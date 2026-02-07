@@ -13,14 +13,8 @@
 use crate::math::Point;
 use crate::shaders::shapes::Shape;
 
-// Dimension-specific parry alias
-#[cfg(all(feature = "from_rapier", feature = "dim2"))]
-use parry2d as parry;
-#[cfg(all(feature = "from_rapier", feature = "dim3"))]
-use parry3d as parry;
-
 #[cfg(feature = "from_rapier")]
-use parry::shape::{Shape as ParryShape, TypedShape};
+use crate::parry::shape::{Shape as ParryShape, TypedShape};
 
 /// Auxiliary buffers for complex shape types like polylines and triangle meshes.
 ///

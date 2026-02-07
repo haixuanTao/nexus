@@ -22,6 +22,11 @@ pub use glamx;
 // Dimension-specific type aliases
 //
 
+#[cfg(feature = "dim2")]
+extern crate parry2d as parry;
+#[cfg(feature = "dim3")]
+extern crate parry3d as parry;
+
 /// The vector type for the current dimension (Vec2 in 2D, Vec3 in 3D).
 #[cfg(feature = "dim2")]
 pub type Vector = Vec2;

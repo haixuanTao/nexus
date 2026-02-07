@@ -15,7 +15,12 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::too_many_arguments)]
 
-// Dimension-specific rapier alias
+
+#[cfg(all(feature = "from_rapier", feature = "dim2"))]
+use parry2d as parry;
+#[cfg(all(feature = "from_rapier", feature = "dim3"))]
+use parry3d as parry;
+
 #[cfg(all(feature = "from_rapier", feature = "dim2"))]
 use rapier2d as rapier;
 #[cfg(all(feature = "from_rapier", feature = "dim3"))]
