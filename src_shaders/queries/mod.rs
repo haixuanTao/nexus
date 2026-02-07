@@ -1,0 +1,68 @@
+//! Collision query algorithms.
+//!
+//! This module provides various query algorithms for collision detection:
+//! - Point projection onto shapes
+//! - Ray casting
+//! - Contact manifold generation
+//! - GJK/EPA algorithms for convex shapes
+//! - SAT (Separating Axis Theorem) for specific shape pairs
+
+mod contact;
+mod contact_manifold;
+mod contact_pfm_pfm;
+mod gjk;
+mod polygonal_feature;
+mod projection;
+mod ray;
+mod sat;
+
+pub use contact::*;
+pub use contact_manifold::*;
+pub use contact_pfm_pfm::*;
+pub use polygonal_feature::*;
+// Re-export projection items explicitly; EPSILON also exists in sat
+pub use projection::{
+    ProjectionResult, ProjectionWithLocation, FEATURE_EDGE, FEATURE_FACE, FEATURE_SOLID,
+    FEATURE_VERTEX,
+};
+pub use ray::*;
+// Re-export sat items explicitly; EPSILON comes from projection
+use crate::queries::projection::EPSILON;
+use crate::Vector;
+#[cfg(feature = "dim3")]
+pub use sat::{
+    cuboid_cuboid_compute_separation_wrt_local_line,
+    cuboid_cuboid_find_local_separating_edge_twoway,
+};
+pub use sat::{cuboid_cuboid_find_local_separating_normal_oneway, SeparatingAxis};
+
+// TODO: move this elsewhere
+/// Approximate equality check for vectors.
+#[inline]
+pub fn relative_eq(a: Vector, b: Vector) -> bool {
+    let abs_diff = (a - b).abs();
+
+    // For when the numbers are really close together
+    #[cfg(feature = "dim2")]
+    let close = abs_diff.x <= EPSILON.x && abs_diff.y <= EPSILON.y;
+    #[cfg(feature = "dim3")]
+    let close = abs_diff.x <= EPSILON.x && abs_diff.y <= EPSILON.y && abs_diff.z <= EPSILON.z;
+
+    if close {
+        return true;
+    }
+
+    let abs_a = a.abs();
+    let abs_b = b.abs();
+    let max_ab = abs_a.max(abs_b);
+
+    // Use a relative difference comparison
+    #[cfg(feature = "dim2")]
+    let result = abs_diff.x <= max_ab.x * EPSILON.x && abs_diff.y <= max_ab.y * EPSILON.y;
+    #[cfg(feature = "dim3")]
+    let result = abs_diff.x <= max_ab.x * EPSILON.x
+        && abs_diff.y <= max_ab.y * EPSILON.y
+        && abs_diff.z <= max_ab.z * EPSILON.z;
+
+    result
+}

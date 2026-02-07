@@ -1,0 +1,207 @@
+//! Contact Computation Module
+//!
+//! This module provides high-level contact computation functions for various shape pairs.
+//! Each function implements the narrow-phase collision detection algorithm specific to
+//! that pair of shape types.
+//!
+//! Implemented shape pairs:
+//! - Ball-Ball: Analytical distance-based computation
+//! - Cuboid-Ball: Point projection onto cuboid boundary
+//! - Ball-Cuboid: Inverse of cuboid-ball with coordinate transform
+//! - Cuboid-Cuboid: SAT + polygonal feature clipping
+//!
+//! Algorithm patterns:
+//! - Simple shapes (ball-ball): Direct analytical formulas
+//! - Mixed shapes (cuboid-ball): Point projection + distance test
+//! - Complex shapes (cuboid-cuboid): Multi-stage SAT + clipping + reduction
+//!
+//! All functions operate in the local frame of the first shape, with the second
+//! shape's pose provided as a relative transform.
+
+use crate::queries::contact_manifold::ContactManifold;
+use crate::queries::polygonal_feature;
+use crate::queries::sat::{self, SeparatingAxis};
+use crate::shapes::{Ball, Cuboid, Shape};
+#[cfg(feature = "dim3")]
+use crate::{MaybeIndexUnchecked, Pad, Pose};
+#[cfg(feature = "dim2")]
+use crate::{MaybeIndexUnchecked, Pose, VectorWithPadding};
+use glamx::UVec2;
+
+use super::contact_pfm_pfm;
+use crate::Vector;
+
+/// Contact manifold with collider pair indices for solver integration.
+///
+/// This structure extends ContactManifold with the collider indices,
+/// allowing the physics solver to identify which bodies are in contact.
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[repr(C)]
+pub struct IndexedManifold {
+    /// The contact information.
+    pub contact: ContactManifold,
+    /// Collider pair that resulted in this contact.
+    pub colliders: UVec2,
+    #[cfg(feature = "dim3")]
+    pub padding: [u32; 2],
+}
+
+/// Computes the contact between two balls.
+pub fn ball_ball(pose12: Pose, ball1: &Ball, ball2: &Ball) -> ContactManifold {
+    let r1 = ball1.radius;
+    let r2 = ball2.radius;
+    let center2_1 = pose12.translation;
+    let mut normal1 = Vector::Y;
+
+    let distance = center2_1.length();
+    let sum_radius = r1 + r2;
+
+    if distance != 0.0 {
+        normal1 = center2_1 / distance;
+    }
+
+    let point1 = normal1 * r1;
+
+    ContactManifold::single_point(point1, distance - sum_radius, normal1)
+}
+
+/// Computes the contact between a convex shape and a ball.
+pub fn convex_ball(pose12: Pose, shape1: &Shape, ball2: &Ball) -> ContactManifold {
+    let center2_1 = pose12.translation;
+    let proj = shape1.project_local_point_on_boundary(center2_1);
+    let proj_vec = center2_1 - proj.point;
+    let mut dist = proj_vec.length();
+    let mut normal1 = if dist != 0.0 {
+        proj_vec / dist
+    } else {
+        Vector::Y
+    };
+
+    if proj.is_inside {
+        normal1 = -normal1;
+        dist = -dist;
+    }
+
+    ContactManifold::single_point(proj.point, dist - ball2.radius, normal1)
+}
+
+/// Computes the contact between a ball and a convex shape.
+pub fn ball_convex(pose12: Pose, ball1: &Ball, shape2: &Shape) -> ContactManifold {
+    let pose21 = pose12.inverse();
+    let mut result = convex_ball(pose21, shape2, ball1);
+    let normal1 = -(pose12.rotation * result.normal_a);
+    result.points_a.at_mut(0).pt = normal1 * ball1.radius;
+    result.normal_a = normal1;
+    result
+}
+
+/// Computes the contact manifold between two polygonal feature-based shapes.
+#[cfg(feature = "dim2")]
+pub fn pfm_pfm(
+    pose12: Pose,
+    shape1: &Shape,
+    thickness1: f32,
+    shape2: &Shape,
+    thickness2: f32,
+    prediction: f32,
+    vertices: &[VectorWithPadding],
+) -> ContactManifold {
+    contact_pfm_pfm::contact_manifold_pfm_pfm(
+        pose12, shape1, thickness1, shape2, thickness2, prediction, vertices,
+    )
+}
+
+/// Computes the contact manifold between two polygonal feature-based shapes.
+#[cfg(feature = "dim3")]
+pub fn pfm_pfm(
+    pose12: Pose,
+    shape1: &Shape,
+    thickness1: f32,
+    shape2: &Shape,
+    thickness2: f32,
+    prediction: f32,
+    vertices: &[Pad<crate::Vector, u32>],
+    indices: &[u32],
+) -> ContactManifold {
+    contact_pfm_pfm::contact_manifold_pfm_pfm(
+        pose12, shape1, thickness1, shape2, thickness2, prediction, vertices, indices,
+    )
+}
+
+/// Computes the contact between two cuboids.
+pub fn cuboid_cuboid(
+    pose12: Pose,
+    cuboid1: &Cuboid,
+    cuboid2: &Cuboid,
+    prediction: f32,
+) -> ContactManifold {
+    let pose21 = pose12.inverse();
+
+    /*
+     *
+     * Point-Face
+     *
+     */
+    let sep1 = sat::cuboid_cuboid_find_local_separating_normal_oneway(cuboid1, cuboid2, pose12);
+
+    // TODO PERF: support the prediction early-exit.
+    // if sep1.separation > prediction {
+    //     return ContactManifold::default();
+    // }
+
+    let sep2 = sat::cuboid_cuboid_find_local_separating_normal_oneway(cuboid2, cuboid1, pose21);
+
+    // TODO PERF: support the prediction early-exit.
+    // if sep2.separation > prediction {
+    //     return ContactManifold::default();
+    // }
+
+    /*
+     *
+     * Edge-Edge cases
+     *
+     */
+    #[cfg(feature = "dim2")]
+    let sep3 = SeparatingAxis::new(-1.0e10, Vector::new(1.0, 0.0)); // This case does not exist in 2D.
+    #[cfg(feature = "dim3")]
+    let sep3 = sat::cuboid_cuboid_find_local_separating_edge_twoway(cuboid1, cuboid2, pose12);
+
+    // TODO PERF: support the prediction early-exit.
+    // if sep3.separation > prediction {
+    //     return ContactManifold::default();
+    // }
+
+    /*
+     *
+     * Select the best combination of features
+     * and get the polygons to clip.
+     *
+     */
+    let mut best_sep = sep1;
+
+    if sep2.separation > sep1.separation && sep2.separation > sep3.separation {
+        best_sep = SeparatingAxis::new(sep2.separation, pose12.rotation * -sep2.axis);
+    } else if sep3.separation > sep1.separation {
+        best_sep = sep3;
+    }
+
+    let local_n2 = pose21.rotation * -best_sep.axis;
+
+    // Now the reference feature is from `cuboid1` and the best separation is `best_sep`.
+    // Everything must be expressed in the local-space of `cuboid1` for contact clipping.
+    let face1 = cuboid1.support_face(best_sep.axis);
+    let face2 = cuboid2.support_face(local_n2);
+    let mut manifold = polygonal_feature::contacts(
+        pose12,
+        pose21,
+        best_sep.axis,
+        local_n2,
+        &face1,
+        &face2,
+        prediction,
+        false,
+    );
+    manifold.normal_a = best_sep.axis;
+    manifold
+}

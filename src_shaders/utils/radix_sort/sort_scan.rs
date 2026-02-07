@@ -1,0 +1,95 @@
+//! Radix Sort Scan Kernel
+//!
+//! Computes exclusive prefix sums of the reduced histogram counts.
+//! This determines the global offsets for each bin.
+//!
+//! Algorithm:
+//! 1. Load reduced values into shared memory with transposition
+//! 2. Compute local prefix sums
+//! 3. Compute workgroup prefix sum
+//! 4. Combine and write back exclusive prefix sums
+//!
+//! Workgroup size: 256 threads
+//! Shared memory: 256 entries for sums + 4x256 entries for local data
+
+use khal_derive::spirv_bindgen;
+use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use spirv_std::glam::UVec3;
+use spirv_std::spirv;
+
+use crate::MaybeIndexUnchecked;
+
+use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
+
+/// Radix sort scan kernel.
+///
+/// Computes exclusive prefix sums of reduced histogram counts.
+#[spirv_bindgen]
+#[spirv(compute(threads(256)))]
+pub fn gpu_sort_scan(
+    #[spirv(local_invocation_id)] local_id: UVec3,
+    #[spirv(workgroup_id)] _group_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] num_keys_arr: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] reduced: &mut [u32],
+    #[spirv(workgroup)] sums: &mut [u32; 256],
+    #[spirv(workgroup)] lds: &mut [[u32; 256]; 4],
+) {
+    let num_keys = num_keys_arr.read(0);
+    let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
+    let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
+
+    // Load with transposition
+    for i in 0..ELEMENTS_PER_THREAD {
+        let data_index = i * WG + local_id.x;
+        let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
+        let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
+        lds.at_mut(row as usize)
+            .write(col as usize, reduced.read(data_index as usize));
+    }
+
+    workgroup_memory_barrier_with_group_sync();
+
+    // Local prefix sum
+    let mut sum = 0u32;
+    for i in 0..ELEMENTS_PER_THREAD {
+        let tmp = lds.at(i as usize).read(local_id.x as usize);
+        lds.at_mut(i as usize).write(local_id.x as usize, sum);
+        sum += tmp;
+    }
+
+    // Workgroup prefix sum
+    sums.write(local_id.x as usize, sum);
+    for i in 0..8u32 {
+        workgroup_memory_barrier_with_group_sync();
+        if local_id.x >= (1 << i) {
+            sum += sums.read((local_id.x - (1 << i)) as usize);
+        }
+        workgroup_memory_barrier_with_group_sync();
+        sums.write(local_id.x as usize, sum);
+    }
+
+    workgroup_memory_barrier_with_group_sync();
+
+    sum = 0;
+    if local_id.x > 0 {
+        sum = sums.read((local_id.x - 1) as usize);
+    }
+
+    for i in 0..ELEMENTS_PER_THREAD {
+        let elt = lds.at_mut(i as usize).read(local_id.x as usize);
+        lds.at_mut(i as usize).write(local_id.x as usize, elt + sum);
+    }
+
+    // lds now contains exclusive prefix sum
+    workgroup_memory_barrier_with_group_sync();
+
+    // Write back with transposition
+    for i in 0..ELEMENTS_PER_THREAD {
+        let data_index = i * WG + local_id.x;
+        let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
+        let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
+        if data_index < num_reduce_wgs {
+            reduced.write(data_index as usize, lds.at(row as usize).read(col as usize));
+        }
+    }
+}

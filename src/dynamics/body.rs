@@ -1,110 +1,60 @@
-//! Rigid-body definition and set.
+//! Rigid-body definitions, mass properties, velocities, and GPU storage.
+//!
+//! This module provides the core data structures for representing rigid bodies on the GPU,
+//! including their poses, velocities, forces, and mass properties. It also provides
+//! [`GpuBodySet`] for managing collections of rigid bodies in GPU memory.
 
-use crate::math::{AngularInertia, GpuSim};
-use crate::shapes::{GpuShape, ShapeBuffers};
-use num_traits::Zero;
-use rapier::geometry::ColliderHandle;
-use rapier::math::{AngVector, Point, Vector};
-use rapier::prelude::MassProperties;
-use rapier::{
-    dynamics::{RigidBodyHandle, RigidBodySet},
-    geometry::ColliderSet,
+use crate::math::{Point, Pose, Vector};
+use crate::shapes::ShapeBuffers;
+
+use crate::shaders::dynamics::{LocalMassProperties, Velocity, WorldMassProperties};
+use crate::shaders::shapes::Shape;
+use khal::BufferUsages;
+use khal::backend::GpuBackend;
+use vortx::tensor::Tensor;
+
+#[cfg(feature = "from_rapier")]
+use {
+    crate::rapier::dynamics::{RigidBodyHandle, RigidBodySet},
+    crate::rapier::geometry::{ColliderHandle, ColliderSet},
+    crate::rapier::prelude::MassProperties,
+    crate::shapes::shape_from_parry,
+    num_traits::Zero,
 };
-use slang_hal::backend::Backend;
-use gla::tensor::GpuTensor;
-use wgpu::BufferUsages;
 
-#[derive(Copy, Clone, PartialEq, encase::ShaderType)]
-#[repr(C)]
-/// Linear and angular forces with a layout compatible with the corresponding WGSL struct.
-pub struct GpuForce {
-    /// The linear part of the force.
-    pub linear: Vector<f32>,
-    /// The angular part of the force (aka. the torque).
-    pub angular: AngVector<f32>,
-}
-
-#[derive(Copy, Clone, PartialEq, Default, encase::ShaderType)]
-#[repr(C)]
-/// Linear and angular velocities with a layout compatible with the corresponding WGSL struct.
-pub struct GpuVelocity {
-    /// The linear (translational) velocity.
-    pub linear: Vector<f32>,
-    /// The angular (rotational) velocity.
-    pub angular: AngVector<f32>,
-}
-
-#[derive(Copy, Clone, PartialEq, encase::ShaderType)]
-#[repr(C)]
-/// Rigid-body mass-properties, with a layout compatible with the corresponding WGSL struct.
-pub struct GpuMassProperties {
-    /// The inverse angular inertia tensor.
-    pub inv_inertia: AngularInertia<f32>,
-    /// The inverse mass.
-    pub inv_mass: Vector<f32>,
-    /// The center-of-mass.
-    pub com: Vector<f32>, // ShaderType isn’t implemented for Point
-}
-
-impl From<MassProperties> for GpuMassProperties {
-    fn from(props: MassProperties) -> Self {
-        GpuMassProperties {
-            #[cfg(feature = "dim2")]
-            inv_inertia: props.inv_principal_inertia_sqrt * props.inv_principal_inertia_sqrt,
-            #[cfg(feature = "dim3")]
-            inv_inertia: props.reconstruct_inverse_inertia_matrix(),
-            inv_mass: Vector::repeat(props.inv_mass),
-            com: props.local_com.coords,
-        }
-    }
-}
-
-impl Default for GpuMassProperties {
-    fn default() -> Self {
-        GpuMassProperties {
-            #[rustfmt::skip]
-            #[cfg(feature = "dim2")]
-            inv_inertia: 1.0,
-            #[cfg(feature = "dim3")]
-            inv_inertia: AngularInertia::identity(),
-            inv_mass: Vector::repeat(1.0),
-            com: Vector::zeros(),
-        }
-    }
-}
+/// Re-export types from the shader crate for convenience.
+pub use crate::shaders::dynamics::{
+    Force, Impulse, LocalMassProperties as GpuLocalMassProperties, Velocity as GpuVelocity,
+    WorldMassProperties as GpuWorldMassProperties,
+};
 
 /// A set of rigid-bodies stored on the gpu.
-pub struct GpuBodySet<B: Backend> {
+pub struct GpuBodySet {
     len: u32,
-    shapes_data: Vec<GpuShape>, // TODO: exists only for convenience in the MPM simulation.
-    pub(crate) mprops: GpuTensor<GpuMassProperties, B>,
-    pub(crate) local_mprops: GpuTensor<GpuMassProperties, B>,
-    pub(crate) vels: GpuTensor<GpuVelocity, B>,
-    pub(crate) poses: GpuTensor<GpuSim, B>,
-    // TODO: support other shape types.
-    // TODO: support a shape with a shift relative to the body.
-    pub(crate) shapes: GpuTensor<GpuShape, B>,
-    // TODO: it’s a bit weird that we store the vertex buffer but not the
-    //       index buffer. This is because our only use-case currently
-    //       is from wgsparkl which has its own way of storing indices.
-    pub(crate) shapes_local_vertex_buffers: GpuTensor<Point<f32>, B>,
-    pub(crate) shapes_vertex_buffers: GpuTensor<Point<f32>, B>,
-    pub(crate) shapes_vertex_collider_id: GpuTensor<u32, B>, // NOTE: this is a bit of a hack for wgsparkl
+    shapes_data: Vec<Shape>,
+    pub(crate) mprops: Tensor<WorldMassProperties>,
+    pub(crate) local_mprops: Tensor<LocalMassProperties>,
+    pub(crate) vels: Tensor<Velocity>,
+    pub(crate) poses: Tensor<Pose>,
+    pub(crate) shapes: Tensor<Shape>,
+    pub(crate) shapes_local_vertex_buffers: Tensor<Point>,
+    pub(crate) shapes_vertex_buffers: Tensor<Point>,
+    pub(crate) shapes_vertex_collider_id: Tensor<u32>,
 }
 
 #[derive(Copy, Clone)]
 /// Helper struct for defining a rigid-body to be added to a [`GpuBodySet`].
 pub struct BodyDesc {
-    /// The rigid-body’s mass-properties in local-space.
-    pub local_mprops: GpuMassProperties,
-    /// The rigid-body’s mass-properties in world-space.
-    pub mprops: GpuMassProperties,
-    /// The rigid-body’s linear and angular velocities.
-    pub vel: GpuVelocity,
-    /// The rigid-body’s world-space pose.
-    pub pose: GpuSim,
-    /// The rigid-body’s shape.
-    pub shape: GpuShape,
+    /// The rigid-body's mass-properties in local-space.
+    pub local_mprops: LocalMassProperties,
+    /// The rigid-body's mass-properties in world-space.
+    pub mprops: WorldMassProperties,
+    /// The rigid-body's linear and angular velocities.
+    pub vel: Velocity,
+    /// The rigid-body's world-space pose.
+    pub pose: Pose,
+    /// The rigid-body's shape.
+    pub shape: Shape,
 }
 
 impl Default for BodyDesc {
@@ -114,42 +64,82 @@ impl Default for BodyDesc {
             mprops: Default::default(),
             vel: Default::default(),
             pose: Default::default(),
-            shape: GpuShape::cuboid(Vector::repeat(0.5)),
+            shape: Shape::cuboid(Vector::splat(0.5)),
         }
     }
 }
 
+/// Coupling mode between a GPU body and the physics simulation.
+///
+/// This controls whether a body is affected by physics forces or acts as a kinematic body.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BodyCoupling {
+    /// One-way coupling: the body affects other bodies but is not affected by them.
+    ///
+    /// This is useful for kinematic bodies that move independently of physics forces.
     OneWay,
+    /// Two-way coupling: the body both affects and is affected by other bodies.
+    ///
+    /// This is the standard mode for dynamic rigid bodies.
     #[default]
     TwoWays,
 }
 
+/// Associates a body/collider pair with a coupling mode.
+///
+/// Used when creating a [`GpuBodySet`] to specify which bodies should have
+/// two-way vs one-way coupling.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BodyCouplingEntry {
-    pub body: RigidBodyHandle,
-    pub collider: ColliderHandle,
+    /// The rigid body index.
+    pub body: usize,
+    /// The collider index.
+    pub collider: usize,
+    /// The coupling mode for this body.
     pub mode: BodyCoupling,
 }
 
-impl<B: Backend> GpuBodySet<B> {
-    /// Is this set empty?
+#[cfg(feature = "from_rapier")]
+/// Associates a Rapier body/collider pair with a coupling mode.
+///
+/// Used when creating a [`GpuBodySet`] from Rapier data structures to specify
+/// which bodies should have two-way vs one-way coupling.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RapierBodyCouplingEntry {
+    /// The Rapier rigid body handle.
+    pub body: RigidBodyHandle,
+    /// The Rapier collider handle.
+    pub collider: ColliderHandle,
+    /// The coupling mode for this body.
+    pub mode: BodyCoupling,
+}
+
+impl GpuBodySet {
+    /// Returns `true` if this set contains no rigid bodies.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Number of rigid-bodies in this set.
+    /// Returns the number of rigid bodies in this set.
     pub fn len(&self) -> u32 {
         self.len
     }
 
+    /// Creates a new GPU body set from Rapier rigid bodies and colliders.
+    ///
+    /// # Parameters
+    ///
+    /// - `backend`: The GPU backend for allocating buffers.
+    /// - `bodies`: Rapier rigid body set.
+    /// - `colliders`: Rapier collider set.
+    /// - `coupling`: Body coupling entries specifying which bodies to include.
+    #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
-        backend: &B,
+        backend: &GpuBackend,
         bodies: &RigidBodySet,
         colliders: &ColliderSet,
-        coupling: &[BodyCouplingEntry],
-    ) -> Result<Self, B::Error> {
+        coupling: &[RapierBodyCouplingEntry],
+    ) -> Self {
         let mut shape_buffers = ShapeBuffers::default();
         let mut gpu_bodies = vec![];
         let mut pt_collider_ids = vec![];
@@ -159,8 +149,8 @@ impl<B: Backend> GpuBodySet<B> {
             let rb = &bodies[coupling.body];
 
             let prev_len = shape_buffers.vertices.len();
-            let shape = GpuShape::from_parry(co.shape(), &mut shape_buffers)
-                .expect("Unsupported shape type");
+            let shape =
+                shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape type");
             for _ in prev_len..shape_buffers.vertices.len() {
                 pt_collider_ids.push(co_id as u32);
             }
@@ -168,29 +158,21 @@ impl<B: Backend> GpuBodySet<B> {
             let zero_mprops = MassProperties::zero();
             let two_ways_coupling = rb.is_dynamic() && coupling.mode == BodyCoupling::TwoWays;
             let desc = BodyDesc {
-                vel: GpuVelocity {
-                    linear: *rb.linvel(),
-                    #[allow(clippy::clone_on_copy)] // Needed for 2D/3D switch.
-                    angular: rb.angvel().clone(),
-                },
-                #[cfg(feature = "dim2")]
-                pose: (*rb.position()).into(),
-                #[cfg(feature = "dim3")]
-                pose: GpuSim::from_isometry(*rb.position(), 1.0),
+                vel: Velocity::new(
+                    rb.linvel(),
+                    #[cfg(feature = "dim2")]
+                    rb.angvel(),
+                    #[cfg(feature = "dim3")]
+                    rb.angvel(),
+                ),
+                pose: *rb.position(),
                 shape,
                 local_mprops: if two_ways_coupling {
-                    rb.mass_properties().local_mprops.into()
+                    convert_local_mprops(&rb.mass_properties().local_mprops)
                 } else {
-                    zero_mprops.into()
+                    convert_local_mprops(&zero_mprops)
                 },
-                mprops: if two_ways_coupling {
-                    rb.mass_properties()
-                        .local_mprops
-                        .transform_by(rb.position())
-                        .into()
-                } else {
-                    zero_mprops.into()
-                },
+                mprops: Default::default(),
             };
             gpu_bodies.push(desc);
         }
@@ -200,11 +182,11 @@ impl<B: Backend> GpuBodySet<B> {
 
     /// Create a set of `bodies` on the gpu.
     pub fn new(
-        backend: &B,
+        backend: &GpuBackend,
         bodies: &[BodyDesc],
         pt_collider_ids: &[u32],
         shape_buffers: &ShapeBuffers,
-    ) -> Result<Self, B::Error> {
+    ) -> Self {
         #[allow(clippy::type_complexity)]
         let (local_mprops, (mprops, (vels, (poses, shapes_data)))): (
             Vec<_>,
@@ -212,83 +194,123 @@ impl<B: Backend> GpuBodySet<B> {
         ) = bodies
             .iter()
             .copied()
-            // NOTE: Looks silly, but we can’t just collect into (Vec, Vec, Vec).
             .map(|b| (b.local_mprops, (b.mprops, (b.vel, (b.pose, b.shape)))))
             .collect();
-        // TODO: (api design) how can we let the user pick the buffer usages?
-        Ok(Self {
+
+        Self {
             len: bodies.len() as u32,
-            mprops: GpuTensor::vector_encased(backend, &mprops, BufferUsages::STORAGE)?,
-            local_mprops: GpuTensor::vector_encased(backend, &local_mprops, BufferUsages::STORAGE)?,
-            vels: GpuTensor::vector_encased(
+            mprops: Tensor::vector(backend, &mprops, BufferUsages::STORAGE).unwrap(),
+            local_mprops: Tensor::vector(backend, &local_mprops, BufferUsages::STORAGE).unwrap(),
+            vels: Tensor::vector(
                 backend,
                 &vels,
                 BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            )?,
-            poses: GpuTensor::vector(
+            )
+            .unwrap(),
+            poses: Tensor::vector(
                 backend,
                 &poses,
                 BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            )?,
-            shapes: GpuTensor::vector(backend, &shapes_data, BufferUsages::STORAGE)?,
-            shapes_local_vertex_buffers: GpuTensor::vector_encased(
+            )
+            .unwrap(),
+            shapes: Tensor::vector(backend, &shapes_data, BufferUsages::STORAGE).unwrap(),
+            shapes_local_vertex_buffers: Tensor::vector_encased(
                 backend,
                 &shape_buffers.vertices,
                 BufferUsages::STORAGE,
-            )?,
-            shapes_vertex_buffers: GpuTensor::vector_encased(
+            )
+            .unwrap(),
+            shapes_vertex_buffers: Tensor::vector_encased(
                 backend,
-                // TODO: init in world-space directly?
                 &shape_buffers.vertices,
                 BufferUsages::STORAGE,
-            )?,
-            shapes_vertex_collider_id: GpuTensor::vector(
+            )
+            .unwrap(),
+            shapes_vertex_collider_id: Tensor::vector(
                 backend,
                 pt_collider_ids,
                 BufferUsages::STORAGE,
-            )?,
+            )
+            .unwrap(),
             shapes_data,
-        })
+        }
     }
 
     /// GPU storage buffer containing the poses of every rigid-body.
-    pub fn poses(&self) -> &GpuTensor<GpuSim, B> {
+    pub fn poses(&self) -> &Tensor<Pose> {
         &self.poses
     }
 
     /// GPU storage buffer containing the velocities of every rigid-body.
-    pub fn vels(&self) -> &GpuTensor<GpuVelocity, B> {
+    pub fn vels(&self) -> &Tensor<Velocity> {
         &self.vels
     }
 
     /// GPU storage buffer containing the world-space mass-properties of every rigid-body.
-    pub fn mprops(&self) -> &GpuTensor<GpuMassProperties, B> {
+    pub fn mprops(&self) -> &Tensor<WorldMassProperties> {
         &self.mprops
     }
 
     /// GPU storage buffer containing the local-space mass-properties of every rigid-body.
-    pub fn local_mprops(&self) -> &GpuTensor<GpuMassProperties, B> {
+    pub fn local_mprops(&self) -> &Tensor<LocalMassProperties> {
         &self.local_mprops
     }
 
     /// GPU storage buffer containing the shape of every rigid-body.
-    pub fn shapes(&self) -> &GpuTensor<GpuShape, B> {
+    pub fn shapes(&self) -> &Tensor<Shape> {
         &self.shapes
     }
 
-    pub fn shapes_vertex_buffers(&self) -> &GpuTensor<Point<f32>, B> {
+    /// Returns the GPU buffer containing shape vertices in world-space.
+    ///
+    /// This buffer is updated each frame as bodies move.
+    pub fn shapes_vertex_buffers(&self) -> &Tensor<Point> {
         &self.shapes_vertex_buffers
     }
 
-    pub fn shapes_local_vertex_buffers(&self) -> &GpuTensor<Point<f32>, B> {
+    /// Returns the GPU buffer containing shape vertices in local-space.
+    ///
+    /// These are the original vertex positions before transformation.
+    pub fn shapes_local_vertex_buffers(&self) -> &Tensor<Point> {
         &self.shapes_local_vertex_buffers
     }
 
-    pub fn shapes_vertex_collider_id(&self) -> &GpuTensor<u32, B> {
+    /// Returns the GPU buffer mapping each vertex to its collider ID.
+    ///
+    /// This is used by wgsparkl for particle-body interactions.
+    pub fn shapes_vertex_collider_id(&self) -> &Tensor<u32> {
         &self.shapes_vertex_collider_id
     }
 
-    pub fn shapes_data(&self) -> &[GpuShape] {
+    /// Returns a CPU-side slice of the shape data.
+    ///
+    /// Useful for accessing shape information without GPU readback.
+    pub fn shapes_data(&self) -> &[Shape] {
         &self.shapes_data
+    }
+}
+
+#[cfg(feature = "from_rapier")]
+fn convert_local_mprops(mprops: &MassProperties) -> LocalMassProperties {
+    #[cfg(feature = "dim2")]
+    {
+        LocalMassProperties {
+            inv_mass: glamx::Vec2::splat(mprops.inv_mass),
+            com: mprops.local_com,
+            padding2: 0,
+            inv_inertia: mprops.inv_principal_inertia,
+        }
+    }
+    #[cfg(feature = "dim3")]
+    {
+        LocalMassProperties {
+            inertia_ref_frame: mprops.principal_inertia_local_frame,
+            inv_principal_inertia: mprops.inv_principal_inertia,
+            padding0: 0,
+            inv_mass: glamx::Vec3::splat(mprops.inv_mass),
+            padding1: 0,
+            com: mprops.local_com,
+            padding2: 0,
+        }
     }
 }

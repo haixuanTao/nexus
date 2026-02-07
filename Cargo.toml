@@ -1,40 +1,52 @@
 [workspace]
 members = [
     "crates/nexus2d",
-    "crates/nexus3d"
+    "crates/nexus3d",
+    "crates/nexus-shaders2d",
+    "crates/nexus-shaders3d",
+    "crates/nexus_testbed2d",
+    "crates/nexus_testbed3d",
+    "crates/examples2d",
+    "crates/examples3d",
 ]
 resolver = "2"
 
-[workspace.dependencies]
-nalgebra = { version = "0.34", features = ["convert-bytemuck"] }
-bytemuck = { version = "1", features = ["derive", "extern_crate_std"] }
-anyhow = "1"
-async-channel = "2"
-thiserror = "2"
-futures = "0.3"
+[package]
+name = "nexus"
+authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
+description = "Cross-platform GPU-accelerated rigid-body physics using rust-gpu."
+repository = "https://github.com/dimforge/nexus"
+version = "0.4.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
 
-shader-slang = "0.1"
-shader-slang-sys = "0.1"
-gla = "0.1"
-slang-hal = "0.1"
+[features]
+default = ["webgpu", "f32"]
+dim2 = []
+dim3 = []
+f32 = []
+f64 = []
+webgpu = ["khal/webgpu"]
+vulkan = ["khal/vulkan"]
+cpu = []  # Enables CPU shader execution
+from_rapier = []  # Enables conversion from rapier types
 
-# TODO: make the wgpu dependency optional too (all backends should be optional but with
-#       wgpu enabled by default).
-wgpu = { version = "26", features = ["naga-ir"] }
-encase = { version = "0.11", features = [ "nalgebra" ] }
+[dependencies]
+glamx = { version = "0.1", default-features = false, features = ["nostd-libm", "bytemuck"] }
+include_dir = "0.7"
+khal = { version = "0.2", features = ["derive"] }
+vortx = "0.2"
+bytemuck = { version = "1", features = ["derive"] }
+encase = "0.12"
 
-[workspace.lints]
+[lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("dim2", "dim3"))'
+    'cfg(feature, values("dim2", "dim3", "from_rapier"))',
 ] }
 
-[profile.release]
-opt-level = 'z'
-
 [patch.crates-io]
-gla = { path = "../gla" }
-encase = { path = "../encase" }
-shader-slang = { path = "../slang-rs" }
-minislang = { path = "../slmath/crates/minislang" }
-slang-hal-derive = { path = "../slmath/crates/slang-hal-derive" }
-slang-hal = { path = "../slmath/crates/slang-hal" }
+khal = { path = "../khal/crates/khal" }
+khal-derive = { path = "../khal/crates/khal-derive" }
+glamx = { path = "../glamx" }
+vortx = { path = "../vortx" }
+kiss3d = { path = "../kiss3d" }

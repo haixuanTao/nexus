@@ -9,3 +9,7 @@ dist3d
 assets/**/*.bin
 src/autogen2d
 src/autogen3d
+publish/
+*.spv
+manifest.json
+__pycache__

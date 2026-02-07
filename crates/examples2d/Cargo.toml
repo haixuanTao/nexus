@@ -1,0 +1,21 @@
+[package]
+name = "nexus-examples-2d"
+version = "0.4.0"
+authors = ["Sébastien Crozet <developer@crozet.re>"]
+edition = "2024"
+
+[dependencies]
+glamx = { version = "0.1", default-features = false }
+nexus_testbed2d = { path = "../nexus_testbed2d" }
+nexus2d = { path = "../nexus2d" }
+rapier2d = "0.32"
+kiss3d = "0.40"
+oorandom = "11"
+rand = "0.9"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[[bin]]
+name = "all_examples2"
+path = "all_examples2.rs"

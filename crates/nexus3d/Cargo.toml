@@ -1,11 +1,10 @@
 [package]
 name = "nexus3d"
 authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
-description = "Cross-platform 3D rigid-body physics."
-homepage = "https://wgmath.rs"
-repository = "https://github.com/dimforge/wgmath"
-version = "0.1.0"
-edition = "2021"
+description = "Cross-platform 3D GPU-accelerated rigid-body physics."
+repository = "https://github.com/dimforge/nexus"
+version = "0.4.0"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -19,24 +18,35 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [features]
-default = ["dim3"]
+default = ["dim3", "f32", "webgpu"]
 dim3 = []
+f32 = []
+f64 = []
+webgpu = ["khal/webgpu"]
+vulkan = ["khal/vulkan"]
+from_rapier = ["rapier3d", "parry3d"]
 
 [dependencies]
-nalgebra = { workspace = true }
-wgpu = { workspace = true }
-encase = { workspace = true }
-bytemuck = { workspace = true }
-slang-hal = { workspace = true }
-gla = { workspace = true }
-rapier3d = "0.28"# TODO: should be behind a feature?
+nexus-shaders3d = { path = "../nexus-shaders3d" }
+glamx = { version = "0.1", default-features = false, features = ["nostd-libm", "bytemuck", "encase"] }
+include_dir = "0.7"
+khal = { version = "0.2", features = ["derive"] }
+vortx = "0.2"
+bytemuck = { version = "1", features = ["derive"] }
+encase = "0.12"
+bvh = "0.7"
 num-traits = "0.2"
+web-time = "1"
+
+# Optional dependencies for rapier/parry interop
+rapier3d = { version = "0.32", optional = true }
+parry3d = { version = "0.26", optional = true }
 
 [dev-dependencies]
-nalgebra = { version = "0.34", features = ["rand"] }
 futures-test = "0.3"
 serial_test = "3"
 approx = "0.5"
-async-std = { version = "1", features = ["attributes"] }
-bevy = { version = "0.16", features = ["shader_format_glsl", "shader_format_spirv"] }
-bevy_panorbit_camera = "0.26.0"
+rand = "0.9"
+
+[build-dependencies]
+walkdir = "2"

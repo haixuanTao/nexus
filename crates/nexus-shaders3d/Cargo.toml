@@ -1,0 +1,37 @@
+[package]
+name = "nexus-shaders3d"
+authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
+description = "3D GPU shaders for nexus physics engine (rust-gpu)."
+repository = "https://github.com/dimforge/nexus"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "../../src_shaders/lib.rs"
+crate-type = ["lib", "dylib"]
+
+[lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("dim2"))',
+    'cfg(target_arch, values("spirv"))',
+] }
+
+[features]
+default = ["dim3"]
+dim3 = []
+unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
+push_constants = []
+
+[dependencies]
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git" }
+glamx = { path = "../../../glamx", default-features = false, features = ["libm"] }
+vortx-shaders = { path = "../../../vortx/vortx-shaders", default-features = false }
+# Proc-macro crate - always compiles on host, so unconditional dependency is fine
+khal-derive = { path = "../../../khal/crates/khal-derive" }
+
+[target.'cfg(not(target_arch = "spirv"))'.dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+encase = "0.12"
+khal = { path = "../../../khal/crates/khal", features = ["derive"] }
+glamx = { path = "../../../glamx", features = ["bytemuck"] }
