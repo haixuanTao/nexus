@@ -9,7 +9,6 @@ license = "MIT OR Apache-2.0"
 
 [lib]
 path = "../../src_shaders/lib.rs"
-crate-type = ["lib", "dylib"]
 
 [lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
