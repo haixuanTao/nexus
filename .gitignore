@@ -1,4 +1,3 @@
-/target
 *.lock
 .vscode
 .idea
@@ -13,3 +12,4 @@ publish/
 *.spv
 manifest.json
 __pycache__
+target

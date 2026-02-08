@@ -2,12 +2,12 @@
 members = [
     "crates/nexus2d",
     "crates/nexus3d",
-    "crates/nexus-shaders2d",
-    "crates/nexus-shaders3d",
     "crates/nexus_testbed2d",
     "crates/nexus_testbed3d",
     "crates/examples2d",
     "crates/examples3d",
+    "crates/nexus-shaders2d",
+    "crates/nexus-shaders3d",
 ]
 resolver = "2"
 
@@ -50,3 +50,4 @@ khal-derive = { path = "../khal/crates/khal-derive" }
 glamx = { path = "../glamx" }
 vortx = { path = "../vortx" }
 kiss3d = { path = "../kiss3d" }
+parry3d = { path = "../parry/crates/parry3d" }
