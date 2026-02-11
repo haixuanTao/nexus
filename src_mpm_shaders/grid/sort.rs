@@ -26,7 +26,10 @@ use spirv_std::spirv;
 /// For each particle, computes the set of blocks whose stencil could overlap
 /// the particle, and inserts them into the hashmap. This must be run before
 /// any per-block operations.
-#[spirv_bindgen]
+// TODO HACK: enabling spirv-passthrough for this shader since naga panics
+//            on the spv backend because of https://github.com/gfx-rs/wgpu/issues/7315
+//            (in our case, it’s caused by the lines involving the atomic compare-exchange).
+#[spirv_bindgen(spirv_passthrough)]
 #[spirv(compute(threads(64)))]
 pub fn gpu_touch_particle_blocks(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
@@ -52,7 +55,10 @@ pub fn gpu_touch_particle_blocks(
 /// Similar to `gpu_touch_particle_blocks`, but operates on rigid body surface
 /// particles. Only touches blocks for rigid particles that are flagged as needing
 /// a block (via the `rigid_particle_needs_block` bitfield).
-#[spirv_bindgen]
+// TODO HACK: enabling spirv-passthrough for this shader since naga panics
+//            on the spv backend because of https://github.com/gfx-rs/wgpu/issues/7315
+//            (in our case, it’s caused by the lines involving the atomic compare-exchange).
+#[spirv_bindgen(spirv_passthrough)]
 #[spirv(compute(threads(64)))]
 pub fn gpu_touch_rigid_particle_blocks(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
