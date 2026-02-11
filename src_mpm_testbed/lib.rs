@@ -242,17 +242,6 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                     new_selected_demo = Some(stage.selected_demo);
                 }
 
-                ui.label(format!(
-                    "total: {:.1}ms (encoding: {:.1}ms)",
-                    stage.step_result.timings.total_step_time,
-                    stage.step_result.timings.encoding_time
-                ));
-                ui.label(format!(
-                    "readback: {:.1}ms",
-                    stage.step_result.timings.readback_time
-                ));
-                ui.label(format!("particles: {}", stage.physics.data.particles.len()));
-
                 egui::ComboBox::from_label("render mode")
                     .selected_text(stage.app_state.render_mode.text())
                     .show_ui(ui, |ui| {
@@ -264,6 +253,18 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                             );
                         }
                     });
+
+                ui.label(format!(
+                    "total: {:.1}ms (encoding: {:.1}ms)",
+                    stage.step_result.timings.total_step_time,
+                    stage.step_result.timings.encoding_time
+                ));
+                ui.label(format!(
+                    "readback: {:.1}ms",
+                    stage.step_result.timings.readback_time
+                ));
+                ui.label(format!("particles: {}", stage.physics.data.particles.len()));
+
 
                 ui.horizontal(|ui| {
                     let play_pause_label = if stage.app_state.run_state == RunState::Running {
