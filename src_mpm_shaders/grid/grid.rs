@@ -313,7 +313,7 @@ pub fn insertion_index(
                 { spirv_std::memory::Scope::QueueFamily as u32 },
                 { spirv_std::memory::Semantics::NONE.bits() },
                 { spirv_std::memory::Semantics::NONE.bits() },
-            >(&mut hmap_entries.at_mut(slot as usize).state, NONE, packed_key)
+            >(&mut hmap_entries.at_mut(slot as usize).state, packed_key, NONE)
         };
 
         if old_value == packed_key {
