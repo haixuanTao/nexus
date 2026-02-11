@@ -144,6 +144,8 @@ pub fn gpu_narrow_phase_shape_shape(
         }
 
         // PFM - PFM (generic convex shapes via GJK/EPA)
+        // This is deferred to another kernel to reduce the spirv shader size
+        // (otherwise it’s too big and hangs macos on loading).
         if !checked {
             let sub1 = shape1.pfm_subshape();
             let sub2 = shape2.pfm_subshape();

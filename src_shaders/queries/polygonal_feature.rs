@@ -51,6 +51,15 @@ pub struct PolygonalFeature {
     pub num_vertices: u32,
 }
 
+impl From<parry::shape::PolygonalFeature> for PolygonalFeature {
+    fn from(value: parry::shape::PolygonalFeature) -> Self {
+        Self {
+            vertices: value.vertices,
+            num_vertices: value.num_vertices as u32,
+        }
+    }
+}
+
 impl Default for PolygonalFeature {
     fn default() -> Self {
         Self {

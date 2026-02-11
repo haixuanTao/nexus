@@ -10,6 +10,7 @@
 //! that cannot be stored inline in the `Shape` struct. The [`ShapeBuffers`] struct
 //! holds these vertex buffers.
 
+use crate::shaders::VectorWithPadding;
 use crate::math::Point;
 use crate::shaders::shapes::Shape;
 
@@ -26,7 +27,7 @@ pub struct ShapeBuffers {
     ///
     /// Polyline and TriMesh shapes reference ranges within this buffer.
     /// The shape stores the start and end indices of its vertices in this buffer.
-    pub vertices: Vec<Point>,
+    pub vertices: Vec<VectorWithPadding>,
     /// Index buffers for polylines, triangle meshes, and convex polyhedrons.
     pub indices: Vec<u32>,
 }
@@ -103,7 +104,8 @@ pub fn shape_from_parry(
             buffers.vertices.extend(
                 flat_bvh
                     .iter()
-                    .flat_map(|n| [bvh_to_point(n.aabb.min), bvh_to_point(n.aabb.max)]),
+                    .flat_map(|n| [bvh_to_point(n.aabb.min), bvh_to_point(n.aabb.max)])
+                    .map(VectorWithPadding::new),
             );
             let bvh_node_len = flat_bvh.len();
             buffers.indices.extend(
@@ -112,7 +114,7 @@ pub fn shape_from_parry(
                     .flat_map(|n| [n.entry_index, n.exit_index, n.shape_index]),
             );
 
-            buffers.vertices.extend(shape.vertices().iter().copied());
+            buffers.vertices.extend(shape.vertices().iter().copied().map(VectorWithPadding::new));
             buffers
                 .indices
                 .extend(shape.indices().iter().flat_map(|seg| seg.iter().copied()));
@@ -170,7 +172,8 @@ pub fn shape_from_parry(
             buffers.vertices.extend(
                 flat_bvh
                     .iter()
-                    .flat_map(|n| [bvh_to_point(n.aabb.min), bvh_to_point(n.aabb.max)]),
+                    .flat_map(|n| [bvh_to_point(n.aabb.min), bvh_to_point(n.aabb.max)])
+                    .map(VectorWithPadding::new),
             );
             let bvh_node_len = flat_bvh.len();
             buffers.indices.extend(
@@ -179,7 +182,7 @@ pub fn shape_from_parry(
                     .flat_map(|n| [n.entry_index, n.exit_index, n.shape_index]),
             );
 
-            buffers.vertices.extend(shape.vertices().iter().copied());
+            buffers.vertices.extend(shape.vertices().iter().copied().map(VectorWithPadding::new));
             buffers
                 .indices
                 .extend(shape.indices().iter().flat_map(|tri| tri.iter().copied()));
@@ -196,7 +199,7 @@ pub fn shape_from_parry(
         #[cfg(feature = "dim2")]
         TypedShape::ConvexPolygon(poly) => {
             let first_vtx_id = buffers.vertices.len() as u32;
-            buffers.vertices.extend(poly.points().iter().copied());
+            buffers.vertices.extend(poly.points().iter().copied().map(VectorWithPadding::new));
             let end_vtx_id = buffers.vertices.len() as u32;
             Some(Shape::convex_poly(first_vtx_id, end_vtx_id, 0, 0))
         }
@@ -206,7 +209,7 @@ pub fn shape_from_parry(
             let first_face_id = buffers.indices.len();
             let all_idx = poly.vertices_adj_to_face();
 
-            buffers.vertices.extend(poly.points().iter().copied());
+            buffers.vertices.extend(poly.points().iter().copied().map(VectorWithPadding::new));
             for face in poly.faces() {
                 let id = face.first_vertex_or_edge as usize;
 

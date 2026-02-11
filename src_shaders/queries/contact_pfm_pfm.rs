@@ -79,7 +79,7 @@ pub fn contact_support_map_support_map(
         return cpts;
     }
 
-    // The point is inside of the CSO: use the fallback algorithm
+    // The point is inside the CSO: use the fallback algorithm
     let mut epa = Epa::default();
     let penetration = epa.closest_points(pose12, g1, g2, &simplex, vertices);
     if penetration.valid {

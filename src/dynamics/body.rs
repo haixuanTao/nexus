@@ -21,7 +21,7 @@ use {
     crate::shapes::shape_from_parry,
     num_traits::Zero,
 };
-
+use crate::shaders::VectorWithPadding;
 /// Re-export types from the shader crate for convenience.
 pub use crate::shaders::dynamics::{
     Force, Impulse, LocalMassProperties as GpuLocalMassProperties, Velocity as GpuVelocity,
@@ -32,14 +32,14 @@ pub use crate::shaders::dynamics::{
 pub struct GpuBodySet {
     len: u32,
     shapes_data: Vec<Shape>,
-    pub(crate) mprops: Tensor<WorldMassProperties>,
-    pub(crate) local_mprops: Tensor<LocalMassProperties>,
-    pub(crate) vels: Tensor<Velocity>,
-    pub(crate) poses: Tensor<Pose>,
-    pub(crate) shapes: Tensor<Shape>,
-    pub(crate) shapes_local_vertex_buffers: Tensor<Point>,
-    pub(crate) shapes_vertex_buffers: Tensor<Point>,
-    pub(crate) shapes_vertex_collider_id: Tensor<u32>,
+    pub mprops: Tensor<WorldMassProperties>,
+    pub local_mprops: Tensor<LocalMassProperties>,
+    pub vels: Tensor<Velocity>,
+    pub poses: Tensor<Pose>,
+    pub shapes: Tensor<Shape>,
+    pub shapes_local_vertex_buffers: Tensor<VectorWithPadding>,
+    pub shapes_vertex_buffers: Tensor<VectorWithPadding>,
+    pub shapes_vertex_collider_id: Tensor<u32>,
 }
 
 #[derive(Copy, Clone)]
@@ -214,13 +214,13 @@ impl GpuBodySet {
             )
             .unwrap(),
             shapes: Tensor::vector(backend, &shapes_data, BufferUsages::STORAGE).unwrap(),
-            shapes_local_vertex_buffers: Tensor::vector_encased(
+            shapes_local_vertex_buffers: Tensor::vector(
                 backend,
                 &shape_buffers.vertices,
                 BufferUsages::STORAGE,
             )
             .unwrap(),
-            shapes_vertex_buffers: Tensor::vector_encased(
+            shapes_vertex_buffers: Tensor::vector(
                 backend,
                 &shape_buffers.vertices,
                 BufferUsages::STORAGE,
@@ -261,17 +261,37 @@ impl GpuBodySet {
         &self.shapes
     }
 
+    /// Mutable reference to the GPU storage buffer containing the poses of every rigid-body.
+    pub fn poses_mut(&mut self) -> &mut Tensor<Pose> {
+        &mut self.poses
+    }
+
+    /// Mutable reference to the GPU storage buffer containing the velocities of every rigid-body.
+    pub fn vels_mut(&mut self) -> &mut Tensor<Velocity> {
+        &mut self.vels
+    }
+
+    /// Mutable reference to the GPU storage buffer containing the world-space mass-properties of every rigid-body.
+    pub fn mprops_mut(&mut self) -> &mut Tensor<WorldMassProperties> {
+        &mut self.mprops
+    }
+
     /// Returns the GPU buffer containing shape vertices in world-space.
     ///
     /// This buffer is updated each frame as bodies move.
-    pub fn shapes_vertex_buffers(&self) -> &Tensor<Point> {
+    pub fn shapes_vertex_buffers(&self) -> &Tensor<VectorWithPadding> {
         &self.shapes_vertex_buffers
+    }
+
+    /// Mutable reference to the GPU buffer containing shape vertices in world-space.
+    pub fn shapes_vertex_buffers_mut(&mut self) -> &mut Tensor<VectorWithPadding> {
+        &mut self.shapes_vertex_buffers
     }
 
     /// Returns the GPU buffer containing shape vertices in local-space.
     ///
     /// These are the original vertex positions before transformation.
-    pub fn shapes_local_vertex_buffers(&self) -> &Tensor<Point> {
+    pub fn shapes_local_vertex_buffers(&self) -> &Tensor<VectorWithPadding> {
         &self.shapes_local_vertex_buffers
     }
 

@@ -1,0 +1,17 @@
+[package]
+name = "mpm-examples-3d"
+version = "0.4.0"
+authors = ["Sebastien Crozet <sebcrozet@dimforge.com>"]
+edition = "2024"
+
+[dependencies]
+glamx = { version = "0.1", default-features = false }
+khal = { version = "0.2" }
+nexus_mpm_testbed3d = { path = "../nexus_mpm_testbed3d" }
+nexus-mpm3d = { path = "../nexus-mpm3d", features = ["from_rapier"] }
+rapier3d = "0.32"
+kiss3d = "0.40"
+
+[[bin]]
+name = "mpm_testbed3"
+path = "mpm_testbed3.rs"

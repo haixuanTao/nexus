@@ -15,13 +15,13 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::queries::{PolygonalFeature, ProjectionResult};
-use crate::shapes::ball::Ball;
+use crate::shapes::{Ball, Cuboid};
 use crate::shapes::capsule::Capsule;
-use crate::shapes::cuboid::Cuboid;
 use crate::shapes::segment::Segment;
 use crate::shapes::triangle::Triangle;
 use crate::{Pose, Vector, VectorWithPadding};
 use glamx::Vec4;
+use parry::{query::PointQuery, shape::SupportMap};
 
 #[cfg(feature = "dim3")]
 use crate::shapes::cone::Cone;
@@ -299,10 +299,10 @@ impl Shape {
     pub fn project_local_point(&self, pt: Vector) -> Vector {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_BALL {
-            return self.to_ball().project_local_point(pt);
+            return self.to_ball().project_local_point(pt, true).point;
         }
         if ty == SHAPE_TYPE_CUBOID {
-            return self.to_cuboid().project_local_point(pt);
+            return self.to_cuboid().project_local_point(pt, true).point;
         }
         if ty == SHAPE_TYPE_CAPSULE {
             return self.to_capsule().project_local_point(pt);
@@ -325,10 +325,10 @@ impl Shape {
     pub fn project_point(&self, pose: Pose, pt: Vector) -> Vector {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_BALL {
-            return self.to_ball().project_point(pose, pt);
+            return self.to_ball().project_point(&pose, pt, true).point;
         }
         if ty == SHAPE_TYPE_CUBOID {
-            return self.to_cuboid().project_point(pose, pt);
+            return self.to_cuboid().project_point(&pose, pt, true).point;
         }
         if ty == SHAPE_TYPE_CAPSULE {
             return self.to_capsule().project_point(pose, pt);
@@ -349,10 +349,10 @@ impl Shape {
     pub fn project_local_point_on_boundary(&self, pt: Vector) -> ProjectionResult {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_BALL {
-            return self.to_ball().project_local_point_on_boundary(pt);
+            return self.to_ball().project_local_point(pt, false).into();
         }
         if ty == SHAPE_TYPE_CUBOID {
-            return self.to_cuboid().project_local_point_on_boundary(pt);
+            return self.to_cuboid().project_local_point(pt, false).into();
         }
         if ty == SHAPE_TYPE_CAPSULE {
             return self.to_capsule().project_local_point_on_boundary(pt);
@@ -376,10 +376,10 @@ impl Shape {
     pub fn project_point_on_boundary(&self, pose: Pose, pt: Vector) -> ProjectionResult {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_BALL {
-            return self.to_ball().project_point_on_boundary(pose, pt);
+            return self.to_ball().project_point(&pose, pt, false).into();
         }
         if ty == SHAPE_TYPE_CUBOID {
-            return self.to_cuboid().project_point_on_boundary(pose, pt);
+            return self.to_cuboid().project_point(&pose, pt, false).into();
         }
         if ty == SHAPE_TYPE_CAPSULE {
             return self.to_capsule().project_point_on_boundary(pose, pt);
@@ -411,9 +411,9 @@ impl Shape {
     /// Computes the local support point of a self.
     pub fn local_support_point(&self, dir: Vector, vertices: &[VectorWithPadding]) -> Vector {
         let ty = self.shape_type();
-        // if ty == SHAPE_TYPE_BALL {
-        //     return self.to_ball().local_support_point(dir);
-        // }
+        if ty == SHAPE_TYPE_BALL {
+            return self.to_ball().local_support_point(dir);
+        }
         if ty == SHAPE_TYPE_CUBOID {
             return self.to_cuboid().local_support_point(dir);
         }
@@ -445,7 +445,7 @@ impl Shape {
     pub fn support_face(&self, dir: Vector, vertices: &[VectorWithPadding]) -> PolygonalFeature {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_CUBOID {
-            return self.to_cuboid().support_face(dir);
+            return self.to_cuboid().support_face(dir).into();
         }
         if ty == SHAPE_TYPE_TRIANGLE {
             return self.to_triangle().support_face(dir);
@@ -471,7 +471,7 @@ impl Shape {
     ) -> PolygonalFeature {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_CUBOID {
-            return self.to_cuboid().support_face(dir);
+            return self.to_cuboid().support_face(dir).into();
         }
         if ty == SHAPE_TYPE_TRIANGLE {
             return self.to_triangle().support_face(dir);

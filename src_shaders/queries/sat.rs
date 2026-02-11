@@ -14,6 +14,7 @@
 
 use crate::shapes::Cuboid;
 use crate::{Pose, Vector};
+use parry::shape::SupportMap;
 
 #[cfg(feature = "dim3")]
 use crate::MaybeIndexUnchecked;

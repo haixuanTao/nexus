@@ -220,20 +220,14 @@ impl GpuPhysicsState {
 
         // NOTE: GPU doesn't like empty storage buffer bindings.
         if shape_buffers.vertices.is_empty() {
-            shape_buffers.vertices.push(Point::ZERO);
+            shape_buffers.vertices.push(Point::ZERO.into());
         }
         if shape_buffers.indices.is_empty() {
             shape_buffers.indices.extend_from_slice(&[0; 3]);
         }
 
-        // Convert vertices to VectorWithPadding for GPU storage
-        let vertices_with_padding: Vec<VectorWithPadding> = shape_buffers
-            .vertices
-            .iter()
-            .map(|v| VectorWithPadding::new(*v))
-            .collect();
         let vertex_buffers =
-            Tensor::vector(backend, &vertices_with_padding, BufferUsages::STORAGE).unwrap();
+            Tensor::vector(backend, &shape_buffers.vertices, BufferUsages::STORAGE).unwrap();
         let index_buffers =
             Tensor::vector(backend, &shape_buffers.indices, BufferUsages::STORAGE).unwrap();
 

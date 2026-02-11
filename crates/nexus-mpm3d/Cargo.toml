@@ -1,0 +1,54 @@
+[package]
+name = "nexus-mpm3d"
+authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
+description = "Cross-platform 3D GPU-accelerated MPM physics."
+repository = "https://github.com/dimforge/nexus"
+version = "0.4.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nexus_mpm3d"
+path = "../../src_mpm/lib.rs"
+required-features = ["dim3"]
+
+[lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("dim2"))',
+] }
+
+[features]
+default = ["dim3", "f32", "webgpu"]
+dim3 = []
+f32 = []
+f64 = []
+webgpu = ["khal/webgpu"]
+vulkan = ["khal/vulkan"]
+from_rapier = ["rapier3d", "parry3d", "nexus3d/from_rapier"]
+
+[dependencies]
+nexus-mpm-shaders3d = { path = "../nexus-mpm-shaders3d" }
+nexus3d = { path = "../nexus3d", default-features = false, features = ["dim3"] }
+glamx = { version = "0.1", default-features = false, features = ["nostd-libm", "bytemuck", "encase"] }
+include_dir = "0.7"
+khal = { version = "0.2", features = ["derive"] }
+vortx = "0.2"
+bytemuck = { version = "1", features = ["derive"] }
+static_assertions = "1"
+encase = "0.12"
+bvh = "0.7"
+num-traits = "0.2"
+web-time = "1"
+
+# Optional dependencies for rapier/parry interop
+rapier3d = { version = "0.32", optional = true }
+parry3d = { version = "0.26", optional = true }
+
+[dev-dependencies]
+futures-test = "0.3"
+serial_test = "3"
+approx = "0.5"
+rand = "0.9"
+
+[build-dependencies]
+walkdir = "2"

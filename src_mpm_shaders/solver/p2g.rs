@@ -1,0 +1,742 @@
+//! Particle-to-Grid (P2G) transfer kernel.
+//!
+//! This is the core MPM kernel that transfers particle data (momentum, mass, affine matrix)
+//! onto the grid nodes. Uses shared memory, workgroup barriers, and linked list traversal
+//! to efficiently gather particle contributions from neighboring nodes.
+//!
+//! The kernel also handles CPIC (Compatible Particle-In-Cell) affinity checks:
+//! particles that are incompatible with a node (different side of a collider) contribute
+//! to the node's `incompatible` momentum field instead, and impulses are computed for
+//! the rigid body coupling.
+//!
+//! Corresponds to `p2g.slang`.
+
+use crate::grid::grid::*;
+use crate::grid::kernel::*;
+use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
+use crate::solver::boundary_condition::BoundaryCondition;
+use crate::solver::particle::{
+    dir_to_associated_grid_node, Dynamics, Position,
+};
+use crate::{vector_part, vector_plus_one, scalar_part, AngVector, MaybeIndexUnchecked, Matrix, Vector, VectorPlusOne, PaddingExt};
+use glamx::*;
+use khal_derive::spirv_bindgen;
+use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use spirv_std::spirv;
+
+/*
+ * Shared memory layout constants.
+ */
+
+/// Number of shared memory cells.
+/// In 2D: (8+2)^2 = 100. In 3D: (4+2)^3 = 216.
+#[cfg(feature = "dim2")]
+const NUM_SHARED_CELLS: usize = 100; // 10 * 10
+#[cfg(feature = "dim3")]
+const NUM_SHARED_CELLS: usize = 216; // 6 * 6 * 6
+
+/// K_RANGE: in 2D the k loop is trivial (0..=0), in 3D it's (0..=1).
+#[cfg(feature = "dim2")]
+const K_RANGE: u32 = 0;
+#[cfg(feature = "dim3")]
+const K_RANGE: u32 = 1;
+
+/// A shared-memory node entry: particle ID and global node ID.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct SharedNode {
+    particle_id: u32,
+    global_id: u32,
+}
+
+/// Result of a single P2G step (one particle iteration).
+#[derive(Clone, Copy)]
+struct P2GStepResult {
+    new_momentum_velocity_mass: VectorPlusOne,
+    new_momentum_velocity_mass_incompatible: VectorPlusOne,
+    impulse: Vector,
+    ang_impulse: AngVector,
+}
+
+impl P2GStepResult {
+    fn zero() -> Self {
+        Self {
+            new_momentum_velocity_mass: VectorPlusOne::ZERO,
+            new_momentum_velocity_mass_incompatible: VectorPlusOne::ZERO,
+            impulse: Vector::ZERO,
+            #[cfg(feature = "dim2")]
+            ang_impulse: 0.0,
+            #[cfg(feature = "dim3")]
+            ang_impulse: Vec3::ZERO,
+        }
+    }
+}
+
+/// Integer impulse atomic struct for accumulating impulses across threads.
+///
+/// Uses integer atomics to avoid floating-point atomic limitations on GPU.
+/// The COM (center of mass) is stored alongside to reduce binding count.
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[repr(C)]
+pub struct IntegerImpulseAtomic {
+    pub com: Vector,
+    pub linear_x: i32,
+    pub linear_y: i32,
+    #[cfg(feature = "dim3")]
+    pub linear_z: i32,
+    #[cfg(feature = "dim3")]
+    pub _padding_a: i32,
+    #[cfg(feature = "dim2")]
+    pub angular: i32,
+    #[cfg(feature = "dim2")]
+    pub _padding: i32,
+    #[cfg(feature = "dim3")]
+    pub angular_x: i32,
+    #[cfg(feature = "dim3")]
+    pub angular_y: i32,
+    #[cfg(feature = "dim3")]
+    pub angular_z: i32,
+    #[cfg(feature = "dim3")]
+    pub _padding_b: [i32; 2],
+}
+
+const FLOAT_TO_INT_FACTOR: f32 = 1e5;
+
+/// Converts a float to an integer for atomic accumulation.
+#[inline]
+fn flt2int(flt: f32) -> i32 {
+    (flt * FLOAT_TO_INT_FACTOR) as i32
+}
+
+/*
+ * Shared memory flatten helpers (same as p2g.slang).
+ */
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32) -> u32 {
+    (x - 6) + (y - 6) * 10
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn flatten_shared_shift(x: u32, y: u32) -> u32 {
+    x + y * 10
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
+    (x - 2) + (y - 2) * 6 + (z - 2) * 6 * 6
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
+    x + y * 6 + z * 6 * 6
+}
+
+/*
+ * Atomic max for workgroup memory.
+ */
+
+/// Atomically computes max(ptr, value) in workgroup-scope memory.
+#[inline]
+fn atomic_max_u32_workgroup(ptr: &mut u32, value: u32) -> u32 {
+    unsafe {
+        spirv_std::arch::atomic_u_max::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value)
+    }
+}
+
+/// Atomically stores 0 in workgroup-scope memory.
+#[inline]
+fn atomic_store_u32_workgroup(ptr: &mut u32, value: u32) {
+    unsafe {
+        spirv_std::arch::atomic_exchange::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value);
+    }
+}
+
+/// Atomically loads from workgroup-scope memory.
+#[inline]
+fn atomic_load_u32_workgroup(ptr: &mut u32) -> u32 {
+    unsafe {
+        spirv_std::arch::atomic_load::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr)
+    }
+}
+
+/// Atomic add for i32 (storage buffer scope) for impulse accumulation.
+#[inline]
+fn atomic_add_i32(ptr: &mut i32, value: i32) {
+    unsafe {
+        spirv_std::arch::atomic_i_add::<
+            i32,
+            { spirv_std::memory::Scope::QueueFamily as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value);
+    }
+}
+
+/*
+ * P2G step: compute the contribution of all particles in the neighborhood
+ * to a single grid node.
+ */
+
+#[inline]
+fn p2g_step(
+    body_vels: &[BodyVelocity],
+    body_impulses: &mut [IntegerImpulseAtomic],
+    body_materials: &[BoundaryCondition],
+    packed_cell_index_in_block: u32,
+    cell_width: f32,
+    node_affinity: u32,
+    collider_id: u32,
+    shared_pos: &[Position; NUM_SHARED_CELLS],
+    shared_vel_mass: &[VectorPlusOne; NUM_SHARED_CELLS],
+    shared_affine: &[Matrix; NUM_SHARED_CELLS],
+    shared_force_dt: &[Vector; NUM_SHARED_CELLS],
+    shared_affinities: &[u32; NUM_SHARED_CELLS],
+    shared_normals: &[Vector; NUM_SHARED_CELLS],
+) -> P2GStepResult {
+    // Shift to reach the first node with particles contributing to the current cell's data.
+    #[cfg(feature = "dim2")]
+    let bottommost_contributing_node = flatten_shared_shift(2, 2);
+    #[cfg(feature = "dim3")]
+    let bottommost_contributing_node = flatten_shared_shift(2, 2, 2);
+
+    let mut new_momentum_velocity_mass = VectorPlusOne::ZERO;
+    let mut new_momentum_velocity_mass_incompatible = VectorPlusOne::ZERO;
+    let mut impulse = Vector::ZERO;
+    #[cfg(feature = "dim2")]
+    let mut ang_impulse: AngVector = 0.0;
+    #[cfg(feature = "dim3")]
+    let mut ang_impulse: AngVector = Vec3::ZERO;
+
+    for i in 0..NBH_LEN as u32 {
+        let packed_shift = nbh_shift_shared(i as usize);
+        let nbh_shared_index = (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
+        let particle_pos = shared_pos[nbh_shared_index];
+        let particle_vel_mass = shared_vel_mass[nbh_shared_index];
+        let particle_affine = shared_affine[nbh_shared_index];
+        let particle_force_dt = shared_force_dt[nbh_shared_index];
+        let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
+        let w = QuadraticKernel::precompute_weights(ref_elt_pos_minus_particle_pos, cell_width);
+
+        let shift = nbh_shift(i as usize);
+
+        #[cfg(feature = "dim2")]
+        let particle_vel = Vec2::new(particle_vel_mass.x, particle_vel_mass.y);
+        #[cfg(feature = "dim2")]
+        let particle_mass = particle_vel_mass.z;
+        #[cfg(feature = "dim2")]
+        let inv_shift = UVec2::new(2, 2) - shift;
+        #[cfg(feature = "dim2")]
+        let momentum = particle_vel * particle_mass;
+        #[cfg(feature = "dim2")]
+        let dpt = ref_elt_pos_minus_particle_pos + Vec2::new(inv_shift.x as f32, inv_shift.y as f32) * cell_width;
+        #[cfg(feature = "dim2")]
+        let weight = vec3_extract(w[0], inv_shift.x) * vec3_extract(w[1], inv_shift.y);
+
+        #[cfg(feature = "dim3")]
+        let particle_vel = Vec3::new(particle_vel_mass.x, particle_vel_mass.y, particle_vel_mass.z);
+        #[cfg(feature = "dim3")]
+        let particle_mass = particle_vel_mass.w;
+        #[cfg(feature = "dim3")]
+        let inv_shift = UVec3::new(2, 2, 2) - shift;
+        #[cfg(feature = "dim3")]
+        let momentum = particle_vel * particle_mass + particle_force_dt;
+        #[cfg(feature = "dim3")]
+        let dpt = ref_elt_pos_minus_particle_pos + Vec3::new(inv_shift.x as f32, inv_shift.y as f32, inv_shift.z as f32) * cell_width;
+        #[cfg(feature = "dim3")]
+        let weight = vec3_extract(w[0], inv_shift.x) * vec3_extract(w[1], inv_shift.y) * vec3_extract(w[2], inv_shift.z);
+
+        let particle_affinity = shared_affinities[nbh_shared_index];
+        let contribution = vector_plus_one(particle_affine * dpt + momentum, particle_mass) * weight;
+
+        if !affinities_are_compatible(node_affinity, particle_affinity) {
+            if collider_id != NONE {
+                let particle_normal = shared_normals[nbh_shared_index];
+                let body_vel = body_vels.read(collider_id as usize);
+                let body_com = body_impulses.at(collider_id as usize).com;
+                let body_material = body_materials.read(collider_id as usize);
+                let cell_center = dpt + particle_pos.pt;
+                let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
+                let particle_ghost_vel = body_pt_vel + body_material.project_velocity(particle_vel - body_pt_vel, particle_normal);
+                let delta_impulse = (particle_vel - particle_ghost_vel) * (weight * particle_mass);
+
+                let lever_arm = body_com - cell_center;
+
+                #[cfg(feature = "dim2")]
+                {
+                    let delta_ang_impulse = delta_impulse.dot(Vec2::new(lever_arm.y, -lever_arm.x));
+                    ang_impulse += delta_ang_impulse;
+                }
+                #[cfg(feature = "dim3")]
+                {
+                    let delta_ang_impulse = delta_impulse.cross(lever_arm);
+                    ang_impulse += delta_ang_impulse;
+                }
+
+                impulse += delta_impulse;
+            }
+
+            new_momentum_velocity_mass_incompatible += contribution;
+        } else {
+            new_momentum_velocity_mass += contribution;
+        }
+    }
+
+    P2GStepResult {
+        new_momentum_velocity_mass,
+        new_momentum_velocity_mass_incompatible,
+        impulse,
+        ang_impulse,
+    }
+}
+
+/*
+ * fetch_max_linked_lists_length: compute the maximum linked list length across
+ * all nodes in the 2x2 (2D) or 2x2x2 (3D) neighborhood of the current block.
+ */
+
+#[inline]
+fn fetch_max_linked_lists_length(
+    grid_data: &[Grid],
+    hmap_entries: &[GridHashMapEntry],
+    nodes_linked_lists: &[NodeLinkedList],
+    tid: spirv_std::glam::UVec3,
+    active_block_vid: BlockVirtualId,
+    _bid: u32,
+    max_linked_list_length: &mut u32,
+) {
+    #[cfg(feature = "dim2")]
+    let base_block_pos_int = active_block_vid.id - IVec2::new(1, 1);
+    #[cfg(feature = "dim3")]
+    let base_block_pos_int = active_block_vid.id - IVec3::new(1, 1, 1);
+
+    for i_loop in 0..2u32 {
+        for j_loop in 0..2u32 {
+            for k_loop in 0..K_RANGE + 1 {
+                #[cfg(feature = "dim2")]
+                {
+                    if (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
+                        continue;
+                    }
+                    let octant = UVec2::new(i_loop, j_loop);
+                    let octant_hid = find_block_header_id(
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId {
+                            id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
+                        },
+                    );
+                    if octant_hid.id != NONE {
+                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let tid_xy = UVec2::new(tid.x, tid.y);
+                        let global_node_id = node_id(global_chunk_id, tid_xy);
+                        let len = nodes_linked_lists.at(global_node_id.id as usize).len;
+                        atomic_max_u32_workgroup(max_linked_list_length, len);
+                    }
+                }
+                #[cfg(feature = "dim3")]
+                {
+                    if (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2) {
+                        continue;
+                    }
+                    let octant = UVec3::new(i_loop, j_loop, k_loop);
+                    let octant_hid = find_block_header_id(
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId {
+                            id: base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                            padding: 0
+                        },
+                    );
+                    if octant_hid.id != NONE {
+                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+                        let global_node_id = node_id(global_chunk_id, tid_xyz);
+                        let len = nodes_linked_lists.at(global_node_id.id as usize).len;
+                        atomic_max_u32_workgroup(max_linked_list_length, len);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*
+ * fetch_nodes: load the initial linked-list heads and global node IDs into shared memory.
+ */
+
+#[inline]
+fn fetch_nodes(
+    grid_data: &[Grid],
+    hmap_entries: &[GridHashMapEntry],
+    nodes_linked_lists: &[NodeLinkedList],
+    tid: spirv_std::glam::UVec3,
+    active_block_vid: BlockVirtualId,
+    _bid: u32,
+    shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
+) {
+    #[cfg(feature = "dim2")]
+    let base_block_pos_int = active_block_vid.id - IVec2::new(1, 1);
+    #[cfg(feature = "dim3")]
+    let base_block_pos_int = active_block_vid.id - IVec3::new(1, 1, 1);
+
+    for i_loop in 0..2u32 {
+        for j_loop in 0..2u32 {
+            for k_loop in 0..K_RANGE + 1 {
+                #[cfg(feature = "dim2")]
+                {
+                    if (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
+                        continue;
+                    }
+                    let octant = UVec2::new(i_loop, j_loop);
+                    let octant_hid = find_block_header_id(
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId {
+                            id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
+                        },
+                    );
+                    let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
+                    let shared_node_index = flatten_shared_index(shared_index.x, shared_index.y) as usize;
+
+                    if octant_hid.id != NONE {
+                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let tid_xy = UVec2::new(tid.x, tid.y);
+                        let global_node_id = node_id(global_chunk_id, tid_xy);
+                        let particle_id = nodes_linked_lists.at(global_node_id.id as usize).head;
+                        shared_nodes[shared_node_index].particle_id = particle_id;
+                        shared_nodes[shared_node_index].global_id = global_node_id.id;
+                    } else {
+                        shared_nodes[shared_node_index].particle_id = NONE;
+                    }
+                }
+                #[cfg(feature = "dim3")]
+                {
+                    if (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2) {
+                        continue;
+                    }
+                    let octant = UVec3::new(i_loop, j_loop, k_loop);
+                    let octant_hid = find_block_header_id(
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId {
+                            id: base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                            padding: 0
+                        },
+                    );
+                    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+                    let shared_index = octant * 4 + tid_xyz;
+                    let shared_node_index = flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize;
+
+                    if octant_hid.id != NONE {
+                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let global_node_id = node_id(global_chunk_id, tid_xyz);
+                        let particle_id = nodes_linked_lists.at(global_node_id.id as usize).head;
+                        shared_nodes[shared_node_index].particle_id = particle_id;
+                        shared_nodes[shared_node_index].global_id = global_node_id.id;
+                    } else {
+                        shared_nodes[shared_node_index].particle_id = NONE;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*
+ * fetch_next_particle: advance each shared-memory slot's linked list by one,
+ * loading the current particle's data into shared memory arrays.
+ */
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn fetch_next_particle(
+    particles_pos: &[Position],
+    particles_dyn: &[Dynamics],
+    particle_node_linked_lists: &[u32],
+    tid: spirv_std::glam::UVec3,
+    shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
+    shared_pos: &mut [Position; NUM_SHARED_CELLS],
+    shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
+    shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
+    shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    shared_normals: &mut [Vector; NUM_SHARED_CELLS],
+) {
+    for i_loop in 0..2u32 {
+        for j_loop in 0..2u32 {
+            for k_loop in 0..K_RANGE + 1 {
+                #[cfg(feature = "dim2")]
+                let skip = (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6);
+                #[cfg(feature = "dim3")]
+                let skip = (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2);
+
+                if skip {
+                    continue;
+                }
+
+                #[cfg(feature = "dim2")]
+                let shared_flat_index = {
+                    let octant = UVec2::new(i_loop, j_loop);
+                    let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
+                    flatten_shared_index(shared_index.x, shared_index.y) as usize
+                };
+                #[cfg(feature = "dim3")]
+                let shared_flat_index = {
+                    let octant = UVec3::new(i_loop, j_loop, k_loop);
+                    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+                    let shared_index = octant * 4 + tid_xyz;
+                    flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize
+                };
+
+                let curr_particle_id = shared_nodes[shared_flat_index].particle_id;
+
+                if curr_particle_id != NONE && particles_dyn.at(curr_particle_id as usize).enabled != 0 {
+                    let pdyn = particles_dyn.read(curr_particle_id as usize);
+                    shared_affinities[shared_flat_index] = pdyn.cdf.affinity;
+                    shared_normals[shared_flat_index] = pdyn.cdf.normal;
+                    shared_pos[shared_flat_index] = particles_pos.read(curr_particle_id as usize);
+                    shared_affine[shared_flat_index] = pdyn.affine.remove_padding();
+                    shared_force_dt[shared_flat_index] = pdyn.force_dt;
+                    shared_vel_mass[shared_flat_index] = vector_plus_one(pdyn.velocity, pdyn.mass);
+                } else {
+                    shared_affinities[shared_flat_index] = 0;
+                    shared_normals[shared_flat_index] = Vector::ZERO;
+                    shared_pos[shared_flat_index].pt = Vector::ZERO;
+                    shared_affine[shared_flat_index] = Matrix::ZERO;
+                    shared_vel_mass[shared_flat_index] = VectorPlusOne::ZERO;
+                    shared_force_dt[shared_flat_index] = Vector::ZERO;
+                }
+
+                if curr_particle_id != NONE {
+                    // Advance the linked list even if the particle is disabled.
+                    let next_particle_id = particle_node_linked_lists.read(curr_particle_id as usize);
+                    shared_nodes[shared_flat_index].particle_id = next_particle_id;
+                }
+            }
+        }
+    }
+}
+
+/*
+ * GPU entry points.
+ */
+
+/// GPU kernel: P2G transfer (2D).
+///
+/// Transfers particle momentum, mass, and affine contributions onto grid nodes.
+/// Handles CPIC compatibility checks and rigid body impulse accumulation.
+///
+/// Dispatched with one workgroup per active block.
+#[cfg(feature = "dim2")]
+#[spirv_bindgen]
+#[spirv(compute(threads(8, 8)))]
+pub fn gpu_p2g(
+    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_index)] tid_flat: u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes_linked_lists: &[NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_pos: &[Position],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_dyn: &[Dynamics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_impulses: &mut [IntegerImpulseAtomic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_materials: &[BoundaryCondition],
+    // Shared memory arrays.
+    #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] max_linked_list_length: &mut u32,
+    #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
+) {
+    p2g_impl(
+        block_id, tid, tid_flat,
+        grid_data, hmap_entries, active_blocks,
+        nodes_linked_lists, particle_node_linked_lists,
+        particles_pos, particles_dyn, nodes,
+        body_vels, body_impulses, body_materials,
+        shared_vel_mass, shared_affine, shared_force_dt,
+        shared_nodes, shared_pos, shared_affinities, shared_normals,
+        max_linked_list_length, max_linked_list_length_uniform,
+    );
+}
+
+/// GPU kernel: P2G transfer (3D).
+#[cfg(feature = "dim3")]
+#[spirv_bindgen]
+#[spirv(compute(threads(4, 4, 4)))]
+pub fn gpu_p2g(
+    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_index)] tid_flat: u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes_linked_lists: &[NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_pos: &[Position],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_dyn: &[Dynamics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_impulses: &mut [IntegerImpulseAtomic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_materials: &[BoundaryCondition],
+    // Shared memory arrays.
+    #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] max_linked_list_length: &mut u32,
+    #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
+) {
+    p2g_impl(
+        block_id, tid, tid_flat,
+        grid_data, hmap_entries, active_blocks,
+        nodes_linked_lists, particle_node_linked_lists,
+        particles_pos, particles_dyn, nodes,
+        body_vels, body_impulses, body_materials,
+        shared_vel_mass, shared_affine, shared_force_dt,
+        shared_nodes, shared_pos, shared_affinities, shared_normals,
+        max_linked_list_length, max_linked_list_length_uniform,
+    );
+}
+
+/// Common P2G implementation used by both 2D and 3D entry points.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn p2g_impl(
+    block_id: spirv_std::glam::UVec3,
+    tid: spirv_std::glam::UVec3,
+    tid_flat: u32,
+    grid_data: &[Grid],
+    hmap_entries: &[GridHashMapEntry],
+    active_blocks: &[ActiveBlockHeader],
+    nodes_linked_lists: &[NodeLinkedList],
+    particle_node_linked_lists: &[u32],
+    particles_pos: &[Position],
+    particles_dyn: &[Dynamics],
+    nodes: &mut [Node],
+    body_vels: &[BodyVelocity],
+    body_impulses: &mut [IntegerImpulseAtomic],
+    body_materials: &[BoundaryCondition],
+    shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
+    shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
+    shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
+    shared_pos: &mut [Position; NUM_SHARED_CELLS],
+    shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    shared_normals: &mut [Vector; NUM_SHARED_CELLS],
+    max_linked_list_length: &mut u32,
+    max_linked_list_length_uniform: &mut u32,
+) {
+    let bid = block_id.x;
+    // Force copy of the virtual ID (naga bug workaround).
+    let vid_ = active_blocks.at(bid as usize).virtual_id.id;
+    let vid = BlockVirtualId::new(vid_);
+
+    // Initialize max linked list length to 0.
+    if tid_flat == 0 {
+        atomic_store_u32_workgroup(max_linked_list_length, 0);
+    }
+
+    workgroup_memory_barrier_with_group_sync();
+    fetch_max_linked_lists_length(
+        grid_data, hmap_entries, nodes_linked_lists,
+        tid, vid, bid, max_linked_list_length,
+    );
+    workgroup_memory_barrier_with_group_sync();
+
+    *max_linked_list_length_uniform = atomic_load_u32_workgroup(max_linked_list_length);
+
+    // Block -> shared memory transfer.
+    fetch_nodes(
+        grid_data, hmap_entries, nodes_linked_lists,
+        tid, vid, bid, shared_nodes,
+    );
+
+    // Compute the packed cell index for the current thread's node.
+    #[cfg(feature = "dim2")]
+    let packed_cell_index_in_block = flatten_shared_index(tid.x + 8, tid.y + 8);
+    #[cfg(feature = "dim3")]
+    let packed_cell_index_in_block = flatten_shared_index(tid.x + 4, tid.y + 4, tid.z + 4);
+
+    let global_id = shared_nodes[packed_cell_index_in_block as usize].global_id;
+    let node_affinities = nodes.at(global_id as usize).cdf.affinities;
+    let collider_id = nodes.at(global_id as usize).cdf.closest_id;
+    let mut total_result = P2GStepResult::zero();
+
+    // Iterate through linked lists with uniform control flow.
+    let len = *max_linked_list_length_uniform;
+    for _ in 0..len {
+        workgroup_memory_barrier_with_group_sync();
+        fetch_next_particle(
+            particles_pos, particles_dyn, particle_node_linked_lists, tid,
+            shared_nodes, shared_pos, shared_vel_mass, shared_affine,
+            shared_force_dt, shared_affinities, shared_normals,
+        );
+        workgroup_memory_barrier_with_group_sync();
+
+        let partial_result = p2g_step(
+            body_vels, body_impulses, body_materials,
+            packed_cell_index_in_block,
+            grid_data.at(0).cell_width,
+            node_affinities, collider_id,
+            shared_pos, shared_vel_mass, shared_affine,
+            shared_force_dt, shared_affinities, shared_normals,
+        );
+        total_result.new_momentum_velocity_mass += partial_result.new_momentum_velocity_mass;
+        total_result.new_momentum_velocity_mass_incompatible += partial_result.new_momentum_velocity_mass_incompatible;
+        total_result.impulse += partial_result.impulse;
+        total_result.ang_impulse += partial_result.ang_impulse;
+    }
+
+    // Write the node state to global memory.
+    nodes.at_mut(global_id as usize).momentum_velocity_mass = total_result.new_momentum_velocity_mass;
+    nodes.at_mut(global_id as usize).momentum_velocity_mass_incompatible = total_result.new_momentum_velocity_mass_incompatible;
+
+    // Apply the impulse to the closest body using integer atomics.
+    if collider_id != NONE {
+        let ci = collider_id as usize;
+        #[cfg(feature = "dim2")]
+        {
+            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_x, flt2int(total_result.impulse.x));
+            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_y, flt2int(total_result.impulse.y));
+            atomic_add_i32(&mut body_impulses.at_mut(ci).angular, flt2int(total_result.ang_impulse));
+        }
+        #[cfg(feature = "dim3")]
+        {
+            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_x, flt2int(total_result.impulse.x));
+            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_y, flt2int(total_result.impulse.y));
+            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_z, flt2int(total_result.impulse.z));
+            atomic_add_i32(&mut body_impulses.at_mut(ci).angular_x, flt2int(total_result.ang_impulse.x));
+            atomic_add_i32(&mut body_impulses.at_mut(ci).angular_y, flt2int(total_result.ang_impulse.y));
+            atomic_add_i32(&mut body_impulses.at_mut(ci).angular_z, flt2int(total_result.ang_impulse.z));
+        }
+    }
+}

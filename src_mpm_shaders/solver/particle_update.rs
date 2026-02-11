@@ -1,0 +1,175 @@
+//! Particle update kernel: advection, deformation gradient update, constitutive model,
+//! and APIC affine matrix computation.
+//!
+//! This is the main per-particle update kernel that runs after G2P has transferred
+//! grid velocities back to particles. It performs:
+//! 1. Velocity clamping and boundary condition enforcement.
+//! 2. Rayleigh damping.
+//! 3. Position advection.
+//! 4. Penalty-based collision response.
+//! 5. Deformation gradient update (solid and fluid paths).
+//! 6. Constitutive model stress computation.
+//! 7. APIC affine matrix computation for the next P2G transfer.
+//! 8. NaN/divergence detection with automatic particle disabling.
+
+use crate::grid::grid::Grid;
+use crate::grid::kernel::QuadraticKernel;
+use crate::models::default::{DefaultParticleModel, GpuParticleModel};
+use crate::models::interfaces::{ParticleUpdateData, MODEL_FLAGS_FLUID};
+use crate::solver::boundary_condition::{BoundaryCondition, BOUNDARY_CONDITION_SLIP};
+use crate::solver::params::SimulationParams;
+use crate::solver::particle::{Dynamics, Position};
+use crate::{diag, MaybeIndexUnchecked, Matrix, Vector, PaddedMatrix};
+use crate::PaddingExt;
+use glamx::*;
+use khal_derive::spirv_bindgen;
+use spirv_std::spirv;
+
+/// Phase data for multi-material mixing (currently unused placeholder).
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[repr(C)]
+pub struct Phase {
+    pub phase: f32,
+    pub max_stretch: f32,
+}
+
+/// Penalty coefficient for collision response.
+const PENALTY_COEFF: f32 = 1.0e3;
+
+/// Checks if a Vector contains any NaN components.
+///
+/// Uses the property that NaN != NaN to detect NaN values.
+#[inline]
+fn vector_has_nan(v: Vector) -> bool {
+    #[cfg(feature = "dim2")]
+    {
+        v.x != v.x || v.y != v.y
+    }
+    #[cfg(feature = "dim3")]
+    {
+        v.x != v.x || v.y != v.y || v.z != v.z
+    }
+}
+
+/// Main particle update kernel.
+///
+/// Each thread processes one particle, performing the full update cycle:
+/// advection, deformation gradient update, constitutive model evaluation,
+/// and APIC affine matrix computation.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_particle_update(
+    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_model: &mut [GpuParticleModel],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_pos: &mut [Position],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_dyn: &mut [Dynamics],
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] particles_len: &u32,
+) {
+    let particle_id = invocation_id.x;
+
+    if particle_id >= *particles_len {
+        return;
+    }
+
+    let flags = DefaultParticleModel::model_flags(particles_model, particle_id);
+    let dt = params.dt;
+    let cell_width = grid_data.at(0).cell_width;
+    let mut dynamics = particles_dyn.read(particle_id as usize);
+    let particle_pos = particles_pos.at(particle_id as usize).pt;
+
+    // If the particle is fixed, clear its velocity.
+    // This isn't ideal (this should typically be handled on the grid) but we sometimes
+    // need sub-grid-sized fixed particles.
+    if dynamics.fixed != 0 {
+        dynamics.velocity = Vector::ZERO;
+    }
+
+    /*
+     * Advection.
+     */
+    // Reproject velocity if the particle is penetrating a rigid collider.
+    // TODO: double check that we never need the reprojection below.
+    //       This reprojection isn't part of the original MPM-MLS/CPIC paper but we added
+    //       it at some point as it appeared that we'd still get some penetrating particles.
+    //       However, that might have been caused by other bugs so it is unsure if we need to
+    //       keep it now.
+    if dynamics.cdf.signed_distance < -0.05 * cell_width {
+        let slip = BoundaryCondition::new(BOUNDARY_CONDITION_SLIP, 0.0);
+        dynamics.velocity = dynamics.cdf.rigid_vel
+            + slip.project_velocity(dynamics.velocity - dynamics.cdf.rigid_vel, dynamics.cdf.normal);
+    }
+
+    // Clamp the max velocity a particle can get.
+    // TODO: clamp the grid velocities instead?
+    let vel_len = dynamics.velocity.length();
+    if vel_len > cell_width / dt {
+        dynamics.velocity = dynamics.velocity / vel_len * cell_width / dt;
+    }
+
+    // Apply Rayleigh mass-proportional damping (implicit integration for stability).
+    // v_new = v / (1 + damping * dt)
+    dynamics.velocity = dynamics.velocity / (1.0 + dynamics.damping * dt);
+
+    let new_particle_pos = particle_pos + dynamics.velocity * dt;
+
+    /*
+     * Penalty impulse.
+     */
+    // TODO: apply the penalty impulse as an extra force on the grid instead of
+    //       changing the particle velocity directly?
+    if dynamics.cdf.signed_distance < -0.05 * cell_width {
+        let corrected_dist = dynamics.cdf.signed_distance.max(-0.3 * cell_width);
+        let impulse = (dt * -corrected_dist * PENALTY_COEFF) * dynamics.cdf.normal;
+        dynamics.velocity += impulse;
+    }
+
+    /*
+     * Deformation gradient update.
+     */
+    if (flags & MODEL_FLAGS_FLUID) == 0 {
+        // Solid path: F_new = F + F * vel_grad * dt
+        // NOTE: the velocity gradient was stored in the affine buffer.
+        dynamics.def_grad = dynamics.def_grad + dynamics.def_grad * (dynamics.affine * dt);
+    } else {
+        // Fluid path: only track the diagonal (isotropic deformation).
+        let def_grad0 = dynamics.def_grad.x_axis.x;
+        let new_def_grad_diag_elt = def_grad0 + def_grad0 * dynamics.vel_grad_det * dt;
+        dynamics.def_grad = PaddedMatrix::add_padding(diag(Vector::splat(new_def_grad_diag_elt)));
+    }
+
+    /*
+     * Constitutive model.
+     */
+    let update_data = ParticleUpdateData::new(dt, cell_width, particle_id);
+    let update_result = DefaultParticleModel::update(particles_model, &update_data, &mut dynamics);
+
+    /*
+     * Affine matrix for APIC transfer.
+     */
+    let inv_d = QuadraticKernel::inv_d(cell_width);
+    // NOTE: the velocity gradient was stored in the affine buffer.
+    let affine = dynamics.affine * dynamics.mass
+        - PaddedMatrix::add_padding(update_result.kirchoff_stress * (dynamics.init_volume * inv_d * dt));
+
+    /*
+     * Write back the new particle properties.
+     */
+    // Check for NaN and invalid deformation gradients.
+    if !vector_has_nan(new_particle_pos) && dynamics.def_grad.determinant() > 0.0 {
+        particles_pos.at_mut(particle_id as usize).pt = new_particle_pos;
+        dynamics.affine = affine;
+    } else {
+        // This particle diverged, disable it.
+        dynamics.enabled = 0;
+        dynamics.velocity = Vector::ZERO;
+        dynamics.def_grad = PaddedMatrix::IDENTITY;
+        dynamics.affine = PaddedMatrix::ZERO;
+        dynamics.mass = 0.0;
+    }
+    dynamics.force_dt = Vector::ZERO;
+
+    particles_dyn.write(particle_id as usize, dynamics);
+}

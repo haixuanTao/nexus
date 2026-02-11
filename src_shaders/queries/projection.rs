@@ -6,6 +6,7 @@
 
 use crate::Vector;
 use glamx::Vec3;
+use parry::query::PointProjection;
 
 /// Epsilon for floating-point comparisons.
 pub const EPSILON: Vector = Vector::splat(1.1920929e-7);
@@ -23,6 +24,15 @@ pub struct ProjectionResult {
     pub point: Vector,
     /// Is the point inside of the shape?
     pub is_inside: bool,
+}
+
+impl From<PointProjection> for ProjectionResult {
+    fn from(value: PointProjection) -> Self {
+        ProjectionResult {
+            point: value.point,
+            is_inside: value.is_inside,
+        }
+    }
 }
 
 impl ProjectionResult {

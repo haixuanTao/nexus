@@ -8,6 +8,14 @@ members = [
     "crates/examples3d",
     "crates/nexus-shaders2d",
     "crates/nexus-shaders3d",
+    "crates/nexus-mpm-shaders2d",
+    "crates/nexus-mpm-shaders3d",
+    "crates/nexus-mpm2d",
+    "crates/nexus-mpm3d",
+    "crates/nexus_mpm_testbed2d",
+    "crates/nexus_mpm_testbed3d",
+    "crates/mpm_examples2d",
+    "crates/mpm_examples3d",
 ]
 resolver = "2"
 
@@ -50,4 +58,5 @@ khal-derive = { path = "../khal/crates/khal-derive" }
 glamx = { path = "../glamx" }
 vortx = { path = "../vortx" }
 kiss3d = { path = "../kiss3d" }
+parry2d = { path = "../parry/crates/parry2d" }
 parry3d = { path = "../parry/crates/parry3d" }

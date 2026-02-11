@@ -13,12 +13,10 @@
 //! - TriMesh (triangle mesh)
 //! - Polyline
 
-mod ball;
 mod capsule;
 #[cfg(feature = "dim3")]
 mod cone;
 mod convex_polyhedron;
-mod cuboid;
 #[cfg(feature = "dim3")]
 mod cylinder;
 mod polyline;
@@ -30,13 +28,12 @@ mod triangle;
 mod trimesh;
 
 // Re-export struct types only to avoid ambiguous function re-exports.
-// Shape-specific functions should be accessed via module path (e.g., cuboid::local_support_point).
-pub use ball::Ball;
+pub use parry::shape::{Ball, Cuboid};
+
 pub use capsule::Capsule;
 #[cfg(feature = "dim3")]
 pub use cone::Cone;
 pub use convex_polyhedron::ConvexPolyhedron;
-pub use cuboid::Cuboid;
 #[cfg(feature = "dim3")]
 pub use cylinder::Cylinder;
 pub use polyline::Polyline;

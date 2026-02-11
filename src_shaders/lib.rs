@@ -23,9 +23,9 @@ pub use glamx;
 //
 
 #[cfg(feature = "dim2")]
-extern crate parry2d as parry;
+pub extern crate parry2d as parry;
 #[cfg(feature = "dim3")]
-extern crate parry3d as parry;
+pub extern crate parry3d as parry;
 
 /// The vector type for the current dimension (Vec2 in 2D, Vec3 in 3D).
 #[cfg(feature = "dim2")]
@@ -319,6 +319,13 @@ impl<T, P> Pad<T, P> {
 pub type VectorWithPadding = Pad<Vector, ()>;
 #[cfg(feature = "dim3")]
 pub type VectorWithPadding = Pad<Vector, u32>;
+
+impl<T, P: Default> From<T> for Pad<T, P> {
+    #[inline(always)]
+    fn from(x: T) -> Pad<T, P> {
+        Pad(x, P::default())
+    }
+}
 
 impl<T, P> Deref for Pad<T, P> {
     type Target = T;

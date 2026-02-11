@@ -1,0 +1,33 @@
+[package]
+name = "nexus_mpm_testbed3d"
+version = "0.4.0"
+authors = ["Sebastien Crozet <sebcrozet@dimforge.com>"]
+description = "Testbed for 3D GPU MPM physics demos with nexus."
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nexus_mpm_testbed3d"
+path = "../../src_mpm_testbed/lib.rs"
+required-features = ["dim3"]
+
+[lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("dim2"))',
+] }
+
+[features]
+default = ["dim3", "webgpu"]
+dim3 = []
+webgpu = ["khal/webgpu"]
+
+[dependencies]
+glamx = { version = "0.1", default-features = false }
+khal = { version = "0.2", features = ["derive"] }
+vortx = "0.2"
+nexus-mpm3d = { path = "../nexus-mpm3d", default-features = false, features = ["dim3", "from_rapier"] }
+nexus3d = { path = "../nexus3d", features = ["from_rapier"] }
+rapier3d = "0.32"
+bytemuck = { version = "1", features = ["derive"] }
+kiss3d = { version = "0.40", features = ["egui", "parry"] }
+web-time = "1"

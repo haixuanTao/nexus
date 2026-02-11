@@ -197,8 +197,8 @@ pub fn cuboid_cuboid(
         pose21,
         best_sep.axis,
         local_n2,
-        &face1,
-        &face2,
+        &face1.into(),
+        &face2.into(),
         prediction,
         false,
     );
