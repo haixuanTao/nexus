@@ -335,9 +335,9 @@ fn particle_g2p(
 /// GPU kernel: G2P CDF transfer (2D).
 ///
 /// Transfers grid CDF data back to particles using MLS reconstruction.
-#[cfg(feature = "dim2")]
 #[spirv_bindgen]
-#[spirv(compute(threads(8, 8)))]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_g2p_cdf(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
@@ -352,58 +352,6 @@ pub fn gpu_g2p_cdf(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_dyn: &mut [Dynamics],
     // Shared memory.
     #[spirv(workgroup)] shared_nodes: &mut [NodeCdf; NUM_SHARED_CELLS],
-) {
-    g2p_cdf_impl(
-        block_id, tid, tid_flat, params,
-        grid_data, hmap_entries, active_blocks, nodes,
-        sorted_particle_ids, particles_pos, particles_dyn,
-        shared_nodes,
-    );
-}
-
-/// GPU kernel: G2P CDF transfer (3D).
-#[cfg(feature = "dim3")]
-#[spirv_bindgen]
-#[spirv(compute(threads(4, 4, 4)))]
-pub fn gpu_g2p_cdf(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_dyn: &mut [Dynamics],
-    // Shared memory.
-    #[spirv(workgroup)] shared_nodes: &mut [NodeCdf; NUM_SHARED_CELLS],
-) {
-    g2p_cdf_impl(
-        block_id, tid, tid_flat, params,
-        grid_data, hmap_entries, active_blocks, nodes,
-        sorted_particle_ids, particles_pos, particles_dyn,
-        shared_nodes,
-    );
-}
-
-/// Common G2P CDF implementation for both 2D and 3D.
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn g2p_cdf_impl(
-    block_id: spirv_std::glam::UVec3,
-    tid: spirv_std::glam::UVec3,
-    tid_flat: u32,
-    params: &SimulationParams,
-    grid_data: &[Grid],
-    hmap_entries: &[GridHashMapEntry],
-    active_blocks: &[ActiveBlockHeader],
-    nodes: &[Node],
-    sorted_particle_ids: &[u32],
-    particles_pos: &[Position],
-    particles_dyn: &mut [Dynamics],
-    shared_nodes: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
     let bid = block_id.x;
     let vid_ = active_blocks.at(bid as usize).virtual_id.id;

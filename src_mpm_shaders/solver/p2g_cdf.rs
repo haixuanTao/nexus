@@ -56,71 +56,6 @@ struct SharedPrimitive {
 }
 
 /*
- * Shared memory flatten helpers (same as p2g.slang).
- */
-
-#[cfg(feature = "dim2")]
-#[inline]
-fn flatten_shared_index(x: u32, y: u32) -> u32 {
-    (x - 6) + (y - 6) * 10
-}
-
-#[cfg(feature = "dim2")]
-#[inline]
-fn flatten_shared_shift(x: u32, y: u32) -> u32 {
-    x + y * 10
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
-    (x - 2) + (y - 2) * 6 + (z - 2) * 6 * 6
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
-    x + y * 6 + z * 6 * 6
-}
-
-/*
- * Workgroup atomic helpers.
- */
-
-#[inline]
-fn atomic_max_u32_workgroup(ptr: &mut u32, value: u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_u_max::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value)
-    }
-}
-
-#[inline]
-fn atomic_store_u32_workgroup(ptr: &mut u32, value: u32) {
-    unsafe {
-        spirv_std::arch::atomic_exchange::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value);
-    }
-}
-
-#[inline]
-fn atomic_load_u32_workgroup(ptr: &mut u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_load::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr)
-    }
-}
-
-/*
  * Segment projection helper (2D).
  */
 
@@ -451,10 +386,10 @@ fn fetch_next_particle(
  * GPU entry points.
  */
 
-/// GPU kernel: P2G CDF transfer (2D).
-#[cfg(feature = "dim2")]
+/// GPU kernel: P2G CDF transfer
 #[spirv_bindgen]
-#[spirv(compute(threads(8, 8)))]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_p2g_cdf(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
@@ -473,70 +408,6 @@ pub fn gpu_p2g_cdf(
     #[spirv(workgroup)] shared_collider_ids: &mut [u32; NUM_SHARED_CELLS],
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
     #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
-) {
-    p2g_cdf_impl(
-        block_id, tid, tid_flat,
-        grid_data, hmap_entries, active_blocks,
-        rigid_nodes_linked_lists, particle_node_linked_lists,
-        collider_vertices, rigid_particle_indices, nodes,
-        shared_nodes, shared_primitives, shared_collider_ids,
-        max_linked_list_length, max_linked_list_length_uniform,
-    );
-}
-
-/// GPU kernel: P2G CDF transfer (3D).
-#[cfg(feature = "dim3")]
-#[spirv_bindgen]
-#[spirv(compute(threads(4, 4, 4)))]
-pub fn gpu_p2g_cdf(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] rigid_nodes_linked_lists: &[NodeLinkedList],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] collider_vertices: &[VectorWithPadding],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] rigid_particle_indices: &[RigidParticleIndices],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
-    // Shared memory.
-    #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_primitives: &mut [SharedPrimitive; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_collider_ids: &mut [u32; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] max_linked_list_length: &mut u32,
-    #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
-) {
-    p2g_cdf_impl(
-        block_id, tid, tid_flat,
-        grid_data, hmap_entries, active_blocks,
-        rigid_nodes_linked_lists, particle_node_linked_lists,
-        collider_vertices, rigid_particle_indices, nodes,
-        shared_nodes, shared_primitives, shared_collider_ids,
-        max_linked_list_length, max_linked_list_length_uniform,
-    );
-}
-
-/// Common P2G CDF implementation for both 2D and 3D.
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn p2g_cdf_impl(
-    block_id: spirv_std::glam::UVec3,
-    tid: spirv_std::glam::UVec3,
-    tid_flat: u32,
-    grid_data: &[Grid],
-    hmap_entries: &[GridHashMapEntry],
-    active_blocks: &[ActiveBlockHeader],
-    rigid_nodes_linked_lists: &[NodeLinkedList],
-    particle_node_linked_lists: &[u32],
-    collider_vertices: &[VectorWithPadding],
-    rigid_particle_indices: &[RigidParticleIndices],
-    nodes: &mut [Node],
-    shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
-    shared_primitives: &mut [SharedPrimitive; NUM_SHARED_CELLS],
-    shared_collider_ids: &mut [u32; NUM_SHARED_CELLS],
-    max_linked_list_length: &mut u32,
-    max_linked_list_length_uniform: &mut u32,
 ) {
     let bid = block_id.x;
     let vid_ = active_blocks.at(bid as usize).virtual_id.id;
@@ -609,4 +480,70 @@ fn p2g_cdf_impl(
 
     // Write the node cdf to global memory.
     nodes.at_mut(global_id as usize).cdf = node_cdf;
+}
+
+
+/*
+ * Shared memory flatten helpers (same as p2g.slang).
+ */
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32) -> u32 {
+    (x - 6) + (y - 6) * 10
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn flatten_shared_shift(x: u32, y: u32) -> u32 {
+    x + y * 10
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
+    (x - 2) + (y - 2) * 6 + (z - 2) * 6 * 6
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
+    x + y * 6 + z * 6 * 6
+}
+
+/*
+ * Workgroup atomic helpers.
+ */
+
+#[inline]
+fn atomic_max_u32_workgroup(ptr: &mut u32, value: u32) -> u32 {
+    unsafe {
+        spirv_std::arch::atomic_u_max::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value)
+    }
+}
+
+#[inline]
+fn atomic_store_u32_workgroup(ptr: &mut u32, value: u32) {
+    unsafe {
+        spirv_std::arch::atomic_exchange::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value);
+    }
+}
+
+#[inline]
+fn atomic_load_u32_workgroup(ptr: &mut u32) -> u32 {
+    unsafe {
+        spirv_std::arch::atomic_load::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr)
+    }
 }

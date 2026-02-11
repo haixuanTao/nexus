@@ -103,92 +103,6 @@ pub struct IntegerImpulseAtomic {
 
 const FLOAT_TO_INT_FACTOR: f32 = 1e5;
 
-/// Converts a float to an integer for atomic accumulation.
-#[inline]
-fn flt2int(flt: f32) -> i32 {
-    (flt * FLOAT_TO_INT_FACTOR) as i32
-}
-
-/*
- * Shared memory flatten helpers (same as p2g.slang).
- */
-
-#[cfg(feature = "dim2")]
-#[inline]
-fn flatten_shared_index(x: u32, y: u32) -> u32 {
-    (x - 6) + (y - 6) * 10
-}
-
-#[cfg(feature = "dim2")]
-#[inline]
-fn flatten_shared_shift(x: u32, y: u32) -> u32 {
-    x + y * 10
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
-    (x - 2) + (y - 2) * 6 + (z - 2) * 6 * 6
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
-    x + y * 6 + z * 6 * 6
-}
-
-/*
- * Atomic max for workgroup memory.
- */
-
-/// Atomically computes max(ptr, value) in workgroup-scope memory.
-#[inline]
-fn atomic_max_u32_workgroup(ptr: &mut u32, value: u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_u_max::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value)
-    }
-}
-
-/// Atomically stores 0 in workgroup-scope memory.
-#[inline]
-fn atomic_store_u32_workgroup(ptr: &mut u32, value: u32) {
-    unsafe {
-        spirv_std::arch::atomic_exchange::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value);
-    }
-}
-
-/// Atomically loads from workgroup-scope memory.
-#[inline]
-fn atomic_load_u32_workgroup(ptr: &mut u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_load::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr)
-    }
-}
-
-/// Atomic add for i32 (storage buffer scope) for impulse accumulation.
-#[inline]
-fn atomic_add_i32(ptr: &mut i32, value: i32) {
-    unsafe {
-        spirv_std::arch::atomic_i_add::<
-            i32,
-            { spirv_std::memory::Scope::QueueFamily as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value);
-    }
-}
-
 /*
  * P2G step: compute the contribution of all particles in the neighborhood
  * to a single grid node.
@@ -544,9 +458,9 @@ fn fetch_next_particle(
 /// Handles CPIC compatibility checks and rigid body impulse accumulation.
 ///
 /// Dispatched with one workgroup per active block.
-#[cfg(feature = "dim2")]
 #[spirv_bindgen]
-#[spirv(compute(threads(8, 8)))]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_p2g(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
@@ -572,88 +486,6 @@ pub fn gpu_p2g(
     #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
     #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
-) {
-    p2g_impl(
-        block_id, tid, tid_flat,
-        grid_data, hmap_entries, active_blocks,
-        nodes_linked_lists, particle_node_linked_lists,
-        particles_pos, particles_dyn, nodes,
-        body_vels, body_impulses, body_materials,
-        shared_vel_mass, shared_affine, shared_force_dt,
-        shared_nodes, shared_pos, shared_affinities, shared_normals,
-        max_linked_list_length, max_linked_list_length_uniform,
-    );
-}
-
-/// GPU kernel: P2G transfer (3D).
-#[cfg(feature = "dim3")]
-#[spirv_bindgen]
-#[spirv(compute(threads(4, 4, 4)))]
-pub fn gpu_p2g(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes_linked_lists: &[NodeLinkedList],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_dyn: &[Dynamics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_impulses: &mut [IntegerImpulseAtomic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_materials: &[BoundaryCondition],
-    // Shared memory arrays.
-    #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_affinities: &mut [u32; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] max_linked_list_length: &mut u32,
-    #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
-) {
-    p2g_impl(
-        block_id, tid, tid_flat,
-        grid_data, hmap_entries, active_blocks,
-        nodes_linked_lists, particle_node_linked_lists,
-        particles_pos, particles_dyn, nodes,
-        body_vels, body_impulses, body_materials,
-        shared_vel_mass, shared_affine, shared_force_dt,
-        shared_nodes, shared_pos, shared_affinities, shared_normals,
-        max_linked_list_length, max_linked_list_length_uniform,
-    );
-}
-
-/// Common P2G implementation used by both 2D and 3D entry points.
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn p2g_impl(
-    block_id: spirv_std::glam::UVec3,
-    tid: spirv_std::glam::UVec3,
-    tid_flat: u32,
-    grid_data: &[Grid],
-    hmap_entries: &[GridHashMapEntry],
-    active_blocks: &[ActiveBlockHeader],
-    nodes_linked_lists: &[NodeLinkedList],
-    particle_node_linked_lists: &[u32],
-    particles_pos: &[Position],
-    particles_dyn: &[Dynamics],
-    nodes: &mut [Node],
-    body_vels: &[BodyVelocity],
-    body_impulses: &mut [IntegerImpulseAtomic],
-    body_materials: &[BoundaryCondition],
-    shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
-    shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
-    shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
-    shared_pos: &mut [Position; NUM_SHARED_CELLS],
-    shared_affinities: &mut [u32; NUM_SHARED_CELLS],
-    shared_normals: &mut [Vector; NUM_SHARED_CELLS],
-    max_linked_list_length: &mut u32,
-    max_linked_list_length_uniform: &mut u32,
 ) {
     let bid = block_id.x;
     // Force copy of the virtual ID (naga bug workaround).
@@ -738,5 +570,92 @@ fn p2g_impl(
             atomic_add_i32(&mut body_impulses.at_mut(ci).angular_y, flt2int(total_result.ang_impulse.y));
             atomic_add_i32(&mut body_impulses.at_mut(ci).angular_z, flt2int(total_result.ang_impulse.z));
         }
+    }
+}
+
+
+/// Converts a float to an integer for atomic accumulation.
+#[inline]
+fn flt2int(flt: f32) -> i32 {
+    (flt * FLOAT_TO_INT_FACTOR) as i32
+}
+
+/*
+ * Shared memory flatten helpers (same as p2g.slang).
+ */
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32) -> u32 {
+    (x - 6) + (y - 6) * 10
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn flatten_shared_shift(x: u32, y: u32) -> u32 {
+    x + y * 10
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
+    (x - 2) + (y - 2) * 6 + (z - 2) * 6 * 6
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
+    x + y * 6 + z * 6 * 6
+}
+
+/*
+ * Atomic max for workgroup memory.
+ */
+
+/// Atomically computes max(ptr, value) in workgroup-scope memory.
+#[inline]
+fn atomic_max_u32_workgroup(ptr: &mut u32, value: u32) -> u32 {
+    unsafe {
+        spirv_std::arch::atomic_u_max::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value)
+    }
+}
+
+/// Atomically stores 0 in workgroup-scope memory.
+#[inline]
+fn atomic_store_u32_workgroup(ptr: &mut u32, value: u32) {
+    unsafe {
+        spirv_std::arch::atomic_exchange::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value);
+    }
+}
+
+/// Atomically loads from workgroup-scope memory.
+#[inline]
+fn atomic_load_u32_workgroup(ptr: &mut u32) -> u32 {
+    unsafe {
+        spirv_std::arch::atomic_load::<
+            u32,
+            { spirv_std::memory::Scope::Workgroup as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr)
+    }
+}
+
+/// Atomic add for i32 (storage buffer scope) for impulse accumulation.
+#[inline]
+fn atomic_add_i32(ptr: &mut i32, value: i32) {
+    unsafe {
+        spirv_std::arch::atomic_i_add::<
+            i32,
+            { spirv_std::memory::Scope::QueueFamily as u32 },
+            { spirv_std::memory::Semantics::NONE.bits() },
+        >(ptr, value);
     }
 }

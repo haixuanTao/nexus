@@ -150,6 +150,7 @@ pub fn vector_part(v: VectorPlusOne) -> Vector {
 /// Extract the scalar (mass) part from a VectorPlusOne.
 #[cfg(feature = "dim2")]
 #[inline]
+// FIXME: remove this. Split the vector for an additional field.
 pub fn scalar_part(v: VectorPlusOne) -> f32 {
     v.z
 }

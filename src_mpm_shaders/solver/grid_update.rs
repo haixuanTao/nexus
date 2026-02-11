@@ -13,6 +13,51 @@ use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
 
+
+/// GPU kernel: grid update.
+///
+/// Converts grid momentum to velocity, applies gravity, and clamps velocities.
+/// Dispatched with one workgroup per active block, one thread per node.
+#[spirv_bindgen]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
+pub fn gpu_grid_update(
+    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes: &mut [Node],
+) {
+    let bid = block_id.x;
+    let vid = active_blocks.at(bid as usize).virtual_id;
+    let cell_width = grid_data.at(0).cell_width;
+
+    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
+    let tid_xy = UVec2::new(tid.x, tid.y);
+    let global_node_id = node_id(global_chunk_id, tid_xy);
+
+    #[cfg(feature = "dim2")]
+    let cell_pos = Vec2::new(
+        (vid.id.x * 8 + tid.x as i32) as f32,
+        (vid.id.y * 8 + tid.y as i32) as f32,
+    ) * cell_width;
+    #[cfg(feature = "dim3")]
+    let cell_pos = Vec3::new(
+        (vid.id.x * 4 + tid.x as i32) as f32,
+        (vid.id.y * 4 + tid.y as i32) as f32,
+        (vid.id.z * 4 + tid.z as i32) as f32,
+    ) * cell_width;
+
+    let global_id = global_node_id.id as usize;
+    let momentum_velocity_mass = nodes.at(global_id).momentum_velocity_mass;
+    let momentum_velocity_mass_incompatible = nodes.at(global_id).momentum_velocity_mass_incompatible;
+    let new_grid_velocity_mass = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass);
+    let new_grid_velocity_mass_incompatible = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass_incompatible);
+    nodes.at_mut(global_id).momentum_velocity_mass = new_grid_velocity_mass;
+    nodes.at_mut(global_id).momentum_velocity_mass_incompatible = new_grid_velocity_mass_incompatible;
+}
+
 /// Updates a single cell's momentum+mass to velocity+mass.
 ///
 /// Converts momentum to velocity by dividing by mass, adds gravity,
@@ -34,74 +79,4 @@ fn update_single_cell(
     velocity = velocity.clamp(-vel_limit, vel_limit);
 
     vector_plus_one(velocity, mass)
-}
-
-/// GPU kernel: grid update (2D).
-///
-/// Converts grid momentum to velocity, applies gravity, and clamps velocities.
-/// Dispatched with one workgroup per active block, one thread per node.
-#[cfg(feature = "dim2")]
-#[spirv_bindgen]
-#[spirv(compute(threads(8, 8)))]
-pub fn gpu_grid_update(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes: &mut [Node],
-) {
-    let bid = block_id.x;
-    let vid = active_blocks.at(bid as usize).virtual_id;
-    let cell_width = grid_data.at(0).cell_width;
-
-    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
-    let tid_xy = UVec2::new(tid.x, tid.y);
-    let global_node_id = node_id(global_chunk_id, tid_xy);
-    let cell_pos = Vec2::new(
-        (vid.id.x * 8 + tid.x as i32) as f32,
-        (vid.id.y * 8 + tid.y as i32) as f32,
-    ) * cell_width;
-
-    let global_id = global_node_id.id as usize;
-    let momentum_velocity_mass = nodes.at(global_id).momentum_velocity_mass;
-    let momentum_velocity_mass_incompatible = nodes.at(global_id).momentum_velocity_mass_incompatible;
-    let new_grid_velocity_mass = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass);
-    let new_grid_velocity_mass_incompatible = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass_incompatible);
-    nodes.at_mut(global_id).momentum_velocity_mass = new_grid_velocity_mass;
-    nodes.at_mut(global_id).momentum_velocity_mass_incompatible = new_grid_velocity_mass_incompatible;
-}
-
-/// GPU kernel: grid update (3D).
-#[cfg(feature = "dim3")]
-#[spirv_bindgen]
-#[spirv(compute(threads(4, 4, 4)))]
-pub fn gpu_grid_update(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes: &mut [Node],
-) {
-    let bid = block_id.x;
-    let vid = active_blocks.at(bid as usize).virtual_id;
-    let cell_width = grid_data.at(0).cell_width;
-
-    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
-    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
-    let global_node_id = node_id(global_chunk_id, tid_xyz);
-    let cell_pos = Vec3::new(
-        (vid.id.x * 4 + tid.x as i32) as f32,
-        (vid.id.y * 4 + tid.y as i32) as f32,
-        (vid.id.z * 4 + tid.z as i32) as f32,
-    ) * cell_width;
-
-    let global_id = global_node_id.id as usize;
-    let momentum_velocity_mass = nodes.at(global_id).momentum_velocity_mass;
-    let momentum_velocity_mass_incompatible = nodes.at(global_id).momentum_velocity_mass_incompatible;
-    let new_grid_velocity_mass = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass);
-    let new_grid_velocity_mass_incompatible = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass_incompatible);
-    nodes.at_mut(global_id).momentum_velocity_mass = new_grid_velocity_mass;
-    nodes.at_mut(global_id).momentum_velocity_mass_incompatible = new_grid_velocity_mass_incompatible;
 }

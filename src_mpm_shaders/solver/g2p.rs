@@ -36,40 +36,6 @@ const NUM_SHARED_CELLS: usize = 216; // 6 * 6 * 6
 const WORKGROUP_SIZE: u32 = 64;
 
 /*
- * Shared memory flatten helpers for G2P.
- * Note: different from P2G -- no shift subtraction since the truncated blocks
- * are in the higher-index quadrants.
- */
-
-#[cfg(feature = "dim2")]
-#[inline]
-fn flatten_shared_index(x: u32, y: u32) -> u32 {
-    x + y * 10
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
-    x + y * 6 + z * 6 * 6
-}
-
-/*
- * Outer product helper.
- */
-
-#[cfg(feature = "dim2")]
-#[inline]
-fn outer_product(a: Vec2, b: Vec2) -> Mat2 {
-    Mat2::from_cols(a * b.x, a * b.y)
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-fn outer_product(a: Vec3, b: Vec3) -> Mat3 {
-    Mat3::from_cols(a * b.x, a * b.y, a * b.z)
-}
-
-/*
  * Global -> shared memory transfer.
  */
 
@@ -276,9 +242,9 @@ fn particle_g2p(
 ///
 /// Transfers grid node velocities back to particles using APIC interpolation.
 /// Dispatched with one workgroup per active block.
-#[cfg(feature = "dim2")]
 #[spirv_bindgen]
-#[spirv(compute(threads(8, 8)))]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_g2p(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
@@ -298,70 +264,6 @@ pub fn gpu_g2p(
     #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
-) {
-    g2p_impl(
-        block_id, tid, tid_flat, params,
-        grid_data, hmap_entries, active_blocks, nodes,
-        sorted_particle_ids, particles_pos, particles_dyn,
-        body_vels, body_mprops, body_materials,
-        shared_nodes_vel_mass, shared_nodes_vel_mass_incompatible, shared_nodes_cdf,
-    );
-}
-
-/// GPU kernel: G2P transfer (3D).
-#[cfg(feature = "dim3")]
-#[spirv_bindgen]
-#[spirv(compute(threads(4, 4, 4)))]
-pub fn gpu_g2p(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_dyn: &mut [Dynamics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_mprops: &[BodyMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_materials: &[BoundaryCondition],
-    // Shared memory.
-    #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
-) {
-    g2p_impl(
-        block_id, tid, tid_flat, params,
-        grid_data, hmap_entries, active_blocks, nodes,
-        sorted_particle_ids, particles_pos, particles_dyn,
-        body_vels, body_mprops, body_materials,
-        shared_nodes_vel_mass, shared_nodes_vel_mass_incompatible, shared_nodes_cdf,
-    );
-}
-
-/// Common G2P implementation for both 2D and 3D.
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn g2p_impl(
-    block_id: spirv_std::glam::UVec3,
-    tid: spirv_std::glam::UVec3,
-    tid_flat: u32,
-    params: &SimulationParams,
-    grid_data: &[Grid],
-    hmap_entries: &[GridHashMapEntry],
-    active_blocks: &[ActiveBlockHeader],
-    nodes: &[Node],
-    sorted_particle_ids: &[u32],
-    particles_pos: &[Position],
-    particles_dyn: &mut [Dynamics],
-    body_vels: &[BodyVelocity],
-    body_mprops: &[BodyMassProperties],
-    body_materials: &[BoundaryCondition],
-    shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
     let bid = block_id.x;
     // Force copy of the virtual ID (naga bug workaround).
@@ -397,4 +299,39 @@ fn g2p_impl(
         );
         sorted_particle_id += WORKGROUP_SIZE;
     }
+}
+
+
+/*
+ * Shared memory flatten helpers for G2P.
+ * Note: different from P2G -- no shift subtraction since the truncated blocks
+ * are in the higher-index quadrants.
+ */
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32) -> u32 {
+    x + y * 10
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
+    x + y * 6 + z * 6 * 6
+}
+
+/*
+ * Outer product helper.
+ */
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn outer_product(a: Vec2, b: Vec2) -> Mat2 {
+    Mat2::from_cols(a * b.x, a * b.y)
+}
+
+#[cfg(feature = "dim3")]
+#[inline]
+fn outer_product(a: Vec3, b: Vec3) -> Mat3 {
+    Mat3::from_cols(a * b.x, a * b.y, a * b.z)
 }
