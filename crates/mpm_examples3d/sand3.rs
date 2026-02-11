@@ -35,10 +35,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
                     / 2.0;
                 let radius = cell_width / 4.0;
                 let model = ParticleModel::sand(YOUNG_MODULUS, POISSON_RATIO);
-                let mut particle = Particle::new(position, radius, DENSITY, model);
-                if j > 80 {
-                    particle.dynamics.set_fixed(true);
-                }
+                let particle = Particle::new(position, radius, DENSITY, model);
                 particles.push(particle);
             }
         }

@@ -190,8 +190,7 @@ pub fn gpu_copy_particles_len_to_scan_value(
 /// Writes the prefix sum results back as `first_particle` offsets and resets particle counts.
 ///
 /// After the prefix sum, `scan_values[i]` contains the exclusive scan result.
-/// This kernel copies it into `active_blocks[i].first_particle` and resets
-/// `num_particles` to 0 for use as an atomic counter in the finalization pass.
+/// This kernel copies it into `active_blocks[i].first_particle`.
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_copy_scan_values_to_first_particles(
@@ -204,7 +203,6 @@ pub fn gpu_copy_scan_values_to_first_particles(
     if id < grid_data.at(0).num_active_blocks {
         let idx = id as usize;
         active_blocks.at_mut(idx).first_particle = scan_values.read(idx);
-        active_blocks.at_mut(idx).num_particles = 0;
     }
 }
 
