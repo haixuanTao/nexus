@@ -1,9 +1,11 @@
 //! Neo-Hookean elasticity model.
 
-use crate::{Matrix, Vector};
+use super::utils::{
+    bulk_modulus_from_lame, shear_modulus_from_lame, ElasticitySoundSpeedTimestepBound,
+};
 use crate::glamx::MatExt;
+use crate::{Matrix, Vector};
 use spirv_std::num_traits::Float;
-use super::utils::{bulk_modulus_from_lame, shear_modulus_from_lame, ElasticitySoundSpeedTimestepBound};
 
 /// Neo-Hookean hyperelastic constitutive model.
 ///

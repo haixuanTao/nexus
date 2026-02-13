@@ -1,6 +1,6 @@
 pub use crate::mpm_shaders::solver::params::SimulationParams;
-use khal::backend::{GpuBackend, GpuBackendError};
 use khal::BufferUsages;
+use khal::backend::{GpuBackend, GpuBackendError};
 use vortx::tensor::Tensor;
 
 /// GPU-resident simulation parameters.

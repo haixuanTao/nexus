@@ -3,12 +3,12 @@
 //! These kernels handle spatial hashing and sorting to group particles by grid block
 //! for efficient neighbor queries during P2G/G2P.
 
-use crate::mpm_shaders::grid::sort::{
-    GpuCopyParticlesLenToScanValue, GpuCopyScanValuesToFirstParticles,
-    GpuFinalizeParticlesSort, GpuMarkRigidParticlesNeedingBlock, GpuSortRigidParticles,
-    GpuTouchParticleBlocks, GpuTouchRigidParticleBlocks, GpuUpdateBlockParticleCount,
-};
 use crate::grid::grid::GpuGrid;
+use crate::mpm_shaders::grid::sort::{
+    GpuCopyParticlesLenToScanValue, GpuCopyScanValuesToFirstParticles, GpuFinalizeParticlesSort,
+    GpuMarkRigidParticlesNeedingBlock, GpuSortRigidParticles, GpuTouchParticleBlocks,
+    GpuTouchRigidParticleBlocks, GpuUpdateBlockParticleCount,
+};
 use crate::solver::GpuRigidParticles;
 use khal::Shader;
 

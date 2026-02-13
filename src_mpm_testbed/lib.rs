@@ -23,23 +23,24 @@ mod data;
 pub mod step;
 
 use crate::step::{GpuReadbackData, RenderConfig, SimulationStepResult, WgPrepReadback};
+use khal::Shader;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps, WebGpu};
 use khal::re_exports::wgpu::Limits;
-use khal::Shader;
 use kiss3d::egui;
 use kiss3d::prelude::*;
 use nexus_mpm::pipeline::{MpmPipeline, MpmPipelineHooks};
 use nexus_mpm::solver::GpuParticleModelData;
 use rapier::geometry::{ColliderHandle, Shape, ShapeType};
 
-#[cfg(feature = "dim2")]
-use kiss3d::camera::{FixedView3d, PanZoomCamera2d};
 #[cfg(feature = "dim3")]
 use kiss3d::camera::{FixedView2d, OrbitCamera3d};
+#[cfg(feature = "dim2")]
+use kiss3d::camera::{FixedView3d, PanZoomCamera2d};
 use kiss3d::scene::{SceneNode2d, SceneNode3d};
 
 pub type SceneBuilders<GpuModel> = Vec<(String, SceneBuildFn<GpuModel>)>;
-pub type SceneBuildFn<GpuModel> = fn(&KhalGpuBackend, &mut AppState<GpuModel>) -> PhysicsContext<GpuModel>;
+pub type SceneBuildFn<GpuModel> =
+    fn(&KhalGpuBackend, &mut AppState<GpuModel>) -> PhysicsContext<GpuModel>;
 
 #[cfg(feature = "dim2")]
 type RenderNode = SceneNode2d;
@@ -144,32 +145,24 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
 
         self.instances.clear();
         #[cfg(feature = "dim2")]
-        self.instances.extend(
-            self.step_result
-                .instances
-                .iter()
-                .map(|d| InstanceData2d {
-                    position: d.position,
-                    color: [d.color.x, d.color.y, d.color.z, d.color.w],
-                    deformation: d.deformation,
-                    ..Default::default()
-                }),
-        );
+        self.instances
+            .extend(self.step_result.instances.iter().map(|d| InstanceData2d {
+                position: d.position,
+                color: [d.color.x, d.color.y, d.color.z, d.color.w],
+                deformation: d.deformation,
+                ..Default::default()
+            }));
         #[cfg(feature = "dim3")]
-        self.instances.extend(
-            self.step_result
-                .instances
-                .iter()
-                .map(|d| {
-                    use nexus_mpm::mpm_shaders::PaddingExt;
-                    InstanceData3d {
-                        position: d.position,
-                        color: Color::new(d.color.x, d.color.y, d.color.z, d.color.w),
-                        deformation: d.deformation.remove_padding(),
-                        ..Default::default()
-                    }
-                }),
-        );
+        self.instances
+            .extend(self.step_result.instances.iter().map(|d| {
+                use nexus_mpm::mpm_shaders::PaddingExt;
+                InstanceData3d {
+                    position: d.position,
+                    color: Color::new(d.color.x, d.color.y, d.color.z, d.color.w),
+                    deformation: d.deformation.remove_padding(),
+                    ..Default::default()
+                }
+            }));
     }
 }
 
@@ -201,7 +194,12 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
         scene3d.add_directional_light(glamx::Vec3::new(1.0, 1.0, 1.0));
     }
 
-    render_colliders(&mut scene2d, &mut scene3d, &stage.physics, &mut colliders_gfx);
+    render_colliders(
+        &mut scene2d,
+        &mut scene3d,
+        &stage.physics,
+        &mut colliders_gfx,
+    );
 
     // Create particle instance node.
     #[cfg(feature = "dim2")]
@@ -217,10 +215,7 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
     };
     #[cfg(feature = "dim3")]
     let (mut camera2d, mut camera3d) = {
-        let arc_ball = OrbitCamera3d::new(
-            glamx::Vec3::new(40.0, 40.0, 40.0),
-            glamx::Vec3::ZERO,
-        );
+        let arc_ball = OrbitCamera3d::new(glamx::Vec3::new(40.0, 40.0, 40.0), glamx::Vec3::ZERO);
         (FixedView2d::default(), arc_ball)
     };
 
@@ -310,7 +305,6 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                     }
                 }
 
-
                 ui.horizontal(|ui| {
                     let play_pause_label = if stage.app_state.run_state == RunState::Running {
                         "Pause"
@@ -340,7 +334,12 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
             for (_, mut node) in colliders_gfx.drain() {
                 node.detach();
             }
-            render_colliders(&mut scene2d, &mut scene3d, &stage.physics, &mut colliders_gfx);
+            render_colliders(
+                &mut scene2d,
+                &mut scene3d,
+                &stage.physics,
+                &mut colliders_gfx,
+            );
         }
     }
 }
@@ -459,10 +458,7 @@ fn generate_collider_node(
         }
         ShapeType::Triangle => {
             let tri = co_shape.as_triangle().unwrap();
-            let mesh = kiss3d_mesh_3d(
-                &[tri.a, tri.b, tri.c],
-                &[[0, 1, 2], [0, 2, 1]],
-            );
+            let mesh = kiss3d_mesh_3d(&[tri.a, tri.b, tri.c], &[[0, 1, 2], [0, 2, 1]]);
             Some(scene3d.add_mesh(Rc::new(RefCell::new(mesh)), glamx::Vec3::ONE))
         }
         ShapeType::TriMesh => {
@@ -497,17 +493,11 @@ fn kiss3d_mesh_from_polyline_2d(vertices: &[glamx::Vec2]) -> GpuMesh2d {
 }
 
 #[cfg(feature = "dim2")]
-fn kiss3d_mesh_2d(
-    vertices: &[glamx::Vec2],
-    indices: &[[u32; 3]],
-) -> GpuMesh2d {
+fn kiss3d_mesh_2d(vertices: &[glamx::Vec2], indices: &[[u32; 3]]) -> GpuMesh2d {
     GpuMesh2d::new(vertices.to_vec(), indices.to_vec(), None, false)
 }
 
 #[cfg(feature = "dim3")]
-fn kiss3d_mesh_3d(
-    vertices: &[glamx::Vec3],
-    indices: &[[u32; 3]],
-) -> GpuMesh3d {
+fn kiss3d_mesh_3d(vertices: &[glamx::Vec3], indices: &[[u32; 3]]) -> GpuMesh3d {
     GpuMesh3d::new(vertices.to_vec(), indices.to_vec(), None, None, false)
 }

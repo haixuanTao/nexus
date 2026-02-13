@@ -15,7 +15,6 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::too_many_arguments)]
 
-
 #[cfg(all(feature = "from_rapier", feature = "dim2"))]
 use parry2d as parry;
 #[cfg(all(feature = "from_rapier", feature = "dim3"))]

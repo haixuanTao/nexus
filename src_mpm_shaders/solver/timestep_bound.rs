@@ -6,10 +6,10 @@
 use crate::grid::grid::Grid;
 use crate::models::default::{DefaultParticleModel, GpuParticleModel};
 use crate::solver::particle::Dynamics;
-use crate::{atomic_min_u32, sqrt, DIM, MaybeIndexUnchecked, Matrix};
+use crate::PaddingExt;
+use crate::{atomic_min_u32, sqrt, Matrix, MaybeIndexUnchecked, DIM};
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
-use crate::PaddingExt;
 
 /// GPU-side timestep bound result.
 ///
@@ -60,7 +60,8 @@ pub fn gpu_reset_timestep_bound(
 pub fn gpu_estimate_timestep_bound(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_model: &[GpuParticleModel],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    particles_model: &[GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_dyn: &[Dynamics],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] particles_len: &u32,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] result: &mut [GpuTimestepBounds],

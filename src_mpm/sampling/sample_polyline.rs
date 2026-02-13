@@ -44,9 +44,9 @@ pub fn sample_polyline(
                     break;
                 }
 
-                buffers
-                    .samples
-                    .push(Position { pt: seg.a + dir * shift });
+                buffers.samples.push(Position {
+                    pt: seg.a + dir * shift,
+                });
                 buffers.samples_ids.push(sample_id);
             }
 

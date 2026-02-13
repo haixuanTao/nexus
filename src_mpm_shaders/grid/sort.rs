@@ -34,8 +34,10 @@ use spirv_std::spirv;
 pub fn gpu_touch_particle_blocks(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &mut [Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &mut [GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &mut [ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    hmap_entries: &mut [GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    active_blocks: &mut [ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_pos: &[Position],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] particles_len: &u32,
 ) {
@@ -63,8 +65,10 @@ pub fn gpu_touch_particle_blocks(
 pub fn gpu_touch_rigid_particle_blocks(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &mut [Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &mut [GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &mut [ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    hmap_entries: &mut [GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    active_blocks: &mut [ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] rigid_particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] rigid_particle_needs_block: &[u32],
 ) {
@@ -98,7 +102,8 @@ pub fn gpu_mark_rigid_particles_needing_block(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] rigid_particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] rigid_particle_needs_block: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    rigid_particle_needs_block: &mut [u32],
 ) {
     let id = invocation_id.x;
     if id < rigid_particles_pos.len() as u32 {
@@ -154,7 +159,8 @@ pub fn gpu_update_block_particle_count(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_pos: &[Position],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] particles_len: &u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] active_blocks: &mut [ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
+    active_blocks: &mut [ActiveBlockHeader],
 ) {
     let id = invocation_id.x;
     if id < *particles_len {
@@ -163,7 +169,9 @@ pub fn gpu_update_block_particle_count(
         let block_vid = block_associated_to_point(cell_width, particle.pt);
         let active_block_id = find_block_header_id(grid_data, hmap_entries, &block_vid);
         atomic_add_u32(
-            &mut active_blocks.at_mut(active_block_id.id as usize).num_particles,
+            &mut active_blocks
+                .at_mut(active_block_id.id as usize)
+                .num_particles,
             1,
         );
     }
@@ -197,7 +205,8 @@ pub fn gpu_copy_scan_values_to_first_particles(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] scan_values: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &mut [ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    active_blocks: &mut [ActiveBlockHeader],
 ) {
     let id = invocation_id.x;
     if id < grid_data.at(0).num_active_blocks {
@@ -222,8 +231,10 @@ pub fn gpu_finalize_particles_sort(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_pos: &[Position],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] particles_len: &u32,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] scan_values: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] nodes_linked_lists: &mut [NodeLinkedList],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particle_node_linked_lists: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    nodes_linked_lists: &mut [NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    particle_node_linked_lists: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] sorted_particle_ids: &mut [u32],
 ) {
     let id = invocation_id.x;
@@ -234,13 +245,15 @@ pub fn gpu_finalize_particles_sort(
 
         // Place the particle at its sorted position.
         let active_block_id = find_block_header_id(grid_data, hmap_entries, &block_vid);
-        let target_index =
-            atomic_add_u32(&mut scan_values.at_mut(active_block_id.id as usize), 1);
+        let target_index = atomic_add_u32(&mut scan_values.at_mut(active_block_id.id as usize), 1);
         sorted_particle_ids.write(target_index as usize, id);
 
         // Build per-node particle linked list.
         let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
-        let node_global_id = node_id(block_header_id_to_physical_id(active_block_id), node_local_id);
+        let node_global_id = node_id(
+            block_header_id_to_physical_id(active_block_id),
+            node_local_id,
+        );
         let prev_head = unsafe {
             spirv_std::arch::atomic_exchange::<
                 u32,
@@ -271,8 +284,10 @@ pub fn gpu_sort_rigid_particles(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] rigid_particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] rigid_nodes_linked_lists: &mut [NodeLinkedList],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] rigid_particle_node_linked_lists: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    rigid_nodes_linked_lists: &mut [NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
+    rigid_particle_node_linked_lists: &mut [u32],
 ) {
     let id = invocation_id.x;
     if id < rigid_particles_pos.len() as u32 {
@@ -287,8 +302,10 @@ pub fn gpu_sort_rigid_particles(
         if active_block_id.id != NONE {
             // Build per-node rigid particle linked list.
             let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
-            let node_global_id =
-                node_id(block_header_id_to_physical_id(active_block_id), node_local_id);
+            let node_global_id = node_id(
+                block_header_id_to_physical_id(active_block_id),
+                node_local_id,
+            );
             let prev_head = unsafe {
                 spirv_std::arch::atomic_exchange::<
                     u32,

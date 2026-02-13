@@ -147,22 +147,23 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         let t_total_step = t_total.elapsed().as_secs_f32() * 1000.0;
 
         // Read back timestamp results.
-        let (gpu_pass_times, gpu_total_time) =
-            if let Ok(results) = self.timestamps.read(&self.gpu).await {
-                // Aggregate by label.
-                let mut aggregated: Vec<(String, f64)> = vec![];
-                for r in &results {
-                    if let Some(existing) = aggregated.iter_mut().find(|(label, _)| label == &r.label) {
-                        existing.1 += r.duration_ms;
-                    } else {
-                        aggregated.push((r.label.clone(), r.duration_ms));
-                    }
+        let (gpu_pass_times, gpu_total_time) = if let Ok(results) =
+            self.timestamps.read(&self.gpu).await
+        {
+            // Aggregate by label.
+            let mut aggregated: Vec<(String, f64)> = vec![];
+            for r in &results {
+                if let Some(existing) = aggregated.iter_mut().find(|(label, _)| label == &r.label) {
+                    existing.1 += r.duration_ms;
+                } else {
+                    aggregated.push((r.label.clone(), r.duration_ms));
                 }
-                let total = aggregated.iter().map(|e| e.1).sum();
-                (aggregated, total)
-            } else {
-                (Vec::new(), 0.0)
-            };
+            }
+            let total = aggregated.iter().map(|e| e.1).sum();
+            (aggregated, total)
+        } else {
+            (Vec::new(), 0.0)
+        };
 
         // Read back readback data.
         let t_readback = web_time::Instant::now();

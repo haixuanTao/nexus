@@ -1,6 +1,6 @@
-use nexus_mpm_testbed3d::{nexus_mpm, RapierData};
+use nexus_mpm_testbed3d::{RapierData, nexus_mpm};
 
-use glamx::{vec3, Pose3};
+use glamx::{Pose3, vec3};
 use khal::backend::GpuBackend;
 use nexus_mpm::{
     pipeline::MpmData,
@@ -63,8 +63,8 @@ pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physi
         let heightfield = HeightField::new(heights, vec3(35.0, 1.0, 10.0));
         let (mut vtx, idx) = heightfield.to_trimesh();
         vtx.iter_mut().for_each(|pt| {
-            *pt = Pose3::rotation(vec3(1.3, 0.0, 0.0)) * *pt
-                + vec3(0.0, 10.0, k as f32 * 10.0 - 10.0)
+            *pt =
+                Pose3::rotation(vec3(1.3, 0.0, 0.0)) * *pt + vec3(0.0, 10.0, k as f32 * 10.0 - 10.0)
         });
         let rb = RigidBodyBuilder::fixed();
         let rb_handle = rapier_data.bodies.insert(rb);

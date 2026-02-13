@@ -1,5 +1,5 @@
-use crate::{sqrt, Matrix, Vector, DIM, DIM_USIZE};
 use crate::trace;
+use crate::{sqrt, Matrix, Vector, DIM, DIM_USIZE};
 
 /// Computes the Lame parameters (lambda, mu) from the Young modulus and Poisson ratio.
 /// Returns (lambda, mu).
@@ -165,8 +165,7 @@ impl ElasticitySoundSpeedTimestepBound {
         let curr_density = density0 / f32::max(def_grad_det, 1.0e-6);
 
         // Speed of sound of pressure waves.
-        let sound_speed =
-            sqrt((self.bulk_modulus + self.shear_modulus * 4.0 / 3.0) / curr_density);
+        let sound_speed = sqrt((self.bulk_modulus + self.shear_modulus * 4.0 / 3.0) / curr_density);
 
         // Take the max between sound speed and physical velocity.
         // Note that we don't calculate the speed of sound for the shear waves since that's

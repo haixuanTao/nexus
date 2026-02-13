@@ -1,14 +1,19 @@
 //! Linear (corotated) elasticity model.
 
-use crate::{diag, Matrix, Vector};
+use super::utils::{
+    bulk_modulus_from_lame, shear_modulus_from_lame, ElasticitySoundSpeedTimestepBound,
+};
 use crate::glamx::MatExt;
-use super::utils::{bulk_modulus_from_lame, shear_modulus_from_lame, ElasticitySoundSpeedTimestepBound};
+use crate::{diag, Matrix, Vector};
 
 /// Corotated linear elastic constitutive model.
 ///
 /// Uses SVD-based corotated formulation for computing the Kirchoff stress.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_arch = "spirv"), derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct LinearElasticModel {
     pub lambda: f32,

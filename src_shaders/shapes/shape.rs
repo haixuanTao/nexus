@@ -15,10 +15,10 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::queries::{PolygonalFeature, ProjectionResult};
-use crate::shapes::{Ball, Cuboid};
 use crate::shapes::capsule::Capsule;
 use crate::shapes::segment::Segment;
 use crate::shapes::triangle::Triangle;
+use crate::shapes::{Ball, Cuboid};
 use crate::{Pose, Vector, VectorWithPadding};
 use glamx::Vec4;
 use parry::{query::PointQuery, shape::SupportMap};

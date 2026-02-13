@@ -148,8 +148,7 @@ impl TriMesh {
     /// Gets the vertex indices for a triangle.
     #[inline]
     fn triangle_vids(&self, idx: &[u32], tri_id: u32) -> UVec3 {
-        let base_id =
-            (self.bvh_idx_root_id + self.bvh_node_len * 3 + tri_id * 3) as usize;
+        let base_id = (self.bvh_idx_root_id + self.bvh_node_len * 3 + tri_id * 3) as usize;
         let base_vid = self.bvh_vtx_root_id + self.bvh_node_len * 2;
         let a = base_vid + idx.read(base_id);
         let b = base_vid + idx.read(base_id + 1);
@@ -219,12 +218,7 @@ impl TriMesh {
     ///
     /// Uses BVH traversal to efficiently find the closest triangle,
     /// then uses pseudo-normals to determine if the point is inside the mesh.
-    pub fn project_local_point(
-        &self,
-        idx: &[u32],
-        vtx: &[Vector],
-        pt: Vector,
-    ) -> ProjectionResult {
+    pub fn project_local_point(&self, idx: &[u32], vtx: &[Vector], pt: Vector) -> ProjectionResult {
         let mut curr = 0u32;
         let mut best = 1.0e10f32;
         let mut best_proj = ProjectionWithLocation::solid(pt);
@@ -238,8 +232,7 @@ impl TriMesh {
             if node_idx.entry_index == 0xFFFFFFFF {
                 // This is a leaf.
                 let tri = self.triangle(idx, vtx, node_idx.shape_index);
-                let proj =
-                    triangle_project_local_point_and_get_location(&tri, pt);
+                let proj = triangle_project_local_point_and_get_location(&tri, pt);
                 let dist = (proj.point - pt).length();
                 if dist < best {
                     best = dist;
@@ -260,13 +253,7 @@ impl TriMesh {
             }
         }
 
-        let pn = self.pseudo_normal(
-            idx,
-            vtx,
-            best_tri_id,
-            best_proj.feature_type,
-            best_proj.id,
-        );
+        let pn = self.pseudo_normal(idx, vtx, best_tri_id, best_proj.feature_type, best_proj.id);
         let is_inside = pn.dot(pt - best_proj.point) <= 0.0;
         ProjectionResult::new(best_proj.point, is_inside)
     }
@@ -342,7 +329,9 @@ fn stable_check_edges_voronoi(
 
     #[cfg(feature = "dim2")]
     {
-        let _ = (ab, ac, bc, ap, bp, _cp, ab_ap, ab_bp, ac_ap, ac_cp, ac_bp, ab_cp);
+        let _ = (
+            ab, ac, bc, ap, bp, _cp, ab_ap, ab_bp, ac_ap, ac_cp, ac_bp, ab_cp,
+        );
         // TODO: 2D case not fully implemented in original Slang either.
         ProjectionInfo {
             feature: FACE_CW,
@@ -427,18 +416,12 @@ fn triangle_project_local_point_and_get_location(
             // may result in the denominator being zero
             // when the triangle is nearly degenerate.
             if proj.params.x + proj.params.y + proj.params.z != 0.0 {
-                let denom =
-                    1.0 / (proj.params.x + proj.params.y + proj.params.z);
+                let denom = 1.0 / (proj.params.x + proj.params.y + proj.params.z);
                 let v = proj.params.y * denom;
                 let w = proj.params.z * denom;
                 let bcoords = Vec3::new(1.0 - v - w, v, w);
                 let res = a + ab * v + ac * w;
-                return ProjectionWithLocation::face(
-                    res,
-                    bcoords,
-                    proj.feature,
-                    false,
-                );
+                return ProjectionWithLocation::face(res, bcoords, proj.feature, false);
             }
         }
         _ => { /* fall through to solid case */ }

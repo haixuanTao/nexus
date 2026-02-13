@@ -4,12 +4,12 @@
 //! interpolation weights. This is the first major step of each MPM timestep.
 
 use crate::cast_tensor_mut;
-use crate::grid::grid::{indirect_dispatch_tensor, GpuGrid};
+use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::p2g::{GpuP2g, IntegerImpulseAtomic};
 use crate::solver::{GpuImpulses, GpuMaterials, GpuParticleModelData, GpuParticles};
-use nexus::dynamics::GpuBodySet;
-use khal::backend::{GpuBackendError, GpuPass};
 use khal::Shader;
+use khal::backend::{GpuBackendError, GpuPass};
+use nexus::dynamics::GpuBodySet;
 
 /// GPU compute kernel for Particle-to-Grid (P2G) momentum transfer.
 ///

@@ -28,19 +28,15 @@ pub use glamx;
 use glamx::*;
 
 // Re-export key types and utilities from nexus-shaders.
+pub use nexus_shaders::MaybeIndexUnchecked;
+pub use nexus_shaders::{abs, acos, asin, atan2, cos, safe_div, sin, sqrt};
 pub use nexus_shaders::{
     atomic_add_u32, atomic_add_u32_workgroup, atomic_max_u32, atomic_min_u32, udiv, umod,
 };
-pub use nexus_shaders::{
-    abs, acos, asin, atan2, cos, safe_div, sin, sqrt,
-};
-pub use nexus_shaders::{
-    gcross, gcross_av, gdot, maybe_inv, rotation_to_matrix,
-};
+pub use nexus_shaders::{gcross, gcross_av, gdot, maybe_inv, rotation_to_matrix};
 pub use nexus_shaders::{
     AngVector, Pad, Pose, RotMatrix, Rotation, Vector, VectorWithPadding, DIM,
 };
-pub use nexus_shaders::MaybeIndexUnchecked;
 
 //
 // MPM-specific type aliases
@@ -183,20 +179,20 @@ pub trait PaddingExt {
 impl PaddingExt for Mat2 {
     type WithoutPadding = Mat2;
     #[inline]
-    fn remove_padding(self) -> Mat2 { self }
+    fn remove_padding(self) -> Mat2 {
+        self
+    }
     #[inline]
-    fn add_padding(without_padding: Mat2) -> Mat2 { without_padding }
+    fn add_padding(without_padding: Mat2) -> Mat2 {
+        without_padding
+    }
 }
 
 impl PaddingExt for Mat4 {
     type WithoutPadding = Mat3;
     #[inline]
     fn remove_padding(self) -> Mat3 {
-        Mat3::from_cols(
-            self.x_axis.xyz(),
-            self.y_axis.xyz(),
-            self.z_axis.xyz(),
-        )
+        Mat3::from_cols(self.x_axis.xyz(), self.y_axis.xyz(), self.z_axis.xyz())
     }
     #[inline]
     fn add_padding(without_padding: Mat3) -> Mat4 {

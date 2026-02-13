@@ -8,11 +8,12 @@
 
 use crate::grid::grid::*;
 use crate::solver::params::SimulationParams;
-use crate::{vector_part, scalar_part, vector_plus_one, MaybeIndexUnchecked, Vector, VectorPlusOne};
+use crate::{
+    scalar_part, vector_part, vector_plus_one, MaybeIndexUnchecked, Vector, VectorPlusOne,
+};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
-
 
 /// GPU kernel: grid update.
 ///
@@ -54,11 +55,19 @@ pub fn gpu_grid_update(
 
     let global_id = global_node_id.id as usize;
     let momentum_velocity_mass = nodes.at(global_id).momentum_velocity_mass;
-    let momentum_velocity_mass_incompatible = nodes.at(global_id).momentum_velocity_mass_incompatible;
-    let new_grid_velocity_mass = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass);
-    let new_grid_velocity_mass_incompatible = update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass_incompatible);
+    let momentum_velocity_mass_incompatible =
+        nodes.at(global_id).momentum_velocity_mass_incompatible;
+    let new_grid_velocity_mass =
+        update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass);
+    let new_grid_velocity_mass_incompatible = update_single_cell(
+        sim_params,
+        cell_width,
+        cell_pos,
+        momentum_velocity_mass_incompatible,
+    );
     nodes.at_mut(global_id).momentum_velocity_mass = new_grid_velocity_mass;
-    nodes.at_mut(global_id).momentum_velocity_mass_incompatible = new_grid_velocity_mass_incompatible;
+    nodes.at_mut(global_id).momentum_velocity_mass_incompatible =
+        new_grid_velocity_mass_incompatible;
 }
 
 /// Updates a single cell's momentum+mass to velocity+mass.

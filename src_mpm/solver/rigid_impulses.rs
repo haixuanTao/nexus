@@ -1,11 +1,13 @@
 //! Impulse accumulation and application for MPM-rigid body coupling.
 
 use crate::grid::grid::GpuGrid;
-use crate::mpm_shaders::solver::rigid_impulses::{GpuRigidImpulsesUpdate, GpuUpdateWorldMassProperties, IntegerImpulse};
+use crate::mpm_shaders::solver::rigid_impulses::{
+    GpuRigidImpulsesUpdate, GpuUpdateWorldMassProperties, IntegerImpulse,
+};
 use crate::solver::GpuSimulationParams;
-use nexus::dynamics::GpuBodySet;
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
+use nexus::dynamics::GpuBodySet;
 use vortx::tensor::Tensor;
 
 /// GPU kernels for computing and applying impulses to rigid bodies from MPM.
@@ -34,11 +36,7 @@ impl GpuImpulses {
         const MAX_BODY_COUNT: usize = 16; // CPIC doesn't support more.
         let impulses = [IntegerImpulse::default(); MAX_BODY_COUNT];
         Ok(Self {
-            incremental_impulses: Tensor::vector(
-                backend,
-                &impulses,
-                BufferUsages::STORAGE,
-            )?,
+            incremental_impulses: Tensor::vector(backend, &impulses, BufferUsages::STORAGE)?,
         })
     }
 }

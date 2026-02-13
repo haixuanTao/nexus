@@ -3,12 +3,12 @@
 //! Interpolates grid velocities back to particles and updates particle velocity
 //! gradients. This happens after grid forces have been applied.
 
-use crate::grid::grid::{indirect_dispatch_tensor, GpuGrid};
+use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::g2p::GpuG2p;
 use crate::solver::{GpuMaterials, GpuParticleModelData, GpuParticles, GpuSimulationParams};
-use nexus::dynamics::GpuBodySet;
-use khal::backend::{GpuBackendError, GpuPass};
 use khal::Shader;
+use khal::backend::{GpuBackendError, GpuPass};
+use nexus::dynamics::GpuBodySet;
 
 /// GPU compute kernel for Grid-to-Particle (G2P) velocity interpolation.
 ///

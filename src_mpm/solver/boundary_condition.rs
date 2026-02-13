@@ -12,11 +12,17 @@ pub trait BoundaryConditionExt {
 
 impl BoundaryConditionExt for BoundaryCondition {
     fn stick() -> BoundaryCondition {
-        BoundaryCondition { ty: 0, friction: 0.0 }
+        BoundaryCondition {
+            ty: 0,
+            friction: 0.0,
+        }
     }
 
     fn slip() -> BoundaryCondition {
-        BoundaryCondition { ty: 1, friction: 0.0 }
+        BoundaryCondition {
+            ty: 1,
+            friction: 0.0,
+        }
     }
 
     fn separate(friction: f32) -> BoundaryCondition {
@@ -33,7 +39,10 @@ impl GpuMaterials {
     /// Creates material buffers.
     ///
     /// Allocates space for up to 16 bodies (CPIC limitation).
-    pub fn new(backend: &GpuBackend, materials: &[BoundaryCondition]) -> Result<Self, GpuBackendError> {
+    pub fn new(
+        backend: &GpuBackend,
+        materials: &[BoundaryCondition],
+    ) -> Result<Self, GpuBackendError> {
         assert!(
             materials.len() <= 16,
             "CPIC only supports up to 16 colliders"

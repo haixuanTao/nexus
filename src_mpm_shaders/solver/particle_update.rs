@@ -19,8 +19,8 @@ use crate::models::interfaces::{ParticleUpdateData, MODEL_FLAGS_FLUID};
 use crate::solver::boundary_condition::{BoundaryCondition, BOUNDARY_CONDITION_SLIP};
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{Dynamics, Position};
-use crate::{diag, MaybeIndexUnchecked, Matrix, Vector, PaddedMatrix};
 use crate::PaddingExt;
+use crate::{diag, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
@@ -63,7 +63,8 @@ pub fn gpu_particle_update(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_model: &mut [GpuParticleModel],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    particles_model: &mut [GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_pos: &mut [Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_dyn: &mut [Dynamics],
     #[spirv(uniform, descriptor_set = 0, binding = 5)] particles_len: &u32,
@@ -99,7 +100,10 @@ pub fn gpu_particle_update(
     if dynamics.cdf.signed_distance < -0.05 * cell_width {
         let slip = BoundaryCondition::new(BOUNDARY_CONDITION_SLIP, 0.0);
         dynamics.velocity = dynamics.cdf.rigid_vel
-            + slip.project_velocity(dynamics.velocity - dynamics.cdf.rigid_vel, dynamics.cdf.normal);
+            + slip.project_velocity(
+                dynamics.velocity - dynamics.cdf.rigid_vel,
+                dynamics.cdf.normal,
+            );
     }
 
     // Clamp the max velocity a particle can get.
@@ -152,7 +156,9 @@ pub fn gpu_particle_update(
     let inv_d = QuadraticKernel::inv_d(cell_width);
     // NOTE: the velocity gradient was stored in the affine buffer.
     let affine = dynamics.affine * dynamics.mass
-        - PaddedMatrix::add_padding(update_result.kirchoff_stress * (dynamics.init_volume * inv_d * dt));
+        - PaddedMatrix::add_padding(
+            update_result.kirchoff_stress * (dynamics.init_volume * inv_d * dt),
+        );
 
     /*
      * Write back the new particle properties.

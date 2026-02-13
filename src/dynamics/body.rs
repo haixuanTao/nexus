@@ -13,6 +13,12 @@ use khal::BufferUsages;
 use khal::backend::GpuBackend;
 use vortx::tensor::Tensor;
 
+use crate::shaders::VectorWithPadding;
+/// Re-export types from the shader crate for convenience.
+pub use crate::shaders::dynamics::{
+    Force, Impulse, LocalMassProperties as GpuLocalMassProperties, Velocity as GpuVelocity,
+    WorldMassProperties as GpuWorldMassProperties,
+};
 #[cfg(feature = "from_rapier")]
 use {
     crate::rapier::dynamics::{RigidBodyHandle, RigidBodySet},
@@ -20,12 +26,6 @@ use {
     crate::rapier::prelude::MassProperties,
     crate::shapes::shape_from_parry,
     num_traits::Zero,
-};
-use crate::shaders::VectorWithPadding;
-/// Re-export types from the shader crate for convenience.
-pub use crate::shaders::dynamics::{
-    Force, Impulse, LocalMassProperties as GpuLocalMassProperties, Velocity as GpuVelocity,
-    WorldMassProperties as GpuWorldMassProperties,
 };
 
 /// A set of rigid-bodies stored on the gpu.

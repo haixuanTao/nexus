@@ -1,4 +1,4 @@
-use nexus_mpm_testbed2d::{nexus_mpm, rapier, AppState, PhysicsContext, RapierData};
+use nexus_mpm_testbed2d::{AppState, PhysicsContext, RapierData, nexus_mpm, rapier};
 
 use khal::backend::GpuBackend;
 use nexus_mpm::pipeline::MpmData;

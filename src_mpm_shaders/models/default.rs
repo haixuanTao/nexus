@@ -1,11 +1,11 @@
 //! Default particle model: a tagged union dispatching to different constitutive models.
 
-use crate::solver::particle::Dynamics;
-use crate::{Matrix, PaddedMatrix, PaddingExt, Vector};
+use super::drucker_prager::*;
 use super::interfaces::*;
 use super::linear_elasticity::LinearElasticModel;
 use super::neo_hookean_elasticity::NeoHookeanModel;
-use super::drucker_prager::*;
+use crate::solver::particle::Dynamics;
+use crate::{Matrix, PaddedMatrix, PaddingExt, Vector};
 
 /// The byte stride of `GpuParticleModel` in GPU buffers.
 /// This **MUST** match the size of `GpuParticleModel` on the host side.
@@ -160,7 +160,9 @@ impl DefaultParticleModel {
                 let projection = sand.plastic.project(sand.plastic_state, def_grad);
                 store_plastic_state(&mut model.data, projection.state);
                 dynamics.def_grad = PaddedMatrix::add_padding(projection.deformation_gradient);
-                let stress = sand.elastic.kirchoff_stress(projection.deformation_gradient);
+                let stress = sand
+                    .elastic
+                    .kirchoff_stress(projection.deformation_gradient);
                 ModelUpdateResult::new(stress)
             }
             MODEL_SAND_NEO_HOOKEAN => {
@@ -168,7 +170,9 @@ impl DefaultParticleModel {
                 let projection = sand.plastic.project(sand.plastic_state, def_grad);
                 store_plastic_state(&mut model.data, projection.state);
                 dynamics.def_grad = PaddedMatrix::add_padding(projection.deformation_gradient);
-                let stress = sand.elastic.kirchoff_stress(projection.deformation_gradient);
+                let stress = sand
+                    .elastic
+                    .kirchoff_stress(projection.deformation_gradient);
                 ModelUpdateResult::new(stress)
             }
             _ => ModelUpdateResult::new(Matrix::ZERO),

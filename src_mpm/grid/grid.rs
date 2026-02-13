@@ -65,12 +65,8 @@ impl WgGrid {
             // - Update the hashmap & grid buffer sizes if its occupancy is too high.
 
             // NOTE: num_active_blocks := 0 is set in reset_hmap.
-            self.reset_hmap.call(
-                pass,
-                hmap_capacity,
-                &mut grid.meta,
-                &mut grid.hmap_entries,
-            )?;
+            self.reset_hmap
+                .call(pass, hmap_capacity, &mut grid.meta, &mut grid.hmap_entries)?;
 
             sort_module.touch_particle_blocks.call(
                 pass,
@@ -290,38 +286,22 @@ impl GpuGrid {
             padding: [0; _],
         };
         let default_entries = vec![default_entry; capacity as usize];
-        let prev_hmap_entries =
-            Tensor::vector(backend, &default_entries, BufferUsages::STORAGE)?;
-        let hmap_entries =
-            Tensor::vector(backend, &default_entries, BufferUsages::STORAGE)?;
-        let nodes = Tensor::vector_uninit(
-            backend,
-            capacity * NODES_PER_BLOCK,
-            BufferUsages::STORAGE,
-        )?;
-        let nodes_linked_lists = Tensor::vector_uninit(
-            backend,
-            capacity * NODES_PER_BLOCK,
-            BufferUsages::STORAGE,
-        )?;
-        let rigid_nodes_linked_lists = Tensor::vector_uninit(
-            backend,
-            capacity * NODES_PER_BLOCK,
-            BufferUsages::STORAGE,
-        )?;
-        let active_blocks =
-            Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
-        let scan_values =
-            Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
-        let indirect_n_blocks_groups = Tensor::vector_uninit(
-            backend,
-            3,
-            BufferUsages::STORAGE | BufferUsages::INDIRECT,
-        )?;
+        let prev_hmap_entries = Tensor::vector(backend, &default_entries, BufferUsages::STORAGE)?;
+        let hmap_entries = Tensor::vector(backend, &default_entries, BufferUsages::STORAGE)?;
+        let nodes =
+            Tensor::vector_uninit(backend, capacity * NODES_PER_BLOCK, BufferUsages::STORAGE)?;
+        let nodes_linked_lists =
+            Tensor::vector_uninit(backend, capacity * NODES_PER_BLOCK, BufferUsages::STORAGE)?;
+        let rigid_nodes_linked_lists =
+            Tensor::vector_uninit(backend, capacity * NODES_PER_BLOCK, BufferUsages::STORAGE)?;
+        let active_blocks = Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
+        let scan_values = Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
+        let indirect_n_blocks_groups =
+            Tensor::vector_uninit(backend, 3, BufferUsages::STORAGE | BufferUsages::INDIRECT)?;
         let indirect_n_g2p_p2g_groups = Tensor::vector_uninit(
             backend,
             3,
-            BufferUsages::STORAGE | BufferUsages::INDIRECT,
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_SRC,
         )?;
         let debug = Tensor::vector(backend, [0u32, 0], BufferUsages::STORAGE)?;
 

@@ -4,7 +4,7 @@
 //! The quadratic kernel uses a 3-node stencil per dimension, giving 9 neighbors in 2D
 //! and 27 neighbors in 3D.
 
-use crate::{abs, DIM_USIZE, Vector};
+use crate::{abs, Vector, DIM_USIZE};
 use glamx::*;
 
 /*
@@ -35,39 +35,39 @@ pub const NBH_SHIFTS: [UVec2; 9] = [
     UVec2::new(0, 1),
     UVec2::new(1, 2),
     UVec2::new(1, 0),
-    UVec2::new(1, 1)
+    UVec2::new(1, 1),
 ];
 
 /// Returns the stencil offset for neighbor `i` as a UVector.
 #[cfg(feature = "dim3")]
 pub const NBH_SHIFTS: [UVec2; 27] = [
-        UVec3::new(2, 2, 2),
-        UVec3::new(2, 0, 2),
-        UVec3::new(2, 1, 2),
-        UVec3::new(0, 2, 2),
-        UVec3::new(0, 0, 2),
-        UVec3::new(0, 1, 2),
-        UVec3::new(1, 2, 2),
-        UVec3::new(1, 0, 2),
-        UVec3::new(1, 1, 2),
-        UVec3::new(2, 2, 0),
-         UVec3::new(2, 0, 0),
-         UVec3::new(2, 1, 0),
-         UVec3::new(0, 2, 0),
-         UVec3::new(0, 0, 0),
-         UVec3::new(0, 1, 0),
-         UVec3::new(1, 2, 0),
-         UVec3::new(1, 0, 0),
-         UVec3::new(1, 1, 0),
-         UVec3::new(2, 2, 1),
-         UVec3::new(2, 0, 1),
-         UVec3::new(2, 1, 1),
-         UVec3::new(0, 2, 1),
-         UVec3::new(0, 0, 1),
-         UVec3::new(0, 1, 1),
-         UVec3::new(1, 2, 1),
-         UVec3::new(1, 0, 1),
-        UVec3::new(1, 1, 1),
+    UVec3::new(2, 2, 2),
+    UVec3::new(2, 0, 2),
+    UVec3::new(2, 1, 2),
+    UVec3::new(0, 2, 2),
+    UVec3::new(0, 0, 2),
+    UVec3::new(0, 1, 2),
+    UVec3::new(1, 2, 2),
+    UVec3::new(1, 0, 2),
+    UVec3::new(1, 1, 2),
+    UVec3::new(2, 2, 0),
+    UVec3::new(2, 0, 0),
+    UVec3::new(2, 1, 0),
+    UVec3::new(0, 2, 0),
+    UVec3::new(0, 0, 0),
+    UVec3::new(0, 1, 0),
+    UVec3::new(1, 2, 0),
+    UVec3::new(1, 0, 0),
+    UVec3::new(1, 1, 0),
+    UVec3::new(2, 2, 1),
+    UVec3::new(2, 0, 1),
+    UVec3::new(2, 1, 1),
+    UVec3::new(0, 2, 1),
+    UVec3::new(0, 0, 1),
+    UVec3::new(0, 1, 1),
+    UVec3::new(1, 2, 1),
+    UVec3::new(1, 0, 1),
+    UVec3::new(1, 1, 1),
 ];
 
 /// Returns the flat shared-memory index for neighbor `i`.
@@ -77,8 +77,8 @@ pub const NBH_SHIFTS: [UVec2; 27] = [
 pub const NBH_SHIFT_SHARED: [u32; 9] = [22, 2, 12, 20, 0, 10, 21, 1, 11];
 #[cfg(feature = "dim3")]
 pub const NBH_SHIFT_SHARED: [u32; 27] = [
-    86, 74, 80, 84, 72, 78, 85, 73, 79, 14, 2, 8, 12, 0, 6, 13, 1, 7, 50, 38, 44, 48,
-    36, 42, 49, 37, 43,
+    86, 74, 80, 84, 72, 78, 85, 73, 79, 14, 2, 8, 12, 0, 6, 13, 1, 7, 50, 38, 44, 48, 36, 42, 49,
+    37, 43,
 ];
 
 /// Extracts a component from a Vec3 by dynamic index.

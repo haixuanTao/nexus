@@ -1,4 +1,4 @@
-use nexus_mpm_testbed2d::{nexus_mpm, rapier, AppState, PhysicsContext, RapierData};
+use nexus_mpm_testbed2d::{AppState, PhysicsContext, RapierData, nexus_mpm, rapier};
 
 use glamx::Vec2;
 use khal::backend::GpuBackend;
@@ -20,11 +20,10 @@ pub fn elasticity_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physic
     let mut particles = vec![];
     for i in 0..700 {
         for j in 0..700 {
-            let position =
-                glamx::vec2(i as f32 + 0.5 + (i / 50) as f32 * 2.0, j as f32 + 0.5)
-                    * cell_width
-                    / 2.0
-                    + Vec2::Y * offset_y;
+            let position = glamx::vec2(i as f32 + 0.5 + (i / 50) as f32 * 2.0, j as f32 + 0.5)
+                * cell_width
+                / 2.0
+                + Vec2::Y * offset_y;
             let density = 1000.0;
             let radius = cell_width / 4.0;
             let model = ParticleModel::elastic(5.0e6, 0.2);
@@ -33,8 +32,9 @@ pub fn elasticity_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physic
     }
 
     if !app_state.restarting {
+        app_state.min_num_substeps = 15;
         app_state.max_num_substeps = 15;
-        app_state.gravity_factor = 2.0;
+        app_state.gravity_factor = 0.0; // 2.0;
     };
 
     let params = SimulationParams {

@@ -1,4 +1,4 @@
-use nexus_mpm_testbed2d::{nexus_mpm, rapier, AppState, PhysicsContext, RapierData};
+use nexus_mpm_testbed2d::{AppState, PhysicsContext, RapierData, nexus_mpm, rapier};
 
 use glamx::Vec2;
 use khal::backend::GpuBackend;
@@ -21,8 +21,7 @@ pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physi
     for i in 0..700 {
         for j in 0..700 {
             let position =
-                glamx::vec2(i as f32 + 0.5, j as f32 + 0.5) * cell_width / 2.0
-                    + Vec2::Y * offset_y;
+                glamx::vec2(i as f32 + 0.5, j as f32 + 0.5) * cell_width / 2.0 + Vec2::Y * offset_y;
 
             let density = 1000.0;
             let radius = cell_width / 4.0;

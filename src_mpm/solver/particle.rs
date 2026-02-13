@@ -1,13 +1,13 @@
 use crate::mpm_shaders::solver::particle::{Dynamics, Position, RigidParticleIndices};
+use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use crate::solver::particle_model::GpuParticleModelData;
 use glamx::{Mat2, Mat3, Vec2, Vec3, Vec4};
-use khal::backend::{GpuBackend, GpuBackendError};
 use khal::BufferUsages;
+use khal::backend::{GpuBackend, GpuBackendError};
 use nexus::dynamics::GpuBodySet;
 use nexus::math::{Matrix, Vector};
 use std::ops::RangeBounds;
 use vortx::tensor::Tensor;
-use crate::mpm_shaders::{PaddingExt, PaddedMatrix};
 
 #[cfg(feature = "from_rapier")]
 use {
@@ -131,7 +131,7 @@ impl ParticleDynamics {
             phase: self.phase,
             enabled: self.enabled,
             fixed: self.fixed,
-            padding: [0; _]
+            padding: [0; _],
         }
     }
 }
@@ -337,11 +337,7 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             dynamics: Tensor::vector(backend, &data.dynamics, resizeable)?,
             models: Tensor::vector(backend, &data.models, resizeable)?,
             sorted_ids: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
-            node_linked_lists: Tensor::vector_uninit(
-                backend,
-                particles.len() as u32,
-                resizeable,
-            )?,
+            node_linked_lists: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
         })
     }
 

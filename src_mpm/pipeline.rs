@@ -7,10 +7,10 @@ use crate::grid::grid::{GpuGrid, WgGrid};
 use crate::grid::prefix_sum::{PrefixSumWorkspace, WgPrefixSum};
 use crate::grid::sort::WgSort;
 use crate::solver::{
-    BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData, GpuParticles,
-    GpuRigidParticles, GpuSimulationParams, GpuTimestepBounds, Particle, SimulationParams, WgG2P,
-    WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgP2G, WgP2GCdf, WgParticleUpdate, WgRigidImpulses,
-    WgRigidParticleUpdate, WgTimestepBounds,
+    BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData,
+    GpuParticles, GpuRigidParticles, GpuSimulationParams, GpuTimestepBounds, Particle,
+    SimulationParams, WgG2P, WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgP2G, WgP2GCdf,
+    WgParticleUpdate, WgRigidImpulses, WgRigidParticleUpdate, WgTimestepBounds,
 };
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
@@ -348,12 +348,8 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
 
         {
             let mut pass = encoder.begin_pass("CDF G2P", timestamps.as_deref_mut());
-            self.g2p_cdf.launch(
-                &mut pass,
-                &data.sim_params,
-                &data.grid,
-                &mut data.particles,
-            )?;
+            self.g2p_cdf
+                .launch(&mut pass, &data.sim_params, &data.grid, &mut data.particles)?;
         }
 
         {

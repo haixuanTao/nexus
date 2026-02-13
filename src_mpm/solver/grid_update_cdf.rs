@@ -1,10 +1,10 @@
 //! Grid CDF (Collision Detection Field) update for rigid body coupling.
 
-use crate::grid::grid::{indirect_dispatch_tensor, GpuGrid};
+use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::grid_update_cdf::GpuGridUpdateCdf;
-use nexus::dynamics::GpuBodySet;
-use khal::backend::{GpuBackendError, GpuPass};
 use khal::Shader;
+use khal::backend::{GpuBackendError, GpuPass};
+use nexus::dynamics::GpuBodySet;
 
 /// GPU kernel for updating grid node CDF data from rigid bodies.
 ///

@@ -13,9 +13,10 @@ pub struct Position {
 
 impl Position {
     pub fn new(pt: Vector) -> Self {
-        Self { pt,
-        #[cfg(feature = "dim3")]
-        padding: 0,
+        Self {
+            pt,
+            #[cfg(feature = "dim3")]
+            padding: 0,
         }
     }
 }
@@ -25,7 +26,10 @@ impl Position {
 /// Stores the result of the collision detection between a particle and the
 /// nearest rigid collider surface.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Cdf {
     /// The contact normal direction.
@@ -108,14 +112,16 @@ pub struct Dynamics {
     /// The particle's velocity.
     pub velocity: Vector,
     /// Determinant of the velocity gradient (used for fluid models).
-    #[cfg(feature = "dim3")] // The location of this fields in the struct depends on dim2/dim3 to reduce padding.
+    #[cfg(feature = "dim3")]
+    // The location of this fields in the struct depends on dim2/dim3 to reduce padding.
     pub vel_grad_det: f32,
     /// Additional user-defined force applied to the particle, multiplied by dt.
     /// Reset at each `particle_update` invocation.
     /// Stored as force * dt so that dt is not needed during p2g.
     pub force_dt: Vector,
     /// Determinant of the velocity gradient (used for fluid models).
-    #[cfg(feature = "dim2")] // The location of this fields in the struct depends on dim2/dim3 to reduce padding.
+    #[cfg(feature = "dim2")]
+    // The location of this fields in the struct depends on dim2/dim3 to reduce padding.
     pub vel_grad_det: f32,
     /// The particle's initial volume (reference configuration).
     pub init_volume: f32,
@@ -173,10 +179,7 @@ pub fn associated_grid_pos(part_pos: &Position, cell_width: f32) -> Vector {
 /// This is used for mapping a particle to the correct block in the sparse grid.
 /// The block size is 8x8 in 2D and 4x4x4 in 3D.
 #[inline]
-pub fn associated_cell_index_in_block_off_by_one(
-    part_pos: &Position,
-    cell_width: f32,
-) -> UVector {
+pub fn associated_cell_index_in_block_off_by_one(part_pos: &Position, cell_width: f32) -> UVector {
     let assoc_cell = (part_pos.pt / cell_width).round() - Vector::ONE;
     #[cfg(feature = "dim2")]
     let assoc_block = (assoc_cell / 8.0).floor() * 8.0;

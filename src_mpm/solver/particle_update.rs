@@ -9,8 +9,8 @@ use crate::mpm_shaders::models::default::GpuParticleModel;
 use crate::mpm_shaders::solver::particle_update::GpuParticleUpdate;
 use crate::solver::particle_model::GpuParticleModelData;
 use crate::solver::{GpuParticles, GpuSimulationParams};
-use khal::backend::{GpuBackendError, GpuPass};
 use khal::Shader;
+use khal::backend::{GpuBackendError, GpuPass};
 
 /// GPU compute kernel for updating particle state.
 ///

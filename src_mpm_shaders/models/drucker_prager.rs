@@ -1,12 +1,15 @@
 //! Drucker-Prager plasticity model.
 
-use crate::{diag, sqrt, sin, Matrix, Vector};
 use crate::glamx::MatExt;
+use crate::{diag, sin, sqrt, Matrix, Vector};
 use spirv_std::num_traits::Float;
 
 /// Persistent plastic state for a Drucker-Prager particle.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_arch = "spirv"), derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct DruckerPragerPlasticState {
     pub plastic_deformation_gradient_det: f32,
@@ -36,7 +39,10 @@ pub struct DruckerPragerProjectionResult {
 /// The hardening law is parameterized by (ha, hb, hc, hd) which control
 /// how the friction angle evolves with accumulated plastic strain.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_arch = "spirv"), derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct DruckerPragerPlasticity {
     pub ha: f32,
@@ -176,8 +182,7 @@ impl DruckerPragerPlasticity {
                 state.plastic_deformation_gradient_det * prev_det / new_det;
             let new_log_vol_gain = state.log_vol_gain + prev_det.ln() - new_det.ln();
             let new_plastic_hardening = state.plastic_hardening + projection.plastic_hardening;
-            let new_deformation_gradient =
-                svd.u * diag(projection.singular_values) * svd.vt;
+            let new_deformation_gradient = svd.u * diag(projection.singular_values) * svd.vt;
 
             DruckerPragerResult {
                 state: DruckerPragerPlasticState {
@@ -228,8 +233,7 @@ impl DruckerPragerPlasticity {
                 state.plastic_deformation_gradient_det * prev_det / new_det;
             let new_log_vol_gain = state.log_vol_gain + prev_det.ln() - new_det.ln();
             let new_plastic_hardening = state.plastic_hardening + projection.plastic_hardening;
-            let new_deformation_gradient =
-                svd.u * diag(projection.singular_values) * svd.vt;
+            let new_deformation_gradient = svd.u * diag(projection.singular_values) * svd.vt;
 
             DruckerPragerResult {
                 state: DruckerPragerPlasticState {

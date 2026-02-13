@@ -1,4 +1,7 @@
-use crate::models::{DruckerPrager, DruckerPragerPlasticState, DruckerPragerPlasticity, ElasticCoefficients, ElasticCoefficientsExt};
+use crate::models::{
+    DruckerPrager, DruckerPragerPlasticState, DruckerPragerPlasticity, ElasticCoefficients,
+    ElasticCoefficientsExt,
+};
 pub use crate::mpm_shaders::models::default::GpuParticleModel;
 use bytemuck::Pod;
 

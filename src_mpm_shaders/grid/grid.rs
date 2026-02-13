@@ -164,7 +164,7 @@ pub struct ActiveBlockHeader {
     /// Number of particles belonging to this block.
     pub num_particles: u32,
     #[cfg(feature = "dim3")]
-    pub padding: [u32; 2]
+    pub padding: [u32; 2],
 }
 
 /// Top-level grid metadata.
@@ -313,7 +313,11 @@ pub fn insertion_index(
                 { spirv_std::memory::Scope::QueueFamily as u32 },
                 { spirv_std::memory::Semantics::NONE.bits() },
                 { spirv_std::memory::Semantics::NONE.bits() },
-            >(&mut hmap_entries.at_mut(slot as usize).state, packed_key, NONE)
+            >(
+                &mut hmap_entries.at_mut(slot as usize).state,
+                packed_key,
+                NONE,
+            )
         };
 
         if old_value == packed_key {
@@ -414,7 +418,9 @@ pub fn mark_block_as_active(
     if slot != NONE {
         let block_header_id = atomic_add_u32(&mut grid.at_mut(0).num_active_blocks, 1);
         active_blocks.at_mut(block_header_id as usize).virtual_id = *block;
-        active_blocks.at_mut(block_header_id as usize).first_particle = 0;
+        active_blocks
+            .at_mut(block_header_id as usize)
+            .first_particle = 0;
         active_blocks.at_mut(block_header_id as usize).num_particles = 0;
         hmap_entries.at_mut(slot as usize).value = BlockHeaderId {
             id: block_header_id,
@@ -513,32 +519,60 @@ pub fn blocks_associated_to_point(
 /// neighborhood starting at B.
 #[cfg(feature = "dim2")]
 #[inline]
-pub fn blocks_associated_to_block(
-    block: &BlockVirtualId,
-) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
+pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
     [
-        BlockVirtualId { id: block.id + IVec2::new(0, 0) },
-        BlockVirtualId { id: block.id + IVec2::new(0, 1) },
-        BlockVirtualId { id: block.id + IVec2::new(1, 0) },
-        BlockVirtualId { id: block.id + IVec2::new(1, 1) },
+        BlockVirtualId {
+            id: block.id + IVec2::new(0, 0),
+        },
+        BlockVirtualId {
+            id: block.id + IVec2::new(0, 1),
+        },
+        BlockVirtualId {
+            id: block.id + IVec2::new(1, 0),
+        },
+        BlockVirtualId {
+            id: block.id + IVec2::new(1, 1),
+        },
     ]
 }
 
 /// Returns all blocks neighboring a given block (including itself).
 #[cfg(feature = "dim3")]
 #[inline]
-pub fn blocks_associated_to_block(
-    block: &BlockVirtualId,
-) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
+pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
     [
-        BlockVirtualId { id: block.id + IVec3::new(0, 0, 0), padding: 0 },
-        BlockVirtualId { id: block.id + IVec3::new(0, 0, 1), padding: 0 },
-        BlockVirtualId { id: block.id + IVec3::new(0, 1, 0), padding: 0 },
-        BlockVirtualId { id: block.id + IVec3::new(0, 1, 1), padding: 0 },
-        BlockVirtualId { id: block.id + IVec3::new(1, 0, 0), padding: 0 },
-        BlockVirtualId { id: block.id + IVec3::new(1, 0, 1), padding: 0 },
-        BlockVirtualId { id: block.id + IVec3::new(1, 1, 0), padding: 0 },
-        BlockVirtualId { id: block.id + IVec3::new(1, 1, 1), padding: 0 },
+        BlockVirtualId {
+            id: block.id + IVec3::new(0, 0, 0),
+            padding: 0,
+        },
+        BlockVirtualId {
+            id: block.id + IVec3::new(0, 0, 1),
+            padding: 0,
+        },
+        BlockVirtualId {
+            id: block.id + IVec3::new(0, 1, 0),
+            padding: 0,
+        },
+        BlockVirtualId {
+            id: block.id + IVec3::new(0, 1, 1),
+            padding: 0,
+        },
+        BlockVirtualId {
+            id: block.id + IVec3::new(1, 0, 0),
+            padding: 0,
+        },
+        BlockVirtualId {
+            id: block.id + IVec3::new(1, 0, 1),
+            padding: 0,
+        },
+        BlockVirtualId {
+            id: block.id + IVec3::new(1, 1, 0),
+            padding: 0,
+        },
+        BlockVirtualId {
+            id: block.id + IVec3::new(1, 1, 1),
+            padding: 0,
+        },
     ]
 }
 
@@ -591,7 +625,8 @@ fn div_ceil(x: u32, y: u32) -> u32 {
 pub fn gpu_reset_hmap(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &mut Grid,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &mut [GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    hmap_entries: &mut [GridHashMapEntry],
 ) {
     let id = invocation_id.x;
 
@@ -646,8 +681,10 @@ pub fn gpu_reset(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] nodes: &mut [Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] nodes_linked_lists: &mut [NodeLinkedList],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] rigid_nodes_linked_lists: &mut [NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    nodes_linked_lists: &mut [NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    rigid_nodes_linked_lists: &mut [NodeLinkedList],
 ) {
     let i = invocation_id.x;
     let num_nodes = grid_data.at(0).num_active_blocks * NUM_CELL_PER_BLOCK;

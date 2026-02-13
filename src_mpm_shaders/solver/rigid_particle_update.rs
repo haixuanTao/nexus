@@ -3,8 +3,8 @@
 use crate::solver::particle::RigidParticleIndices;
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
 use nexus_shaders::VectorWithPadding;
+use spirv_std::spirv;
 
 pub const WORKGROUP_SIZE: u32 = 64;
 
@@ -16,7 +16,8 @@ pub const WORKGROUP_SIZE: u32 = 64;
 #[spirv(compute(threads(64)))]
 pub fn gpu_transform_sample_points(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] rigid_particle_indices: &[RigidParticleIndices],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
+    rigid_particle_indices: &[RigidParticleIndices],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] local_pts: &[VectorWithPadding],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] world_pts: &mut [VectorWithPadding],

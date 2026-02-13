@@ -15,15 +15,16 @@ use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
 use crate::solver::boundary_condition::BoundaryCondition;
-use crate::solver::particle::{
-    dir_to_associated_grid_node, Dynamics, Position,
+use crate::solver::particle::{dir_to_associated_grid_node, Dynamics, Position};
+use crate::{
+    scalar_part, vector_part, vector_plus_one, AngVector, Matrix, MaybeIndexUnchecked, PaddingExt,
+    Vector, VectorPlusOne,
 };
-use crate::{vector_part, vector_plus_one, scalar_part, AngVector, MaybeIndexUnchecked, Matrix, Vector, VectorPlusOne, PaddingExt};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
-
+use unroll::unroll_for_loops;
 /*
  * Shared memory layout constants.
  */
@@ -140,7 +141,8 @@ fn p2g_step(
 
     for i in 0..NBH_LEN as u32 {
         let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
-        let nbh_shared_index = (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
+        let nbh_shared_index =
+            (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
         let particle_pos = shared_pos[nbh_shared_index];
         let particle_vel_mass = shared_vel_mass[nbh_shared_index];
         let particle_affine = shared_affine[nbh_shared_index];
@@ -159,12 +161,17 @@ fn p2g_step(
         #[cfg(feature = "dim2")]
         let momentum = particle_vel * particle_mass;
         #[cfg(feature = "dim2")]
-        let dpt = ref_elt_pos_minus_particle_pos + Vec2::new(inv_shift.x as f32, inv_shift.y as f32) * cell_width;
+        let dpt = ref_elt_pos_minus_particle_pos
+            + Vec2::new(inv_shift.x as f32, inv_shift.y as f32) * cell_width;
         #[cfg(feature = "dim2")]
         let weight = vec3_extract(w[0], inv_shift.x) * vec3_extract(w[1], inv_shift.y);
 
         #[cfg(feature = "dim3")]
-        let particle_vel = Vec3::new(particle_vel_mass.x, particle_vel_mass.y, particle_vel_mass.z);
+        let particle_vel = Vec3::new(
+            particle_vel_mass.x,
+            particle_vel_mass.y,
+            particle_vel_mass.z,
+        );
         #[cfg(feature = "dim3")]
         let particle_mass = particle_vel_mass.w;
         #[cfg(feature = "dim3")]
@@ -172,12 +179,16 @@ fn p2g_step(
         #[cfg(feature = "dim3")]
         let momentum = particle_vel * particle_mass + particle_force_dt;
         #[cfg(feature = "dim3")]
-        let dpt = ref_elt_pos_minus_particle_pos + Vec3::new(inv_shift.x as f32, inv_shift.y as f32, inv_shift.z as f32) * cell_width;
+        let dpt = ref_elt_pos_minus_particle_pos
+            + Vec3::new(inv_shift.x as f32, inv_shift.y as f32, inv_shift.z as f32) * cell_width;
         #[cfg(feature = "dim3")]
-        let weight = vec3_extract(w[0], inv_shift.x) * vec3_extract(w[1], inv_shift.y) * vec3_extract(w[2], inv_shift.z);
+        let weight = vec3_extract(w[0], inv_shift.x)
+            * vec3_extract(w[1], inv_shift.y)
+            * vec3_extract(w[2], inv_shift.z);
 
         let particle_affinity = shared_affinities[nbh_shared_index];
-        let contribution = vector_plus_one(particle_affine * dpt + momentum, particle_mass) * weight;
+        let contribution =
+            vector_plus_one(particle_affine * dpt + momentum, particle_mass) * weight;
 
         if !affinities_are_compatible(node_affinity, particle_affinity) {
             if collider_id != NONE {
@@ -187,7 +198,8 @@ fn p2g_step(
                 let body_material = body_materials.read(collider_id as usize);
                 let cell_center = dpt + particle_pos.pt;
                 let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
-                let particle_ghost_vel = body_pt_vel + body_material.project_velocity(particle_vel - body_pt_vel, particle_normal);
+                let particle_ghost_vel = body_pt_vel
+                    + body_material.project_velocity(particle_vel - body_pt_vel, particle_normal);
                 let delta_impulse = (particle_vel - particle_ghost_vel) * (weight * particle_mass);
 
                 let lever_arm = body_com - cell_center;
@@ -226,6 +238,7 @@ fn p2g_step(
  */
 
 #[inline]
+#[unroll_for_loops]
 fn fetch_max_linked_lists_length(
     grid_data: &[Grid],
     hmap_entries: &[GridHashMapEntry],
@@ -240,15 +253,12 @@ fn fetch_max_linked_lists_length(
     #[cfg(feature = "dim3")]
     let base_block_pos_int = active_block_vid.id - IVec3::new(1, 1, 1);
 
-    for i_loop in 0..2u32 {
-        for j_loop in 0..2u32 {
-            for k_loop in 0..K_RANGE + 1 {
-                #[cfg(feature = "dim2")]
-                {
-                    if (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
-                        continue;
-                    }
-                    let octant = UVec2::new(i_loop, j_loop);
+    for i_loop in 0..2 {
+        for j_loop in 0..2 {
+            #[cfg(feature = "dim2")]
+            {
+                if !((i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6)) {
+                    let octant = UVec2::new(i_loop as u32, j_loop as u32);
                     let octant_hid = find_block_header_id(
                         grid_data,
                         hmap_entries,
@@ -264,18 +274,21 @@ fn fetch_max_linked_lists_length(
                         atomic_max_u32_workgroup(max_linked_list_length, len);
                     }
                 }
-                #[cfg(feature = "dim3")]
+            }
+            #[cfg(feature = "dim3")]
+            for k_loop in 0..2 {
+                if !((i_loop == 0 && tid.x < 2)
+                    || (j_loop == 0 && tid.y < 2)
+                    || (k_loop == 0 && tid.z < 2))
                 {
-                    if (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2) {
-                        continue;
-                    }
                     let octant = UVec3::new(i_loop, j_loop, k_loop);
                     let octant_hid = find_block_header_id(
                         grid_data,
                         hmap_entries,
                         &BlockVirtualId {
-                            id: base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
-                            padding: 0
+                            id: base_block_pos_int
+                                + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                            padding: 0,
                         },
                     );
                     if octant_hid.id != NONE {
@@ -296,6 +309,7 @@ fn fetch_max_linked_lists_length(
  */
 
 #[inline]
+#[unroll_for_loops]
 fn fetch_nodes(
     grid_data: &[Grid],
     hmap_entries: &[GridHashMapEntry],
@@ -310,15 +324,12 @@ fn fetch_nodes(
     #[cfg(feature = "dim3")]
     let base_block_pos_int = active_block_vid.id - IVec3::new(1, 1, 1);
 
-    for i_loop in 0..2u32 {
-        for j_loop in 0..2u32 {
-            for k_loop in 0..K_RANGE + 1 {
-                #[cfg(feature = "dim2")]
-                {
-                    if (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
-                        continue;
-                    }
-                    let octant = UVec2::new(i_loop, j_loop);
+    for i_loop in 0..2 {
+        for j_loop in 0..2 {
+            #[cfg(feature = "dim2")]
+            {
+                if !((i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6)) {
+                    let octant = UVec2::new(i_loop as u32, j_loop as u32);
                     let octant_hid = find_block_header_id(
                         grid_data,
                         hmap_entries,
@@ -327,7 +338,8 @@ fn fetch_nodes(
                         },
                     );
                     let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
-                    let shared_node_index = flatten_shared_index(shared_index.x, shared_index.y) as usize;
+                    let shared_node_index =
+                        flatten_shared_index(shared_index.x, shared_index.y) as usize;
 
                     if octant_hid.id != NONE {
                         let global_chunk_id = block_header_id_to_physical_id(octant_hid);
@@ -340,23 +352,28 @@ fn fetch_nodes(
                         shared_nodes[shared_node_index].particle_id = NONE;
                     }
                 }
-                #[cfg(feature = "dim3")]
+            }
+            #[cfg(feature = "dim3")]
+            for k_loop in 0..2 {
+                if !((i_loop == 0 && tid.x < 2)
+                    || (j_loop == 0 && tid.y < 2)
+                    || (k_loop == 0 && tid.z < 2))
                 {
-                    if (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2) {
-                        continue;
-                    }
                     let octant = UVec3::new(i_loop, j_loop, k_loop);
                     let octant_hid = find_block_header_id(
                         grid_data,
                         hmap_entries,
                         &BlockVirtualId {
-                            id: base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
-                            padding: 0
+                            id: base_block_pos_int
+                                + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                            padding: 0,
                         },
                     );
                     let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
                     let shared_index = octant * 4 + tid_xyz;
-                    let shared_node_index = flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize;
+                    let shared_node_index =
+                        flatten_shared_index(shared_index.x, shared_index.y, shared_index.z)
+                            as usize;
 
                     if octant_hid.id != NONE {
                         let global_chunk_id = block_header_id_to_physical_id(octant_hid);
@@ -380,6 +397,7 @@ fn fetch_nodes(
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
+#[unroll_for_loops]
 fn fetch_next_particle(
     particles_pos: &[Position],
     particles_dyn: &[Dynamics],
@@ -393,55 +411,61 @@ fn fetch_next_particle(
     shared_affinities: &mut [u32; NUM_SHARED_CELLS],
     shared_normals: &mut [Vector; NUM_SHARED_CELLS],
 ) {
-    for i_loop in 0..2u32 {
-        for j_loop in 0..2u32 {
+    for i_loop in 0..2 {
+        for j_loop in 0..2 {
             for k_loop in 0..K_RANGE + 1 {
                 #[cfg(feature = "dim2")]
                 let skip = (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6);
                 #[cfg(feature = "dim3")]
-                let skip = (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2);
+                let skip = (i_loop == 0 && tid.x < 2)
+                    || (j_loop == 0 && tid.y < 2)
+                    || (k_loop == 0 && tid.z < 2);
 
-                if skip {
-                    continue;
-                }
+                if !skip {
+                    #[cfg(feature = "dim2")]
+                    let shared_flat_index = {
+                        let octant = UVec2::new(i_loop as u32, j_loop as u32);
+                        let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
+                        flatten_shared_index(shared_index.x, shared_index.y) as usize
+                    };
+                    #[cfg(feature = "dim3")]
+                    let shared_flat_index = {
+                        let octant = UVec3::new(i_loop, j_loop, k_loop);
+                        let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+                        let shared_index = octant * 4 + tid_xyz;
+                        flatten_shared_index(shared_index.x, shared_index.y, shared_index.z)
+                            as usize
+                    };
 
-                #[cfg(feature = "dim2")]
-                let shared_flat_index = {
-                    let octant = UVec2::new(i_loop, j_loop);
-                    let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
-                    flatten_shared_index(shared_index.x, shared_index.y) as usize
-                };
-                #[cfg(feature = "dim3")]
-                let shared_flat_index = {
-                    let octant = UVec3::new(i_loop, j_loop, k_loop);
-                    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
-                    let shared_index = octant * 4 + tid_xyz;
-                    flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize
-                };
+                    let curr_particle_id = shared_nodes[shared_flat_index].particle_id;
 
-                let curr_particle_id = shared_nodes[shared_flat_index].particle_id;
+                    if curr_particle_id != NONE
+                        && particles_dyn.at(curr_particle_id as usize).enabled != 0
+                    {
+                        let pdyn = particles_dyn.read(curr_particle_id as usize);
+                        shared_affinities[shared_flat_index] = pdyn.cdf.affinity;
+                        shared_normals[shared_flat_index] = pdyn.cdf.normal;
+                        shared_pos[shared_flat_index] =
+                            particles_pos.read(curr_particle_id as usize);
+                        shared_affine[shared_flat_index] = pdyn.affine.remove_padding();
+                        shared_force_dt[shared_flat_index] = pdyn.force_dt;
+                        shared_vel_mass[shared_flat_index] =
+                            vector_plus_one(pdyn.velocity, pdyn.mass);
+                    } else {
+                        shared_affinities[shared_flat_index] = 0;
+                        shared_normals[shared_flat_index] = Vector::ZERO;
+                        shared_pos[shared_flat_index].pt = Vector::ZERO;
+                        shared_affine[shared_flat_index] = Matrix::ZERO;
+                        shared_vel_mass[shared_flat_index] = VectorPlusOne::ZERO;
+                        shared_force_dt[shared_flat_index] = Vector::ZERO;
+                    }
 
-                if curr_particle_id != NONE && particles_dyn.at(curr_particle_id as usize).enabled != 0 {
-                    let pdyn = particles_dyn.read(curr_particle_id as usize);
-                    shared_affinities[shared_flat_index] = pdyn.cdf.affinity;
-                    shared_normals[shared_flat_index] = pdyn.cdf.normal;
-                    shared_pos[shared_flat_index] = particles_pos.read(curr_particle_id as usize);
-                    shared_affine[shared_flat_index] = pdyn.affine.remove_padding();
-                    shared_force_dt[shared_flat_index] = pdyn.force_dt;
-                    shared_vel_mass[shared_flat_index] = vector_plus_one(pdyn.velocity, pdyn.mass);
-                } else {
-                    shared_affinities[shared_flat_index] = 0;
-                    shared_normals[shared_flat_index] = Vector::ZERO;
-                    shared_pos[shared_flat_index].pt = Vector::ZERO;
-                    shared_affine[shared_flat_index] = Matrix::ZERO;
-                    shared_vel_mass[shared_flat_index] = VectorPlusOne::ZERO;
-                    shared_force_dt[shared_flat_index] = Vector::ZERO;
-                }
-
-                if curr_particle_id != NONE {
-                    // Advance the linked list even if the particle is disabled.
-                    let next_particle_id = particle_node_linked_lists.read(curr_particle_id as usize);
-                    shared_nodes[shared_flat_index].particle_id = next_particle_id;
+                    if curr_particle_id != NONE {
+                        // Advance the linked list even if the particle is disabled.
+                        let next_particle_id =
+                            particle_node_linked_lists.read(curr_particle_id as usize);
+                        shared_nodes[shared_flat_index].particle_id = next_particle_id;
+                    }
                 }
             }
         }
@@ -461,6 +485,7 @@ fn fetch_next_particle(
 #[spirv_bindgen]
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
+#[unroll_for_loops]
 pub fn gpu_p2g(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
@@ -468,14 +493,17 @@ pub fn gpu_p2g(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes_linked_lists: &[NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    nodes_linked_lists: &[NodeLinkedList],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_dyn: &[Dynamics],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_impulses: &mut [IntegerImpulseAtomic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_materials: &[BoundaryCondition],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)]
+    body_impulses: &mut [IntegerImpulseAtomic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
+    body_materials: &[BoundaryCondition],
     // Shared memory arrays.
     #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
@@ -499,8 +527,13 @@ pub fn gpu_p2g(
 
     workgroup_memory_barrier_with_group_sync();
     fetch_max_linked_lists_length(
-        grid_data, hmap_entries, nodes_linked_lists,
-        tid, vid, bid, max_linked_list_length,
+        grid_data,
+        hmap_entries,
+        nodes_linked_lists,
+        tid,
+        vid,
+        bid,
+        max_linked_list_length,
     );
     workgroup_memory_barrier_with_group_sync();
 
@@ -508,8 +541,13 @@ pub fn gpu_p2g(
 
     // Block -> shared memory transfer.
     fetch_nodes(
-        grid_data, hmap_entries, nodes_linked_lists,
-        tid, vid, bid, shared_nodes,
+        grid_data,
+        hmap_entries,
+        nodes_linked_lists,
+        tid,
+        vid,
+        bid,
+        shared_nodes,
     );
 
     // Compute the packed cell index for the current thread's node.
@@ -525,54 +563,98 @@ pub fn gpu_p2g(
 
     // Iterate through linked lists with uniform control flow.
     let len = *max_linked_list_length_uniform;
-    for _ in 0..len {
+    for k in 0..len {
         workgroup_memory_barrier_with_group_sync();
         fetch_next_particle(
-            particles_pos, particles_dyn, particle_node_linked_lists, tid,
-            shared_nodes, shared_pos, shared_vel_mass, shared_affine,
-            shared_force_dt, shared_affinities, shared_normals,
+            particles_pos,
+            particles_dyn,
+            particle_node_linked_lists,
+            tid,
+            shared_nodes,
+            shared_pos,
+            shared_vel_mass,
+            shared_affine,
+            shared_force_dt,
+            shared_affinities,
+            shared_normals,
         );
         workgroup_memory_barrier_with_group_sync();
-
         let partial_result = p2g_step(
-            body_vels, body_impulses, body_materials,
+            body_vels,
+            body_impulses,
+            body_materials,
             packed_cell_index_in_block,
             grid_data.at(0).cell_width,
-            node_affinities, collider_id,
-            shared_pos, shared_vel_mass, shared_affine,
-            shared_force_dt, shared_affinities, shared_normals,
+            node_affinities,
+            collider_id,
+            shared_pos,
+            shared_vel_mass,
+            shared_affine,
+            shared_force_dt,
+            shared_affinities,
+            shared_normals,
         );
         total_result.new_momentum_velocity_mass += partial_result.new_momentum_velocity_mass;
-        total_result.new_momentum_velocity_mass_incompatible += partial_result.new_momentum_velocity_mass_incompatible;
+        total_result.new_momentum_velocity_mass_incompatible +=
+            partial_result.new_momentum_velocity_mass_incompatible;
         total_result.impulse += partial_result.impulse;
         total_result.ang_impulse += partial_result.ang_impulse;
     }
 
     // Write the node state to global memory.
-    nodes.at_mut(global_id as usize).momentum_velocity_mass = total_result.new_momentum_velocity_mass;
-    nodes.at_mut(global_id as usize).momentum_velocity_mass_incompatible = total_result.new_momentum_velocity_mass_incompatible;
+    nodes.at_mut(global_id as usize).momentum_velocity_mass =
+        total_result.new_momentum_velocity_mass;
+    nodes
+        .at_mut(global_id as usize)
+        .momentum_velocity_mass_incompatible = total_result.new_momentum_velocity_mass_incompatible;
 
     // Apply the impulse to the closest body using integer atomics.
     if collider_id != NONE {
         let ci = collider_id as usize;
         #[cfg(feature = "dim2")]
         {
-            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_x, flt2int(total_result.impulse.x));
-            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_y, flt2int(total_result.impulse.y));
-            atomic_add_i32(&mut body_impulses.at_mut(ci).angular, flt2int(total_result.ang_impulse));
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).linear_x,
+                flt2int(total_result.impulse.x),
+            );
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).linear_y,
+                flt2int(total_result.impulse.y),
+            );
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).angular,
+                flt2int(total_result.ang_impulse),
+            );
         }
         #[cfg(feature = "dim3")]
         {
-            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_x, flt2int(total_result.impulse.x));
-            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_y, flt2int(total_result.impulse.y));
-            atomic_add_i32(&mut body_impulses.at_mut(ci).linear_z, flt2int(total_result.impulse.z));
-            atomic_add_i32(&mut body_impulses.at_mut(ci).angular_x, flt2int(total_result.ang_impulse.x));
-            atomic_add_i32(&mut body_impulses.at_mut(ci).angular_y, flt2int(total_result.ang_impulse.y));
-            atomic_add_i32(&mut body_impulses.at_mut(ci).angular_z, flt2int(total_result.ang_impulse.z));
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).linear_x,
+                flt2int(total_result.impulse.x),
+            );
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).linear_y,
+                flt2int(total_result.impulse.y),
+            );
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).linear_z,
+                flt2int(total_result.impulse.z),
+            );
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).angular_x,
+                flt2int(total_result.ang_impulse.x),
+            );
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).angular_y,
+                flt2int(total_result.ang_impulse.y),
+            );
+            atomic_add_i32(
+                &mut body_impulses.at_mut(ci).angular_z,
+                flt2int(total_result.ang_impulse.z),
+            );
         }
     }
 }
-
 
 /// Converts a float to an integer for atomic accumulation.
 #[inline]

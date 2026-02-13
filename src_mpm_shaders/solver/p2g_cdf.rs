@@ -16,9 +16,10 @@ use crate::solver::particle::{Position, RigidParticleIndices};
 use crate::{abs, MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
+use nexus_shaders::VectorWithPadding;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
-use nexus_shaders::VectorWithPadding;
+use unroll::unroll_for_loops;
 /*
  * Constants.
  */
@@ -96,7 +97,8 @@ fn p2g_cdf_step(
 
     for i in 0..NBH_LEN as u32 {
         let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
-        let nbh_shared_index = (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
+        let nbh_shared_index =
+            (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
 
         let collider_id = shared_collider_ids[nbh_shared_index];
 
@@ -119,8 +121,8 @@ fn p2g_cdf_step(
                 let ab = primitive.b - primitive.a;
                 let sign = dpt.dot(Vec2::new(-ab.y, ab.x)) < 0.0;
 
-                result.affinities |= (1u32 << collider_id)
-                    | ((sign as u32) << (collider_id + SIGN_BITS_SHIFT));
+                result.affinities |=
+                    (1u32 << collider_id) | ((sign as u32) << (collider_id + SIGN_BITS_SHIFT));
 
                 if distance < result.distance {
                     result.distance = distance;
@@ -144,14 +146,15 @@ fn p2g_cdf_step(
             if n_length != 0.0
                 && ab.cross(n).dot(ap) <= 0.0
                 && bc.cross(n).dot(bp) <= 0.0
-                && ac.cross(n).dot(cp) >= 0.0 // Positive sign due to `ac` instead of `ca`.
+                && ac.cross(n).dot(cp) >= 0.0
+            // Positive sign due to `ac` instead of `ca`.
             {
                 // Valid projection on the face interior.
                 let signed_dist = n.dot(ap) / n_length;
                 let sign = signed_dist < 0.0;
                 let distance = abs(signed_dist);
-                result.affinities |= (1u32 << collider_id)
-                    | ((sign as u32) << (collider_id + SIGN_BITS_SHIFT));
+                result.affinities |=
+                    (1u32 << collider_id) | ((sign as u32) << (collider_id + SIGN_BITS_SHIFT));
 
                 if distance < result.distance {
                     result.distance = distance;
@@ -159,7 +162,6 @@ fn p2g_cdf_step(
                 }
             }
         }
-
     }
 
     result
@@ -170,6 +172,7 @@ fn p2g_cdf_step(
  */
 
 #[inline]
+#[unroll_for_loops]
 fn fetch_max_linked_lists_length(
     grid_data: &[Grid],
     hmap_entries: &[GridHashMapEntry],
@@ -185,15 +188,13 @@ fn fetch_max_linked_lists_length(
 
     for i_loop in 0..2u32 {
         for j_loop in 0..2u32 {
-            for k_loop in 0..K_RANGE + 1 {
-                #[cfg(feature = "dim2")]
-                {
-                    if (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
-                        continue;
-                    }
-                    let octant = UVec2::new(i_loop, j_loop);
+            #[cfg(feature = "dim2")]
+            {
+                if !((i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6)) {
+                    let octant = UVec2::new(i_loop as u32, j_loop as u32);
                     let octant_hid = find_block_header_id(
-                        grid_data, hmap_entries,
+                        grid_data,
+                        hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
                         },
@@ -206,15 +207,21 @@ fn fetch_max_linked_lists_length(
                         atomic_max_u32_workgroup(max_linked_list_length, len);
                     }
                 }
-                #[cfg(feature = "dim3")]
+            }
+            #[cfg(feature = "dim3")]
+            for k_loop in 0..2 {
+                if !((i_loop == 0 && tid.x < 2)
+                    || (j_loop == 0 && tid.y < 2)
+                    || (k_loop == 0 && tid.z < 2))
                 {
-                    if (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2) {
-                        continue;
-                    }
                     let octant = UVec3::new(i_loop, j_loop, k_loop);
                     let octant_hid = find_block_header_id(
-                        grid_data, hmap_entries,
-                        &BlockVirtualId::new(base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32)),
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId::new(
+                            base_block_pos_int
+                                + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                        ),
                     );
                     if octant_hid.id != NONE {
                         let global_chunk_id = block_header_id_to_physical_id(octant_hid);
@@ -230,6 +237,7 @@ fn fetch_max_linked_lists_length(
 }
 
 #[inline]
+#[unroll_for_loops]
 fn fetch_nodes(
     grid_data: &[Grid],
     hmap_entries: &[GridHashMapEntry],
@@ -251,20 +259,30 @@ fn fetch_nodes(
                     if (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
                         (true, 0usize)
                     } else {
-                        let octant = UVec2::new(i_loop, j_loop);
+                        let octant = UVec2::new(i_loop as u32, j_loop as u32);
                         let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
-                        (false, flatten_shared_index(shared_index.x, shared_index.y) as usize)
+                        (
+                            false,
+                            flatten_shared_index(shared_index.x, shared_index.y) as usize,
+                        )
                     }
                 };
                 #[cfg(feature = "dim3")]
                 let (skip, shared_node_index) = {
-                    if (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2) {
+                    if (i_loop == 0 && tid.x < 2)
+                        || (j_loop == 0 && tid.y < 2)
+                        || (k_loop == 0 && tid.z < 2)
+                    {
                         (true, 0usize)
                     } else {
                         let octant = UVec3::new(i_loop, j_loop, k_loop);
                         let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
                         let shared_index = octant * 4 + tid_xyz;
-                        (false, flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize)
+                        (
+                            false,
+                            flatten_shared_index(shared_index.x, shared_index.y, shared_index.z)
+                                as usize,
+                        )
                     }
                 };
 
@@ -274,9 +292,10 @@ fn fetch_nodes(
 
                 #[cfg(feature = "dim2")]
                 let octant_hid = {
-                    let octant = UVec2::new(i_loop, j_loop);
+                    let octant = UVec2::new(i_loop as u32, j_loop as u32);
                     find_block_header_id(
-                        grid_data, hmap_entries,
+                        grid_data,
+                        hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
                         },
@@ -286,8 +305,12 @@ fn fetch_nodes(
                 let octant_hid = {
                     let octant = UVec3::new(i_loop, j_loop, k_loop);
                     find_block_header_id(
-                        grid_data, hmap_entries,
-                        &BlockVirtualId::new(base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32)),
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId::new(
+                            base_block_pos_int
+                                + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                        ),
                     )
                 };
 
@@ -324,7 +347,9 @@ fn fetch_next_particle(
                 #[cfg(feature = "dim2")]
                 let skip = (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6);
                 #[cfg(feature = "dim3")]
-                let skip = (i_loop == 0 && tid.x < 2) || (j_loop == 0 && tid.y < 2) || (k_loop == 0 && tid.z < 2);
+                let skip = (i_loop == 0 && tid.x < 2)
+                    || (j_loop == 0 && tid.y < 2)
+                    || (k_loop == 0 && tid.z < 2);
 
                 if skip {
                     continue;
@@ -366,7 +391,8 @@ fn fetch_next_particle(
                         };
                     }
 
-                    let next_particle_id = particle_node_linked_lists.read(curr_particle_id as usize);
+                    let next_particle_id =
+                        particle_node_linked_lists.read(curr_particle_id as usize);
                     shared_nodes[shared_flat_index].particle_id = next_particle_id;
                 } else {
                     shared_collider_ids[shared_flat_index] = NONE;
@@ -397,10 +423,13 @@ pub fn gpu_p2g_cdf(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] rigid_nodes_linked_lists: &[NodeLinkedList],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    rigid_nodes_linked_lists: &[NodeLinkedList],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] collider_vertices: &[VectorWithPadding],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] rigid_particle_indices: &[RigidParticleIndices],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    collider_vertices: &[VectorWithPadding],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    rigid_particle_indices: &[RigidParticleIndices],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
     // Shared memory.
     #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
@@ -420,8 +449,12 @@ pub fn gpu_p2g_cdf(
 
     workgroup_memory_barrier_with_group_sync();
     fetch_max_linked_lists_length(
-        grid_data, hmap_entries, rigid_nodes_linked_lists,
-        tid, vid, max_linked_list_length,
+        grid_data,
+        hmap_entries,
+        rigid_nodes_linked_lists,
+        tid,
+        vid,
+        max_linked_list_length,
     );
     workgroup_memory_barrier_with_group_sync();
 
@@ -429,8 +462,12 @@ pub fn gpu_p2g_cdf(
 
     // Block -> shared memory transfer.
     fetch_nodes(
-        grid_data, hmap_entries, rigid_nodes_linked_lists,
-        tid, vid, shared_nodes,
+        grid_data,
+        hmap_entries,
+        rigid_nodes_linked_lists,
+        tid,
+        vid,
+        shared_nodes,
     );
 
     // Compute the packed cell index and cell position for the current thread's node.
@@ -458,14 +495,22 @@ pub fn gpu_p2g_cdf(
     for _ in 0..len {
         workgroup_memory_barrier_with_group_sync();
         fetch_next_particle(
-            particle_node_linked_lists, collider_vertices, rigid_particle_indices,
-            tid, shared_nodes, shared_primitives, shared_collider_ids,
+            particle_node_linked_lists,
+            collider_vertices,
+            rigid_particle_indices,
+            tid,
+            shared_nodes,
+            shared_primitives,
+            shared_collider_ids,
         );
         workgroup_memory_barrier_with_group_sync();
 
         let partial_result = p2g_cdf_step(
-            packed_cell_index_in_block, grid_data.at(0).cell_width, cell_pos,
-            shared_primitives, shared_collider_ids,
+            packed_cell_index_in_block,
+            grid_data.at(0).cell_width,
+            cell_pos,
+            shared_primitives,
+            shared_collider_ids,
         );
 
         if partial_result.closest_id != NONE {
@@ -481,7 +526,6 @@ pub fn gpu_p2g_cdf(
     // Write the node cdf to global memory.
     nodes.at_mut(global_id as usize).cdf = node_cdf;
 }
-
 
 /*
  * Shared memory flatten helpers (same as p2g.slang).

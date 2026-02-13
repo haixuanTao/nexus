@@ -42,7 +42,10 @@ pub fn sample_trimesh(trimesh: &TriMesh, params: &SamplingParams, buffers: &mut 
             ),
             collider: params.collider_id,
         };
-        buffers.samples.push(Position { pt: sample.point, padding: 0 });
+        buffers.samples.push(Position {
+            pt: sample.point,
+            padding: 0,
+        });
         buffers.samples_ids.push(sample_id);
     }
 

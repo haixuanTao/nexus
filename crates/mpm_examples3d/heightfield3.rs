@@ -1,4 +1,4 @@
-use nexus_mpm_testbed3d::{nexus_mpm, RapierData};
+use nexus_mpm_testbed3d::{RapierData, nexus_mpm};
 
 use glamx::vec3;
 use khal::backend::GpuBackend;

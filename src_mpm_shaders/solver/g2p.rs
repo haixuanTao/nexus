@@ -17,13 +17,16 @@ use crate::solver::params::SimulationParams;
 use crate::solver::particle::{
     associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Dynamics, Position,
 };
-use crate::{vector_part, scalar_part, vector_plus_one, MaybeIndexUnchecked, Matrix, Vector, VectorPlusOne, PaddedMatrix};
+use crate::PaddingExt;
+use crate::{
+    scalar_part, vector_part, vector_plus_one, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector,
+    VectorPlusOne,
+};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
-use crate::PaddingExt;
-
+use unroll::unroll_for_loops;
 /*
  * Constants.
  */
@@ -40,6 +43,7 @@ const WORKGROUP_SIZE: u32 = 64;
  */
 
 #[inline]
+#[unroll_for_loops]
 fn global_shared_memory_transfers(
     grid_data: &[Grid],
     hmap_entries: &[GridHashMapEntry],
@@ -54,34 +58,35 @@ fn global_shared_memory_transfers(
 
     #[cfg(feature = "dim2")]
     {
-        for i_loop in 0..2u32 {
-            for j_loop in 0..2u32 {
-                if (i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1) {
-                    continue;
-                }
-                let octant = UVec2::new(i_loop, j_loop);
-                let octant_hid = find_block_header_id(
-                    grid_data,
-                    hmap_entries,
-                    &BlockVirtualId {
-                        id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
-                    },
-                );
-                let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
-                let flat_shared_index = flatten_shared_index(shared_index.x, shared_index.y) as usize;
+        for i_loop in 0..2 {
+            for j_loop in 0..2 {
+                if !((i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1)) {
+                    let octant = UVec2::new(i_loop as u32, j_loop as u32);
+                    let octant_hid = find_block_header_id(
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId {
+                            id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
+                        },
+                    );
+                    let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
+                    let flat_shared_index =
+                        flatten_shared_index(shared_index.x, shared_index.y) as usize;
 
-                if octant_hid.id != NONE {
-                    let global_chunk_id = block_header_id_to_physical_id(octant_hid);
-                    let tid_xy = UVec2::new(tid.x, tid.y);
-                    let global_node_id = node_id(global_chunk_id, tid_xy);
-                    let node = nodes.read(global_node_id.id as usize);
-                    shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
-                    shared_nodes_vel_mass_incompatible[flat_shared_index] = node.momentum_velocity_mass_incompatible;
-                    shared_nodes_cdf[flat_shared_index] = node.cdf;
-                } else {
-                    shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
-                    shared_nodes_vel_mass_incompatible[flat_shared_index] = VectorPlusOne::ZERO;
-                    shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                    if octant_hid.id != NONE {
+                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let tid_xy = UVec2::new(tid.x, tid.y);
+                        let global_node_id = node_id(global_chunk_id, tid_xy);
+                        let node = nodes.read(global_node_id.id as usize);
+                        shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
+                        shared_nodes_vel_mass_incompatible[flat_shared_index] =
+                            node.momentum_velocity_mass_incompatible;
+                        shared_nodes_cdf[flat_shared_index] = node.cdf;
+                    } else {
+                        shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
+                        shared_nodes_vel_mass_incompatible[flat_shared_index] = VectorPlusOne::ZERO;
+                        shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                    }
                 }
             }
         }
@@ -89,35 +94,42 @@ fn global_shared_memory_transfers(
 
     #[cfg(feature = "dim3")]
     {
-        for i_loop in 0..2u32 {
-            for j_loop in 0..2u32 {
-                for k_loop in 0..2u32 {
-                    if (i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1) || (k_loop == 1 && tid.z > 1) {
-                        continue;
-                    }
-                    let octant = UVec3::new(i_loop, j_loop, k_loop);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
-                        hmap_entries,
-                        &BlockVirtualId::new(
-                            base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32)
-                        ),
-                    );
-                    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
-                    let shared_index = octant * 4 + tid_xyz;
-                    let flat_shared_index = flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize;
+        for i_loop in 0..2 {
+            for j_loop in 0..2 {
+                for k_loop in 0..2 {
+                    if !((i_loop == 1 && tid.x > 1)
+                        || (j_loop == 1 && tid.y > 1)
+                        || (k_loop == 1 && tid.z > 1))
+                    {
+                        let octant = UVec3::new(i_loop, j_loop, k_loop);
+                        let octant_hid = find_block_header_id(
+                            grid_data,
+                            hmap_entries,
+                            &BlockVirtualId::new(
+                                base_block_pos_int
+                                    + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                            ),
+                        );
+                        let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+                        let shared_index = octant * 4 + tid_xyz;
+                        let flat_shared_index =
+                            flatten_shared_index(shared_index.x, shared_index.y, shared_index.z)
+                                as usize;
 
-                    if octant_hid.id != NONE {
-                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
-                        let global_node_id = node_id(global_chunk_id, tid_xyz);
-                        let node = nodes.read(global_node_id.id as usize);
-                        shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
-                        shared_nodes_vel_mass_incompatible[flat_shared_index] = node.momentum_velocity_mass_incompatible;
-                        shared_nodes_cdf[flat_shared_index] = node.cdf;
-                    } else {
-                        shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
-                        shared_nodes_vel_mass_incompatible[flat_shared_index] = VectorPlusOne::ZERO;
-                        shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                        if octant_hid.id != NONE {
+                            let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                            let global_node_id = node_id(global_chunk_id, tid_xyz);
+                            let node = nodes.read(global_node_id.id as usize);
+                            shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
+                            shared_nodes_vel_mass_incompatible[flat_shared_index] =
+                                node.momentum_velocity_mass_incompatible;
+                            shared_nodes_cdf[flat_shared_index] = node.cdf;
+                        } else {
+                            shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
+                            shared_nodes_vel_mass_incompatible[flat_shared_index] =
+                                VectorPlusOne::ZERO;
+                            shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                        }
                     }
                 }
             }
@@ -131,6 +143,7 @@ fn global_shared_memory_transfers(
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
+#[unroll_for_loops]
 fn particle_g2p(
     body_vels: &[BodyVelocity],
     body_mprops: &[BodyMassProperties],
@@ -159,13 +172,12 @@ fn particle_g2p(
         let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
         let w = QuadraticKernel::precompute_weights(ref_elt_pos_minus_particle_pos, cell_width);
 
-        let assoc_cell_index_in_block = associated_cell_index_in_block_off_by_one(&particle_pos, cell_width);
+        let assoc_cell_index_in_block =
+            associated_cell_index_in_block_off_by_one(&particle_pos, cell_width);
 
         #[cfg(feature = "dim2")]
-        let packed_cell_index_in_block = flatten_shared_index(
-            assoc_cell_index_in_block.x,
-            assoc_cell_index_in_block.y,
-        );
+        let packed_cell_index_in_block =
+            flatten_shared_index(assoc_cell_index_in_block.x, assoc_cell_index_in_block.y);
         #[cfg(feature = "dim3")]
         let packed_cell_index_in_block = flatten_shared_index(
             assoc_cell_index_in_block.x,
@@ -179,12 +191,15 @@ fn particle_g2p(
             let shared_id = (packed_cell_index_in_block + packed_shift) as usize;
             let cell_data = shared_nodes_vel_mass[shared_id];
             let cell_cdf = shared_nodes_cdf[shared_id];
-            let is_compatible = affinities_are_compatible(particle_cdf.affinity, cell_cdf.affinities);
+            let is_compatible =
+                affinities_are_compatible(particle_cdf.affinity, cell_cdf.affinities);
 
             #[cfg(feature = "dim2")]
-            let dpt = ref_elt_pos_minus_particle_pos + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
+            let dpt = ref_elt_pos_minus_particle_pos
+                + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
             #[cfg(feature = "dim3")]
-            let dpt = ref_elt_pos_minus_particle_pos + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
+            let dpt = ref_elt_pos_minus_particle_pos
+                + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
 
             let mut cpic_cell_data = cell_data;
 
@@ -199,15 +214,20 @@ fn particle_g2p(
                     let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
 
                     let cpic_vel = vector_part(cpic_cell_data);
-                    let particle_ghost_vel = body_pt_vel + body_material.project_velocity(cpic_vel - body_pt_vel, particle_cdf.normal);
-                    cpic_cell_data = vector_plus_one(particle_ghost_vel, scalar_part(cpic_cell_data));
+                    let particle_ghost_vel = body_pt_vel
+                        + body_material
+                            .project_velocity(cpic_vel - body_pt_vel, particle_cdf.normal);
+                    cpic_cell_data =
+                        vector_plus_one(particle_ghost_vel, scalar_part(cpic_cell_data));
                 }
             }
 
             #[cfg(feature = "dim2")]
             let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
             #[cfg(feature = "dim3")]
-            let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
+            let weight = vec3_extract(w[0], shift.x)
+                * vec3_extract(w[1], shift.y)
+                * vec3_extract(w[2], shift.z);
 
             let cpic_vel = vector_part(cpic_cell_data);
 
@@ -217,8 +237,8 @@ fn particle_g2p(
         }
 
         // Accumulate rigid body velocities for all affinity-linked colliders.
-        for i_collider in 0..16u32 {
-            if affinity_bit(i_collider, particle_cdf.affinity) {
+        for i_collider in 0..16 {
+            if affinity_bit(i_collider as u32, particle_cdf.affinity) {
                 let body_vel = body_vels.read(i_collider as usize);
                 let body_com = body_mprops.at(i_collider as usize).com;
                 rigid_vel += velocity_at_point(body_com, &body_vel, particle_pos.pt);
@@ -229,7 +249,8 @@ fn particle_g2p(
     particles_dyn.at_mut(particle_id as usize).cdf.rigid_vel = rigid_vel;
     // Set the particle velocity, and store the velocity gradient into the affine matrix.
     // The rest will be dealt with in the particle update kernel(s).
-    particles_dyn.at_mut(particle_id as usize).affine = PaddedMatrix::add_padding(velocity_gradient);
+    particles_dyn.at_mut(particle_id as usize).affine =
+        PaddedMatrix::add_padding(velocity_gradient);
     particles_dyn.at_mut(particle_id as usize).vel_grad_det = vel_grad_det;
     particles_dyn.at_mut(particle_id as usize).velocity = vector_part(momentum_velocity_mass);
 }
@@ -245,6 +266,7 @@ fn particle_g2p(
 #[spirv_bindgen]
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
+#[unroll_for_loops]
 pub fn gpu_g2p(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
@@ -259,7 +281,8 @@ pub fn gpu_g2p(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_dyn: &mut [Dynamics],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_mprops: &[BodyMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_materials: &[BoundaryCondition],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
+    body_materials: &[BoundaryCondition],
     // Shared memory.
     #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
@@ -272,8 +295,14 @@ pub fn gpu_g2p(
 
     // Block -> shared memory transfer.
     global_shared_memory_transfers(
-        grid_data, hmap_entries, nodes, tid, vid,
-        shared_nodes_vel_mass, shared_nodes_vel_mass_incompatible, shared_nodes_cdf,
+        grid_data,
+        hmap_entries,
+        nodes,
+        tid,
+        vid,
+        shared_nodes_vel_mass,
+        shared_nodes_vel_mass_incompatible,
+        shared_nodes_cdf,
     );
 
     // Sync after shared memory initialization.
@@ -292,15 +321,21 @@ pub fn gpu_g2p(
         }
         let particle_id = sorted_particle_ids.read(sorted_particle_id as usize);
         particle_g2p(
-            body_vels, body_mprops, body_materials,
-            particles_pos, particles_dyn,
-            particle_id, grid_data.at(0).cell_width, params.dt,
-            shared_nodes_vel_mass, shared_nodes_vel_mass_incompatible, shared_nodes_cdf,
+            body_vels,
+            body_mprops,
+            body_materials,
+            particles_pos,
+            particles_dyn,
+            particle_id,
+            grid_data.at(0).cell_width,
+            params.dt,
+            shared_nodes_vel_mass,
+            shared_nodes_vel_mass_incompatible,
+            shared_nodes_cdf,
         );
         sorted_particle_id += WORKGROUP_SIZE;
     }
 }
-
 
 /*
  * Shared memory flatten helpers for G2P.

@@ -16,11 +16,12 @@ use crate::solver::particle::{
     associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Cdf, Dynamics, Position,
 };
 use crate::{abs, MaybeIndexUnchecked, Vector};
+use crunchy::unroll;
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
-
+use unroll::unroll_for_loops;
 /*
  * Constants.
  */
@@ -82,6 +83,7 @@ fn shape_has_solid_interior(_i_collider: u32) -> bool {
  */
 
 #[inline]
+#[unroll_for_loops]
 fn global_shared_memory_transfers(
     grid_data: &[Grid],
     hmap_entries: &[GridHashMapEntry],
@@ -94,29 +96,28 @@ fn global_shared_memory_transfers(
 
     #[cfg(feature = "dim2")]
     {
-        for i_loop in 0..2u32 {
-            for j_loop in 0..2u32 {
-                if (i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1) {
-                    continue;
-                }
-                let octant = UVec2::new(i_loop, j_loop);
-                let octant_hid = find_block_header_id(
-                    grid_data,
-                    hmap_entries,
-                    &BlockVirtualId {
-                        id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
-                    },
-                );
-                let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
-                let flat_id = flatten_shared_index(shared_index.x, shared_index.y) as usize;
+        for i_loop in 0..2 {
+            for j_loop in 0..2 {
+                if !((i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1)) {
+                    let octant = UVec2::new(i_loop as u32, j_loop as u32);
+                    let octant_hid = find_block_header_id(
+                        grid_data,
+                        hmap_entries,
+                        &BlockVirtualId {
+                            id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
+                        },
+                    );
+                    let shared_index = octant * 8 + UVec2::new(tid.x, tid.y);
+                    let flat_id = flatten_shared_index(shared_index.x, shared_index.y) as usize;
 
-                if octant_hid.id != NONE {
-                    let global_chunk_id = block_header_id_to_physical_id(octant_hid);
-                    let tid_xy = UVec2::new(tid.x, tid.y);
-                    let global_node_id = node_id(global_chunk_id, tid_xy);
-                    shared_nodes[flat_id] = nodes.at(global_node_id.id as usize).cdf;
-                } else {
-                    shared_nodes[flat_id] = NodeCdf::new(0.0, 0, NONE);
+                    if octant_hid.id != NONE {
+                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let tid_xy = UVec2::new(tid.x, tid.y);
+                        let global_node_id = node_id(global_chunk_id, tid_xy);
+                        shared_nodes[flat_id] = nodes.at(global_node_id.id as usize).cdf;
+                    } else {
+                        shared_nodes[flat_id] = NodeCdf::new(0.0, 0, NONE);
+                    }
                 }
             }
         }
@@ -124,28 +125,35 @@ fn global_shared_memory_transfers(
 
     #[cfg(feature = "dim3")]
     {
-        for i_loop in 0..2u32 {
-            for j_loop in 0..2u32 {
-                for k_loop in 0..2u32 {
-                    if (i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1) || (k_loop == 1 && tid.z > 1) {
-                        continue;
-                    }
-                    let octant = UVec3::new(i_loop, j_loop, k_loop);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
-                        hmap_entries,
-                        &BlockVirtualId::new(base_block_pos_int + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32)),
-                    );
-                    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
-                    let shared_index = octant * 4 + tid_xyz;
-                    let shared_node_id = flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize;
+        for i_loop in 0..2 {
+            for j_loop in 0..2 {
+                for k_loop in 0..2 {
+                    if !((i_loop == 1 && tid.x > 1)
+                        || (j_loop == 1 && tid.y > 1)
+                        || (k_loop == 1 && tid.z > 1))
+                    {
+                        let octant = UVec3::new(i_loop, j_loop, k_loop);
+                        let octant_hid = find_block_header_id(
+                            grid_data,
+                            hmap_entries,
+                            &BlockVirtualId::new(
+                                base_block_pos_int
+                                    + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                            ),
+                        );
+                        let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+                        let shared_index = octant * 4 + tid_xyz;
+                        let shared_node_id =
+                            flatten_shared_index(shared_index.x, shared_index.y, shared_index.z)
+                                as usize;
 
-                    if octant_hid.id != NONE {
-                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
-                        let global_node_id = node_id(global_chunk_id, tid_xyz);
-                        shared_nodes[shared_node_id] = nodes.at(global_node_id.id as usize).cdf;
-                    } else {
-                        shared_nodes[shared_node_id] = NodeCdf::new(0.0, 0, NONE);
+                        if octant_hid.id != NONE {
+                            let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                            let global_node_id = node_id(global_chunk_id, tid_xyz);
+                            shared_nodes[shared_node_id] = nodes.at(global_node_id.id as usize).cdf;
+                        } else {
+                            shared_nodes[shared_node_id] = NodeCdf::new(0.0, 0, NONE);
+                        }
                     }
                 }
             }
@@ -158,6 +166,7 @@ fn global_shared_memory_transfers(
  */
 
 #[inline]
+#[unroll_for_loops]
 fn particle_g2p(
     particles_pos: &[Position],
     particles_dyn: &mut [Dynamics],
@@ -176,13 +185,12 @@ fn particle_g2p(
     let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
     let w = QuadraticKernel::precompute_weights(ref_elt_pos_minus_particle_pos, cell_width);
 
-    let assoc_cell_index_in_block = associated_cell_index_in_block_off_by_one(&particle_pos, cell_width);
+    let assoc_cell_index_in_block =
+        associated_cell_index_in_block_off_by_one(&particle_pos, cell_width);
 
     #[cfg(feature = "dim2")]
-    let packed_cell_index_in_block = flatten_shared_index(
-        assoc_cell_index_in_block.x,
-        assoc_cell_index_in_block.y,
-    );
+    let packed_cell_index_in_block =
+        flatten_shared_index(assoc_cell_index_in_block.x, assoc_cell_index_in_block.y);
     #[cfg(feature = "dim3")]
     let packed_cell_index_in_block = flatten_shared_index(
         assoc_cell_index_in_block.x,
@@ -191,7 +199,7 @@ fn particle_g2p(
     );
 
     // Pass 1: Determine sign bits (Eqn. 21) and combine affinity masks.
-    for i in 0..NBH_LEN as u32 {
+    let mut combine_affinity = |i| {
         let shift = NBH_SHIFTS.read(i as usize);
         let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
         let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
@@ -200,26 +208,55 @@ fn particle_g2p(
         #[cfg(feature = "dim2")]
         let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
         #[cfg(feature = "dim3")]
-        let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
+        let weight =
+            vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
 
         // Unrolled inner loop over 16 colliders.
-        for i_collider in 0..16u32 {
-            let compatible = if affinity_bit(i_collider, cell_data.affinities) { 1.0f32 } else { 0.0f32 };
-            let sign = if sign_bit(i_collider, cell_data.affinities) && !shape_has_solid_interior(i_collider) {
-                -1.0f32
-            } else {
-                1.0f32
-            };
-            affinity_signs[i_collider as usize] += compatible * weight * sign * cell_data.distance;
+        // NOTE: `unroll_for_loops` doesn’t see through the closure so we use crunchy::unroll instead.
+        unroll! {
+            for i_collider in 0..16 {
+                let compatible = if affinity_bit(i_collider as u32, cell_data.affinities) {
+                    1.0f32
+                } else {
+                    0.0f32
+                };
+                let sign = if sign_bit(i_collider as u32, cell_data.affinities)
+                    && !shape_has_solid_interior(i_collider as u32)
+                {
+                    -1.0f32
+                } else {
+                    1.0f32
+                };
+                affinity_signs[i_collider as usize] += compatible * weight * sign * cell_data.distance;
+            }
         }
+    };
+
+    // NOTE HACK: we define both loops separately instead of using the NBH_LEN const so
+    //            loop unrolling works (it requires literals for the range bounds).
+    #[cfg(feature = "dim2")]
+    for i in 0..9
+    /* NBH_LEN */
+    {
+        combine_affinity(i);
+    }
+    #[cfg(feature = "dim3")]
+    for i in 0..27
+    /* NBH_LEN */
+    {
+        combine_affinity(i);
     }
 
     // Convert the affinity signs to bits.
-    for i_collider in 0..16u32 {
-        let mask = 1u32 << (i_collider + SIGN_BITS_SHIFT);
+    for i_collider in 0..16 {
+        let mask = 1u32 << (i_collider as u32 + SIGN_BITS_SHIFT);
         if (prev_affinity & (1u32 << i_collider)) == 0 {
             // Only set the sign bit for affinities that didn't exist before.
-            let sgn_bit = if affinity_signs[i_collider as usize] < 0.0 { mask } else { 0u32 };
+            let sgn_bit = if affinity_signs[i_collider as usize] < 0.0 {
+                mask
+            } else {
+                0u32
+            };
             particle_affinity |= sgn_bit;
         } else {
             particle_affinity |= prev_affinity & mask;
@@ -236,23 +273,27 @@ fn particle_g2p(
     #[cfg(feature = "dim3")]
     let mut qtu = Vec4::ZERO;
 
-    for i in 0..NBH_LEN as u32 {
+    let mut handle_nbh = |i| {
         let shift = NBH_SHIFTS.read(i as usize);
         let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
         let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
 
         #[cfg(feature = "dim2")]
-        let dpt = ref_elt_pos_minus_particle_pos + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
+        let dpt =
+            ref_elt_pos_minus_particle_pos + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
         #[cfg(feature = "dim2")]
         let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
         #[cfg(feature = "dim3")]
-        let dpt = ref_elt_pos_minus_particle_pos + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
+        let dpt = ref_elt_pos_minus_particle_pos
+            + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
         #[cfg(feature = "dim3")]
-        let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
+        let weight =
+            vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
 
         let combined_affinity = cell_data.affinities & particle_affinity & AFFINITY_BITS_MASK;
         let sign_differences = ((cell_data.affinities >> SIGN_BITS_SHIFT)
-            ^ (particle_affinity >> SIGN_BITS_SHIFT)) & combined_affinity;
+            ^ (particle_affinity >> SIGN_BITS_SHIFT))
+            & combined_affinity;
 
         #[cfg(feature = "dim2")]
         let p = Vec3::new(dpt.x, dpt.y, 1.0);
@@ -286,6 +327,21 @@ fn particle_g2p(
                 }
             }
         }
+    };
+
+    // NOTE HACK: we define both loops separately instead of using the NBH_LEN const so
+    //            loop unrolling works (it requires literals for the range bounds).
+    #[cfg(feature = "dim2")]
+    for i in 0..9
+    /* NBH_LEN */
+    {
+        handle_nbh(i)
+    }
+    #[cfg(feature = "dim3")]
+    for i in 0..27
+    /* NBH_LEN */
+    {
+        handle_nbh(i)
     }
 
     if qtq.determinant() > 1.0e-8 {
@@ -315,12 +371,8 @@ fn particle_g2p(
             } else {
                 Vec3::ZERO
             };
-            particles_dyn.at_mut(particle_id as usize).cdf = Cdf::new(
-                normal,
-                Vec3::ZERO,
-                result.w,
-                particle_affinity,
-            );
+            particles_dyn.at_mut(particle_id as usize).cdf =
+                Cdf::new(normal, Vec3::ZERO, result.w, particle_affinity);
         }
     } else {
         // TODO: store the affinity in this case too?
@@ -358,10 +410,7 @@ pub fn gpu_g2p_cdf(
     let vid = BlockVirtualId::new(vid_);
 
     // Block -> shared memory transfer.
-    global_shared_memory_transfers(
-        grid_data, hmap_entries, nodes, tid, vid,
-        shared_nodes,
-    );
+    global_shared_memory_transfers(grid_data, hmap_entries, nodes, tid, vid, shared_nodes);
 
     // Sync after shared memory initialization.
     workgroup_memory_barrier_with_group_sync();
@@ -379,8 +428,11 @@ pub fn gpu_g2p_cdf(
         }
         let particle_id = sorted_particle_ids.read(sorted_particle_id as usize);
         particle_g2p(
-            particles_pos, particles_dyn,
-            particle_id, grid_data.at(0).cell_width, params.dt,
+            particles_pos,
+            particles_dyn,
+            particle_id,
+            grid_data.at(0).cell_width,
+            params.dt,
             shared_nodes,
         );
         sorted_particle_id += WORKGROUP_SIZE;

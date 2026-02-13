@@ -98,8 +98,12 @@ pub fn gpu_grid_update_cdf(
     ) * grid_data.at(0).cell_width;
 
     let global_id = global_node_id.id;
-    nodes.at_mut(global_id as usize).cdf =
-        collide(collision_shapes, collision_shape_poses, grid_data.at(0).cell_width, cell_pos);
+    nodes.at_mut(global_id as usize).cdf = collide(
+        collision_shapes,
+        collision_shape_poses,
+        grid_data.at(0).cell_width,
+        cell_pos,
+    );
 }
 
 /// GPU kernel: grid update CDF (3D version).
@@ -128,6 +132,10 @@ pub fn gpu_grid_update_cdf(
     ) * grid_data.at(0).cell_width;
 
     let global_id = global_node_id.id;
-    nodes.at_mut(global_id as usize).cdf =
-        collide(collision_shapes, collision_shape_poses, grid_data.at(0).cell_width, cell_pos);
+    nodes.at_mut(global_id as usize).cdf = collide(
+        collision_shapes,
+        collision_shape_poses,
+        grid_data.at(0).cell_width,
+        cell_pos,
+    );
 }

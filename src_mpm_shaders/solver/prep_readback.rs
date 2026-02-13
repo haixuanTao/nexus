@@ -7,7 +7,9 @@
 use crate::grid::grid::Grid;
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{Dynamics, Position};
-use crate::{abs, acos, cos, diag, sqrt, MaybeIndexUnchecked, Matrix, PaddedMatrix, PaddingExt, Vector};
+use crate::{
+    abs, acos, cos, diag, sqrt, Matrix, MaybeIndexUnchecked, PaddedMatrix, PaddingExt, Vector,
+};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
@@ -37,7 +39,10 @@ pub struct RenderConfig {
 /// for Vec4) and GPU (scalar block layout).
 #[cfg(feature = "dim2")]
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(Debug, bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct ReadbackData {
     pub color: Vec4,
@@ -56,7 +61,10 @@ pub struct ReadbackData {
 /// On the host side, use `deformation.remove_padding()` to get the Mat3.
 #[cfg(feature = "dim3")]
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(Debug, bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct ReadbackData {
     pub color: Vec4,
@@ -69,7 +77,11 @@ pub struct ReadbackData {
 
 #[inline]
 fn fmax(a: f32, b: f32) -> f32 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 #[inline]
@@ -173,13 +185,7 @@ fn compute_deformation(def_grad: PaddedMatrix, init_radius: f32) -> PaddedMatrix
 /// Compute the color for a particle based on the render mode.
 #[cfg(feature = "dim2")]
 #[inline]
-fn compute_color(
-    dyn_: &Dynamics,
-    base_color: Vec4,
-    mode: u32,
-    cell_width: f32,
-    dt: f32,
-) -> Vec4 {
+fn compute_color(dyn_: &Dynamics, base_color: Vec4, mode: u32, cell_width: f32, dt: f32) -> Vec4 {
     if mode == RENDER_MODE_VELOCITY {
         let vel = dyn_.velocity;
         let c = Vec2::new(abs(vel.x), abs(vel.y)) * dt * 100.0 + Vec2::splat(0.2);
@@ -225,13 +231,7 @@ fn compute_color(
 /// Compute the color for a particle based on the render mode.
 #[cfg(feature = "dim3")]
 #[inline]
-fn compute_color(
-    dyn_: &Dynamics,
-    base_color: Vec4,
-    mode: u32,
-    cell_width: f32,
-    dt: f32,
-) -> Vec4 {
+fn compute_color(dyn_: &Dynamics, base_color: Vec4, mode: u32, cell_width: f32, dt: f32) -> Vec4 {
     let failed = dyn_.enabled == 0;
 
     let color = if mode == RENDER_MODE_VELOCITY {

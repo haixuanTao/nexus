@@ -1,11 +1,11 @@
 //! Particle-to-Grid transfer with Collision Detection Field for rigid bodies.
 
-use crate::grid::grid::{indirect_dispatch_tensor, GpuGrid};
+use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::p2g_cdf::GpuP2gCdf;
 use crate::solver::GpuRigidParticles;
-use nexus::dynamics::GpuBodySet;
-use khal::backend::{GpuBackendError, GpuPass};
 use khal::Shader;
+use khal::backend::{GpuBackendError, GpuPass};
+use nexus::dynamics::GpuBodySet;
 
 /// GPU kernel for P2G transfer from rigid body particles.
 ///

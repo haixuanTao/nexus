@@ -1,10 +1,10 @@
 //! Grid-to-Particle transfer with Collision Detection Field updates.
 
-use crate::grid::grid::{indirect_dispatch_tensor, GpuGrid};
+use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::g2p_cdf::GpuG2pCdf;
 use crate::solver::{GpuParticleModelData, GpuParticles, GpuSimulationParams};
-use khal::backend::{GpuBackendError, GpuPass};
 use khal::Shader;
+use khal::backend::{GpuBackendError, GpuPass};
 
 /// GPU kernel for G2P transfer with CDF updates for rigid body coupling.
 ///

@@ -101,11 +101,13 @@ pub fn gpu_rigid_impulses_update(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mprops: &mut [WorldMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] incremental_impulses: &mut [IntegerImpulse],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    incremental_impulses: &mut [IntegerImpulse],
 ) {
     let id = invocation_id.x;
 
@@ -147,14 +149,34 @@ pub fn gpu_rigid_impulses_update(
         // Construct a mask: 1.0 where inv_mass != 0.0, 0.0 otherwise.
         #[cfg(feature = "dim2")]
         let mass_mask = Vec2::new(
-            if current_mprops.inv_mass.x != 0.0 { 1.0 } else { 0.0 },
-            if current_mprops.inv_mass.y != 0.0 { 1.0 } else { 0.0 },
+            if current_mprops.inv_mass.x != 0.0 {
+                1.0
+            } else {
+                0.0
+            },
+            if current_mprops.inv_mass.y != 0.0 {
+                1.0
+            } else {
+                0.0
+            },
         );
         #[cfg(feature = "dim3")]
         let mass_mask = Vec3::new(
-            if current_mprops.inv_mass.x != 0.0 { 1.0 } else { 0.0 },
-            if current_mprops.inv_mass.y != 0.0 { 1.0 } else { 0.0 },
-            if current_mprops.inv_mass.z != 0.0 { 1.0 } else { 0.0 },
+            if current_mprops.inv_mass.x != 0.0 {
+                1.0
+            } else {
+                0.0
+            },
+            if current_mprops.inv_mass.y != 0.0 {
+                1.0
+            } else {
+                0.0
+            },
+            if current_mprops.inv_mass.z != 0.0 {
+                1.0
+            } else {
+                0.0
+            },
         );
         new_vel.linear += sim_params.gravity * mass_mask * sim_params.dt;
 
@@ -172,9 +194,11 @@ pub fn gpu_rigid_impulses_update(
 pub fn gpu_update_world_mass_properties(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] mprops: &mut [WorldMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] incremental_impulses: &mut [IntegerImpulse],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    incremental_impulses: &mut [IntegerImpulse],
 ) {
     let id = invocation_id.x;
 

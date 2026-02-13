@@ -107,11 +107,9 @@ pub fn convert_trimesh_to_gpu(shape: &TriMesh, buffers: &mut ShapeBuffers) -> Gp
             .vertices
             .extend(pn.vertices_pseudo_normal.iter().copied());
         assert_eq!(shape.vertices().len(), pn.vertices_pseudo_normal.len());
-        buffers.vertices.extend(
-            pn.edges_pseudo_normal
-                .iter()
-                .flat_map(|n| *n),
-        );
+        buffers
+            .vertices
+            .extend(pn.edges_pseudo_normal.iter().flat_map(|n| *n));
     }
     buffers
         .indices

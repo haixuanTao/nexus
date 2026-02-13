@@ -7,7 +7,9 @@
 use crate::cast_tensor;
 use crate::grid::grid::GpuGrid;
 use crate::mpm_shaders::models::default::GpuParticleModel;
-use crate::mpm_shaders::solver::timestep_bound::{GpuEstimateTimestepBound, GpuResetTimestepBound, GpuTimestepBounds};
+use crate::mpm_shaders::solver::timestep_bound::{
+    GpuEstimateTimestepBound, GpuResetTimestepBound, GpuTimestepBounds,
+};
 use crate::solver::{GpuParticleModelData, GpuParticles};
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
 use khal::{BufferUsages, Shader};
@@ -60,11 +62,7 @@ impl WgTimestepBounds {
         particles: &GpuParticles<GpuModel>,
         bounds: &mut Tensor<GpuTimestepBounds>,
     ) -> Result<(), GpuBackendError> {
-        self.reset_timestep_bound.call(
-            pass,
-            1u32,
-            bounds,
-        )?;
+        self.reset_timestep_bound.call(pass, 1u32, bounds)?;
 
         let len = particles.len() as u32;
         self.estimate_timestep_bound.call(

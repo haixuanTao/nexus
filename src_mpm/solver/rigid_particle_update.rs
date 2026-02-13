@@ -2,13 +2,15 @@
 
 use crate::cast_tensor;
 use crate::cast_tensor_mut;
-use crate::mpm_shaders::solver::rigid_particle_update::{GpuTransformSamplePoints, GpuTransformShapePoints};
+use crate::mpm_shaders::VectorWithPadding;
+use crate::mpm_shaders::solver::rigid_particle_update::{
+    GpuTransformSamplePoints, GpuTransformShapePoints,
+};
 use crate::solver::GpuRigidParticles;
+use khal::Shader;
+use khal::backend::{GpuBackendError, GpuPass};
 use nexus::dynamics::GpuBodySet;
 use nexus::math::Vector;
-use khal::backend::{GpuBackendError, GpuPass};
-use khal::Shader;
-use crate::mpm_shaders::VectorWithPadding;
 
 /// GPU kernels for updating rigid body particle positions.
 ///
