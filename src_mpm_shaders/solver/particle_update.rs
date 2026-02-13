@@ -130,13 +130,13 @@ pub fn gpu_particle_update(
      * Deformation gradient update.
      */
     if (flags & MODEL_FLAGS_FLUID) == 0 {
-        // Solid path: F_new = F + F * vel_grad * dt
+        // Solid path: F_new = F + (vel_grad * dt) * F
         // NOTE: the velocity gradient was stored in the affine buffer.
-        dynamics.def_grad = dynamics.def_grad + dynamics.def_grad * (dynamics.affine * dt);
+        dynamics.def_grad = dynamics.def_grad + (dynamics.affine * dt) * dynamics.def_grad;
     } else {
         // Fluid path: only track the diagonal (isotropic deformation).
         let def_grad0 = dynamics.def_grad.x_axis.x;
-        let new_def_grad_diag_elt = def_grad0 + def_grad0 * dynamics.vel_grad_det * dt;
+        let new_def_grad_diag_elt = def_grad0 + (dynamics.vel_grad_det * dt) * def_grad0;
         dynamics.def_grad = PaddedMatrix::add_padding(diag(Vector::splat(new_def_grad_diag_elt)));
     }
 

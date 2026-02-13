@@ -24,7 +24,7 @@ impl NeoHookeanModel {
     pub fn kirchoff_stress(&self, deformation_gradient: Matrix) -> Matrix {
         let j = f32::max(deformation_gradient.determinant(), 1.0e-10);
         let diag_val = self.lambda * j.ln() - self.mu;
-        let mut stress = deformation_gradient.transpose() * deformation_gradient * self.mu;
+        let mut stress = deformation_gradient * deformation_gradient.transpose() * self.mu;
 
         stress.x_axis.x += diag_val;
         stress.y_axis.y += diag_val;

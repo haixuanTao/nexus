@@ -36,7 +36,7 @@ impl LinearElasticModel {
         let recomposed = svd.u * diag(modified_s) * svd.vt;
 
         let diag_val = self.lambda * (j - 1.0) * j;
-        let mut result = deformation_gradient.transpose() * recomposed * (2.0 * self.mu);
+        let mut result = recomposed * deformation_gradient.transpose() * (2.0 * self.mu);
 
         result.x_axis.x += diag_val;
         result.y_axis.y += diag_val;
