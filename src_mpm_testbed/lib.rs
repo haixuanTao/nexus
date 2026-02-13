@@ -22,9 +22,10 @@ use std::rc::Rc;
 mod data;
 pub mod step;
 
-use crate::step::{ReadbackBuffers, SimulationStepResult};
-use khal::backend::{GpuBackend as KhalGpuBackend, WebGpu};
+use crate::step::{GpuReadbackData, RenderConfig, SimulationStepResult, WgPrepReadback};
+use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps, WebGpu};
 use khal::re_exports::wgpu::Limits;
+use khal::Shader;
 use kiss3d::egui;
 use kiss3d::prelude::*;
 use nexus_mpm::pipeline::{MpmPipeline, MpmPipelineHooks};
@@ -54,7 +55,9 @@ pub(crate) struct Stage<GpuModel: GpuParticleModelData> {
     pub(crate) app_state: AppState<GpuModel>,
     pub(crate) step_id: usize,
     pub(crate) step_result: SimulationStepResult,
-    pub(crate) readback: ReadbackBuffers,
+    pub(crate) readback_shader: WgPrepReadback,
+    pub(crate) readback: GpuReadbackData,
+    pub(crate) timestamps: GpuTimestamps,
     #[cfg(feature = "dim2")]
     instances: Vec<InstanceData2d>,
     #[cfg(feature = "dim3")]
@@ -90,7 +93,14 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         let physics = (builders[0].1)(&gpu, &mut app_state);
         app_state.num_substeps = 0;
 
-        let readback = ReadbackBuffers::new(&gpu, physics.data.particles.len()).unwrap();
+        let readback_shader = WgPrepReadback::from_backend(&gpu).unwrap();
+        let readback = GpuReadbackData::new(
+            &gpu,
+            physics.data.particles.len(),
+            RenderMode::Default as u32,
+        )
+        .unwrap();
+        let timestamps = GpuTimestamps::new(&gpu, 256);
         let mut step_result = SimulationStepResult::default();
         step_result
             .instances
@@ -99,7 +109,9 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         Stage {
             builders,
             instances: vec![],
+            readback_shader,
             readback,
+            timestamps,
             gpu,
             physics,
             hooks,
@@ -113,7 +125,12 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
     pub fn set_demo(&mut self, demo_id: usize) {
         self.selected_demo = demo_id;
         self.physics = (self.builders[demo_id]).1(&self.gpu, &mut self.app_state);
-        self.readback = ReadbackBuffers::new(&self.gpu, self.physics.data.particles.len()).unwrap();
+        self.readback = GpuReadbackData::new(
+            &self.gpu,
+            self.physics.data.particles.len(),
+            self.app_state.render_mode as u32,
+        )
+        .unwrap();
         self.app_state.num_substeps = 1;
         self.step_result
             .instances
@@ -143,11 +160,14 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             self.step_result
                 .instances
                 .iter()
-                .map(|d| InstanceData3d {
-                    position: d.position,
-                    color: Color::new(d.color.x, d.color.y, d.color.z, d.color.w),
-                    deformation: d.deformation,
-                    ..Default::default()
+                .map(|d| {
+                    use nexus_mpm::mpm_shaders::PaddingExt;
+                    InstanceData3d {
+                        position: d.position,
+                        color: Color::new(d.color.x, d.color.y, d.color.z, d.color.w),
+                        deformation: d.deformation.remove_padding(),
+                        ..Default::default()
+                    }
                 }),
         );
     }
@@ -242,6 +262,7 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                     new_selected_demo = Some(stage.selected_demo);
                 }
 
+                let prev_render_mode = stage.app_state.render_mode;
                 egui::ComboBox::from_label("render mode")
                     .selected_text(stage.app_state.render_mode.text())
                     .show_ui(ui, |ui| {
@@ -254,6 +275,19 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                         }
                     });
 
+                if stage.app_state.render_mode != prev_render_mode {
+                    stage
+                        .gpu
+                        .write_buffer(
+                            stage.readback.mode.buffer_mut(),
+                            0,
+                            &[RenderConfig {
+                                mode: stage.app_state.render_mode as u32,
+                            }],
+                        )
+                        .unwrap();
+                }
+
                 ui.label(format!(
                     "total: {:.1}ms (encoding: {:.1}ms)",
                     stage.step_result.timings.total_step_time,
@@ -264,6 +298,17 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                     stage.step_result.timings.readback_time
                 ));
                 ui.label(format!("particles: {}", stage.physics.data.particles.len()));
+
+                if !stage.step_result.timings.gpu_pass_times.is_empty() {
+                    ui.separator();
+                    ui.label(format!(
+                        "GPU total: {:.2}ms",
+                        stage.step_result.timings.gpu_total_time
+                    ));
+                    for (label, ms) in &stage.step_result.timings.gpu_pass_times {
+                        ui.label(format!("  {}: {:.2}ms", label, ms));
+                    }
+                }
 
 
                 ui.horizontal(|ui| {

@@ -472,7 +472,7 @@ impl GpuPhysicsPipeline {
         // Phase 1: Update mass properties, build LBVH, and find collision pairs
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("update-mprops", None);
 
             // Update mass properties
             self.mprops_update
@@ -516,7 +516,7 @@ impl GpuPhysicsPipeline {
                 validate_lbvh_topology(&tree, &sorted_colliders, num_colliders);
 
                 encoder = backend.begin_encoding();
-                pass = encoder.begin_pass();
+                pass = encoder.begin_pass("lbvh-find-pairs", None);
             }
 
             self.lbvh
@@ -574,7 +574,7 @@ impl GpuPhysicsPipeline {
 
             // Re-run find_pairs with resized buffers
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("lbvh-find-pairs", None);
             self.lbvh
                 .find_pairs(
                     &mut pass,
@@ -594,7 +594,7 @@ impl GpuPhysicsPipeline {
         // Phase 2: Narrow phase and solver preparation
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("narrow-phase", None);
 
             // Narrow phase
             self.narrow_phase
@@ -750,7 +750,7 @@ impl GpuPhysicsPipeline {
 
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("solve-tgs", None);
             self.solver
                 .solve_tgs(
                     &mut pass,

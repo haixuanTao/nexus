@@ -174,8 +174,8 @@ fn particle_g2p(
         );
 
         for i in 0..NBH_LEN as u32 {
-            let shift = nbh_shift(i as usize);
-            let packed_shift = nbh_shift_shared(i as usize);
+            let shift = NBH_SHIFTS.read(i as usize);
+            let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
             let shared_id = (packed_cell_index_in_block + packed_shift) as usize;
             let cell_data = shared_nodes_vel_mass[shared_id];
             let cell_cdf = shared_nodes_cdf[shared_id];

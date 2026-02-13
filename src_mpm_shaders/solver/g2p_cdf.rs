@@ -26,9 +26,9 @@ use spirv_std::spirv;
  */
 
 #[cfg(feature = "dim2")]
-const NUM_SHARED_CELLS: usize = 100; // 10 * 10
+const NUM_SHARED_CELLS: usize = 10 * 10;
 #[cfg(feature = "dim3")]
-const NUM_SHARED_CELLS: usize = 216; // 6 * 6 * 6
+const NUM_SHARED_CELLS: usize = 6 * 6 * 6;
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -192,8 +192,8 @@ fn particle_g2p(
 
     // Pass 1: Determine sign bits (Eqn. 21) and combine affinity masks.
     for i in 0..NBH_LEN as u32 {
-        let shift = nbh_shift(i as usize);
-        let packed_shift = nbh_shift_shared(i as usize);
+        let shift = NBH_SHIFTS.read(i as usize);
+        let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
         let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
         particle_affinity |= cell_data.affinities & AFFINITY_BITS_MASK;
 
@@ -237,8 +237,8 @@ fn particle_g2p(
     let mut qtu = Vec4::ZERO;
 
     for i in 0..NBH_LEN as u32 {
-        let shift = nbh_shift(i as usize);
-        let packed_shift = nbh_shift_shared(i as usize);
+        let shift = NBH_SHIFTS.read(i as usize);
+        let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
         let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
 
         #[cfg(feature = "dim2")]

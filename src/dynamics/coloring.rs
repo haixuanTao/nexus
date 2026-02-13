@@ -211,7 +211,7 @@ impl GpuColoring {
         // Initialize coloring state
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("coloring-reset", None);
             self.dispatch_reset_luby(&mut pass, &mut args).unwrap();
             drop(pass);
             backend.submit(encoder).unwrap();
@@ -228,7 +228,7 @@ impl GpuColoring {
 
             {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass();
+                let mut pass = encoder.begin_pass("coloring-step", None);
                 self.dispatch_step_luby(&mut pass, &mut args).unwrap();
                 drop(pass);
                 backend.submit(encoder).unwrap();
@@ -283,7 +283,7 @@ impl GpuColoring {
         // Initialize TOPO-GC state
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("coloring-reset", None);
             self.dispatch_reset_topo_gc(&mut pass, &mut args).unwrap();
             drop(pass);
             backend.submit(encoder).unwrap();
@@ -300,7 +300,7 @@ impl GpuColoring {
             // Batch multiple iterations to reduce CPU-GPU sync overhead
             {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass();
+                let mut pass = encoder.begin_pass("coloring-step", None);
                 for _ in 0..10 {
                     // Reset completion flag
                     self.reset_completion_flag_topo_gc

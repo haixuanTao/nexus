@@ -9,7 +9,7 @@ use crate::grid::grid::GpuGrid;
 use crate::mpm_shaders::models::default::GpuParticleModel;
 use crate::mpm_shaders::solver::timestep_bound::{GpuEstimateTimestepBound, GpuResetTimestepBound, GpuTimestepBounds};
 use crate::solver::{GpuParticleModelData, GpuParticles};
-use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use vortx::tensor::Tensor;
 
@@ -33,13 +33,14 @@ impl WgTimestepBounds {
     pub async fn compute_bounds<GpuModel: GpuParticleModelData>(
         &self,
         backend: &GpuBackend,
+        timestamps: Option<&mut GpuTimestamps>,
         grid: &GpuGrid,
         particles: &GpuParticles<GpuModel>,
         bounds: &mut Tensor<GpuTimestepBounds>,
         bounds_staging: &mut Tensor<GpuTimestepBounds>,
     ) -> Result<f32, GpuBackendError> {
         let mut encoder = backend.begin_encoding();
-        let mut pass = encoder.begin_pass();
+        let mut pass = encoder.begin_pass("timestep-bounds", timestamps);
         self.launch(&mut pass, grid, particles, bounds)?;
         drop(pass);
         bounds_staging.copy_from_view(&mut encoder, &*bounds)?;

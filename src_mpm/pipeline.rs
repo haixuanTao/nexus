@@ -12,7 +12,7 @@ use crate::solver::{
     WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgP2G, WgP2GCdf, WgParticleUpdate, WgRigidImpulses,
     WgRigidParticleUpdate, WgTimestepBounds,
 };
-use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use nexus::dynamics::GpuBodySet;
 use nexus::math::{Pose, Vector};
@@ -290,11 +290,12 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         backend: &GpuBackend,
         encoder: &mut GpuEncoder,
         data: &mut MpmData<GpuModel>,
+        mut timestamps: Option<&mut GpuTimestamps>,
         hooks: &mut dyn MpmPipelineHooks<GpuModel>,
         hooks_state: &mut dyn Any,
     ) -> Result<(), GpuBackendError> {
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("Rigid update", timestamps.as_deref_mut());
             self.impulses.launch_update_world_mass_properties(
                 &mut pass,
                 &mut data.impulses,
@@ -308,7 +309,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         }
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("Grid sort", timestamps.as_deref_mut());
             data.grid.swap_buffers();
             self.grid.launch_sort(
                 backend,
@@ -330,13 +331,13 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         hooks.after_particle_sort(backend, encoder, data, hooks_state)?;
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("CDF grid update", timestamps.as_deref_mut());
             self.grid_update_cdf
                 .launch(&mut pass, &mut data.grid, &data.bodies)?;
         }
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("CDF P2G", timestamps.as_deref_mut());
             self.p2g_cdf.launch(
                 &mut pass,
                 &mut data.grid,
@@ -346,7 +347,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         }
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("CDF G2P", timestamps.as_deref_mut());
             self.g2p_cdf.launch(
                 &mut pass,
                 &data.sim_params,
@@ -356,7 +357,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         }
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("P2G", timestamps.as_deref_mut());
             self.p2g.launch(
                 &mut pass,
                 &mut data.grid,
@@ -370,7 +371,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         hooks.after_p2g(backend, encoder, data, hooks_state)?;
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("Grid update", timestamps.as_deref_mut());
             self.grid_update
                 .launch(&mut pass, &data.sim_params, &mut data.grid)?;
         }
@@ -378,7 +379,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         hooks.after_grid_update(backend, encoder, data, hooks_state)?;
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("G2P", timestamps.as_deref_mut());
             self.g2p.launch(
                 &mut pass,
                 &data.sim_params,
@@ -392,7 +393,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         hooks.after_g2p(backend, encoder, data, hooks_state)?;
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("Particle update", timestamps.as_deref_mut());
             self.particles_update.launch(
                 &mut pass,
                 &data.sim_params,
@@ -404,7 +405,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         hooks.after_particles_update(backend, encoder, data, hooks_state)?;
 
         {
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("Integrate bodies", timestamps.as_deref_mut());
             self.impulses.launch(
                 &mut pass,
                 &data.grid,

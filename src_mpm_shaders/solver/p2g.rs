@@ -139,7 +139,7 @@ fn p2g_step(
     let mut ang_impulse: AngVector = Vec3::ZERO;
 
     for i in 0..NBH_LEN as u32 {
-        let packed_shift = nbh_shift_shared(i as usize);
+        let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
         let nbh_shared_index = (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
         let particle_pos = shared_pos[nbh_shared_index];
         let particle_vel_mass = shared_vel_mass[nbh_shared_index];
@@ -148,7 +148,7 @@ fn p2g_step(
         let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
         let w = QuadraticKernel::precompute_weights(ref_elt_pos_minus_particle_pos, cell_width);
 
-        let shift = nbh_shift(i as usize);
+        let shift = NBH_SHIFTS.read(i as usize);
 
         #[cfg(feature = "dim2")]
         let particle_vel = Vec2::new(particle_vel_mass.x, particle_vel_mass.y);

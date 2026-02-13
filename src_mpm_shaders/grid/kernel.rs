@@ -25,83 +25,61 @@ pub const NBH_LEN: usize = 27;
 ///
 /// In 2D, these are UVec2 offsets into a 3x3 grid.
 /// In 3D, these are UVec3 offsets into a 3x3x3 grid.
-///
-/// The ordering matches the Slang reference and is chosen to maximize
-/// coalesced memory accesses during P2G/G2P.
 #[cfg(feature = "dim2")]
-#[inline]
-pub fn nbh_shift(i: usize) -> UVec2 {
-    // NBH_SHIFTS for 2D (9 entries)
-    match i {
-        0 => UVec2::new(2, 2),
-        1 => UVec2::new(2, 0),
-        2 => UVec2::new(2, 1),
-        3 => UVec2::new(0, 2),
-        4 => UVec2::new(0, 0),
-        5 => UVec2::new(0, 1),
-        6 => UVec2::new(1, 2),
-        7 => UVec2::new(1, 0),
-        8 => UVec2::new(1, 1),
-        _ => UVec2::ZERO,
-    }
-}
+pub const NBH_SHIFTS: [UVec2; 9] = [
+    UVec2::new(2, 2),
+    UVec2::new(2, 0),
+    UVec2::new(2, 1),
+    UVec2::new(0, 2),
+    UVec2::new(0, 0),
+    UVec2::new(0, 1),
+    UVec2::new(1, 2),
+    UVec2::new(1, 0),
+    UVec2::new(1, 1)
+];
 
 /// Returns the stencil offset for neighbor `i` as a UVector.
 #[cfg(feature = "dim3")]
-#[inline]
-pub fn nbh_shift(i: usize) -> UVec3 {
-    // NBH_SHIFTS for 3D (27 entries)
-    match i {
-        0 => UVec3::new(2, 2, 2),
-        1 => UVec3::new(2, 0, 2),
-        2 => UVec3::new(2, 1, 2),
-        3 => UVec3::new(0, 2, 2),
-        4 => UVec3::new(0, 0, 2),
-        5 => UVec3::new(0, 1, 2),
-        6 => UVec3::new(1, 2, 2),
-        7 => UVec3::new(1, 0, 2),
-        8 => UVec3::new(1, 1, 2),
-        9 => UVec3::new(2, 2, 0),
-        10 => UVec3::new(2, 0, 0),
-        11 => UVec3::new(2, 1, 0),
-        12 => UVec3::new(0, 2, 0),
-        13 => UVec3::new(0, 0, 0),
-        14 => UVec3::new(0, 1, 0),
-        15 => UVec3::new(1, 2, 0),
-        16 => UVec3::new(1, 0, 0),
-        17 => UVec3::new(1, 1, 0),
-        18 => UVec3::new(2, 2, 1),
-        19 => UVec3::new(2, 0, 1),
-        20 => UVec3::new(2, 1, 1),
-        21 => UVec3::new(0, 2, 1),
-        22 => UVec3::new(0, 0, 1),
-        23 => UVec3::new(0, 1, 1),
-        24 => UVec3::new(1, 2, 1),
-        25 => UVec3::new(1, 0, 1),
-        26 => UVec3::new(1, 1, 1),
-        _ => UVec3::ZERO,
-    }
-}
+pub const NBH_SHIFTS: [UVec2; 27] = [
+        UVec3::new(2, 2, 2),
+        UVec3::new(2, 0, 2),
+        UVec3::new(2, 1, 2),
+        UVec3::new(0, 2, 2),
+        UVec3::new(0, 0, 2),
+        UVec3::new(0, 1, 2),
+        UVec3::new(1, 2, 2),
+        UVec3::new(1, 0, 2),
+        UVec3::new(1, 1, 2),
+        UVec3::new(2, 2, 0),
+         UVec3::new(2, 0, 0),
+         UVec3::new(2, 1, 0),
+         UVec3::new(0, 2, 0),
+         UVec3::new(0, 0, 0),
+         UVec3::new(0, 1, 0),
+         UVec3::new(1, 2, 0),
+         UVec3::new(1, 0, 0),
+         UVec3::new(1, 1, 0),
+         UVec3::new(2, 2, 1),
+         UVec3::new(2, 0, 1),
+         UVec3::new(2, 1, 1),
+         UVec3::new(0, 2, 1),
+         UVec3::new(0, 0, 1),
+         UVec3::new(0, 1, 1),
+         UVec3::new(1, 2, 1),
+         UVec3::new(1, 0, 1),
+        UVec3::new(1, 1, 1),
+];
 
 /// Returns the flat shared-memory index for neighbor `i`.
 ///
 /// Used to map the 2D/3D stencil offsets to a 1D index within workgroup shared memory.
-#[inline]
-pub fn nbh_shift_shared(i: usize) -> u32 {
-    #[cfg(feature = "dim2")]
-    {
-        const TABLE: [u32; 9] = [22, 2, 12, 20, 0, 10, 21, 1, 11];
-        TABLE[i]
-    }
-    #[cfg(feature = "dim3")]
-    {
-        const TABLE: [u32; 27] = [
-            86, 74, 80, 84, 72, 78, 85, 73, 79, 14, 2, 8, 12, 0, 6, 13, 1, 7, 50, 38, 44, 48,
-            36, 42, 49, 37, 43,
-        ];
-        TABLE[i]
-    }
-}
+#[cfg(feature = "dim2")]
+pub const NBH_SHIFT_SHARED: [u32; 9] = [22, 2, 12, 20, 0, 10, 21, 1, 11];
+#[cfg(feature = "dim3")]
+pub const NBH_SHIFT_SHARED: [u32; 27] = [
+    86, 74, 80, 84, 72, 78, 85, 73, 79, 14, 2, 8, 12, 0, 6, 13, 1, 7, 50, 38, 44, 48,
+    36, 42, 49, 37, 43,
+];
 
 /// Extracts a component from a Vec3 by dynamic index.
 ///

@@ -95,7 +95,7 @@ fn p2g_cdf_step(
     let mut result = NodeCdf::new(1.0e10, 0, NONE);
 
     for i in 0..NBH_LEN as u32 {
-        let packed_shift = nbh_shift_shared(i as usize);
+        let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
         let nbh_shared_index = (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
 
         let collider_id = shared_collider_ids[nbh_shared_index];

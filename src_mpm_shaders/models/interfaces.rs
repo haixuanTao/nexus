@@ -1,7 +1,7 @@
 use crate::Matrix;
 
 /// Result of a constitutive model update, containing the Kirchoff stress tensor.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct ModelUpdateResult {
     pub kirchoff_stress: Matrix,
 }

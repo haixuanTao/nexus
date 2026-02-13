@@ -29,6 +29,7 @@ mod params;
 mod particle;
 mod particle_model;
 mod particle_update;
+pub mod prep_readback;
 mod rigid_impulses;
 mod rigid_particle_update;
 mod timestep_bound;
