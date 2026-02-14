@@ -199,52 +199,39 @@ fn particle_g2p(
     );
 
     // Pass 1: Determine sign bits (Eqn. 21) and combine affinity masks.
-    let mut combine_affinity = |i| {
-        let shift = NBH_SHIFTS.read(i as usize);
-        let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
-        let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
-        particle_affinity |= cell_data.affinities & AFFINITY_BITS_MASK;
+    for i in 0..27 { // For loop unrolling, use the fixed bound (the maximum one between 2D and 3D).
+        if i < NBH_LEN {
+            let shift = NBH_SHIFTS.read(i as usize);
+            let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
+            let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
+            particle_affinity |= cell_data.affinities & AFFINITY_BITS_MASK;
 
-        #[cfg(feature = "dim2")]
-        let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
-        #[cfg(feature = "dim3")]
-        let weight =
-            vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
+            #[cfg(feature = "dim2")]
+            let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
+            #[cfg(feature = "dim3")]
+            let weight =
+                vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
 
-        // Unrolled inner loop over 16 colliders.
-        // NOTE: `unroll_for_loops` doesn’t see through the closure so we use crunchy::unroll instead.
-        unroll! {
-            for i_collider in 0..16 {
-                let compatible = if affinity_bit(i_collider as u32, cell_data.affinities) {
-                    1.0f32
-                } else {
-                    0.0f32
-                };
-                let sign = if sign_bit(i_collider as u32, cell_data.affinities)
-                    && !shape_has_solid_interior(i_collider as u32)
-                {
-                    -1.0f32
-                } else {
-                    1.0f32
-                };
-                affinity_signs[i_collider as usize] += compatible * weight * sign * cell_data.distance;
+            // Unrolled inner loop over 16 colliders.
+            // NOTE: `unroll_for_loops` doesn’t see through the closure so we use crunchy::unroll instead.
+            unroll! {
+                for i_collider in 0..16 {
+                    let compatible = if affinity_bit(i_collider as u32, cell_data.affinities) {
+                        1.0f32
+                    } else {
+                        0.0f32
+                    };
+                    let sign = if sign_bit(i_collider as u32, cell_data.affinities)
+                        && !shape_has_solid_interior(i_collider as u32)
+                    {
+                        -1.0f32
+                    } else {
+                        1.0f32
+                    };
+                    affinity_signs[i_collider as usize] += compatible * weight * sign * cell_data.distance;
+                }
             }
         }
-    };
-
-    // NOTE HACK: we define both loops separately instead of using the NBH_LEN const so
-    //            loop unrolling works (it requires literals for the range bounds).
-    #[cfg(feature = "dim2")]
-    for i in 0..9
-    /* NBH_LEN */
-    {
-        combine_affinity(i);
-    }
-    #[cfg(feature = "dim3")]
-    for i in 0..27
-    /* NBH_LEN */
-    {
-        combine_affinity(i);
     }
 
     // Convert the affinity signs to bits.
@@ -273,75 +260,62 @@ fn particle_g2p(
     #[cfg(feature = "dim3")]
     let mut qtu = Vec4::ZERO;
 
-    let mut handle_nbh = |i| {
-        let shift = NBH_SHIFTS.read(i as usize);
-        let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
-        let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
+    for i in 0..27 { // For loop unrolling, use the fixed bound (the maximum one between 2D and 3D).
+        if i < NBH_LEN {
+            let shift = NBH_SHIFTS.read(i as usize);
+            let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
+            let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
 
-        #[cfg(feature = "dim2")]
-        let dpt =
-            ref_elt_pos_minus_particle_pos + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
-        #[cfg(feature = "dim2")]
-        let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
-        #[cfg(feature = "dim3")]
-        let dpt = ref_elt_pos_minus_particle_pos
-            + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
-        #[cfg(feature = "dim3")]
-        let weight =
-            vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
+            #[cfg(feature = "dim2")]
+            let dpt =
+                ref_elt_pos_minus_particle_pos + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
+            #[cfg(feature = "dim2")]
+            let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
+            #[cfg(feature = "dim3")]
+            let dpt = ref_elt_pos_minus_particle_pos
+                + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
+            #[cfg(feature = "dim3")]
+            let weight =
+                vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
 
-        let combined_affinity = cell_data.affinities & particle_affinity & AFFINITY_BITS_MASK;
-        let sign_differences = ((cell_data.affinities >> SIGN_BITS_SHIFT)
-            ^ (particle_affinity >> SIGN_BITS_SHIFT))
-            & combined_affinity;
+            let combined_affinity = cell_data.affinities & particle_affinity & AFFINITY_BITS_MASK;
+            let sign_differences = ((cell_data.affinities >> SIGN_BITS_SHIFT)
+                ^ (particle_affinity >> SIGN_BITS_SHIFT))
+                & combined_affinity;
 
-        #[cfg(feature = "dim2")]
-        let p = Vec3::new(dpt.x, dpt.y, 1.0);
-        #[cfg(feature = "dim3")]
-        let p = Vec4::new(dpt.x, dpt.y, dpt.z, 1.0);
+            #[cfg(feature = "dim2")]
+            let p = Vec3::new(dpt.x, dpt.y, 1.0);
+            #[cfg(feature = "dim3")]
+            let p = Vec4::new(dpt.x, dpt.y, dpt.z, 1.0);
 
-        if combined_affinity != 0 {
-            if sign_differences == 0 {
-                // All signs match: positive distance.
-                #[cfg(feature = "dim2")]
-                {
-                    qtq += outer_product_3(p, p) * weight;
-                    qtu += p * (weight * cell_data.distance);
-                }
-                #[cfg(feature = "dim3")]
-                {
-                    qtq += outer_product_4(p, p) * weight;
-                    qtu += p * (weight * cell_data.distance);
-                }
-            } else {
-                // Sign difference: negative distance.
-                #[cfg(feature = "dim2")]
-                {
-                    qtq += outer_product_3(p, p) * weight;
-                    qtu += p * (weight * -cell_data.distance);
-                }
-                #[cfg(feature = "dim3")]
-                {
-                    qtq += outer_product_4(p, p) * weight;
-                    qtu += p * (weight * -cell_data.distance);
+            if combined_affinity != 0 {
+                if sign_differences == 0 {
+                    // All signs match: positive distance.
+                    #[cfg(feature = "dim2")]
+                    {
+                        qtq += outer_product_3(p, p) * weight;
+                        qtu += p * (weight * cell_data.distance);
+                    }
+                    #[cfg(feature = "dim3")]
+                    {
+                        qtq += outer_product_4(p, p) * weight;
+                        qtu += p * (weight * cell_data.distance);
+                    }
+                } else {
+                    // Sign difference: negative distance.
+                    #[cfg(feature = "dim2")]
+                    {
+                        qtq += outer_product_3(p, p) * weight;
+                        qtu += p * (weight * -cell_data.distance);
+                    }
+                    #[cfg(feature = "dim3")]
+                    {
+                        qtq += outer_product_4(p, p) * weight;
+                        qtu += p * (weight * -cell_data.distance);
+                    }
                 }
             }
         }
-    };
-
-    // NOTE HACK: we define both loops separately instead of using the NBH_LEN const so
-    //            loop unrolling works (it requires literals for the range bounds).
-    #[cfg(feature = "dim2")]
-    for i in 0..9
-    /* NBH_LEN */
-    {
-        handle_nbh(i)
-    }
-    #[cfg(feature = "dim3")]
-    for i in 0..27
-    /* NBH_LEN */
-    {
-        handle_nbh(i)
     }
 
     if qtq.determinant() > 1.0e-8 {

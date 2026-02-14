@@ -187,55 +187,57 @@ fn particle_g2p(
             assoc_cell_index_in_block.z,
         );
 
-        for i in 0..NBH_LEN as u32 {
-            let shift = NBH_SHIFTS.read(i as usize);
-            let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
-            let shared_id = (packed_cell_index_in_block + packed_shift) as usize;
-            let cell_data = shared_nodes_vel_mass[shared_id];
-            let cell_cdf = shared_nodes_cdf[shared_id];
-            let is_compatible =
-                affinities_are_compatible(particle_cdf.affinity, cell_cdf.affinities);
+        for i in 0..27 { // For loop unrolling, use the fixed bound (the maximum one between 2D and 3D).
+            if i < NBH_LEN {
+                let shift = NBH_SHIFTS.read(i as usize);
+                let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
+                let shared_id = (packed_cell_index_in_block + packed_shift) as usize;
+                let cell_data = shared_nodes_vel_mass[shared_id];
+                let cell_cdf = shared_nodes_cdf[shared_id];
+                let is_compatible =
+                    affinities_are_compatible(particle_cdf.affinity, cell_cdf.affinities);
 
-            #[cfg(feature = "dim2")]
-            let dpt = ref_elt_pos_minus_particle_pos
-                + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
-            #[cfg(feature = "dim3")]
-            let dpt = ref_elt_pos_minus_particle_pos
-                + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
+                #[cfg(feature = "dim2")]
+                let dpt = ref_elt_pos_minus_particle_pos
+                    + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
+                #[cfg(feature = "dim3")]
+                let dpt = ref_elt_pos_minus_particle_pos
+                    + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
 
-            let mut cpic_cell_data = cell_data;
+                let mut cpic_cell_data = cell_data;
 
-            if !is_compatible {
-                cpic_cell_data = shared_nodes_vel_mass_incompatible[shared_id];
+                if !is_compatible {
+                    cpic_cell_data = shared_nodes_vel_mass_incompatible[shared_id];
 
-                if cell_cdf.closest_id != NONE {
-                    let body_vel = body_vels.read(cell_cdf.closest_id as usize);
-                    let body_com = body_mprops.at(cell_cdf.closest_id as usize).com;
-                    let body_material = body_materials.read(cell_cdf.closest_id as usize);
-                    let cell_center = dpt + particle_pos.pt;
-                    let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
+                    if cell_cdf.closest_id != NONE {
+                        let body_vel = body_vels.read(cell_cdf.closest_id as usize);
+                        let body_com = body_mprops.at(cell_cdf.closest_id as usize).com;
+                        let body_material = body_materials.read(cell_cdf.closest_id as usize);
+                        let cell_center = dpt + particle_pos.pt;
+                        let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
 
-                    let cpic_vel = vector_part(cpic_cell_data);
-                    let particle_ghost_vel = body_pt_vel
-                        + body_material
+                        let cpic_vel = vector_part(cpic_cell_data);
+                        let particle_ghost_vel = body_pt_vel
+                            + body_material
                             .project_velocity(cpic_vel - body_pt_vel, particle_cdf.normal);
-                    cpic_cell_data =
-                        vector_plus_one(particle_ghost_vel, scalar_part(cpic_cell_data));
+                        cpic_cell_data =
+                            vector_plus_one(particle_ghost_vel, scalar_part(cpic_cell_data));
+                    }
                 }
+
+                #[cfg(feature = "dim2")]
+                let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
+                #[cfg(feature = "dim3")]
+                let weight = vec3_extract(w[0], shift.x)
+                    * vec3_extract(w[1], shift.y)
+                    * vec3_extract(w[2], shift.z);
+
+                let cpic_vel = vector_part(cpic_cell_data);
+
+                momentum_velocity_mass += cpic_cell_data * weight;
+                velocity_gradient += outer_product(cpic_vel, dpt) * (weight * inv_d);
+                vel_grad_det += weight * inv_d * cpic_vel.dot(dpt);
             }
-
-            #[cfg(feature = "dim2")]
-            let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
-            #[cfg(feature = "dim3")]
-            let weight = vec3_extract(w[0], shift.x)
-                * vec3_extract(w[1], shift.y)
-                * vec3_extract(w[2], shift.z);
-
-            let cpic_vel = vector_part(cpic_cell_data);
-
-            momentum_velocity_mass += cpic_cell_data * weight;
-            velocity_gradient += outer_product(cpic_vel, dpt) * (weight * inv_d);
-            vel_grad_det += weight * inv_d * cpic_vel.dot(dpt);
         }
 
         // Accumulate rigid body velocities for all affinity-linked colliders.

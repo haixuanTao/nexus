@@ -6,7 +6,7 @@
 
 use crate::grid::grid::Grid;
 use crate::solver::params::SimulationParams;
-use crate::solver::particle::{Cdf, Kinematics, MaterialState, Position};
+use crate::solver::particle::{Cdf, Kinematics, ParticleProperties, Position};
 use crate::{
     abs, acos, cos, diag, sqrt, Matrix, MaybeIndexUnchecked, PaddedMatrix, PaddingExt, Vector,
 };
@@ -188,7 +188,8 @@ fn compute_deformation(def_grad: PaddedMatrix, init_radius: f32) -> PaddedMatrix
 fn compute_color(
     kin: &Kinematics,
     cdf: &Cdf,
-    state: &MaterialState,
+    def_grad: &PaddedMatrix,
+    props: &ParticleProperties,
     base_color: Vec4,
     mode: u32,
     cell_width: f32,
@@ -199,11 +200,11 @@ fn compute_color(
         let c = Vec2::new(abs(vel.x), abs(vel.y)) * dt * 100.0 + Vec2::splat(0.2);
         Vec4::new(c.x, c.y, base_color.z, base_color.w)
     } else if mode == RENDER_MODE_VOLUME {
-        let sv = singular_values(state.def_grad);
+        let sv = singular_values(*def_grad);
         let c = (Vec2::ONE - sv) / 0.005 + Vec2::splat(0.2);
         Vec4::new(c.x, c.y, base_color.z, base_color.w)
     } else if mode == RENDER_MODE_PHASE {
-        let phase = state.phase;
+        let phase = props.phase;
         Vec4::new(0.0, 0.4 * phase, 0.4 * (1.0 - phase), base_color.w)
     } else if mode == RENDER_MODE_CDF_NORMALS {
         let normal = cdf.normal;
@@ -242,7 +243,8 @@ fn compute_color(
 fn compute_color(
     kin: &Kinematics,
     cdf: &Cdf,
-    state: &MaterialState,
+    def_grad: &PaddedMatrix,
+    props: &ParticleProperties,
     base_color: Vec4,
     mode: u32,
     cell_width: f32,
@@ -255,11 +257,11 @@ fn compute_color(
         let c = Vec3::new(abs(vel.x), abs(vel.y), abs(vel.z)) * dt * 100.0 + Vec3::splat(0.2);
         Vec4::new(c.x, c.y, c.z, base_color.w)
     } else if mode == RENDER_MODE_VOLUME {
-        let sv = singular_values(state.def_grad.remove_padding());
+        let sv = singular_values(def_grad.remove_padding());
         let c = (Vec3::ONE - sv) / 0.005 + Vec3::splat(0.2);
         Vec4::new(c.x, c.y, c.z, base_color.w)
     } else if mode == RENDER_MODE_PHASE {
-        let phase = state.phase;
+        let phase = props.phase;
         Vec4::new(0.0, 0.4 * phase, 0.4 * (1.0 - phase), base_color.w)
     } else if mode == RENDER_MODE_CDF_NORMALS {
         let normal = cdf.normal;
@@ -312,12 +314,15 @@ pub fn gpu_prep_readback(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_cdf: &[Cdf],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_state: &[MaterialState],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] base_colors: &[Vec4],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] config: &[RenderConfig],
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] particles_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
+    particles_def_grad: &[PaddedMatrix],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    particles_props: &[ParticleProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] base_colors: &[Vec4],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] params: &SimulationParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] config: &[RenderConfig],
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] particles_len: &u32,
 ) {
     let particle_id = invocation_id.x;
 
@@ -328,15 +333,16 @@ pub fn gpu_prep_readback(
     let pid = particle_id as usize;
     let kin = particles_kin.at(pid);
     let cdf = particles_cdf.at(pid);
-    let state = particles_state.at(pid);
+    let def_grad = particles_def_grad.at(pid);
+    let props = particles_props.at(pid);
     let pos = particles_pos.at(pid);
     let base_color = *base_colors.at(pid);
     let cell_width = grid_data.at(0).cell_width;
     let mode = config.at(0).mode;
     let dt = params.dt;
 
-    let deformation = compute_deformation(state.def_grad, state.init_radius);
-    let color = compute_color(kin, cdf, state, base_color, mode, cell_width, dt);
+    let deformation = compute_deformation(*def_grad, props.init_radius);
+    let color = compute_color(kin, cdf, def_grad, props, base_color, mode, cell_width, dt);
 
     #[cfg(feature = "dim2")]
     {

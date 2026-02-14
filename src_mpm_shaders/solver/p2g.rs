@@ -32,9 +32,9 @@ use unroll::unroll_for_loops;
 /// Number of shared memory cells.
 /// In 2D: (8+2)^2 = 100. In 3D: (4+2)^3 = 216.
 #[cfg(feature = "dim2")]
-const NUM_SHARED_CELLS: usize = 100; // 10 * 10
+const NUM_SHARED_CELLS: usize = 10 * 10;
 #[cfg(feature = "dim3")]
-const NUM_SHARED_CELLS: usize = 216; // 6 * 6 * 6
+const NUM_SHARED_CELLS: usize = 6 * 6 * 6;
 
 /// K_RANGE: in 2D the k loop is trivial (0..=0), in 3D it's (0..=1).
 #[cfg(feature = "dim2")]
@@ -177,7 +177,7 @@ fn p2g_step(
         #[cfg(feature = "dim3")]
         let inv_shift = UVec3::new(2, 2, 2) - shift;
         #[cfg(feature = "dim3")]
-        let momentum = particle_vel * particle_mass + particle_force_dt;
+        let momentum = particle_vel * particle_mass; // + particle_force_dt;
         #[cfg(feature = "dim3")]
         let dpt = ref_elt_pos_minus_particle_pos
             + Vec3::new(inv_shift.x as f32, inv_shift.y as f32, inv_shift.z as f32) * cell_width;
@@ -191,32 +191,32 @@ fn p2g_step(
             vector_plus_one(particle_affine * dpt + momentum, particle_mass) * weight;
 
         if !affinities_are_compatible(node_affinity, particle_affinity) {
-            if collider_id != NONE {
-                let particle_normal = shared_normals[nbh_shared_index];
-                let body_vel = body_vels.read(collider_id as usize);
-                let body_com = body_impulses.at(collider_id as usize).com;
-                let body_material = body_materials.read(collider_id as usize);
-                let cell_center = dpt + particle_pos.pt;
-                let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
-                let particle_ghost_vel = body_pt_vel
-                    + body_material.project_velocity(particle_vel - body_pt_vel, particle_normal);
-                let delta_impulse = (particle_vel - particle_ghost_vel) * (weight * particle_mass);
-
-                let lever_arm = body_com - cell_center;
-
-                #[cfg(feature = "dim2")]
-                {
-                    let delta_ang_impulse = delta_impulse.dot(Vec2::new(lever_arm.y, -lever_arm.x));
-                    ang_impulse += delta_ang_impulse;
-                }
-                #[cfg(feature = "dim3")]
-                {
-                    let delta_ang_impulse = delta_impulse.cross(lever_arm);
-                    ang_impulse += delta_ang_impulse;
-                }
-
-                impulse += delta_impulse;
-            }
+        //     if collider_id != NONE {
+        //         let particle_normal = shared_normals[nbh_shared_index];
+        //         let body_vel = body_vels.read(collider_id as usize);
+        //         let body_com = body_impulses.at(collider_id as usize).com;
+        //         let body_material = body_materials.read(collider_id as usize);
+        //         let cell_center = dpt + particle_pos.pt;
+        //         let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
+        //         let particle_ghost_vel = body_pt_vel
+        //             + body_material.project_velocity(particle_vel - body_pt_vel, particle_normal);
+        //         let delta_impulse = (particle_vel - particle_ghost_vel) * (weight * particle_mass);
+        //
+        //         let lever_arm = body_com - cell_center;
+        //
+        //         #[cfg(feature = "dim2")]
+        //         {
+        //             let delta_ang_impulse = delta_impulse.dot(Vec2::new(lever_arm.y, -lever_arm.x));
+        //             ang_impulse += delta_ang_impulse;
+        //         }
+        //         #[cfg(feature = "dim3")]
+        //         {
+        //             let delta_ang_impulse = delta_impulse.cross(lever_arm);
+        //             ang_impulse += delta_ang_impulse;
+        //         }
+        //
+        //         impulse += delta_impulse;
+        //     }
 
             new_momentum_velocity_mass_incompatible += contribution;
         } else {
@@ -414,9 +414,9 @@ fn fetch_next_particle(
 ) {
     for i_loop in 0..2 {
         for j_loop in 0..2 {
-            for k_loop in 0..K_RANGE + 1 {
+            for k_loop in 0..2 {
                 #[cfg(feature = "dim2")]
-                let skip = (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6);
+                let skip = k_loop != 0 || (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6);
                 #[cfg(feature = "dim3")]
                 let skip = (i_loop == 0 && tid.x < 2)
                     || (j_loop == 0 && tid.y < 2)
@@ -510,9 +510,9 @@ pub fn gpu_p2g(
     // Shared memory arrays.
     #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_affinities: &mut [u32; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] max_linked_list_length: &mut u32,

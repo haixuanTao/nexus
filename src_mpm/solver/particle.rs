@@ -1,5 +1,5 @@
 use crate::mpm_shaders::solver::particle::{
-    Cdf, Kinematics, MaterialState, Position, RigidParticleIndices,
+    Cdf, Kinematics, ParticleProperties, Position, RigidParticleIndices,
 };
 use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use crate::solver::particle_model::GpuParticleModelData;
@@ -48,7 +48,7 @@ impl<Model> Particle<Model> {
 
 /// CPU-side particle dynamics for initialization.
 ///
-/// Splits into GPU `Kinematics`, `Cdf`, and `MaterialState` buffers on upload.
+/// Splits into GPU `Kinematics`, `Cdf`, deformation gradient, and `ParticleProperties` buffers on upload.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ParticleDynamics {
     /// Current velocity.
@@ -134,10 +134,14 @@ impl ParticleDynamics {
         self.cdf
     }
 
-    /// Converts to the GPU `MaterialState` struct.
-    fn to_gpu_material_state(&self) -> MaterialState {
-        MaterialState {
-            def_grad: PaddedMatrix::add_padding(self.def_grad),
+    /// Converts the deformation gradient to a GPU `PaddedMatrix`.
+    fn to_gpu_def_grad(&self) -> PaddedMatrix {
+        PaddedMatrix::add_padding(self.def_grad)
+    }
+
+    /// Converts to the GPU `ParticleProperties` struct.
+    fn to_gpu_properties(&self) -> ParticleProperties {
+        ParticleProperties {
             init_volume: self.init_volume,
             init_radius: self.init_radius,
             damping: self.damping,
@@ -152,7 +156,8 @@ struct SoAParticles<GpuModel: GpuParticleModelData> {
     positions: Vec<Position>,
     kinematics: Vec<Kinematics>,
     cdf: Vec<Cdf>,
-    material_state: Vec<MaterialState>,
+    def_grad: Vec<PaddedMatrix>,
+    properties: Vec<ParticleProperties>,
     models: Vec<GpuModel>,
 }
 
@@ -170,9 +175,13 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
             .iter()
             .map(|p| p.dynamics.to_gpu_cdf())
             .collect();
-        let material_state: Vec<_> = particles
+        let def_grad: Vec<_> = particles
             .iter()
-            .map(|p| p.dynamics.to_gpu_material_state())
+            .map(|p| p.dynamics.to_gpu_def_grad())
+            .collect();
+        let properties: Vec<_> = particles
+            .iter()
+            .map(|p| p.dynamics.to_gpu_properties())
             .collect();
         let models: Vec<_> = particles
             .iter()
@@ -183,7 +192,8 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
             positions,
             kinematics,
             cdf,
-            material_state,
+            def_grad,
+            properties,
             models,
         }
     }
@@ -323,7 +333,8 @@ pub struct GpuParticles<GpuModel: GpuParticleModelData> {
     pub(crate) positions: Tensor<Position>,
     pub(crate) kinematics: Tensor<Kinematics>,
     pub(crate) cdf: Tensor<Cdf>,
-    pub(crate) material_state: Tensor<MaterialState>,
+    pub(crate) def_grad: Tensor<PaddedMatrix>,
+    pub(crate) properties: Tensor<ParticleProperties>,
     pub(crate) models: Tensor<GpuModel>,
     pub(crate) sorted_ids: Tensor<u32>,
     pub(crate) node_linked_lists: Tensor<u32>,
@@ -362,7 +373,8 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             positions: Tensor::vector(backend, &data.positions, resizeable)?,
             kinematics: Tensor::vector(backend, &data.kinematics, resizeable)?,
             cdf: Tensor::vector(backend, &data.cdf, resizeable)?,
-            material_state: Tensor::vector(backend, &data.material_state, resizeable)?,
+            def_grad: Tensor::vector(backend, &data.def_grad, resizeable)?,
+            properties: Tensor::vector(backend, &data.properties, resizeable)?,
             models: Tensor::vector(backend, &data.models, resizeable)?,
             sorted_ids: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
             node_linked_lists: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
@@ -409,14 +421,24 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
         &mut self.cdf
     }
 
-    /// Returns reference to material state buffer.
-    pub fn material_state(&self) -> &Tensor<MaterialState> {
-        &self.material_state
+    /// Returns reference to deformation gradient buffer.
+    pub fn def_grad(&self) -> &Tensor<PaddedMatrix> {
+        &self.def_grad
     }
 
-    /// Returns mutable reference to material state buffer.
-    pub fn material_state_mut(&mut self) -> &mut Tensor<MaterialState> {
-        &mut self.material_state
+    /// Returns mutable reference to deformation gradient buffer.
+    pub fn def_grad_mut(&mut self) -> &mut Tensor<PaddedMatrix> {
+        &mut self.def_grad
+    }
+
+    /// Returns reference to particle properties buffer (read-only on GPU).
+    pub fn properties(&self) -> &Tensor<ParticleProperties> {
+        &self.properties
+    }
+
+    /// Returns mutable reference to particle properties buffer.
+    pub fn properties_mut(&mut self) -> &mut Tensor<ParticleProperties> {
+        &mut self.properties
     }
 
     /// Returns reference to sorted particle ID buffer.

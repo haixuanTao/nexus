@@ -48,7 +48,8 @@ impl WgParticleUpdate {
             &mut particles.positions,
             &mut particles.kinematics,
             &particles.cdf,
-            &mut particles.material_state,
+            &mut particles.def_grad,
+            &particles.properties,
             &particles.gpu_len,
         )
     }

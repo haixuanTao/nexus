@@ -71,7 +71,8 @@ impl WgTimestepBounds {
             &grid.meta,
             cast_tensor::<GpuModel, GpuParticleModel>(&particles.models),
             &particles.kinematics,
-            &particles.material_state,
+            &particles.def_grad,
+            &particles.properties,
             &particles.gpu_len,
             bounds,
         )

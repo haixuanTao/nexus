@@ -59,7 +59,7 @@ fn main() {
 
     let status = Command::new("cargo")
         .args(args)
-        .env("RUST_MIN_STACK", (1024 * 1024 * 4).to_string()) // 4MB stack size. Needed for loop unrolling
+        .env("RUST_MIN_STACK", (1024 * 1024 * 32).to_string()) // increased stack size needed for loop unrolling
         .status()
         .expect("failed to run cargo gpu");
 

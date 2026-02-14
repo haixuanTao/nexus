@@ -131,18 +131,16 @@ pub struct Kinematics {
     pub padding: [u32; 3],
 }
 
-/// Deformation state and static material properties.
+/// Static per-particle properties that are read-only on the GPU.
 ///
-/// Contains the deformation gradient and material parameters that are primarily
-/// accessed during particle_update and timestep estimation, but NOT during P2G/G2P
-/// transfers. Separating this from kinematics avoids loading the large deformation
-/// gradient matrix (64 bytes in 3D) during transfer kernels.
+/// These fields are set once during particle creation and never modified by any
+/// GPU shader. Storing them separately from the deformation gradient (which is
+/// read-write) allows the GPU to cache this buffer more aggressively and avoids
+/// unnecessary write-back bandwidth.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
-pub struct MaterialState {
-    /// The deformation gradient (F).
-    pub def_grad: PaddedMatrix,
+pub struct ParticleProperties {
     /// The particle's initial volume (reference configuration).
     pub init_volume: f32,
     /// The particle's initial radius.
@@ -153,8 +151,7 @@ pub struct MaterialState {
     pub phase: f32,
     /// Whether this particle is fixed in place (non-zero = fixed).
     pub fixed: u32,
-    /// Pad to next multiple of 16 (Mat2/Mat4 alignment).
-    /// 2D: Mat2(16)+5*4+padding = 48 (3*16). 3D: Mat4(64)+5*4+padding = 96 (6*16).
+    /// Pad to 32 bytes for GPU cache line alignment.
     pub padding: [u32; 3],
 }
 

@@ -18,7 +18,7 @@ use crate::models::default::{DefaultParticleModel, GpuParticleModel};
 use crate::models::interfaces::{ParticleUpdateData, MODEL_FLAGS_FLUID};
 use crate::solver::boundary_condition::{BoundaryCondition, BOUNDARY_CONDITION_SLIP};
 use crate::solver::params::SimulationParams;
-use crate::solver::particle::{Cdf, Kinematics, MaterialState, Position};
+use crate::solver::particle::{Cdf, Kinematics, ParticleProperties, Position};
 use crate::PaddingExt;
 use crate::{diag, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
@@ -69,8 +69,10 @@ pub fn gpu_particle_update(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_kin: &mut [Kinematics],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_cdf: &[Cdf],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
-    particles_state: &mut [MaterialState],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] particles_len: &u32,
+    particles_def_grad: &mut [PaddedMatrix],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)]
+    particles_props: &[ParticleProperties],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] particles_len: &u32,
 ) {
     let particle_id = invocation_id.x;
 
@@ -83,13 +85,14 @@ pub fn gpu_particle_update(
     let cell_width = grid_data.at(0).cell_width;
     let mut kin = particles_kin.read(particle_id as usize);
     let cdf = particles_cdf.read(particle_id as usize);
-    let mut state = particles_state.read(particle_id as usize);
+    let mut def_grad = particles_def_grad.read(particle_id as usize);
+    let props = particles_props.read(particle_id as usize);
     let particle_pos = particles_pos.at(particle_id as usize).pt;
 
     // If the particle is fixed, clear its velocity.
     // This isn't ideal (this should typically be handled on the grid) but we sometimes
     // need sub-grid-sized fixed particles.
-    if state.fixed != 0 {
+    if props.fixed != 0 {
         kin.velocity = Vector::ZERO;
     }
 
@@ -117,7 +120,7 @@ pub fn gpu_particle_update(
 
     // Apply Rayleigh mass-proportional damping (implicit integration for stability).
     // v_new = v / (1 + damping * dt)
-    kin.velocity = kin.velocity / (1.0 + state.damping * dt);
+    kin.velocity = kin.velocity / (1.0 + props.damping * dt);
 
     let new_particle_pos = particle_pos + kin.velocity * dt;
 
@@ -138,12 +141,12 @@ pub fn gpu_particle_update(
     if (flags & MODEL_FLAGS_FLUID) == 0 {
         // Solid path: F_new = F + (vel_grad * dt) * F
         // NOTE: the velocity gradient was stored in the affine buffer.
-        state.def_grad = state.def_grad + (kin.affine * dt) * state.def_grad;
+        def_grad = def_grad + (kin.affine * dt) * def_grad;
     } else {
         // Fluid path: only track the diagonal (isotropic deformation).
-        let def_grad0 = state.def_grad.x_axis.x;
+        let def_grad0 = def_grad.x_axis.x;
         let new_def_grad_diag_elt = def_grad0 + (kin.vel_grad_det * dt) * def_grad0;
-        state.def_grad = PaddedMatrix::add_padding(diag(Vector::splat(new_def_grad_diag_elt)));
+        def_grad = PaddedMatrix::add_padding(diag(Vector::splat(new_def_grad_diag_elt)));
     }
 
     /*
@@ -151,7 +154,7 @@ pub fn gpu_particle_update(
      */
     let update_data = ParticleUpdateData::new(dt, cell_width, particle_id);
     let update_result =
-        DefaultParticleModel::update(particles_model, &update_data, &mut state.def_grad);
+        DefaultParticleModel::update(particles_model, &update_data, &mut def_grad);
 
     /*
      * Affine matrix for APIC transfer.
@@ -160,26 +163,26 @@ pub fn gpu_particle_update(
     // NOTE: the velocity gradient was stored in the affine buffer.
     let affine = kin.affine * kin.mass
         - PaddedMatrix::add_padding(
-            update_result.kirchoff_stress * (state.init_volume * inv_d * dt),
+            update_result.kirchoff_stress * (props.init_volume * inv_d * dt),
         );
 
     /*
      * Write back the new particle properties.
      */
     // Check for NaN and invalid deformation gradients.
-    if !vector_has_nan(new_particle_pos) && state.def_grad.determinant() > 0.0 {
+    if !vector_has_nan(new_particle_pos) && def_grad.determinant() > 0.0 {
         particles_pos.at_mut(particle_id as usize).pt = new_particle_pos;
         kin.affine = affine;
     } else {
         // This particle diverged, disable it.
         kin.enabled = 0;
         kin.velocity = Vector::ZERO;
-        state.def_grad = PaddedMatrix::IDENTITY;
+        def_grad = PaddedMatrix::IDENTITY;
         kin.affine = PaddedMatrix::ZERO;
         kin.mass = 0.0;
     }
     kin.force_dt = Vector::ZERO;
 
     particles_kin.write(particle_id as usize, kin);
-    particles_state.write(particle_id as usize, state);
+    particles_def_grad.write(particle_id as usize, def_grad);
 }

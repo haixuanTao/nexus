@@ -191,7 +191,7 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
     #[cfg(feature = "dim3")]
     {
         scene3d.add_directional_light(glamx::Vec3::new(-1.0, -1.0, -1.0));
-        scene3d.add_directional_light(glamx::Vec3::new(1.0, 1.0, 1.0));
+        scene3d.add_directional_light(glamx::Vec3::new(1.0, -1.0, 1.0));
     }
 
     render_colliders(
@@ -446,9 +446,8 @@ fn generate_collider_node(
         }
         ShapeType::Cuboid => {
             let cuboid = co_shape.as_cuboid().unwrap();
-            let (vtx, idx) = cuboid.to_trimesh();
-            let mesh = kiss3d_mesh_3d(&vtx, &idx);
-            Some(scene3d.add_mesh(Rc::new(RefCell::new(mesh)), glamx::Vec3::ONE))
+            let sz = cuboid.half_extents * 2.0;
+            Some(scene3d.add_cube(sz.x, sz.y, sz.z))
         }
         ShapeType::Capsule => {
             let capsule = co_shape.as_capsule().unwrap();
