@@ -5,7 +5,7 @@
 
 use crate::grid::grid::Grid;
 use crate::models::default::{DefaultParticleModel, GpuParticleModel};
-use crate::solver::particle::Dynamics;
+use crate::solver::particle::{Kinematics, MaterialState};
 use crate::PaddingExt;
 use crate::{atomic_min_u32, sqrt, Matrix, MaybeIndexUnchecked, DIM};
 use khal_derive::spirv_bindgen;
@@ -62,9 +62,10 @@ pub fn gpu_estimate_timestep_bound(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     particles_model: &[GpuParticleModel],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_dyn: &[Dynamics],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] particles_len: &u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] result: &mut [GpuTimestepBounds],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_state: &[MaterialState],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] particles_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] result: &mut [GpuTimestepBounds],
 ) {
     let particle_id = invocation_id.x;
 
@@ -72,20 +73,21 @@ pub fn gpu_estimate_timestep_bound(
         return;
     }
 
-    let dynamics = particles_dyn.read(particle_id as usize);
+    let kin = particles_kin.read(particle_id as usize);
 
-    if dynamics.enabled == 0 {
+    if kin.enabled == 0 {
         return;
     }
 
+    let state = particles_state.read(particle_id as usize);
     let cell_width = grid_data.at(0).cell_width;
 
     // Model-specific restrictions (usually based on sound speed, section 4.1).
-    let density0 = dynamics.init_density();
-    let def_grad = dynamics.def_grad.remove_padding();
-    let velocity = dynamics.velocity;
-    let affine = dynamics.affine.remove_padding();
-    let mass = dynamics.mass;
+    let density0 = kin.mass / state.init_volume;
+    let def_grad = state.def_grad.remove_padding();
+    let velocity = kin.velocity;
+    let affine = kin.affine.remove_padding();
+    let mass = kin.mass;
 
     let mut dt = DefaultParticleModel::timestep_bound(
         particles_model,

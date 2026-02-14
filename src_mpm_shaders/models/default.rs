@@ -4,7 +4,6 @@ use super::drucker_prager::*;
 use super::interfaces::*;
 use super::linear_elasticity::LinearElasticModel;
 use super::neo_hookean_elasticity::NeoHookeanModel;
-use crate::solver::particle::Dynamics;
 use crate::{Matrix, PaddedMatrix, PaddingExt, Vector};
 
 /// The byte stride of `GpuParticleModel` in GPU buffers.
@@ -138,11 +137,11 @@ impl DefaultParticleModel {
     pub fn update(
         models: &mut [GpuParticleModel],
         data: &ParticleUpdateData,
-        dynamics: &mut Dynamics,
+        def_grad_padded: &mut PaddedMatrix,
     ) -> ModelUpdateResult {
         let model = &mut models[data.particle_id as usize];
         let tag = model.tag;
-        let def_grad = dynamics.def_grad.remove_padding();
+        let def_grad = def_grad_padded.remove_padding();
 
         match tag {
             MODEL_ELASTIC_LINEAR => {
@@ -159,7 +158,7 @@ impl DefaultParticleModel {
                 let sand = load_sand_linear(&model.data);
                 let projection = sand.plastic.project(sand.plastic_state, def_grad);
                 store_plastic_state(&mut model.data, projection.state);
-                dynamics.def_grad = PaddedMatrix::add_padding(projection.deformation_gradient);
+                *def_grad_padded = PaddedMatrix::add_padding(projection.deformation_gradient);
                 let stress = sand
                     .elastic
                     .kirchoff_stress(projection.deformation_gradient);
@@ -169,7 +168,7 @@ impl DefaultParticleModel {
                 let sand = load_sand_neo_hookean(&model.data);
                 let projection = sand.plastic.project(sand.plastic_state, def_grad);
                 store_plastic_state(&mut model.data, projection.state);
-                dynamics.def_grad = PaddedMatrix::add_padding(projection.deformation_gradient);
+                *def_grad_padded = PaddedMatrix::add_padding(projection.deformation_gradient);
                 let stress = sand
                     .elastic
                     .kirchoff_stress(projection.deformation_gradient);

@@ -71,7 +71,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         builders: SceneBuilders<GpuModel>,
     ) -> Stage<GpuModel> {
         let limits = Limits {
-            max_storage_buffers_per_shader_stage: 11,
+            max_storage_buffers_per_shader_stage: 12,
             max_buffer_size: 1_000_000_000,
             max_storage_buffer_binding_size: 1_000_000_000,
             ..Limits::default()

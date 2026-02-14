@@ -18,7 +18,7 @@ use crate::models::default::{DefaultParticleModel, GpuParticleModel};
 use crate::models::interfaces::{ParticleUpdateData, MODEL_FLAGS_FLUID};
 use crate::solver::boundary_condition::{BoundaryCondition, BOUNDARY_CONDITION_SLIP};
 use crate::solver::params::SimulationParams;
-use crate::solver::particle::{Dynamics, Position};
+use crate::solver::particle::{Cdf, Kinematics, MaterialState, Position};
 use crate::PaddingExt;
 use crate::{diag, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
@@ -66,8 +66,11 @@ pub fn gpu_particle_update(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     particles_model: &mut [GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_pos: &mut [Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_dyn: &mut [Dynamics],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] particles_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_kin: &mut [Kinematics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_cdf: &[Cdf],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    particles_state: &mut [MaterialState],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] particles_len: &u32,
 ) {
     let particle_id = invocation_id.x;
 
@@ -78,14 +81,16 @@ pub fn gpu_particle_update(
     let flags = DefaultParticleModel::model_flags(particles_model, particle_id);
     let dt = params.dt;
     let cell_width = grid_data.at(0).cell_width;
-    let mut dynamics = particles_dyn.read(particle_id as usize);
+    let mut kin = particles_kin.read(particle_id as usize);
+    let cdf = particles_cdf.read(particle_id as usize);
+    let mut state = particles_state.read(particle_id as usize);
     let particle_pos = particles_pos.at(particle_id as usize).pt;
 
     // If the particle is fixed, clear its velocity.
     // This isn't ideal (this should typically be handled on the grid) but we sometimes
     // need sub-grid-sized fixed particles.
-    if dynamics.fixed != 0 {
-        dynamics.velocity = Vector::ZERO;
+    if state.fixed != 0 {
+        kin.velocity = Vector::ZERO;
     }
 
     /*
@@ -97,37 +102,34 @@ pub fn gpu_particle_update(
     //       it at some point as it appeared that we'd still get some penetrating particles.
     //       However, that might have been caused by other bugs so it is unsure if we need to
     //       keep it now.
-    if dynamics.cdf.signed_distance < -0.05 * cell_width {
+    if cdf.signed_distance < -0.05 * cell_width {
         let slip = BoundaryCondition::new(BOUNDARY_CONDITION_SLIP, 0.0);
-        dynamics.velocity = dynamics.cdf.rigid_vel
-            + slip.project_velocity(
-                dynamics.velocity - dynamics.cdf.rigid_vel,
-                dynamics.cdf.normal,
-            );
+        kin.velocity =
+            cdf.rigid_vel + slip.project_velocity(kin.velocity - cdf.rigid_vel, cdf.normal);
     }
 
     // Clamp the max velocity a particle can get.
     // TODO: clamp the grid velocities instead?
-    let vel_len = dynamics.velocity.length();
+    let vel_len = kin.velocity.length();
     if vel_len > cell_width / dt {
-        dynamics.velocity = dynamics.velocity / vel_len * cell_width / dt;
+        kin.velocity = kin.velocity / vel_len * cell_width / dt;
     }
 
     // Apply Rayleigh mass-proportional damping (implicit integration for stability).
     // v_new = v / (1 + damping * dt)
-    dynamics.velocity = dynamics.velocity / (1.0 + dynamics.damping * dt);
+    kin.velocity = kin.velocity / (1.0 + state.damping * dt);
 
-    let new_particle_pos = particle_pos + dynamics.velocity * dt;
+    let new_particle_pos = particle_pos + kin.velocity * dt;
 
     /*
      * Penalty impulse.
      */
     // TODO: apply the penalty impulse as an extra force on the grid instead of
     //       changing the particle velocity directly?
-    if dynamics.cdf.signed_distance < -0.05 * cell_width {
-        let corrected_dist = dynamics.cdf.signed_distance.max(-0.3 * cell_width);
-        let impulse = (dt * -corrected_dist * PENALTY_COEFF) * dynamics.cdf.normal;
-        dynamics.velocity += impulse;
+    if cdf.signed_distance < -0.05 * cell_width {
+        let corrected_dist = cdf.signed_distance.max(-0.3 * cell_width);
+        let impulse = (dt * -corrected_dist * PENALTY_COEFF) * cdf.normal;
+        kin.velocity += impulse;
     }
 
     /*
@@ -136,46 +138,48 @@ pub fn gpu_particle_update(
     if (flags & MODEL_FLAGS_FLUID) == 0 {
         // Solid path: F_new = F + (vel_grad * dt) * F
         // NOTE: the velocity gradient was stored in the affine buffer.
-        dynamics.def_grad = dynamics.def_grad + (dynamics.affine * dt) * dynamics.def_grad;
+        state.def_grad = state.def_grad + (kin.affine * dt) * state.def_grad;
     } else {
         // Fluid path: only track the diagonal (isotropic deformation).
-        let def_grad0 = dynamics.def_grad.x_axis.x;
-        let new_def_grad_diag_elt = def_grad0 + (dynamics.vel_grad_det * dt) * def_grad0;
-        dynamics.def_grad = PaddedMatrix::add_padding(diag(Vector::splat(new_def_grad_diag_elt)));
+        let def_grad0 = state.def_grad.x_axis.x;
+        let new_def_grad_diag_elt = def_grad0 + (kin.vel_grad_det * dt) * def_grad0;
+        state.def_grad = PaddedMatrix::add_padding(diag(Vector::splat(new_def_grad_diag_elt)));
     }
 
     /*
      * Constitutive model.
      */
     let update_data = ParticleUpdateData::new(dt, cell_width, particle_id);
-    let update_result = DefaultParticleModel::update(particles_model, &update_data, &mut dynamics);
+    let update_result =
+        DefaultParticleModel::update(particles_model, &update_data, &mut state.def_grad);
 
     /*
      * Affine matrix for APIC transfer.
      */
     let inv_d = QuadraticKernel::inv_d(cell_width);
     // NOTE: the velocity gradient was stored in the affine buffer.
-    let affine = dynamics.affine * dynamics.mass
+    let affine = kin.affine * kin.mass
         - PaddedMatrix::add_padding(
-            update_result.kirchoff_stress * (dynamics.init_volume * inv_d * dt),
+            update_result.kirchoff_stress * (state.init_volume * inv_d * dt),
         );
 
     /*
      * Write back the new particle properties.
      */
     // Check for NaN and invalid deformation gradients.
-    if !vector_has_nan(new_particle_pos) && dynamics.def_grad.determinant() > 0.0 {
+    if !vector_has_nan(new_particle_pos) && state.def_grad.determinant() > 0.0 {
         particles_pos.at_mut(particle_id as usize).pt = new_particle_pos;
-        dynamics.affine = affine;
+        kin.affine = affine;
     } else {
         // This particle diverged, disable it.
-        dynamics.enabled = 0;
-        dynamics.velocity = Vector::ZERO;
-        dynamics.def_grad = PaddedMatrix::IDENTITY;
-        dynamics.affine = PaddedMatrix::ZERO;
-        dynamics.mass = 0.0;
+        kin.enabled = 0;
+        kin.velocity = Vector::ZERO;
+        state.def_grad = PaddedMatrix::IDENTITY;
+        kin.affine = PaddedMatrix::ZERO;
+        kin.mass = 0.0;
     }
-    dynamics.force_dt = Vector::ZERO;
+    kin.force_dt = Vector::ZERO;
 
-    particles_dyn.write(particle_id as usize, dynamics);
+    particles_kin.write(particle_id as usize, kin);
+    particles_state.write(particle_id as usize, state);
 }

@@ -46,7 +46,9 @@ impl WgParticleUpdate {
             &grid.meta,
             cast_tensor_mut::<GpuModel, GpuParticleModel>(&mut particles.models),
             &mut particles.positions,
-            &mut particles.dynamics,
+            &mut particles.kinematics,
+            &particles.cdf,
+            &mut particles.material_state,
             &particles.gpu_len,
         )
     }

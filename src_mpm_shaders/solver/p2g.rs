@@ -15,7 +15,7 @@ use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
 use crate::solver::boundary_condition::BoundaryCondition;
-use crate::solver::particle::{dir_to_associated_grid_node, Dynamics, Position};
+use crate::solver::particle::{dir_to_associated_grid_node, Cdf, Kinematics, Position};
 use crate::{
     scalar_part, vector_part, vector_plus_one, AngVector, Matrix, MaybeIndexUnchecked, PaddingExt,
     Vector, VectorPlusOne,
@@ -400,7 +400,8 @@ fn fetch_nodes(
 #[unroll_for_loops]
 fn fetch_next_particle(
     particles_pos: &[Position],
-    particles_dyn: &[Dynamics],
+    particles_kin: &[Kinematics],
+    particles_cdf: &[Cdf],
     particle_node_linked_lists: &[u32],
     tid: spirv_std::glam::UVec3,
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
@@ -440,17 +441,18 @@ fn fetch_next_particle(
                     let curr_particle_id = shared_nodes[shared_flat_index].particle_id;
 
                     if curr_particle_id != NONE
-                        && particles_dyn.at(curr_particle_id as usize).enabled != 0
+                        && particles_kin.at(curr_particle_id as usize).enabled != 0
                     {
-                        let pdyn = particles_dyn.read(curr_particle_id as usize);
-                        shared_affinities[shared_flat_index] = pdyn.cdf.affinity;
-                        shared_normals[shared_flat_index] = pdyn.cdf.normal;
+                        let pkin = particles_kin.read(curr_particle_id as usize);
+                        let pcdf = particles_cdf.read(curr_particle_id as usize);
+                        shared_affinities[shared_flat_index] = pcdf.affinity;
+                        shared_normals[shared_flat_index] = pcdf.normal;
                         shared_pos[shared_flat_index] =
                             particles_pos.read(curr_particle_id as usize);
-                        shared_affine[shared_flat_index] = pdyn.affine.remove_padding();
-                        shared_force_dt[shared_flat_index] = pdyn.force_dt;
+                        shared_affine[shared_flat_index] = pkin.affine.remove_padding();
+                        shared_force_dt[shared_flat_index] = pkin.force_dt;
                         shared_vel_mass[shared_flat_index] =
-                            vector_plus_one(pdyn.velocity, pdyn.mass);
+                            vector_plus_one(pkin.velocity, pkin.mass);
                     } else {
                         shared_affinities[shared_flat_index] = 0;
                         shared_normals[shared_flat_index] = Vector::ZERO;
@@ -497,12 +499,13 @@ pub fn gpu_p2g(
     nodes_linked_lists: &[NodeLinkedList],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_dyn: &[Dynamics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)]
-    body_impulses: &mut [IntegerImpulseAtomic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_kin: &[Kinematics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_cdf: &[Cdf],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] nodes: &mut [Node],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
+    body_impulses: &mut [IntegerImpulseAtomic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
     body_materials: &[BoundaryCondition],
     // Shared memory arrays.
     #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
@@ -567,7 +570,8 @@ pub fn gpu_p2g(
         workgroup_memory_barrier_with_group_sync();
         fetch_next_particle(
             particles_pos,
-            particles_dyn,
+            particles_kin,
+            particles_cdf,
             particle_node_linked_lists,
             tid,
             shared_nodes,

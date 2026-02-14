@@ -34,7 +34,7 @@ pub fn elasticity_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physic
     if !app_state.restarting {
         app_state.min_num_substeps = 15;
         app_state.max_num_substeps = 15;
-        app_state.gravity_factor = 0.0; // 2.0;
+        app_state.gravity_factor = 2.0;
     };
 
     let params = SimulationParams {

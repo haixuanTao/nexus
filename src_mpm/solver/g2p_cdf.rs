@@ -41,8 +41,8 @@ impl WgG2PCdf {
             &grid.active_blocks,
             &grid.nodes,
             &particles.sorted_ids,
-            &mut particles.positions,
-            &mut particles.dynamics,
+            &particles.positions,
+            &mut particles.cdf,
         )
     }
 }

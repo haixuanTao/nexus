@@ -15,7 +15,8 @@ use crate::nexus_shaders::dynamics::{
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{
-    associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Dynamics, Position,
+    associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Cdf, Kinematics,
+    Position,
 };
 use crate::PaddingExt;
 use crate::{
@@ -149,7 +150,8 @@ fn particle_g2p(
     body_mprops: &[BodyMassProperties],
     body_materials: &[BoundaryCondition],
     particles_pos: &[Position],
-    particles_dyn: &mut [Dynamics],
+    particles_kin: &mut [Kinematics],
+    particles_cdf: &mut [Cdf],
     particle_id: u32,
     cell_width: f32,
     _dt: f32,
@@ -163,10 +165,10 @@ fn particle_g2p(
     let mut vel_grad_det = 0.0f32;
 
     // G2P
-    if particles_dyn.at(particle_id as usize).enabled != 0 {
+    if particles_kin.at(particle_id as usize).enabled != 0 {
         let particle_pos = particles_pos.read(particle_id as usize);
-        let particle_vel = particles_dyn.at(particle_id as usize).velocity;
-        let particle_cdf = particles_dyn.at(particle_id as usize).cdf;
+        let particle_vel = particles_kin.at(particle_id as usize).velocity;
+        let particle_cdf = particles_cdf.read(particle_id as usize);
 
         let inv_d = QuadraticKernel::inv_d(cell_width);
         let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
@@ -246,13 +248,13 @@ fn particle_g2p(
         }
     }
 
-    particles_dyn.at_mut(particle_id as usize).cdf.rigid_vel = rigid_vel;
+    particles_cdf.at_mut(particle_id as usize).rigid_vel = rigid_vel;
     // Set the particle velocity, and store the velocity gradient into the affine matrix.
     // The rest will be dealt with in the particle update kernel(s).
-    particles_dyn.at_mut(particle_id as usize).affine =
+    particles_kin.at_mut(particle_id as usize).affine =
         PaddedMatrix::add_padding(velocity_gradient);
-    particles_dyn.at_mut(particle_id as usize).vel_grad_det = vel_grad_det;
-    particles_dyn.at_mut(particle_id as usize).velocity = vector_part(momentum_velocity_mass);
+    particles_kin.at_mut(particle_id as usize).vel_grad_det = vel_grad_det;
+    particles_kin.at_mut(particle_id as usize).velocity = vector_part(momentum_velocity_mass);
 }
 
 /*
@@ -278,10 +280,11 @@ pub fn gpu_g2p(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_dyn: &mut [Dynamics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_mprops: &[BodyMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_kin: &mut [Kinematics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] particles_cdf: &mut [Cdf],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_mprops: &[BodyMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
     body_materials: &[BoundaryCondition],
     // Shared memory.
     #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
@@ -325,7 +328,8 @@ pub fn gpu_g2p(
             body_mprops,
             body_materials,
             particles_pos,
-            particles_dyn,
+            particles_kin,
+            particles_cdf,
             particle_id,
             grid_data.at(0).cell_width,
             params.dt,

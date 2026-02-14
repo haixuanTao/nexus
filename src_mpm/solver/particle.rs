@@ -1,4 +1,6 @@
-use crate::mpm_shaders::solver::particle::{Dynamics, Position, RigidParticleIndices};
+use crate::mpm_shaders::solver::particle::{
+    Cdf, Kinematics, MaterialState, Position, RigidParticleIndices,
+};
 use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use crate::solver::particle_model::GpuParticleModelData;
 use glamx::{Mat2, Mat3, Vec2, Vec3, Vec4};
@@ -46,8 +48,7 @@ impl<Model> Particle<Model> {
 
 /// CPU-side particle dynamics for initialization.
 ///
-/// This wraps the shader crate's `Dynamics` type, providing constructors
-/// that use the same math as the old code.
+/// Splits into GPU `Kinematics`, `Cdf`, and `MaterialState` buffers on upload.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ParticleDynamics {
     /// Current velocity.
@@ -115,30 +116,43 @@ impl ParticleDynamics {
         self.mass = self.init_volume * density;
     }
 
-    /// Converts to the GPU `Dynamics` struct.
-    fn to_gpu_dynamics(&self) -> Dynamics {
-        Dynamics {
-            velocity: self.velocity,
-            def_grad: PaddedMatrix::add_padding(self.def_grad),
+    /// Converts to the GPU `Kinematics` struct.
+    fn to_gpu_kinematics(&self) -> Kinematics {
+        Kinematics {
             affine: PaddedMatrix::add_padding(self.affine),
-            force_dt: self.force_dt,
+            velocity: self.velocity,
             vel_grad_det: self.vel_grad_det,
-            cdf: self.cdf,
+            force_dt: self.force_dt,
+            mass: self.mass,
+            enabled: self.enabled,
+            padding: Default::default(),
+        }
+    }
+
+    /// Converts to the GPU `Cdf` struct.
+    fn to_gpu_cdf(&self) -> Cdf {
+        self.cdf
+    }
+
+    /// Converts to the GPU `MaterialState` struct.
+    fn to_gpu_material_state(&self) -> MaterialState {
+        MaterialState {
+            def_grad: PaddedMatrix::add_padding(self.def_grad),
             init_volume: self.init_volume,
             init_radius: self.init_radius,
-            mass: self.mass,
             damping: self.damping,
             phase: self.phase,
-            enabled: self.enabled,
             fixed: self.fixed,
-            padding: [0; _],
+            padding: Default::default(),
         }
     }
 }
 
 struct SoAParticles<GpuModel: GpuParticleModelData> {
     positions: Vec<Position>,
-    dynamics: Vec<Dynamics>,
+    kinematics: Vec<Kinematics>,
+    cdf: Vec<Cdf>,
+    material_state: Vec<MaterialState>,
     models: Vec<GpuModel>,
 }
 
@@ -148,9 +162,17 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
             .iter()
             .map(|p| Position::new(p.position))
             .collect();
-        let dynamics: Vec<_> = particles
+        let kinematics: Vec<_> = particles
             .iter()
-            .map(|p| p.dynamics.to_gpu_dynamics())
+            .map(|p| p.dynamics.to_gpu_kinematics())
+            .collect();
+        let cdf: Vec<_> = particles
+            .iter()
+            .map(|p| p.dynamics.to_gpu_cdf())
+            .collect();
+        let material_state: Vec<_> = particles
+            .iter()
+            .map(|p| p.dynamics.to_gpu_material_state())
             .collect();
         let models: Vec<_> = particles
             .iter()
@@ -159,7 +181,9 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
 
         Self {
             positions,
-            dynamics,
+            kinematics,
+            cdf,
+            material_state,
             models,
         }
     }
@@ -297,7 +321,9 @@ pub struct GpuParticles<GpuModel: GpuParticleModelData> {
     len: usize,
     pub(crate) gpu_len: Tensor<u32>,
     pub(crate) positions: Tensor<Position>,
-    pub(crate) dynamics: Tensor<Dynamics>,
+    pub(crate) kinematics: Tensor<Kinematics>,
+    pub(crate) cdf: Tensor<Cdf>,
+    pub(crate) material_state: Tensor<MaterialState>,
     pub(crate) models: Tensor<GpuModel>,
     pub(crate) sorted_ids: Tensor<u32>,
     pub(crate) node_linked_lists: Tensor<u32>,
@@ -334,7 +360,9 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
                 BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             )?,
             positions: Tensor::vector(backend, &data.positions, resizeable)?,
-            dynamics: Tensor::vector(backend, &data.dynamics, resizeable)?,
+            kinematics: Tensor::vector(backend, &data.kinematics, resizeable)?,
+            cdf: Tensor::vector(backend, &data.cdf, resizeable)?,
+            material_state: Tensor::vector(backend, &data.material_state, resizeable)?,
             models: Tensor::vector(backend, &data.models, resizeable)?,
             sorted_ids: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
             node_linked_lists: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
@@ -361,14 +389,34 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
         &mut self.positions
     }
 
-    /// Returns reference to dynamics buffer.
-    pub fn dynamics(&self) -> &Tensor<Dynamics> {
-        &self.dynamics
+    /// Returns reference to kinematics buffer.
+    pub fn kinematics(&self) -> &Tensor<Kinematics> {
+        &self.kinematics
     }
 
-    /// Returns mutable reference to dynamics buffer.
-    pub fn dynamics_mut(&mut self) -> &mut Tensor<Dynamics> {
-        &mut self.dynamics
+    /// Returns mutable reference to kinematics buffer.
+    pub fn kinematics_mut(&mut self) -> &mut Tensor<Kinematics> {
+        &mut self.kinematics
+    }
+
+    /// Returns reference to CDF buffer.
+    pub fn cdf(&self) -> &Tensor<Cdf> {
+        &self.cdf
+    }
+
+    /// Returns mutable reference to CDF buffer.
+    pub fn cdf_mut(&mut self) -> &mut Tensor<Cdf> {
+        &mut self.cdf
+    }
+
+    /// Returns reference to material state buffer.
+    pub fn material_state(&self) -> &Tensor<MaterialState> {
+        &self.material_state
+    }
+
+    /// Returns mutable reference to material state buffer.
+    pub fn material_state_mut(&mut self) -> &mut Tensor<MaterialState> {
+        &mut self.material_state
     }
 
     /// Returns reference to sorted particle ID buffer.

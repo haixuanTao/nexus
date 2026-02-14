@@ -92,28 +92,26 @@ pub struct RigidParticleIndices {
     pub _pad: u32,
 }
 
-/// The main dynamic state of an MPM particle.
+/// Core kinematic state for APIC particle-grid transfers.
 ///
-/// Field ordering is carefully chosen to minimize padding.
-/// In 2D, `Mat2` has 16-byte alignment (due to glam's SIMD compatibility),
-/// so explicit padding is needed after `velocity: Vec2` (8 bytes) to reach
-/// the required 16-byte alignment for `def_grad: Mat2`.
+/// Contains the fields needed by P2G and G2P kernels: velocity, mass, affine matrix,
+/// external forces, and particle status. Separated from deformation and material
+/// properties to reduce GPU memory bandwidth in transfer kernels.
+///
+/// Field ordering is chosen to minimize SPIR-V padding:
+/// - In 3D, Vec3 has align(16), so f32 fields are placed after Vec3 to pack into the gap.
+/// - In 2D, Vec2 has align(8), so f32 fields are grouped at the end.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
-pub struct Dynamics {
-    /// The deformation gradient (F).
-    pub def_grad: PaddedMatrix,
+pub struct Kinematics {
     /// During `particle_update`, this contains the velocity gradient.
     /// After `particle_update`, this contains the affine matrix for APIC transfer.
     pub affine: PaddedMatrix,
-    /// Contact distance field data.
-    pub cdf: Cdf,
     /// The particle's velocity.
     pub velocity: Vector,
     /// Determinant of the velocity gradient (used for fluid models).
     #[cfg(feature = "dim3")]
-    // The location of this fields in the struct depends on dim2/dim3 to reduce padding.
     pub vel_grad_det: f32,
     /// Additional user-defined force applied to the particle, multiplied by dt.
     /// Reset at each `particle_update` invocation.
@@ -121,34 +119,43 @@ pub struct Dynamics {
     pub force_dt: Vector,
     /// Determinant of the velocity gradient (used for fluid models).
     #[cfg(feature = "dim2")]
-    // The location of this fields in the struct depends on dim2/dim3 to reduce padding.
     pub vel_grad_det: f32,
+    /// The particle's mass.
+    pub mass: f32,
+    /// Whether this particle is enabled (non-zero = enabled).
+    pub enabled: u32,
+    /// 2D: pad to 48 bytes (multiple of 8). 3D: pad to 112 bytes (multiple of 16).
+    #[cfg(feature = "dim2")]
+    pub padding: u32,
+    #[cfg(feature = "dim3")]
+    pub padding: [u32; 3],
+}
+
+/// Deformation state and static material properties.
+///
+/// Contains the deformation gradient and material parameters that are primarily
+/// accessed during particle_update and timestep estimation, but NOT during P2G/G2P
+/// transfers. Separating this from kinematics avoids loading the large deformation
+/// gradient matrix (64 bytes in 3D) during transfer kernels.
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[repr(C)]
+pub struct MaterialState {
+    /// The deformation gradient (F).
+    pub def_grad: PaddedMatrix,
     /// The particle's initial volume (reference configuration).
     pub init_volume: f32,
     /// The particle's initial radius.
     pub init_radius: f32,
-    /// The particle's mass.
-    pub mass: f32,
     /// Rayleigh mass-proportional damping coefficient (1/s).
     pub damping: f32,
     /// Phase value (used for multi-material mixing).
     pub phase: f32,
-    /// Whether this particle is enabled (non-zero = enabled).
-    pub enabled: u32,
     /// Whether this particle is fixed in place (non-zero = fixed).
     pub fixed: u32,
-    #[cfg(feature = "dim2")]
-    pub padding: [u32; 2],
-    #[cfg(feature = "dim3")]
-    pub padding: [u32; 2],
-}
-
-impl Dynamics {
-    /// Returns the initial density of the particle.
-    #[inline]
-    pub fn init_density(&self) -> f32 {
-        self.mass / self.init_volume
-    }
+    /// Pad to next multiple of 16 (Mat2/Mat4 alignment).
+    /// 2D: Mat2(16)+5*4+padding = 48 (3*16). 3D: Mat4(64)+5*4+padding = 96 (6*16).
+    pub padding: [u32; 3],
 }
 
 /*
