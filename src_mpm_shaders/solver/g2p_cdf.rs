@@ -132,7 +132,7 @@ fn global_shared_memory_transfers(
                         || (j_loop == 1 && tid.y > 1)
                         || (k_loop == 1 && tid.z > 1))
                     {
-                        let octant = UVec3::new(i_loop, j_loop, k_loop);
+                        let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
                         let octant_hid = find_block_header_id(
                             grid_data,
                             hmap_entries,

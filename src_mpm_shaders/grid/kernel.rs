@@ -40,7 +40,7 @@ pub const NBH_SHIFTS: [UVec2; 9] = [
 
 /// Returns the stencil offset for neighbor `i` as a UVector.
 #[cfg(feature = "dim3")]
-pub const NBH_SHIFTS: [UVec2; 27] = [
+pub const NBH_SHIFTS: [UVec3; 27] = [
     UVec3::new(2, 2, 2),
     UVec3::new(2, 0, 2),
     UVec3::new(2, 1, 2),

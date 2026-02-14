@@ -30,6 +30,8 @@ vortx-shaders = { path = "../../../vortx/vortx-shaders", default-features = fals
 khal-derive = { path = "../../../khal/crates/khal-derive" }
 parry3d = { version = "0.26", default-features = false, features = ["dim3","f32"] }
 nexus-shaders3d = { path = "../nexus-shaders3d", default-features = false, features = ["dim3"] }
+unroll = "0.1"
+crunchy = "0.2"
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
 bytemuck = { version = "1", features = ["derive"] }

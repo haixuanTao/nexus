@@ -40,7 +40,7 @@ const K_RANGE: u32 = 1;
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct SharedNode {
+pub struct SharedNode {
     particle_id: u32,
     global_id: u32,
 }
@@ -49,7 +49,7 @@ struct SharedNode {
 /// In 2D: segment (two endpoints). In 3D: triangle (three vertices).
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct SharedPrimitive {
+pub struct SharedPrimitive {
     a: Vector,
     b: Vector,
     #[cfg(feature = "dim3")]
@@ -214,7 +214,7 @@ fn fetch_max_linked_lists_length(
                     || (j_loop == 0 && tid.y < 2)
                     || (k_loop == 0 && tid.z < 2))
                 {
-                    let octant = UVec3::new(i_loop, j_loop, k_loop);
+                    let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
                     let octant_hid = find_block_header_id(
                         grid_data,
                         hmap_entries,
@@ -275,7 +275,7 @@ fn fetch_nodes(
                     {
                         (true, 0usize)
                     } else {
-                        let octant = UVec3::new(i_loop, j_loop, k_loop);
+                        let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
                         let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
                         let shared_index = octant * 4 + tid_xyz;
                         (
@@ -303,7 +303,7 @@ fn fetch_nodes(
                 };
                 #[cfg(feature = "dim3")]
                 let octant_hid = {
-                    let octant = UVec3::new(i_loop, j_loop, k_loop);
+                    let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
                     find_block_header_id(
                         grid_data,
                         hmap_entries,

@@ -45,7 +45,7 @@ const K_RANGE: u32 = 1;
 /// A shared-memory node entry: particle ID and global node ID.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct SharedNode {
+pub struct SharedNode {
     particle_id: u32,
     global_id: u32,
 }
@@ -281,7 +281,7 @@ fn fetch_max_linked_lists_length(
                     || (j_loop == 0 && tid.y < 2)
                     || (k_loop == 0 && tid.z < 2))
                 {
-                    let octant = UVec3::new(i_loop, j_loop, k_loop);
+                    let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
                     let octant_hid = find_block_header_id(
                         grid_data,
                         hmap_entries,
@@ -359,7 +359,7 @@ fn fetch_nodes(
                     || (j_loop == 0 && tid.y < 2)
                     || (k_loop == 0 && tid.z < 2))
                 {
-                    let octant = UVec3::new(i_loop, j_loop, k_loop);
+                    let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
                     let octant_hid = find_block_header_id(
                         grid_data,
                         hmap_entries,
@@ -431,7 +431,7 @@ fn fetch_next_particle(
                     };
                     #[cfg(feature = "dim3")]
                     let shared_flat_index = {
-                        let octant = UVec3::new(i_loop, j_loop, k_loop);
+                        let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
                         let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
                         let shared_index = octant * 4 + tid_xyz;
                         flatten_shared_index(shared_index.x, shared_index.y, shared_index.z)
