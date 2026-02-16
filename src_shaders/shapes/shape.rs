@@ -810,23 +810,35 @@ impl Shape {
         self.a.w.to_bits()
     }
 
-    /// Returns the vertex buffer range for a polyline shape.
+    /// Returns the start index of the actual polyline vertices in the vertex buffer.
+    ///
+    /// This accounts for the BVH AABB data that precedes the mesh vertices.
+    /// Each BVH node stores 2 vertices (min and max AABB corners), so the
+    /// actual vertices start at `bvh_vtx_root_id + bvh_node_len * 2`.
     ///
     /// # Panics
     ///
     /// Panics if this shape is not a polyline
-    pub fn polyline_rngs(&self) -> [u32; 2] {
+    pub fn polyline_vertex_start(&self) -> u32 {
         assert!(self.shape_type_tag() == SHAPE_TYPE_POLYLINE);
-        [self.a.x.to_bits(), self.a.y.to_bits()]
+        let bvh_vtx_root_id = self.a.x.to_bits();
+        let bvh_node_len = self.a.z.to_bits();
+        bvh_vtx_root_id + bvh_node_len * 2
     }
 
-    /// Returns the vertex buffer range for a triangle mesh shape.
+    /// Returns the start index of the actual trimesh vertices in the vertex buffer.
+    ///
+    /// This accounts for the BVH AABB data that precedes the mesh vertices.
+    /// Each BVH node stores 2 vertices (min and max AABB corners), so the
+    /// actual vertices start at `bvh_vtx_root_id + bvh_node_len * 2`.
     ///
     /// # Panics
     ///
     /// Panics if this shape is not a triangle mesh
-    pub fn trimesh_rngs(&self) -> [u32; 2] {
+    pub fn trimesh_vertex_start(&self) -> u32 {
         assert!(self.shape_type_tag() == SHAPE_TYPE_TRIMESH);
-        [self.a.x.to_bits(), self.a.y.to_bits()]
+        let bvh_vtx_root_id = self.a.x.to_bits();
+        let bvh_node_len = self.a.z.to_bits();
+        bvh_vtx_root_id + bvh_node_len * 2
     }
 }

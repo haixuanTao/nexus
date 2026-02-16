@@ -281,10 +281,11 @@ impl GpuRigidParticles {
 
             #[cfg(feature = "dim2")]
             if let Some(polyline) = collider.shape().as_polyline() {
-                let rngs = gpu_data.polyline_rngs();
+                // Use polyline_vertex_start() to get the correct base index,
+                // which accounts for BVH AABB data preceding the actual vertices.
                 let sampling_params = SamplingParams {
                     collider_id: collider_id as u32,
-                    base_vid: rngs[0],
+                    base_vid: gpu_data.polyline_vertex_start(),
                     sampling_step,
                 };
                 sampling::sample_polyline(polyline, &sampling_params, &mut sampling_buffers)
@@ -292,20 +293,22 @@ impl GpuRigidParticles {
 
             #[cfg(feature = "dim3")]
             if let Some(trimesh) = collider.shape().as_trimesh() {
-                let rngs = gpu_data.trimesh_rngs();
+                // Use trimesh_vertex_start() to get the correct base index,
+                // which accounts for BVH AABB data preceding the actual vertices.
                 let sampling_params = SamplingParams {
                     collider_id: collider_id as u32,
-                    base_vid: rngs[0],
+                    base_vid: gpu_data.trimesh_vertex_start(),
                     sampling_step,
                 };
                 sampling::sample_trimesh(trimesh, &sampling_params, &mut sampling_buffers)
             } else if let Some(heightfield) = collider.shape().as_heightfield() {
                 let (vtx, idx) = heightfield.to_trimesh();
                 let trimesh = rapier::geometry::TriMesh::new(vtx, idx).unwrap();
-                let rngs = gpu_data.trimesh_rngs();
+                // Use trimesh_vertex_start() to get the correct base index,
+                // which accounts for BVH AABB data preceding the actual vertices.
                 let sampling_params = SamplingParams {
                     collider_id: collider_id as u32,
-                    base_vid: rngs[0],
+                    base_vid: gpu_data.trimesh_vertex_start(),
                     sampling_step,
                 };
                 sampling::sample_trimesh(&trimesh, &sampling_params, &mut sampling_buffers)
