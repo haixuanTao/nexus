@@ -1,5 +1,6 @@
 // TODO: move this to nexus?
 
+use crate::mpm_shaders::VectorWithPadding;
 use encase::ShaderType;
 use nexus::math::Vector;
 use rapier::geometry::TriMesh;
@@ -20,7 +21,7 @@ pub struct ShapeBuffers {
     ///
     /// Polyline and TriMesh shapes reference ranges within this buffer.
     /// The shape stores the start and end indices of its vertices in this buffer.
-    pub vertices: Vec<Vector>,
+    pub vertices: Vec<VectorWithPadding>,
     /// Index buffers for polylines, triangle meshes, and convex polyhedrons.
     pub indices: Vec<u32>,
 }
@@ -84,11 +85,12 @@ pub fn convert_trimesh_to_gpu(shape: &TriMesh, buffers: &mut ShapeBuffers) -> Gp
 
     let bvh = bvh::bvh::BVH::build(&mut objects);
     let flat_bvh = bvh.flatten();
-    buffers.vertices.extend(
-        flat_bvh
-            .iter()
-            .flat_map(|n| [from_bvh_point(n.aabb.min), from_bvh_point(n.aabb.max)]),
-    );
+    buffers.vertices.extend(flat_bvh.iter().flat_map(|n| {
+        [
+            VectorWithPadding::new(from_bvh_point(n.aabb.min)),
+            VectorWithPadding::new(from_bvh_point(n.aabb.max)),
+        ]
+    }));
     let bvh_node_len = flat_bvh.len();
     buffers.indices.extend(
         flat_bvh
@@ -102,14 +104,16 @@ pub fn convert_trimesh_to_gpu(shape: &TriMesh, buffers: &mut ShapeBuffers) -> Gp
         let pn = shape
             .pseudo_normals()
             .expect("trimeshes without pseudo-normals are not supported");
-        buffers.vertices.extend_from_slice(shape.vertices());
         buffers
             .vertices
-            .extend(pn.vertices_pseudo_normal.iter().copied());
+            .extend(shape.vertices().iter().map(|v| VectorWithPadding::new(*v)));
+        buffers
+            .vertices
+            .extend(pn.vertices_pseudo_normal.iter().map(|v| VectorWithPadding::new(*v)));
         assert_eq!(shape.vertices().len(), pn.vertices_pseudo_normal.len());
         buffers
             .vertices
-            .extend(pn.edges_pseudo_normal.iter().flat_map(|n| *n));
+            .extend(pn.edges_pseudo_normal.iter().flat_map(|n| *n).map(|v| VectorWithPadding::new(v)));
     }
     buffers
         .indices

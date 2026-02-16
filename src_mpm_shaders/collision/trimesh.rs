@@ -3,7 +3,7 @@
 //! Provides BVH-accelerated point projection for triangle meshes.
 //! The triangle mesh data is organized into packed buffers:
 //! - Index buffer (`&[u32]`): contains BVH topology followed by triangle indices.
-//! - Vertex buffer (`&[Vector]`): contains BVH AABBs, triangle vertices,
+//! - Vertex buffer (`&[VectorWithPadding]`): contains BVH AABBs, triangle vertices,
 //!   vertex pseudo-normals, and edge pseudo-normals.
 
 use crate::nexus_shaders::queries::{
@@ -11,7 +11,7 @@ use crate::nexus_shaders::queries::{
     FEATURE_VERTEX,
 };
 use crate::nexus_shaders::shapes::Triangle;
-use crate::{MaybeIndexUnchecked, Vector};
+use crate::{MaybeIndexUnchecked, Vector, VectorWithPadding};
 use glamx::{Vec2, Vec3};
 
 /*
@@ -82,7 +82,7 @@ struct ProjectionInfo {
 /// A triangle mesh with BVH acceleration for point projection.
 ///
 /// The triangle mesh is composed of multiple buffers packed into
-/// a `&[u32]` (the "index buffer") and a `&[Vector]` (the "vertex buffer").
+/// a `&[u32]` (the "index buffer") and a `&[VectorWithPadding]` (the "vertex buffer").
 ///
 /// The index buffer contains: `[BVH topology, triangle indices]`.
 /// The vertex buffer contains: `[BVH AABBs, triangle vertices, vertex pseudo-normals, edge pseudo-normals]`.
@@ -129,10 +129,10 @@ impl TriMesh {
 
     /// Gets the AABB of a BVH node.
     #[inline]
-    fn bvh_node_aabb(&self, vtx: &[Vector], node_id: u32) -> Aabb {
+    fn bvh_node_aabb(&self, vtx: &[VectorWithPadding], node_id: u32) -> Aabb {
         // Multiply by 2 since there are two values per AABB (min/max).
         let vid = (self.bvh_vtx_root_id + node_id * 2) as usize;
-        Aabb::new(vtx.read(vid), vtx.read(vid + 1))
+        Aabb::new(vtx.read(vid).0, vtx.read(vid + 1).0)
     }
 
     /// Gets the BVH node indices for tree traversal.
@@ -160,11 +160,11 @@ impl TriMesh {
 
     /// Gets a triangle from the mesh by its index.
     #[inline]
-    fn triangle(&self, idx: &[u32], vtx: &[Vector], tri_id: u32) -> Triangle {
+    fn triangle(&self, idx: &[u32], vtx: &[VectorWithPadding], tri_id: u32) -> Triangle {
         let vids = self.triangle_vids(idx, tri_id);
-        let a = vtx.read(vids.x as usize);
-        let b = vtx.read(vids.y as usize);
-        let c = vtx.read(vids.z as usize);
+        let a = vtx.read(vids.x as usize).0;
+        let b = vtx.read(vids.y as usize).0;
+        let c = vtx.read(vids.z as usize).0;
         Triangle::new(a, b, c)
     }
 
@@ -176,7 +176,7 @@ impl TriMesh {
     fn pseudo_normal(
         &self,
         idx: &[u32],
-        vtx: &[Vector],
+        vtx: &[VectorWithPadding],
         tri_id: u32,
         feat_type: u32,
         feat_id: u32,
@@ -188,7 +188,7 @@ impl TriMesh {
                 1 => vids.y,
                 _ => vids.z,
             };
-            return vtx.read((vid + self.num_vertices) as usize);
+            return vtx.read((vid + self.num_vertices) as usize).0;
         }
 
         if feat_type == FEATURE_EDGE {
@@ -201,7 +201,7 @@ impl TriMesh {
                 + self.num_vertices
                 // Three pseudo-normals per triangle (one per edge).
                 + tri_id * 3;
-            return vtx.read((base_vid + feat_id) as usize);
+            return vtx.read((base_vid + feat_id) as usize).0;
         }
 
         #[cfg(feature = "dim3")]
@@ -220,7 +220,7 @@ impl TriMesh {
     ///
     /// Uses BVH traversal to efficiently find the closest triangle,
     /// then uses pseudo-normals to determine if the point is inside the mesh.
-    pub fn project_local_point(&self, idx: &[u32], vtx: &[Vector], pt: Vector) -> ProjectionResult {
+    pub fn project_local_point(&self, idx: &[u32], vtx: &[VectorWithPadding], pt: Vector) -> ProjectionResult {
         let mut curr = 0u32;
         let mut best = 1.0e10f32;
         let mut best_proj = ProjectionWithLocation::solid(pt);
