@@ -104,13 +104,13 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         }
 
         let t_encoding = web_time::Instant::now();
-        let mut encoder = self.gpu.begin_encoding();
         self.timestamps.reset();
 
         // Run substeps.
         let mut no_state = Box::new(());
         let hooks_state = physics.hooks_state.as_deref_mut().unwrap_or(&mut no_state);
         for _ in 0..self.app_state.num_substeps {
+            let mut encoder = self.gpu.begin_encoding();
             self.app_state
                 .pipeline
                 .launch_step(
@@ -123,9 +123,11 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
                 )
                 .await
                 .unwrap();
+            self.gpu.submit(encoder).unwrap();
         }
 
         // Prepare readback data on GPU and copy to staging.
+        let mut encoder = self.gpu.begin_encoding();
         self.readback_shader
             .launch(
                 &mut encoder,
