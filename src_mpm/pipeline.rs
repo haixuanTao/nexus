@@ -64,6 +64,7 @@ pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
         &mut self,
         _backend: &GpuBackend,
         _encoder: &mut GpuEncoder,
+        _timestamps: Option<&mut GpuTimestamps>,
         _data: &mut MpmData<GpuModel>,
         _state: &mut dyn Any,
     ) -> Result<(), GpuBackendError> {
@@ -75,6 +76,7 @@ pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
         &mut self,
         _backend: &GpuBackend,
         _encoder: &mut GpuEncoder,
+        _timestamps: Option<&mut GpuTimestamps>,
         _data: &mut MpmData<GpuModel>,
         _state: &mut dyn Any,
     ) -> Result<(), GpuBackendError> {
@@ -86,6 +88,7 @@ pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
         &mut self,
         _backend: &GpuBackend,
         _encoder: &mut GpuEncoder,
+        _timestamps: Option<&mut GpuTimestamps>,
         _data: &mut MpmData<GpuModel>,
         _state: &mut dyn Any,
     ) -> Result<(), GpuBackendError> {
@@ -97,17 +100,21 @@ pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
         &mut self,
         _backend: &GpuBackend,
         _encoder: &mut GpuEncoder,
+        _timestamps: Option<&mut GpuTimestamps>,
         _data: &mut MpmData<GpuModel>,
         _state: &mut dyn Any,
     ) -> Result<(), GpuBackendError> {
         Ok(())
     }
 
+    fn particle_update_enabled(&self) -> bool { true }
+
     /// Custom operation run after updating particles.
     fn after_particles_update(
         &mut self,
         _backend: &GpuBackend,
         _encoder: &mut GpuEncoder,
+        _timestamps: Option<&mut GpuTimestamps>,
         _data: &mut MpmData<GpuModel>,
         _state: &mut dyn Any,
     ) -> Result<(), GpuBackendError> {
@@ -328,7 +335,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_particle_sort(backend, encoder, data, hooks_state)?;
+        hooks.after_particle_sort(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
 
         {
             let mut pass = encoder.begin_pass("CDF grid update", timestamps.as_deref_mut());
@@ -364,7 +371,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_p2g(backend, encoder, data, hooks_state)?;
+        hooks.after_p2g(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
 
         {
             let mut pass = encoder.begin_pass("Grid update", timestamps.as_deref_mut());
@@ -372,7 +379,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
                 .launch(&mut pass, &data.sim_params, &mut data.grid)?;
         }
 
-        hooks.after_grid_update(backend, encoder, data, hooks_state)?;
+        hooks.after_grid_update(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
 
         {
             let mut pass = encoder.begin_pass("G2P", timestamps.as_deref_mut());
@@ -386,9 +393,9 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_g2p(backend, encoder, data, hooks_state)?;
+        hooks.after_g2p(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
 
-        {
+        if hooks.particle_update_enabled() {
             let mut pass = encoder.begin_pass("Particle update", timestamps.as_deref_mut());
             self.particles_update.launch(
                 &mut pass,
@@ -398,7 +405,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_particles_update(backend, encoder, data, hooks_state)?;
+        hooks.after_particles_update(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
 
         {
             let mut pass = encoder.begin_pass("Integrate bodies", timestamps.as_deref_mut());

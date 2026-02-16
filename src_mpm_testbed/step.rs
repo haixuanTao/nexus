@@ -128,7 +128,6 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             self.gpu.submit(encoder).unwrap();
         }
 
-        let mut encoder = self.gpu.begin_encoding();
         // Prepare readback data on GPU and copy to staging.
         let mut encoder = self.gpu.begin_encoding();
         self.readback_shader

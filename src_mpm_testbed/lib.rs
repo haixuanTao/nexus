@@ -108,7 +108,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             RenderMode::Default as u32,
         )
         .unwrap();
-        let timestamps = GpuTimestamps::new(&gpu, 256);
+        let timestamps = GpuTimestamps::new(&gpu, 2048);
         let mut step_result = SimulationStepResult::default();
         step_result
             .instances
