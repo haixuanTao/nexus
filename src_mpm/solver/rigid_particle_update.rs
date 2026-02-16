@@ -55,14 +55,18 @@ impl WgRigidParticleUpdate {
             cast_tensor_mut::<_, VectorWithPadding>(&mut rigid_particles.sample_points),
         )?;
 
-        let vtx_len = bodies.shapes_vertex_buffers.len() as u32;
-        self.transform_shape_points.call(
-            pass,
-            [vtx_len, 1, 1],
-            &bodies.shapes_vertex_collider_id,
-            &bodies.poses,
-            &bodies.shapes_local_vertex_buffers,
-            &mut bodies.shapes_vertex_buffers,
-        )
+        // TODO: this is now incorrect since the vertex buffer also contains the BVH.
+        // let vtx_len = bodies.shapes_vertex_buffers.len() as u32;
+        // println!("Shape vbuf: {}", vtx_len);
+        // self.transform_shape_points.call(
+        //     pass,
+        //     [vtx_len, 1, 1],
+        //     &bodies.shapes_vertex_collider_id,
+        //     &bodies.poses,
+        //     &bodies.shapes_local_vertex_buffers,
+        //     &mut bodies.shapes_vertex_buffers,
+        // )
+
+        Ok(())
     }
 }
