@@ -40,7 +40,7 @@ pub fn heightfield_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physi
 
     if !app_state.restarting {
         app_state.min_num_substeps = 10;
-        app_state.max_num_substeps = 40;
+        app_state.max_num_substeps = 10;
         app_state.gravity_factor = 1.0;
     };
 
