@@ -363,3 +363,52 @@ pub fn gpu_prep_readback(
         };
     }
 }
+
+/// GPU kernel: prepare per-rigid-particle readback data for rendering.
+///
+/// Reads rigid particle world positions and writes `ReadbackData` with a fixed
+/// deformation scale (no deformation gradient) and base color from a palette.
+/// Dispatched with one thread per rigid particle.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_prep_readback_rigid(
+    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] instances: &mut [ReadbackData],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] base_colors: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] grid_data: &[Grid],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] particles_len: &u32,
+) {
+    let particle_id = invocation_id.x;
+
+    if particle_id >= *particles_len {
+        return;
+    }
+
+    let pid = particle_id as usize;
+    let pos = particles_pos.at(pid);
+    let base_color = *base_colors.at(pid);
+    let cell_width = grid_data.at(0).cell_width;
+    let scale = cell_width * 0.4;
+
+    #[cfg(feature = "dim2")]
+    {
+        let deformation = diag(Vector::splat(scale));
+        *instances.at_mut(pid) = ReadbackData {
+            color: base_color,
+            deformation,
+            position: pos.pt,
+            _pad: [0.0; 2],
+        };
+    }
+    #[cfg(feature = "dim3")]
+    {
+        let deformation = PaddedMatrix::add_padding(diag(Vector::splat(scale)));
+        *instances.at_mut(pid) = ReadbackData {
+            color: base_color,
+            deformation,
+            position: pos.pt,
+            _pad: 0.0,
+        };
+    }
+}

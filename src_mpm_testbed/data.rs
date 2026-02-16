@@ -17,6 +17,7 @@ pub struct AppState<GpuModel: GpuParticleModelData = GpuParticleModel> {
     pub num_substeps: u32,
     pub gravity_factor: f32,
     pub restarting: bool,
+    pub show_rigid_particles: bool,
 }
 
 #[derive(Default)]

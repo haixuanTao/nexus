@@ -1,7 +1,6 @@
 use crate::{PhysicsState, RunState, Stage};
 use khal::backend::Backend;
 use nexus_mpm::solver::{GpuParticleModelData, SimulationParams};
-use std::collections::BTreeMap;
 
 pub use nexus_mpm::solver::prep_readback::{
     GpuReadbackData, ReadbackData, RenderConfig, WgPrepReadback,
@@ -21,6 +20,7 @@ pub struct SimulationTimes {
 #[derive(Default)]
 pub struct SimulationStepResult {
     pub instances: Vec<ReadbackData>,
+    pub rigid_instances: Vec<ReadbackData>,
     pub timings: SimulationTimes,
 }
 
@@ -46,11 +46,13 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
 
         // Check if particle count changed.
         let new_particle_count = physics.data.particles.len();
+        let num_rigid_particles = physics.data.rigid_particles.len() as usize;
         if prev_particle_count != new_particle_count {
             self.readback
                 .resize(
                     &self.gpu,
                     new_particle_count,
+                    num_rigid_particles,
                     self.app_state.render_mode as u32,
                 )
                 .unwrap();
@@ -137,6 +139,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
                 &physics.data.sim_params,
                 &physics.data.grid,
                 &physics.data.particles,
+                &physics.data.rigid_particles,
             )
             .unwrap();
 
@@ -177,6 +180,17 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             )
             .await
             .unwrap();
+
+        // Read back rigid particle readback data.
+        if num_rigid_particles > 0 {
+            self.gpu
+                .read_buffer(
+                    self.readback.rigid_instances_staging.buffer(),
+                    self.step_result.rigid_instances.as_mut_slice(),
+                )
+                .await
+                .unwrap();
+        }
         let t_readback = t_readback.elapsed().as_secs_f32() * 1000.0;
 
         // Step rapier to update kinematic bodies.

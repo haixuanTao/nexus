@@ -63,6 +63,10 @@ pub(crate) struct Stage<GpuModel: GpuParticleModelData> {
     instances: Vec<InstanceData2d>,
     #[cfg(feature = "dim3")]
     instances: Vec<InstanceData3d>,
+    #[cfg(feature = "dim2")]
+    rigid_instances: Vec<InstanceData2d>,
+    #[cfg(feature = "dim3")]
+    rigid_instances: Vec<InstanceData3d>,
 }
 
 impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
@@ -89,15 +93,18 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             num_substeps: 1,
             gravity_factor: 1.0,
             restarting: false,
+            show_rigid_particles: true,
         };
         let hooks = hooks(&gpu);
         let physics = (builders[0].1)(&gpu, &mut app_state);
         app_state.num_substeps = 0;
 
         let readback_shader = WgPrepReadback::from_backend(&gpu).unwrap();
+        let num_rigid = physics.data.rigid_particles.len() as usize;
         let readback = GpuReadbackData::new(
             &gpu,
             physics.data.particles.len(),
+            num_rigid,
             RenderMode::Default as u32,
         )
         .unwrap();
@@ -106,10 +113,14 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         step_result
             .instances
             .resize(physics.data.particles.len(), Default::default());
+        step_result
+            .rigid_instances
+            .resize(num_rigid, Default::default());
 
         Stage {
             builders,
             instances: vec![],
+            rigid_instances: vec![],
             readback_shader,
             readback,
             timestamps,
@@ -126,9 +137,11 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
     pub fn set_demo(&mut self, demo_id: usize) {
         self.selected_demo = demo_id;
         self.physics = (self.builders[demo_id]).1(&self.gpu, &mut self.app_state);
+        let num_rigid = self.physics.data.rigid_particles.len() as usize;
         self.readback = GpuReadbackData::new(
             &self.gpu,
             self.physics.data.particles.len(),
+            num_rigid,
             self.app_state.render_mode as u32,
         )
         .unwrap();
@@ -136,6 +149,9 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         self.step_result
             .instances
             .resize(self.physics.data.particles.len(), Default::default());
+        self.step_result
+            .rigid_instances
+            .resize(num_rigid, Default::default());
     }
 
     async fn update(&mut self) {
@@ -163,6 +179,34 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
                     ..Default::default()
                 }
             }));
+
+        self.rigid_instances.clear();
+        if self.app_state.show_rigid_particles {
+            #[cfg(feature = "dim2")]
+            self.rigid_instances.extend(
+                self.step_result
+                    .rigid_instances
+                    .iter()
+                    .map(|d| InstanceData2d {
+                        position: d.position,
+                        color: [d.color.x, d.color.y, d.color.z, d.color.w],
+                        deformation: d.deformation,
+                        ..Default::default()
+                    }),
+            );
+            #[cfg(feature = "dim3")]
+            self.rigid_instances.extend(
+                self.step_result.rigid_instances.iter().map(|d| {
+                    use nexus_mpm::mpm_shaders::PaddingExt;
+                    InstanceData3d {
+                        position: d.position,
+                        color: Color::new(d.color.x, d.color.y, d.color.z, d.color.w),
+                        deformation: d.deformation.remove_padding(),
+                        ..Default::default()
+                    }
+                }),
+            );
+        }
     }
 }
 
@@ -201,11 +245,17 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
         &mut colliders_gfx,
     );
 
-    // Create particle instance node.
+    // Create particle instance nodes.
     #[cfg(feature = "dim2")]
     let mut particle_node = scene2d.add_rectangle(1.0, 1.0);
     #[cfg(feature = "dim3")]
     let mut particle_node = scene3d.add_cube(1.0, 1.0, 1.0);
+
+    // Create rigid particle instance node.
+    #[cfg(feature = "dim2")]
+    let mut rigid_particle_node = scene2d.add_rectangle(1.0, 1.0);
+    #[cfg(feature = "dim3")]
+    let mut rigid_particle_node = scene3d.add_cube(1.0, 1.0, 1.0);
 
     #[cfg(feature = "dim2")]
     let (mut camera2d, mut camera3d) = {
@@ -238,6 +288,7 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
         // Update collider rendering.
         update_colliders(&stage.physics, &mut colliders_gfx);
         particle_node.set_instances(&stage.instances);
+        rigid_particle_node.set_instances(&stage.rigid_instances);
 
         // UI
         window.draw_ui(|ctx| {
@@ -282,6 +333,11 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                         )
                         .unwrap();
                 }
+
+                ui.checkbox(
+                    &mut stage.app_state.show_rigid_particles,
+                    "show rigid particles",
+                );
 
                 ui.label(format!(
                     "total: {:.1}ms (encoding: {:.1}ms)",

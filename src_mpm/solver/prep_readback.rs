@@ -4,10 +4,10 @@
 //! transferred back to the CPU compared to reading raw positions and dynamics.
 
 use crate::grid::grid::GpuGrid;
-use crate::mpm_shaders::solver::prep_readback::GpuPrepReadback;
+use crate::mpm_shaders::solver::prep_readback::{GpuPrepReadback, GpuPrepReadbackRigid};
 pub use crate::mpm_shaders::solver::prep_readback::{ReadbackData, RenderConfig};
 use crate::solver::particle_model::GpuParticleModelData;
-use crate::solver::{GpuParticles, GpuSimulationParams};
+use crate::solver::{GpuParticles, GpuRigidParticles, GpuSimulationParams};
 use glamx::Vec4;
 use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
@@ -21,6 +21,7 @@ use vortx::tensor::Tensor;
 #[derive(Shader)]
 pub struct WgPrepReadback {
     prep_readback: GpuPrepReadback,
+    prep_readback_rigid: GpuPrepReadbackRigid,
 }
 
 /// GPU-resident buffers for the readback preparation pipeline.
@@ -36,6 +37,14 @@ pub struct GpuReadbackData {
     pub instances: Tensor<ReadbackData>,
     /// Staging buffer for CPU readback (MAP_READ).
     pub instances_staging: Tensor<ReadbackData>,
+    /// Per-rigid-particle base colors.
+    pub rigid_base_colors: Tensor<Vec4>,
+    /// Rigid particle shader output buffer.
+    pub rigid_instances: Tensor<ReadbackData>,
+    /// Staging buffer for rigid particle CPU readback (MAP_READ).
+    pub rigid_instances_staging: Tensor<ReadbackData>,
+    /// Rigid particle count uniform for the shader.
+    pub rigid_len: Tensor<u32>,
 }
 
 impl GpuReadbackData {
@@ -43,6 +52,7 @@ impl GpuReadbackData {
     pub fn new(
         backend: &GpuBackend,
         num_particles: usize,
+        num_rigid_particles: usize,
         mode: u32,
     ) -> Result<Self, GpuBackendError> {
         let palette = [
@@ -56,6 +66,12 @@ impl GpuReadbackData {
         let base_colors: Vec<Vec4> = (0..num_particles)
             .map(|i| palette[i % palette.len()])
             .collect();
+        let rigid_base_colors: Vec<Vec4> = (0..num_rigid_particles)
+            .map(|i| palette[i % palette.len()])
+            .collect();
+
+        // Use at least 1 element for GPU buffers to avoid zero-sized allocations.
+        let rigid_buf_len = num_rigid_particles.max(1) as u32;
 
         Ok(Self {
             mode: Tensor::scalar(
@@ -74,6 +90,26 @@ impl GpuReadbackData {
                 num_particles as u32,
                 BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             )?,
+            rigid_base_colors: Tensor::vector(
+                backend,
+                rigid_base_colors,
+                BufferUsages::STORAGE,
+            )?,
+            rigid_instances: Tensor::vector_uninit(
+                backend,
+                rigid_buf_len,
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            )?,
+            rigid_instances_staging: Tensor::vector_uninit(
+                backend,
+                rigid_buf_len,
+                BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            )?,
+            rigid_len: Tensor::scalar(
+                backend,
+                num_rigid_particles as u32,
+                BufferUsages::STORAGE | BufferUsages::UNIFORM,
+            )?,
         })
     }
 
@@ -82,9 +118,10 @@ impl GpuReadbackData {
         &mut self,
         backend: &GpuBackend,
         num_particles: usize,
+        num_rigid_particles: usize,
         mode: u32,
     ) -> Result<(), GpuBackendError> {
-        *self = Self::new(backend, num_particles, mode)?;
+        *self = Self::new(backend, num_particles, num_rigid_particles, mode)?;
         Ok(())
     }
 }
@@ -94,6 +131,7 @@ impl WgPrepReadback {
     ///
     /// This runs a compute pass that writes `ReadbackData` into `instances`,
     /// then copies `instances` → `instances_staging` for CPU readback.
+    /// Also dispatches the rigid particle readback shader if there are rigid particles.
     pub fn launch<GpuModel: GpuParticleModelData>(
         &self,
         encoder: &mut GpuEncoder,
@@ -102,8 +140,10 @@ impl WgPrepReadback {
         sim_params: &GpuSimulationParams,
         grid: &GpuGrid,
         particles: &GpuParticles<GpuModel>,
+        rigid_particles: &GpuRigidParticles,
     ) -> Result<(), GpuBackendError> {
         let len = particles.len() as u32;
+        let rigid_len = rigid_particles.len() as u32;
         {
             let mut pass = encoder.begin_pass("prep-readback", timestamps);
             self.prep_readback.call(
@@ -121,10 +161,27 @@ impl WgPrepReadback {
                 &readback.mode,
                 &particles.gpu_len,
             )?;
+
+            if rigid_len > 0 {
+                self.prep_readback_rigid.call(
+                    &mut pass,
+                    [rigid_len, 1, 1],
+                    &mut readback.rigid_instances,
+                    &rigid_particles.sample_points,
+                    &readback.rigid_base_colors,
+                    &grid.meta,
+                    &readback.rigid_len,
+                )?;
+            }
         }
         readback
             .instances_staging
             .copy_from_view(encoder, &readback.instances)?;
+        if rigid_len > 0 {
+            readback
+                .rigid_instances_staging
+                .copy_from_view(encoder, &readback.rigid_instances)?;
+        }
         Ok(())
     }
 }

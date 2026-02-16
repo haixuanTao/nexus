@@ -28,15 +28,15 @@ pub struct ShapeBuffers {
 #[derive(Copy, Clone, ShaderType)]
 pub struct GpuTriMesh {
     /// Index of the root AABB in the vertex buffer.
-    bvh_vtx_root_id: u32,
+    pub bvh_vtx_root_id: u32,
     /// The root AABB left-child index.
-    bvh_idx_root_id: u32,
+    pub bvh_idx_root_id: u32,
     // The number of BVH nodes. Triangle indices are stored after the last bvh node.
-    bvh_node_len: u32,
+    pub bvh_node_len: u32,
     // The total number of triangles in the mesh.
-    num_triangles: u32,
+    pub num_triangles: u32,
     // The total number of vertices in the mesh.
-    num_vertices: u32,
+    pub num_vertices: u32,
 }
 
 pub fn convert_trimesh_to_gpu(shape: &TriMesh, buffers: &mut ShapeBuffers) -> GpuTriMesh {
