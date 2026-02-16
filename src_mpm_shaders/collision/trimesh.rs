@@ -93,6 +93,8 @@ struct ProjectionInfo {
 /// The edge pseudo-normals contain three Vectors per triangle (one for each edge),
 /// in the same order as the triangle indices section.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[repr(C)]
 pub struct TriMesh {
     /// Index of the root AABB in the vertex buffer.
     pub bvh_vtx_root_id: u32,

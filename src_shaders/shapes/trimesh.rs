@@ -17,6 +17,7 @@ use crate::{MaybeIndexUnchecked, VectorWithPadding};
 
 /// A triangle mesh with BVH acceleration structure.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct TriMesh {
     /// Index of the root AABB in the vertex buffer.

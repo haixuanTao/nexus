@@ -5,7 +5,7 @@ use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use crate::solver::particle_model::GpuParticleModelData;
 use glamx::{Mat2, Mat3, Vec2, Vec3, Vec4};
 use khal::BufferUsages;
-use khal::backend::{GpuBackend, GpuBackendError};
+use khal::backend::{Backend, GpuBackend, GpuBackendError};
 use nexus::dynamics::GpuBodySet;
 use nexus::math::{Matrix, Vector};
 use std::ops::RangeBounds;
@@ -332,15 +332,15 @@ impl GpuRigidParticles {
 /// GPU buffers storing all MPM particle data in Structure-of-Arrays layout.
 pub struct GpuParticles<GpuModel: GpuParticleModelData> {
     len: usize,
-    pub(crate) gpu_len: Tensor<u32>,
-    pub(crate) positions: Tensor<Position>,
-    pub(crate) kinematics: Tensor<Kinematics>,
-    pub(crate) cdf: Tensor<Cdf>,
-    pub(crate) def_grad: Tensor<PaddedMatrix>,
-    pub(crate) properties: Tensor<ParticleProperties>,
-    pub(crate) models: Tensor<GpuModel>,
-    pub(crate) sorted_ids: Tensor<u32>,
-    pub(crate) node_linked_lists: Tensor<u32>,
+    pub gpu_len: Tensor<u32>,
+    pub positions: Tensor<Position>,
+    pub kinematics: Tensor<Kinematics>,
+    pub cdf: Tensor<Cdf>,
+    pub def_grad: Tensor<PaddedMatrix>,
+    pub properties: Tensor<ParticleProperties>,
+    pub models: Tensor<GpuModel>,
+    pub sorted_ids: Tensor<u32>,
+    pub node_linked_lists: Tensor<u32>,
 }
 
 impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
@@ -462,5 +462,74 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
     /// Returns mutable reference to per-particle linked list buffer.
     pub fn node_linked_lists_mut(&mut self) -> &mut Tensor<u32> {
         &mut self.node_linked_lists
+    }
+
+    /// Removes a range of particles from the GPU buffers, shifting elements to fill the gap.
+    ///
+    /// Returns the number of removed particles on success.
+    pub fn shift_remove(
+        &mut self,
+        backend: &GpuBackend,
+        range: impl RangeBounds<usize> + Clone,
+    ) -> Result<usize, GpuBackendError> {
+        let Self {
+            len,
+            gpu_len,
+            positions,
+            kinematics,
+            cdf,
+            def_grad,
+            properties,
+            models,
+            sorted_ids: _,
+            node_linked_lists: _,
+        } = self;
+
+        let removed = positions.shift_remove(backend, range.clone())?;
+        kinematics.shift_remove(backend, range.clone())?;
+        cdf.shift_remove(backend, range.clone())?;
+        def_grad.shift_remove(backend, range.clone())?;
+        properties.shift_remove(backend, range.clone())?;
+        models.shift_remove(backend, range)?;
+
+        *len -= removed;
+        backend.write_buffer(gpu_len.buffer_mut(), 0, &[*len as u32])?;
+        Ok(removed)
+    }
+
+    /// Appends particles at the end of the GPU buffers.
+    pub fn append(
+        &mut self,
+        backend: &GpuBackend,
+        particles: &[Particle<GpuModel::Model>],
+    ) -> Result<(), GpuBackendError> {
+        let Self {
+            len,
+            gpu_len,
+            positions,
+            kinematics,
+            cdf,
+            def_grad,
+            properties,
+            models,
+            sorted_ids,
+            node_linked_lists,
+        } = self;
+
+        let data = SoAParticles::new(particles);
+        let zeros = vec![0u32; particles.len()];
+
+        positions.append(backend, &data.positions)?;
+        kinematics.append(backend, &data.kinematics)?;
+        cdf.append(backend, &data.cdf)?;
+        def_grad.append(backend, &data.def_grad)?;
+        properties.append(backend, &data.properties)?;
+        models.append(backend, &data.models)?;
+        sorted_ids.append(backend, &zeros)?;
+        node_linked_lists.append(backend, &zeros)?;
+
+        *len += particles.len();
+        backend.write_buffer(gpu_len.buffer_mut(), 0, &[*len as u32])?;
+        Ok(())
     }
 }

@@ -143,10 +143,10 @@ fn p2g_step(
         let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
         let nbh_shared_index =
             (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
-        let particle_pos = shared_pos[nbh_shared_index];
-        let particle_vel_mass = shared_vel_mass[nbh_shared_index];
-        let particle_affine = shared_affine[nbh_shared_index];
-        let particle_force_dt = shared_force_dt[nbh_shared_index];
+        let particle_pos = shared_pos.read(nbh_shared_index);
+        let particle_vel_mass = shared_vel_mass.read(nbh_shared_index);
+        let particle_affine = shared_affine.read(nbh_shared_index);
+        let particle_force_dt = shared_force_dt.read(nbh_shared_index);
         let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
         let w = QuadraticKernel::precompute_weights(ref_elt_pos_minus_particle_pos, cell_width);
 
@@ -186,13 +186,13 @@ fn p2g_step(
             * vec3_extract(w[1], inv_shift.y)
             * vec3_extract(w[2], inv_shift.z);
 
-        let particle_affinity = shared_affinities[nbh_shared_index];
+        let particle_affinity = shared_affinities.read(nbh_shared_index);
         let contribution =
             vector_plus_one(particle_affine * dpt + momentum, particle_mass) * weight;
 
         if !affinities_are_compatible(node_affinity, particle_affinity) {
         //     if collider_id != NONE {
-        //         let particle_normal = shared_normals[nbh_shared_index];
+        //         let particle_normal = shared_normals.read(nbh_shared_index);
         //         let body_vel = body_vels.read(collider_id as usize);
         //         let body_com = body_impulses.at(collider_id as usize).com;
         //         let body_material = body_materials.read(collider_id as usize);
@@ -346,10 +346,10 @@ fn fetch_nodes(
                         let tid_xy = UVec2::new(tid.x, tid.y);
                         let global_node_id = node_id(global_chunk_id, tid_xy);
                         let particle_id = nodes_linked_lists.at(global_node_id.id as usize).head;
-                        shared_nodes[shared_node_index].particle_id = particle_id;
-                        shared_nodes[shared_node_index].global_id = global_node_id.id;
+                        shared_nodes.at_mut(shared_node_index).particle_id = particle_id;
+                        shared_nodes.at_mut(shared_node_index).global_id = global_node_id.id;
                     } else {
-                        shared_nodes[shared_node_index].particle_id = NONE;
+                        shared_nodes.at_mut(shared_node_index).particle_id = NONE;
                     }
                 }
             }
@@ -379,10 +379,10 @@ fn fetch_nodes(
                         let global_chunk_id = block_header_id_to_physical_id(octant_hid);
                         let global_node_id = node_id(global_chunk_id, tid_xyz);
                         let particle_id = nodes_linked_lists.at(global_node_id.id as usize).head;
-                        shared_nodes[shared_node_index].particle_id = particle_id;
-                        shared_nodes[shared_node_index].global_id = global_node_id.id;
+                        shared_nodes.at_mut(shared_node_index).particle_id = particle_id;
+                        shared_nodes.at_mut(shared_node_index).global_id = global_node_id.id;
                     } else {
-                        shared_nodes[shared_node_index].particle_id = NONE;
+                        shared_nodes.at_mut(shared_node_index).particle_id = NONE;
                     }
                 }
             }
@@ -438,35 +438,35 @@ fn fetch_next_particle(
                             as usize
                     };
 
-                    let curr_particle_id = shared_nodes[shared_flat_index].particle_id;
+                    let curr_particle_id = shared_nodes.at(shared_flat_index).particle_id;
 
                     if curr_particle_id != NONE
                         && particles_kin.at(curr_particle_id as usize).enabled != 0
                     {
                         let pkin = particles_kin.read(curr_particle_id as usize);
                         let pcdf = particles_cdf.read(curr_particle_id as usize);
-                        shared_affinities[shared_flat_index] = pcdf.affinity;
-                        shared_normals[shared_flat_index] = pcdf.normal;
-                        shared_pos[shared_flat_index] =
-                            particles_pos.read(curr_particle_id as usize);
-                        shared_affine[shared_flat_index] = pkin.affine.remove_padding();
-                        shared_force_dt[shared_flat_index] = pkin.force_dt;
-                        shared_vel_mass[shared_flat_index] =
-                            vector_plus_one(pkin.velocity, pkin.mass);
+                        shared_affinities.write(shared_flat_index, pcdf.affinity);
+                        shared_normals.write(shared_flat_index, pcdf.normal);
+                        shared_pos.write(shared_flat_index,
+                            particles_pos.read(curr_particle_id as usize));
+                        shared_affine.write(shared_flat_index, pkin.affine.remove_padding());
+                        shared_force_dt.write(shared_flat_index, pkin.force_dt);
+                        shared_vel_mass.write(shared_flat_index,
+                            vector_plus_one(pkin.velocity, pkin.mass));
                     } else {
-                        shared_affinities[shared_flat_index] = 0;
-                        shared_normals[shared_flat_index] = Vector::ZERO;
-                        shared_pos[shared_flat_index].pt = Vector::ZERO;
-                        shared_affine[shared_flat_index] = Matrix::ZERO;
-                        shared_vel_mass[shared_flat_index] = VectorPlusOne::ZERO;
-                        shared_force_dt[shared_flat_index] = Vector::ZERO;
+                        shared_affinities.write(shared_flat_index, 0);
+                        shared_normals.write(shared_flat_index, Vector::ZERO);
+                        shared_pos.at_mut(shared_flat_index).pt = Vector::ZERO;
+                        shared_affine.write(shared_flat_index, Matrix::ZERO);
+                        shared_vel_mass.write(shared_flat_index, VectorPlusOne::ZERO);
+                        shared_force_dt.write(shared_flat_index, Vector::ZERO);
                     }
 
                     if curr_particle_id != NONE {
                         // Advance the linked list even if the particle is disabled.
                         let next_particle_id =
                             particle_node_linked_lists.read(curr_particle_id as usize);
-                        shared_nodes[shared_flat_index].particle_id = next_particle_id;
+                        shared_nodes.at_mut(shared_flat_index).particle_id = next_particle_id;
                     }
                 }
             }
@@ -559,14 +559,14 @@ pub fn gpu_p2g(
     #[cfg(feature = "dim3")]
     let packed_cell_index_in_block = flatten_shared_index(tid.x + 4, tid.y + 4, tid.z + 4);
 
-    let global_id = shared_nodes[packed_cell_index_in_block as usize].global_id;
+    let global_id = shared_nodes.at(packed_cell_index_in_block as usize).global_id;
     let node_affinities = nodes.at(global_id as usize).cdf.affinities;
     let collider_id = nodes.at(global_id as usize).cdf.closest_id;
     let mut total_result = P2GStepResult::zero();
 
     // Iterate through linked lists with uniform control flow.
     let len = *max_linked_list_length_uniform;
-    for k in 0..len {
+    for _k in 0..len {
         workgroup_memory_barrier_with_group_sync();
         fetch_next_particle(
             particles_pos,
