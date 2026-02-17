@@ -65,28 +65,38 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         let base_dt = physics.data.base_dt;
         let prev_num_substeps = self.app_state.num_substeps;
 
+        let mut no_state = Box::new(());
+        let hooks_state = physics.hooks_state.as_deref_mut().unwrap_or(&mut no_state);
+
         if self.app_state.min_num_substeps < self.app_state.max_num_substeps {
             // Adaptive stepping.
-            let bounds = self
-                .app_state
-                .pipeline
-                .timestep_bounds
-                .compute_bounds(
-                    &self.gpu,
-                    Some(&mut self.timestamps),
-                    &physics.data.grid,
-                    &physics.data.particles,
-                    &mut physics.data.timestep_bounds,
-                    &mut physics.data.timestep_bounds_staging,
-                )
-                .await
-                .unwrap();
+            let bounds = if let Some(max_substep_dt) = self.hooks.max_substep_dt(
+                &self.gpu, Some(&mut self.timestamps), &mut physics.data, hooks_state
+            ) {
+                max_substep_dt
+            } else {
+                self
+                    .app_state
+                    .pipeline
+                    .timestep_bounds
+                    .compute_bounds(
+                        &self.gpu,
+                        Some(&mut self.timestamps),
+                        &physics.data.grid,
+                        &physics.data.particles,
+                        &mut physics.data.timestep_bounds,
+                        &mut physics.data.timestep_bounds_staging,
+                    )
+                    .await
+                    .unwrap()
+            };
 
             let num_substeps_estimated = (base_dt / bounds).ceil() as u32;
             let num_substeps = num_substeps_estimated.clamp(
                 self.app_state.min_num_substeps,
                 self.app_state.max_num_substeps,
             );
+            println!("Num substeps: {num_substeps}, max_dt: {}", bounds);
             self.app_state.num_substeps = num_substeps;
         } else if self.app_state.num_substeps != self.app_state.max_num_substeps {
             self.app_state.num_substeps = self.app_state.max_num_substeps;
@@ -109,8 +119,6 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         self.timestamps.reset();
 
         // Run substeps.
-        let mut no_state = Box::new(());
-        let hooks_state = physics.hooks_state.as_deref_mut().unwrap_or(&mut no_state);
         for _ in 0..self.app_state.num_substeps {
             let mut encoder = self.gpu.begin_encoding();
             self.app_state

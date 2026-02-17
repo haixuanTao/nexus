@@ -16,7 +16,7 @@ use spirv_std::spirv;
 /// Uses an atomic unsigned integer to store the minimum timestep across all particles.
 /// The float timestep is converted to an integer via a fixed-point scaling factor
 /// so that atomic min operations can be used.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct GpuTimestepBounds {

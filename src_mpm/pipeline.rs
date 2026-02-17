@@ -59,6 +59,15 @@ pub struct MpmPipeline<GpuModel: GpuParticleModelData> {
 
 /// Callbacks for adding custom steps to the MPM pipeline.
 pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
+    fn max_substep_dt(&mut self,
+                      _backend: &GpuBackend,
+                      _timestamps: Option<&mut GpuTimestamps>,
+                      _data: &mut MpmData<GpuModel>,
+                      _state: &mut dyn Any,
+    ) -> Option<f32> {
+        None
+    }
+
     /// Custom operation run after particles are sorted and attached to the grid.
     fn after_particle_sort(
         &mut self,
