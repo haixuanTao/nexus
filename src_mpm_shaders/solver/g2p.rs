@@ -4,8 +4,6 @@
 //! (Affine Particle-In-Cell) interpolation. It handles CPIC compatibility
 //! checks, computes velocity gradients for the affine matrix, and accumulates
 //! rigid body velocities for particles near colliders.
-//!
-//! Corresponds to `g2p.slang`.
 
 use crate::grid::grid::*;
 use crate::grid::kernel::*;

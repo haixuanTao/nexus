@@ -6,8 +6,6 @@
 //!
 //! The kernel also determines per-particle affinity bits and sign bits used by CPIC
 //! for compatible particle-grid transfers in subsequent timesteps.
-//!
-//! Corresponds to `g2p_cdf.slang`.
 
 use crate::grid::grid::*;
 use crate::grid::kernel::*;

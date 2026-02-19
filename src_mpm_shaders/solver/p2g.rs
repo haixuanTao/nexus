@@ -8,8 +8,6 @@
 //! particles that are incompatible with a node (different side of a collider) contribute
 //! to the node's `incompatible` momentum field instead, and impulses are computed for
 //! the rigid body coupling.
-//!
-//! Corresponds to `p2g.slang`.
 
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
@@ -667,7 +665,7 @@ fn flt2int(flt: f32) -> i32 {
 }
 
 /*
- * Shared memory flatten helpers (same as p2g.slang).
+ * Shared memory flatten helpers
  */
 
 #[cfg(feature = "dim2")]

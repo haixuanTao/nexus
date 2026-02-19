@@ -2,8 +2,6 @@
 //!
 //! This kernel detects collisions between the grid nodes and the collision shapes,
 //! storing the resulting contact distance field (CDF) data in each node's `cdf` field.
-//!
-//! Corresponds to `grid_update_cdf.slang`.
 
 use crate::grid::grid::*;
 use crate::nexus_shaders::dynamics::Velocity as BodyVelocity;

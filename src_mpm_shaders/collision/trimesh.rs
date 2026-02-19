@@ -334,7 +334,7 @@ fn stable_check_edges_voronoi(
         let _ = (
             ab, ac, bc, ap, bp, _cp, ab_ap, ab_bp, ac_ap, ac_cp, ac_bp, ab_cp,
         );
-        // TODO: 2D case not fully implemented in original Slang either.
+        // TODO: 2D case not fully implemented
         ProjectionInfo {
             feature: FACE_CW,
             params: Vec3::ZERO,

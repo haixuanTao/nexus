@@ -3,8 +3,6 @@
 //! After P2G transfers momentum onto the grid, this kernel converts momentum to
 //! velocity (dividing by mass), applies gravity, and clamps velocities so no node
 //! moves more than one cell width per timestep.
-//!
-//! Corresponds to `grid_update.slang` (the non-CDF grid update).
 
 use crate::grid::grid::*;
 use crate::solver::params::SimulationParams;

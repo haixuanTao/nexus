@@ -7,8 +7,6 @@
 //!
 //! Uses the same linked-list traversal and shared-memory pattern as P2G, but
 //! transfers geometry primitives instead of particle dynamics.
-//!
-//! Corresponds to `p2g_cdf.slang`.
 
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
@@ -168,7 +166,7 @@ fn p2g_cdf_step(
 }
 
 /*
- * Fetch functions (same structure as p2g.slang).
+ * Fetch functions
  */
 
 #[inline]
@@ -528,7 +526,7 @@ pub fn gpu_p2g_cdf(
 }
 
 /*
- * Shared memory flatten helpers (same as p2g.slang).
+ * Shared memory flatten helpers
  */
 
 #[cfg(feature = "dim2")]

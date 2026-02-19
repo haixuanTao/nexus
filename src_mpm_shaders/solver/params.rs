@@ -2,7 +2,6 @@ use crate::Vector;
 
 /// Parameters for the MPM simulation.
 ///
-/// Corresponds to the Slang `SimulationParams` struct.
 /// In 2D, a padding field is added after gravity to satisfy uniform size/alignment requirements.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
