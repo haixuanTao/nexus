@@ -198,6 +198,18 @@ impl GpuBodySet {
             .map(|b| (b.local_mprops, (b.mprops, (b.vel, (b.pose, b.shape)))))
             .collect();
 
+        // Avoid empty buffer bindings.
+        let vertex_buffer = if !shape_buffers.vertices.is_empty() {
+            &shape_buffers.vertices[..]
+        } else {
+            &[VectorWithPadding::default()]
+        };
+        let index_buffer = if !shape_buffers.indices.is_empty() {
+            &shape_buffers.indices[..]
+        } else {
+            &[0, 0, 0]
+        };
+
         Self {
             len: bodies.len() as u32,
             mprops: Tensor::vector(backend, &mprops, BufferUsages::STORAGE).unwrap(),
@@ -217,17 +229,17 @@ impl GpuBodySet {
             shapes: Tensor::vector(backend, &shapes_data, BufferUsages::STORAGE).unwrap(),
             shapes_local_vertex_buffers: Tensor::vector(
                 backend,
-                &shape_buffers.vertices,
+                vertex_buffer,
                 BufferUsages::STORAGE,
             )
             .unwrap(),
             shapes_vertex_buffers: Tensor::vector(
                 backend,
-                &shape_buffers.vertices,
+                vertex_buffer,
                 BufferUsages::STORAGE,
             )
             .unwrap(),
-            shapes_index_buffers: Tensor::vector(backend, &shape_buffers.indices, BufferUsages::STORAGE).unwrap(),
+            shapes_index_buffers: Tensor::vector(backend, index_buffer, BufferUsages::STORAGE).unwrap(),
             shapes_vertex_collider_id: Tensor::vector(
                 backend,
                 pt_collider_ids,

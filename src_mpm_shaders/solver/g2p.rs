@@ -265,7 +265,7 @@ fn particle_g2p<const USE_CPIC: bool>(
     if USE_CPIC {
         particles_cdf.at_mut(particle_id as usize).rigid_vel = rigid_vel;
     }
-    
+
     // Set the particle velocity, and store the velocity gradient into the affine matrix.
     // The rest will be dealt with in the particle update kernel(s).
     particles_kin.at_mut(particle_id as usize).affine =

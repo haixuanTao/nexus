@@ -49,6 +49,7 @@ fn collide(
 
         use crate::nexus_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
 
+        #[cfg(feature = "dim3")]
         let (proj, valid) = if shape_type == SHAPE_TYPE_TRIMESH {
             let mesh = shape.to_trimesh();
             let local_pt = shape_pose.inverse() * point;
@@ -59,6 +60,9 @@ fn collide(
         } else {
             (shape.project_point_on_boundary(shape_pose, point), true)
         };
+
+        #[cfg(feature = "dim2")]
+        let (proj, valid) = (shape.project_point_on_boundary(shape_pose, point), true);
 
         if valid {
             let dpt = proj.point - point;
@@ -86,56 +90,11 @@ fn collide(
     collision
 }
 
-/// GPU kernel: grid update CDF.
-///
-/// For each active grid node, runs collision detection against all collision shapes
-/// and writes the resulting `NodeCdf` (distance, affinity bits, closest collider ID).
-///
-/// Dispatched with one workgroup per active block, one thread per node in the block.
-#[cfg(feature = "dim2")]
-#[spirv_bindgen]
-#[spirv(compute(threads(8, 8)))]
-pub fn gpu_grid_update_collide(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_shapes: &[Shape],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] collision_shape_poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_materials: &[BoundaryCondition],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] nodes: &mut [Node],
-) {
-    let bid = block_id.x;
-    let vid = active_blocks.at(bid as usize).virtual_id;
-
-    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
-    let tid_xy = UVec2::new(tid.x, tid.y);
-    let global_node_id = node_id(global_chunk_id, tid_xy);
-    let cell_pt = Vec2::new(
-        (vid.id.x * 8 + tid.x as i32) as f32,
-        (vid.id.y * 8 + tid.y as i32) as f32,
-    ) * grid_data.at(0).cell_width;
-
-    let global_id = global_node_id.id;
-    let collision = collide(
-        collision_shapes,
-        collision_shape_poses,
-        grid_data.at(0).cell_width,
-        cell_pt,
-    );
-
-    if collision.distance != MAX_FLT {
-        // Found a collision, apply the boundary condition (hard-coded to stick for now).
-        nodes.at_mut(global_id as usize).momentum_velocity_mass.x = 0.0;
-        nodes.at_mut(global_id as usize).momentum_velocity_mass.y = 0.0;
-    }
-}
 
 /// GPU kernel: grid update CDF (3D version).
-#[cfg(feature = "dim3")]
 #[spirv_bindgen]
-#[spirv(compute(threads(4, 4, 4)))]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_grid_update_collide(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
@@ -156,13 +115,30 @@ pub fn gpu_grid_update_collide(
     let vid = active_blocks.at(bid as usize).virtual_id;
 
     let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
-    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
-    let global_node_id = node_id(global_chunk_id, tid_xyz);
-    let cell_pt = Vec3::new(
-        (vid.id.x * 4 + tid.x as i32) as f32,
-        (vid.id.y * 4 + tid.y as i32) as f32,
-        (vid.id.z * 4 + tid.z as i32) as f32,
-    ) * grid_data.at(0).cell_width;
+
+    let global_node_id;
+    let cell_pt;
+
+    #[cfg(feature = "dim2")]
+    {
+        let tid_xy = UVec2::new(tid.x, tid.y);
+        global_node_id = node_id(global_chunk_id, tid_xy);
+        cell_pt = Vec2::new(
+            (vid.id.x * 8 + tid.x as i32) as f32,
+            (vid.id.y * 8 + tid.y as i32) as f32,
+        ) * grid_data.at(0).cell_width;
+    }
+
+    #[cfg(feature = "dim3")]
+    {
+        let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+        global_node_id = node_id(global_chunk_id, tid_xyz);
+        cell_pt = Vec3::new(
+            (vid.id.x * 4 + tid.x as i32) as f32,
+            (vid.id.y * 4 + tid.y as i32) as f32,
+            (vid.id.z * 4 + tid.z as i32) as f32,
+        ) * grid_data.at(0).cell_width;
+    }
 
     let global_id = global_node_id.id;
     let cell_width = grid_data.at(0).cell_width;
@@ -180,6 +156,9 @@ pub fn gpu_grid_update_collide(
         let body_vel = body_vels.at(collision.closest_id);
         let body_com = body_mprops.at(collision.closest_id).com;
         let body_vel_at_grid_pos = velocity_at_point(body_com, body_vel, cell_pt);
+        #[cfg(feature = "dim2")]
+        let node_vel = nodes.at(global_id as usize).momentum_velocity_mass.xy();
+        #[cfg(feature = "dim3")]
         let node_vel = nodes.at(global_id as usize).momentum_velocity_mass.xyz();
         let body_material = body_materials.read(collision.closest_id);
         let delta_vel = node_vel - body_vel_at_grid_pos;
@@ -191,12 +170,16 @@ pub fn gpu_grid_update_collide(
 
             nodes.at_mut(global_id as usize).momentum_velocity_mass.x = corrected_vel.x;
             nodes.at_mut(global_id as usize).momentum_velocity_mass.y = corrected_vel.y;
-            nodes.at_mut(global_id as usize).momentum_velocity_mass.z = corrected_vel.z;
-        } else if -normal_vel * dt > collision.distance - margin {
+            #[cfg(feature = "dim3")]
+            {
+                nodes.at_mut(global_id as usize).momentum_velocity_mass.z = corrected_vel.z;
+            }        } else if -normal_vel * dt > collision.distance - margin {
             let excess_vel = (normal_vel + (collision.distance - margin) / dt) * collision.normal;
             nodes.at_mut(global_id as usize).momentum_velocity_mass.x -= excess_vel.x;
             nodes.at_mut(global_id as usize).momentum_velocity_mass.y -= excess_vel.y;
-            nodes.at_mut(global_id as usize).momentum_velocity_mass.z -= excess_vel.z;
-        }
+            #[cfg(feature = "dim3")]
+            {
+                nodes.at_mut(global_id as usize).momentum_velocity_mass.z -= excess_vel.z;
+            }        }
     }
 }

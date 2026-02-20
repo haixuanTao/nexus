@@ -222,6 +222,7 @@ impl NodeCdf {
 pub struct Node {
     /// The first DIM components contain either momentum or velocity (depending on context).
     /// The last component contains the node's mass.
+    // TODO: split momentum_velocity and mass in two separate fields.
     pub momentum_velocity_mass: VectorPlusOne,
     /// SPIR-V padding: Vec3 has align(16) so stride must be multiple of 16.
     #[cfg(feature = "dim2")]
