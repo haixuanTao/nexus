@@ -89,7 +89,6 @@ pub fn gpu_particle_update(
     let props = particles_props.read(particle_id as usize);
     let particle_pos = particles_pos.at(particle_id as usize).pt;
 
-
     /*
      * Update velocity.
      */
@@ -157,8 +156,7 @@ pub fn gpu_particle_update(
      * Constitutive model.
      */
     let update_data = ParticleUpdateData::new(dt, cell_width, particle_id);
-    let update_result =
-        DefaultParticleModel::update(particles_model, &update_data, &mut def_grad);
+    let update_result = DefaultParticleModel::update(particles_model, &update_data, &mut def_grad);
 
     /*
      * Affine matrix for APIC transfer.

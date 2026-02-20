@@ -59,11 +59,12 @@ pub struct MpmPipeline<GpuModel: GpuParticleModelData> {
 
 /// Callbacks for adding custom steps to the MPM pipeline.
 pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
-    fn max_substep_dt(&mut self,
-                      _backend: &GpuBackend,
-                      _timestamps: Option<&mut GpuTimestamps>,
-                      _data: &mut MpmData<GpuModel>,
-                      _state: &mut dyn Any,
+    fn max_substep_dt(
+        &mut self,
+        _backend: &GpuBackend,
+        _timestamps: Option<&mut GpuTimestamps>,
+        _data: &mut MpmData<GpuModel>,
+        _state: &mut dyn Any,
     ) -> Option<f32> {
         None
     }
@@ -116,7 +117,9 @@ pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
         Ok(())
     }
 
-    fn particle_update_enabled(&self) -> bool { true }
+    fn particle_update_enabled(&self) -> bool {
+        true
+    }
 
     /// Custom operation run after updating particles.
     fn after_particles_update(
@@ -341,15 +344,21 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
 
             if data.use_cpic {
-            self.sort.launch_sort_rigid_particles(
-                &mut pass,
-                &mut data.rigid_particles,
-                &mut data.grid,
-            )?;
-                }
+                self.sort.launch_sort_rigid_particles(
+                    &mut pass,
+                    &mut data.rigid_particles,
+                    &mut data.grid,
+                )?;
+            }
         }
 
-        hooks.after_particle_sort(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
+        hooks.after_particle_sort(
+            backend,
+            encoder,
+            timestamps.as_deref_mut(),
+            data,
+            hooks_state,
+        )?;
 
         if data.use_cpic {
             {
@@ -370,8 +379,12 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
 
             {
                 let mut pass = encoder.begin_pass("CDF G2P", timestamps.as_deref_mut());
-                self.g2p_cdf
-                    .launch(&mut pass, &data.sim_params, &data.grid, &mut data.particles)?;
+                self.g2p_cdf.launch(
+                    &mut pass,
+                    &data.sim_params,
+                    &data.grid,
+                    &mut data.particles,
+                )?;
             }
         }
 
@@ -388,15 +401,33 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_p2g(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
+        hooks.after_p2g(
+            backend,
+            encoder,
+            timestamps.as_deref_mut(),
+            data,
+            hooks_state,
+        )?;
 
         {
             let mut pass = encoder.begin_pass("Grid update", timestamps.as_deref_mut());
-            self.grid_update
-                .launch(&mut pass, data.use_cpic, &data.sim_params, &mut data.grid, &data.bodies, &data.body_materials)?;
+            self.grid_update.launch(
+                &mut pass,
+                data.use_cpic,
+                &data.sim_params,
+                &mut data.grid,
+                &data.bodies,
+                &data.body_materials,
+            )?;
         }
 
-        hooks.after_grid_update(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
+        hooks.after_grid_update(
+            backend,
+            encoder,
+            timestamps.as_deref_mut(),
+            data,
+            hooks_state,
+        )?;
 
         {
             let mut pass = encoder.begin_pass("G2P", timestamps.as_deref_mut());
@@ -411,7 +442,13 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_g2p(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
+        hooks.after_g2p(
+            backend,
+            encoder,
+            timestamps.as_deref_mut(),
+            data,
+            hooks_state,
+        )?;
 
         if hooks.particle_update_enabled() {
             let mut pass = encoder.begin_pass("Particle update", timestamps.as_deref_mut());
@@ -423,7 +460,13 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_particles_update(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
+        hooks.after_particles_update(
+            backend,
+            encoder,
+            timestamps.as_deref_mut(),
+            data,
+            hooks_state,
+        )?;
 
         {
             let mut pass = encoder.begin_pass("Integrate bodies", timestamps.as_deref_mut());

@@ -90,11 +90,7 @@ impl GpuReadbackData {
                 num_particles as u32,
                 BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             )?,
-            rigid_base_colors: Tensor::vector(
-                backend,
-                rigid_base_colors,
-                BufferUsages::STORAGE,
-            )?,
+            rigid_base_colors: Tensor::vector(backend, rigid_base_colors, BufferUsages::STORAGE)?,
             rigid_instances: Tensor::vector_uninit(
                 backend,
                 rigid_buf_len,

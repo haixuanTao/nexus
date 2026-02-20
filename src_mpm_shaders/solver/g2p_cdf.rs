@@ -197,7 +197,8 @@ fn particle_g2p(
     );
 
     // Pass 1: Determine sign bits (Eqn. 21) and combine affinity masks.
-    for i in 0..27 { // For loop unrolling, use the fixed bound (the maximum one between 2D and 3D).
+    for i in 0..27 {
+        // For loop unrolling, use the fixed bound (the maximum one between 2D and 3D).
         if i < NBH_LEN {
             let shift = NBH_SHIFTS.read(i as usize);
             let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
@@ -207,8 +208,9 @@ fn particle_g2p(
             #[cfg(feature = "dim2")]
             let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
             #[cfg(feature = "dim3")]
-            let weight =
-                vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
+            let weight = vec3_extract(w[0], shift.x)
+                * vec3_extract(w[1], shift.y)
+                * vec3_extract(w[2], shift.z);
 
             // Unrolled inner loop over 16 colliders.
             // NOTE: `unroll_for_loops` doesn’t see through the closure so we use crunchy::unroll instead.
@@ -258,23 +260,25 @@ fn particle_g2p(
     #[cfg(feature = "dim3")]
     let mut qtu = Vec4::ZERO;
 
-    for i in 0..27 { // For loop unrolling, use the fixed bound (the maximum one between 2D and 3D).
+    for i in 0..27 {
+        // For loop unrolling, use the fixed bound (the maximum one between 2D and 3D).
         if i < NBH_LEN {
             let shift = NBH_SHIFTS.read(i as usize);
             let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
             let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
 
             #[cfg(feature = "dim2")]
-            let dpt =
-                ref_elt_pos_minus_particle_pos + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
+            let dpt = ref_elt_pos_minus_particle_pos
+                + Vec2::new(shift.x as f32, shift.y as f32) * cell_width;
             #[cfg(feature = "dim2")]
             let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
             #[cfg(feature = "dim3")]
             let dpt = ref_elt_pos_minus_particle_pos
                 + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
             #[cfg(feature = "dim3")]
-            let weight =
-                vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y) * vec3_extract(w[2], shift.z);
+            let weight = vec3_extract(w[0], shift.x)
+                * vec3_extract(w[1], shift.y)
+                * vec3_extract(w[2], shift.z);
 
             let combined_affinity = cell_data.affinities & particle_affinity & AFFINITY_BITS_MASK;
             let sign_differences = ((cell_data.affinities >> SIGN_BITS_SHIFT)

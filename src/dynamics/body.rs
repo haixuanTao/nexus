@@ -233,13 +233,10 @@ impl GpuBodySet {
                 BufferUsages::STORAGE,
             )
             .unwrap(),
-            shapes_vertex_buffers: Tensor::vector(
-                backend,
-                vertex_buffer,
-                BufferUsages::STORAGE,
-            )
-            .unwrap(),
-            shapes_index_buffers: Tensor::vector(backend, index_buffer, BufferUsages::STORAGE).unwrap(),
+            shapes_vertex_buffers: Tensor::vector(backend, vertex_buffer, BufferUsages::STORAGE)
+                .unwrap(),
+            shapes_index_buffers: Tensor::vector(backend, index_buffer, BufferUsages::STORAGE)
+                .unwrap(),
             shapes_vertex_collider_id: Tensor::vector(
                 backend,
                 pt_collider_ids,

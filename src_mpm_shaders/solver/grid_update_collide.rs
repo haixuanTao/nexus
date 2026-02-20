@@ -4,16 +4,18 @@
 //! storing the resulting contact distance field (CDF) data in each node's `cdf` field.
 
 use crate::grid::grid::*;
-use crate::nexus_shaders::dynamics::{Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties};
+use crate::nexus_shaders::dynamics::velocity_at_point;
+use crate::nexus_shaders::dynamics::{
+    Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties,
+};
 use crate::nexus_shaders::shapes::Shape;
+use crate::solver::boundary_condition::BoundaryCondition;
+use crate::solver::params::SimulationParams;
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
 use nexus_shaders::VectorWithPadding;
-use crate::solver::boundary_condition::BoundaryCondition;
-use crate::solver::params::SimulationParams;
-use crate::nexus_shaders::dynamics::velocity_at_point;
+use spirv_std::spirv;
 
 struct Collision {
     normal: Vector,
@@ -36,7 +38,11 @@ fn collide(
     point: Vector,
 ) -> Collision {
     let dist_cap = Vector::splat(cell_width * 1.5);
-    let mut collision =  Collision { normal: Vector::ZERO, distance: MAX_FLT, closest_id: 0 };
+    let mut collision = Collision {
+        normal: Vector::ZERO,
+        distance: MAX_FLT,
+        closest_id: 0,
+    };
 
     // Iterate over all collision shapes.
     // NOTE: we iterate using a fixed upper bound to avoid dynamic buffer length queries
@@ -53,7 +59,12 @@ fn collide(
         let (proj, valid) = if shape_type == SHAPE_TYPE_TRIMESH {
             let mesh = shape.to_trimesh();
             let local_pt = shape_pose.inverse() * point;
-            let (mut proj, valid) = mesh.project_local_point(collision_shape_indices, collision_shape_vertices, local_pt, dist_cap.x);
+            let (mut proj, valid) = mesh.project_local_point(
+                collision_shape_indices,
+                collision_shape_vertices,
+                local_pt,
+                dist_cap.x,
+            );
             // Transform the projected point back to world space.
             proj.point = shape_pose * proj.point;
             (proj, valid)
@@ -90,7 +101,6 @@ fn collide(
     collision
 }
 
-
 /// GPU kernel: grid update CDF (3D version).
 #[spirv_bindgen]
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
@@ -103,11 +113,13 @@ pub fn gpu_grid_update_collide(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] collision_shapes: &[Shape],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] collision_shape_poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] collision_shape_vertices: &[VectorWithPadding],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    collision_shape_vertices: &[VectorWithPadding],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] collision_shape_indices: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_vels: &[BodyVelocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_mprops: &[BodyMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_materials: &[BoundaryCondition],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)]
+    body_materials: &[BoundaryCondition],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] nodes: &mut [Node],
 ) {
     let dt = params.dt;
@@ -166,20 +178,23 @@ pub fn gpu_grid_update_collide(
         let margin = cell_width;
 
         if collision.distance <= margin {
-            let corrected_vel = body_vel_at_grid_pos + body_material.project_velocity(delta_vel, collision.normal);
+            let corrected_vel =
+                body_vel_at_grid_pos + body_material.project_velocity(delta_vel, collision.normal);
 
             nodes.at_mut(global_id as usize).momentum_velocity_mass.x = corrected_vel.x;
             nodes.at_mut(global_id as usize).momentum_velocity_mass.y = corrected_vel.y;
             #[cfg(feature = "dim3")]
             {
                 nodes.at_mut(global_id as usize).momentum_velocity_mass.z = corrected_vel.z;
-            }        } else if -normal_vel * dt > collision.distance - margin {
+            }
+        } else if -normal_vel * dt > collision.distance - margin {
             let excess_vel = (normal_vel + (collision.distance - margin) / dt) * collision.normal;
             nodes.at_mut(global_id as usize).momentum_velocity_mass.x -= excess_vel.x;
             nodes.at_mut(global_id as usize).momentum_velocity_mass.y -= excess_vel.y;
             #[cfg(feature = "dim3")]
             {
                 nodes.at_mut(global_id as usize).momentum_velocity_mass.z -= excess_vel.z;
-            }        }
+            }
+        }
     }
 }

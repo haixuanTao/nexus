@@ -63,8 +63,7 @@ pub fn gpu_estimate_timestep_bound(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     particles_model: &[GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
-    particles_def_grad: &[PaddedMatrix],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_def_grad: &[PaddedMatrix],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
     particles_props: &[ParticleProperties],
     #[spirv(uniform, descriptor_set = 0, binding = 5)] particles_len: &u32,

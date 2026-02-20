@@ -220,7 +220,12 @@ impl TriMesh {
     ///
     /// Uses BVH traversal to efficiently find the closest triangle,
     /// then uses pseudo-normals to determine if the point is inside the mesh.
-    pub fn project_local_point(&self, idx: &[u32], vtx: &[VectorWithPadding], pt: Vector) -> ProjectionResult {
+    pub fn project_local_point(
+        &self,
+        idx: &[u32],
+        vtx: &[VectorWithPadding],
+        pt: Vector,
+    ) -> ProjectionResult {
         let mut curr = 0u32;
         let mut best = 1.0e10f32;
         let mut best_proj = ProjectionWithLocation::solid(pt);

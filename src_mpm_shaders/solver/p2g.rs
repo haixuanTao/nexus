@@ -198,14 +198,17 @@ fn p2g_step<const USE_CPIC: bool>(
                     let cell_center = dpt + particle_pos.pt;
                     let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
                     let particle_ghost_vel = body_pt_vel
-                        + body_material.project_velocity(particle_vel - body_pt_vel, particle_normal);
-                    let delta_impulse = (particle_vel - particle_ghost_vel) * (weight * particle_mass);
+                        + body_material
+                            .project_velocity(particle_vel - body_pt_vel, particle_normal);
+                    let delta_impulse =
+                        (particle_vel - particle_ghost_vel) * (weight * particle_mass);
 
                     let lever_arm = body_com - cell_center;
 
                     #[cfg(feature = "dim2")]
                     {
-                        let delta_ang_impulse = delta_impulse.dot(Vec2::new(lever_arm.y, -lever_arm.x));
+                        let delta_ang_impulse =
+                            delta_impulse.dot(Vec2::new(lever_arm.y, -lever_arm.x));
                         ang_impulse += delta_ang_impulse;
                     }
                     #[cfg(feature = "dim3")]
@@ -452,12 +455,14 @@ fn fetch_next_particle<const USE_CPIC: bool>(
                         }
 
                         let pkin = particles_kin.read(curr_particle_id as usize);
-                        shared_pos.write(shared_flat_index,
-                            particles_pos.read(curr_particle_id as usize));
+                        shared_pos.write(
+                            shared_flat_index,
+                            particles_pos.read(curr_particle_id as usize),
+                        );
                         shared_affine.write(shared_flat_index, pkin.affine.remove_padding());
                         shared_force_dt.write(shared_flat_index, pkin.force_dt);
-                        shared_vel_mass.write(shared_flat_index,
-                            vector_plus_one(pkin.velocity, pkin.mass));
+                        shared_vel_mass
+                            .write(shared_flat_index, vector_plus_one(pkin.velocity, pkin.mass));
                     } else {
                         if USE_CPIC {
                             shared_affinities.write(shared_flat_index, 0);
@@ -560,9 +565,15 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     #[cfg(feature = "dim3")]
     let packed_cell_index_in_block = flatten_shared_index(tid.x + 4, tid.y + 4, tid.z + 4);
 
-    let global_id = shared_nodes.at(packed_cell_index_in_block as usize).global_id;
+    let global_id = shared_nodes
+        .at(packed_cell_index_in_block as usize)
+        .global_id;
     let node_affinities = nodes.at(global_id as usize).cdf.affinities;
-    let collider_id = if USE_CPIC { nodes.at(global_id as usize).cdf.closest_id } else { 0 };
+    let collider_id = if USE_CPIC {
+        nodes.at(global_id as usize).cdf.closest_id
+    } else {
+        0
+    };
     let mut total_result = P2GStepResult::zero();
 
     // Iterate through linked lists with uniform control flow.
@@ -616,7 +627,8 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     if USE_CPIC {
         nodes
             .at_mut(global_id as usize)
-            .momentum_velocity_mass_incompatible = total_result.new_momentum_velocity_mass_incompatible;
+            .momentum_velocity_mass_incompatible =
+            total_result.new_momentum_velocity_mass_incompatible;
 
         // Apply the impulse to the closest body using integer atomics.
         if collider_id != NONE {
@@ -754,8 +766,8 @@ fn atomic_add_i32(ptr: &mut i32, value: i32) {
 }
 
 /*
- Entrupoint specializations (with our without CPIC)
- */
+Entrupoint specializations (with our without CPIC)
+*/
 
 #[spirv_bindgen]
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
@@ -784,10 +796,32 @@ pub fn gpu_p2g(
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
     #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
 ) {
-    gpu_p2g_generic::<false>(block_id, tid, tid_flat, grid_data, hmap_entries,
-                             active_blocks,
-                             nodes_linked_lists, particle_node_linked_lists, particles_pos, particles_kin, &[], nodes, &[], &mut [], &[],
-                             shared_vel_mass, shared_affine, shared_nodes, shared_pos, shared_force_dt, shared_affinities, shared_normals, max_linked_list_length, max_linked_list_length_uniform);
+    gpu_p2g_generic::<false>(
+        block_id,
+        tid,
+        tid_flat,
+        grid_data,
+        hmap_entries,
+        active_blocks,
+        nodes_linked_lists,
+        particle_node_linked_lists,
+        particles_pos,
+        particles_kin,
+        &[],
+        nodes,
+        &[],
+        &mut [],
+        &[],
+        shared_vel_mass,
+        shared_affine,
+        shared_nodes,
+        shared_pos,
+        shared_force_dt,
+        shared_affinities,
+        shared_normals,
+        max_linked_list_length,
+        max_linked_list_length_uniform,
+    );
 }
 
 /// GPU kernel: P2G transfer (2D).
@@ -829,8 +863,30 @@ pub fn gpu_p2g_cpic(
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
     #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
 ) {
-    gpu_p2g_generic::<true>(block_id, tid, tid_flat, grid_data, hmap_entries,
-                             active_blocks,
-                             nodes_linked_lists, particle_node_linked_lists, particles_pos, particles_kin, particles_cdf, nodes, body_vels, body_impulses, body_materials,
-                             shared_vel_mass, shared_affine, shared_nodes, shared_pos, shared_force_dt, shared_affinities, shared_normals, max_linked_list_length, max_linked_list_length_uniform);
+    gpu_p2g_generic::<true>(
+        block_id,
+        tid,
+        tid_flat,
+        grid_data,
+        hmap_entries,
+        active_blocks,
+        nodes_linked_lists,
+        particle_node_linked_lists,
+        particles_pos,
+        particles_kin,
+        particles_cdf,
+        nodes,
+        body_vels,
+        body_impulses,
+        body_materials,
+        shared_vel_mass,
+        shared_affine,
+        shared_nodes,
+        shared_pos,
+        shared_force_dt,
+        shared_affinities,
+        shared_normals,
+        max_linked_list_length,
+        max_linked_list_length_uniform,
+    );
 }

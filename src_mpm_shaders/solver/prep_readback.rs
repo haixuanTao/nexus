@@ -314,8 +314,7 @@ pub fn gpu_prep_readback(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_cdf: &[Cdf],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
-    particles_def_grad: &[PaddedMatrix],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_def_grad: &[PaddedMatrix],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     particles_props: &[ParticleProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] grid_data: &[Grid],

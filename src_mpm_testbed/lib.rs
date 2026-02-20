@@ -184,20 +184,21 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         self.rigid_instances.clear();
         if self.app_state.show_rigid_particles {
             #[cfg(feature = "dim2")]
-            self.rigid_instances.extend(
-                self.step_result
-                    .rigid_instances
-                    .iter()
-                    .map(|d| InstanceData2d {
-                        position: d.position,
-                        color: [d.color.x, d.color.y, d.color.z, d.color.w],
-                        deformation: d.deformation,
-                        ..Default::default()
-                    }),
-            );
+            self.rigid_instances
+                .extend(
+                    self.step_result
+                        .rigid_instances
+                        .iter()
+                        .map(|d| InstanceData2d {
+                            position: d.position,
+                            color: [d.color.x, d.color.y, d.color.z, d.color.w],
+                            deformation: d.deformation,
+                            ..Default::default()
+                        }),
+                );
             #[cfg(feature = "dim3")]
-            self.rigid_instances.extend(
-                self.step_result.rigid_instances.iter().map(|d| {
+            self.rigid_instances
+                .extend(self.step_result.rigid_instances.iter().map(|d| {
                     use nexus_mpm::mpm_shaders::PaddingExt;
                     InstanceData3d {
                         position: d.position,
@@ -205,8 +206,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
                         deformation: d.deformation.remove_padding(),
                         ..Default::default()
                     }
-                }),
-            );
+                }));
         }
     }
 }

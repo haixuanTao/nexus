@@ -71,12 +71,14 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         if self.app_state.min_num_substeps < self.app_state.max_num_substeps {
             // Adaptive stepping.
             let bounds = if let Some(max_substep_dt) = self.hooks.max_substep_dt(
-                &self.gpu, Some(&mut self.timestamps), &mut physics.data, hooks_state
+                &self.gpu,
+                Some(&mut self.timestamps),
+                &mut physics.data,
+                hooks_state,
             ) {
                 max_substep_dt
             } else {
-                self
-                    .app_state
+                self.app_state
                     .pipeline
                     .timestep_bounds
                     .compute_bounds(

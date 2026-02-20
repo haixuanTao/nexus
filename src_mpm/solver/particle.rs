@@ -171,10 +171,7 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
             .iter()
             .map(|p| p.dynamics.to_gpu_kinematics())
             .collect();
-        let cdf: Vec<_> = particles
-            .iter()
-            .map(|p| p.dynamics.to_gpu_cdf())
-            .collect();
+        let cdf: Vec<_> = particles.iter().map(|p| p.dynamics.to_gpu_cdf()).collect();
         let def_grad: Vec<_> = particles
             .iter()
             .map(|p| p.dynamics.to_gpu_def_grad())

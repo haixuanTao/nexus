@@ -162,7 +162,13 @@ impl TriMesh {
     ///
     /// Uses BVH traversal to efficiently find the closest triangle,
     /// then uses pseudo-normals to determine if the point is inside the mesh.
-    pub fn project_local_point(&self, idx: &[u32], vtx: &[VectorWithPadding], pt: Vector, max_dist: f32) -> (ProjectionResult, bool) {
+    pub fn project_local_point(
+        &self,
+        idx: &[u32],
+        vtx: &[VectorWithPadding],
+        pt: Vector,
+        max_dist: f32,
+    ) -> (ProjectionResult, bool) {
         let mut curr = 0u32;
         let mut best = max_dist;
         let mut best_proj = ProjectionWithLocation::solid(pt);
@@ -201,7 +207,8 @@ impl TriMesh {
         }
 
         if best_tri_id != u32::MAX {
-            let pn = self.pseudo_normal(idx, vtx, best_tri_id, best_proj.feature_type, best_proj.id);
+            let pn =
+                self.pseudo_normal(idx, vtx, best_tri_id, best_proj.feature_type, best_proj.id);
             let is_inside = pn.dot(pt - best_proj.point) <= 0.0;
             (ProjectionResult::new(best_proj.point, is_inside), true)
         } else {
@@ -210,13 +217,15 @@ impl TriMesh {
     }
 }
 
-
 /*
  * UVec3 import for vertex index triples.
  */
+use crate::queries::{
+    ProjectionResult, ProjectionWithLocation, FEATURE_EDGE, FEATURE_FACE, FEATURE_SOLID,
+    FEATURE_VERTEX,
+};
 use glamx::{UVec3, Vec2, Vec3};
 use spirv_std::image::sample_with::NoneTy;
-use crate::queries::{ProjectionResult, ProjectionWithLocation, FEATURE_EDGE, FEATURE_FACE, FEATURE_SOLID, FEATURE_VERTEX};
 /*
  * Triangle point projection with location information.
  * TODO: everything below can probably be shared with parry

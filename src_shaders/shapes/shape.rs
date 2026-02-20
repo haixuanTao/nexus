@@ -264,7 +264,14 @@ impl Shape {
             Vector::new(self.b.x, self.b.y, self.b.z),
             Vector::new(self.c.x, self.c.y, self.c.z),
         );
-        TriMesh::new(bvh_vtx_root_id, bvh_idx_root_id, bvh_node_len, num_triangles, num_vertices, root_aabb)
+        TriMesh::new(
+            bvh_vtx_root_id,
+            bvh_idx_root_id,
+            bvh_node_len,
+            num_triangles,
+            num_vertices,
+            root_aabb,
+        )
     }
 
     /// Converts a Shape to a Polyline.
