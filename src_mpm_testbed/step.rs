@@ -115,6 +115,8 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
                 .unwrap();
         }
 
+        physics.data.use_cpic = self.app_state.use_cpic;
+
         let t_encoding = web_time::Instant::now();
         self.timestamps.reset();
 

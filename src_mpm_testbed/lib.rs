@@ -94,6 +94,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             gravity_factor: 1.0,
             restarting: false,
             show_rigid_particles: true,
+            use_cpic: true,
         };
         let hooks = hooks(&gpu);
         let physics = (builders[0].1)(&gpu, &mut app_state);
@@ -338,6 +339,7 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                     &mut stage.app_state.show_rigid_particles,
                     "show rigid particles",
                 );
+                ui.checkbox(&mut stage.app_state.use_cpic, "use CPIC");
 
                 ui.label(format!(
                     "total: {:.1}ms (encoding: {:.1}ms)",

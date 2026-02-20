@@ -260,7 +260,7 @@ impl<GpuModel: GpuParticleModelData> MpmData<GpuModel> {
             sim_params,
             particles,
             gravity: params.gravity,
-            use_cpic: false,
+            use_cpic: true,
             rigid_particles,
             bodies,
             body_materials,
