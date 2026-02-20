@@ -78,17 +78,18 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                         let global_node_id = node_id(global_chunk_id, tid_xy);
                         let node = nodes.read(global_node_id.id as usize);
                         shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
-                        shared_nodes_vel_mass_incompatible[flat_shared_index] =
-                            node.momentum_velocity_mass_incompatible;
+
 
                         if USE_CPIC {
+                        shared_nodes_vel_mass_incompatible[flat_shared_index] =
+                            node.momentum_velocity_mass_incompatible;
                             shared_nodes_cdf[flat_shared_index] = node.cdf;
                         }
                     } else {
                         shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
-                        shared_nodes_vel_mass_incompatible[flat_shared_index] = VectorPlusOne::ZERO;
 
                         if USE_CPIC {
+                        shared_nodes_vel_mass_incompatible[flat_shared_index] = VectorPlusOne::ZERO;
                             shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
                         }
                     }
@@ -126,18 +127,16 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                             let global_node_id = node_id(global_chunk_id, tid_xyz);
                             let node = nodes.read(global_node_id.id as usize);
                             shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
+                            if USE_CPIC {
                             shared_nodes_vel_mass_incompatible[flat_shared_index] =
                                 node.momentum_velocity_mass_incompatible;
-
-                            if USE_CPIC {
                                 shared_nodes_cdf[flat_shared_index] = node.cdf;
                             }
                         } else {
                             shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
+                            if USE_CPIC {
                             shared_nodes_vel_mass_incompatible[flat_shared_index] =
                                 VectorPlusOne::ZERO;
-
-                            if USE_CPIC {
                                 shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
                             }
                         }
@@ -263,7 +262,10 @@ fn particle_g2p<const USE_CPIC: bool>(
         }
     }
 
-    // particles_cdf.at_mut(particle_id as usize).rigid_vel = rigid_vel;
+    if USE_CPIC {
+        particles_cdf.at_mut(particle_id as usize).rigid_vel = rigid_vel;
+    }
+    
     // Set the particle velocity, and store the velocity gradient into the affine matrix.
     // The rest will be dealt with in the particle update kernel(s).
     particles_kin.at_mut(particle_id as usize).affine =
