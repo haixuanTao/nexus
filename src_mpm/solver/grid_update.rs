@@ -5,9 +5,11 @@
 
 use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::grid_update::GpuGridUpdate;
-use crate::solver::GpuSimulationParams;
+use crate::solver::{GpuMaterials, GpuSimulationParams};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
+use nexus::dynamics::GpuBodySet;
+use crate::mpm_shaders::solver::grid_update_collide::GpuGridUpdateCollide;
 
 /// GPU compute kernel for updating grid node velocities.
 ///
@@ -17,6 +19,7 @@ use khal::backend::{GpuBackendError, GpuPass};
 pub struct WgGridUpdate {
     /// Compiled grid update compute shader.
     grid_update: GpuGridUpdate,
+    grid_update_collide: GpuGridUpdateCollide,
 }
 
 impl WgGridUpdate {
@@ -30,8 +33,11 @@ impl WgGridUpdate {
     pub fn launch(
         &self,
         pass: &mut GpuPass,
+        use_cpic: bool,
         sim_params: &GpuSimulationParams,
         grid: &mut GpuGrid,
+        bodies: &GpuBodySet,
+        body_materials: &GpuMaterials,
     ) -> Result<(), GpuBackendError> {
         self.grid_update.call(
             pass,
@@ -40,6 +46,26 @@ impl WgGridUpdate {
             &grid.meta,
             &grid.active_blocks,
             &mut grid.nodes,
-        )
+        )?;
+
+        if !use_cpic {
+            self.grid_update_collide.call(
+                pass,
+                indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
+                &sim_params.params,
+                &grid.meta,
+                &grid.active_blocks,
+                &bodies.shapes,
+                &bodies.poses,
+                &bodies.shapes_vertex_buffers,
+                &bodies.shapes_index_buffers,
+                &bodies.vels,
+                &bodies.mprops,
+                &body_materials.materials,
+                &mut grid.nodes,
+            )?;
+        }
+
+        Ok(())
     }
 }

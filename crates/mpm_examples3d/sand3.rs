@@ -53,6 +53,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
     };
 
     // Floor
+    let thickness = 0.5;
     let rb = RigidBodyBuilder::fixed().translation(vec3(0.0, -4.0, 0.0));
     let rb_handle = rapier_data.bodies.insert(rb);
     let co = ColliderBuilder::cuboid(100.0, 4.0, 100.0);
@@ -63,7 +64,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
     // Wall -Z
     let rb = RigidBodyBuilder::fixed().translation(vec3(0.0, 5.0, -35.0));
     let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(35.0, 5.0, 0.5);
+    let co = ColliderBuilder::cuboid(35.0, 5.0, thickness);
     rapier_data
         .colliders
         .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
@@ -71,7 +72,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
     // Wall +Z
     let rb = RigidBodyBuilder::fixed().translation(vec3(0.0, 5.0, 35.0));
     let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(35.0, 5.0, 0.5);
+    let co = ColliderBuilder::cuboid(35.0, 5.0, thickness);
     rapier_data
         .colliders
         .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
@@ -79,7 +80,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
     // Wall -X
     let rb = RigidBodyBuilder::fixed().translation(vec3(-35.0, 5.0, 0.0));
     let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(0.5, 5.0, 35.0);
+    let co = ColliderBuilder::cuboid(thickness, 5.0, 35.0);
     rapier_data
         .colliders
         .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
@@ -87,7 +88,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
     // Wall +X
     let rb = RigidBodyBuilder::fixed().translation(vec3(35.0, 5.0, 0.0));
     let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(0.5, 5.0, 35.0);
+    let co = ColliderBuilder::cuboid(thickness, 5.0, 35.0);
     rapier_data
         .colliders
         .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
@@ -98,7 +99,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
         .rotation(vec3(0.0, 0.0, -0.5))
         .angvel(vec3(0.0, -1.0, 0.0));
     let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(0.5, 2.0, 30.0);
+    let co = ColliderBuilder::cuboid(thickness, 2.0, 30.0);
     rapier_data
         .colliders
         .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);

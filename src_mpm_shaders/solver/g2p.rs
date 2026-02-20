@@ -43,7 +43,7 @@ const WORKGROUP_SIZE: u32 = 64;
 
 #[inline]
 #[unroll_for_loops]
-fn global_shared_memory_transfers(
+fn global_shared_memory_transfers<const USE_CPIC: bool>(
     grid_data: &[Grid],
     hmap_entries: &[GridHashMapEntry],
     nodes: &[Node],
@@ -80,11 +80,17 @@ fn global_shared_memory_transfers(
                         shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
                         shared_nodes_vel_mass_incompatible[flat_shared_index] =
                             node.momentum_velocity_mass_incompatible;
-                        shared_nodes_cdf[flat_shared_index] = node.cdf;
+
+                        if USE_CPIC {
+                            shared_nodes_cdf[flat_shared_index] = node.cdf;
+                        }
                     } else {
                         shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
                         shared_nodes_vel_mass_incompatible[flat_shared_index] = VectorPlusOne::ZERO;
-                        shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+
+                        if USE_CPIC {
+                            shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                        }
                     }
                 }
             }
@@ -122,12 +128,18 @@ fn global_shared_memory_transfers(
                             shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
                             shared_nodes_vel_mass_incompatible[flat_shared_index] =
                                 node.momentum_velocity_mass_incompatible;
-                            shared_nodes_cdf[flat_shared_index] = node.cdf;
+
+                            if USE_CPIC {
+                                shared_nodes_cdf[flat_shared_index] = node.cdf;
+                            }
                         } else {
                             shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
                             shared_nodes_vel_mass_incompatible[flat_shared_index] =
                                 VectorPlusOne::ZERO;
-                            shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+
+                            if USE_CPIC {
+                                shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                            }
                         }
                     }
                 }
@@ -143,7 +155,7 @@ fn global_shared_memory_transfers(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 #[unroll_for_loops]
-fn particle_g2p(
+fn particle_g2p<const USE_CPIC: bool>(
     body_vels: &[BodyVelocity],
     body_mprops: &[BodyMassProperties],
     body_materials: &[BoundaryCondition],
@@ -166,7 +178,7 @@ fn particle_g2p(
     if particles_kin.at(particle_id as usize).enabled != 0 {
         let particle_pos = particles_pos.read(particle_id as usize);
         let particle_vel = particles_kin.at(particle_id as usize).velocity;
-        let particle_cdf = particles_cdf.read(particle_id as usize);
+        let particle_cdf = if USE_CPIC { particles_cdf.read(particle_id as usize) } else { Cdf::default() };
 
         let inv_d = QuadraticKernel::inv_d(cell_width);
         let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
@@ -190,10 +202,7 @@ fn particle_g2p(
                 let shift = NBH_SHIFTS.read(i as usize);
                 let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
                 let shared_id = (packed_cell_index_in_block + packed_shift) as usize;
-                let cell_data = shared_nodes_vel_mass[shared_id];
-                let cell_cdf = shared_nodes_cdf[shared_id];
-                let is_compatible =
-                    affinities_are_compatible(particle_cdf.affinity, cell_cdf.affinities);
+                let mut cell_data = shared_nodes_vel_mass[shared_id];
 
                 #[cfg(feature = "dim2")]
                 let dpt = ref_elt_pos_minus_particle_pos
@@ -202,24 +211,28 @@ fn particle_g2p(
                 let dpt = ref_elt_pos_minus_particle_pos
                     + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
 
-                let mut cpic_cell_data = cell_data;
+                if USE_CPIC {
+                    let cell_cdf = shared_nodes_cdf[shared_id];
+                    let is_compatible =
+                        affinities_are_compatible(particle_cdf.affinity, cell_cdf.affinities);
 
-                if !is_compatible {
-                    cpic_cell_data = shared_nodes_vel_mass_incompatible[shared_id];
+                    if !is_compatible {
+                        cell_data = shared_nodes_vel_mass_incompatible[shared_id];
 
-                    if cell_cdf.closest_id != NONE {
-                        let body_vel = body_vels.read(cell_cdf.closest_id as usize);
-                        let body_com = body_mprops.at(cell_cdf.closest_id as usize).com;
-                        let body_material = body_materials.read(cell_cdf.closest_id as usize);
-                        let cell_center = dpt + particle_pos.pt;
-                        let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
+                        if cell_cdf.closest_id != NONE {
+                            let body_vel = body_vels.read(cell_cdf.closest_id as usize);
+                            let body_com = body_mprops.at(cell_cdf.closest_id as usize).com;
+                            let body_material = body_materials.read(cell_cdf.closest_id as usize);
+                            let cell_center = dpt + particle_pos.pt;
+                            let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
 
-                        let cpic_vel = vector_part(cpic_cell_data);
-                        let particle_ghost_vel = body_pt_vel
-                            + body_material
-                            .project_velocity(cpic_vel - body_pt_vel, particle_cdf.normal);
-                        cpic_cell_data =
-                            vector_plus_one(particle_ghost_vel, scalar_part(cpic_cell_data));
+                            let cpic_vel = vector_part(cell_data);
+                            let particle_ghost_vel = body_pt_vel
+                                + body_material
+                                .project_velocity(cpic_vel - body_pt_vel, particle_cdf.normal);
+                            cell_data =
+                                vector_plus_one(particle_ghost_vel, scalar_part(cell_data));
+                        }
                     }
                 }
 
@@ -230,25 +243,27 @@ fn particle_g2p(
                     * vec3_extract(w[1], shift.y)
                     * vec3_extract(w[2], shift.z);
 
-                let cpic_vel = vector_part(cpic_cell_data);
+                let cpic_vel = vector_part(cell_data);
 
-                momentum_velocity_mass += cpic_cell_data * weight;
+                momentum_velocity_mass += cell_data * weight;
                 velocity_gradient += outer_product(cpic_vel, dpt) * (weight * inv_d);
                 vel_grad_det += weight * inv_d * cpic_vel.dot(dpt);
             }
         }
 
-        // Accumulate rigid body velocities for all affinity-linked colliders.
-        for i_collider in 0..16 {
-            if affinity_bit(i_collider as u32, particle_cdf.affinity) {
-                let body_vel = body_vels.read(i_collider as usize);
-                let body_com = body_mprops.at(i_collider as usize).com;
-                rigid_vel += velocity_at_point(body_com, &body_vel, particle_pos.pt);
+        if USE_CPIC {
+            // Accumulate rigid body velocities for all affinity-linked colliders.
+            for i_collider in 0..16 {
+                if affinity_bit(i_collider as u32, particle_cdf.affinity) {
+                    let body_vel = body_vels.read(i_collider as usize);
+                    let body_com = body_mprops.at(i_collider as usize).com;
+                    rigid_vel += velocity_at_point(body_com, &body_vel, particle_pos.pt);
+                }
             }
         }
     }
 
-    particles_cdf.at_mut(particle_id as usize).rigid_vel = rigid_vel;
+    // particles_cdf.at_mut(particle_id as usize).rigid_vel = rigid_vel;
     // Set the particle velocity, and store the velocity gradient into the affine matrix.
     // The rest will be dealt with in the particle update kernel(s).
     particles_kin.at_mut(particle_id as usize).affine =
@@ -265,31 +280,26 @@ fn particle_g2p(
 ///
 /// Transfers grid node velocities back to particles using APIC interpolation.
 /// Dispatched with one workgroup per active block.
-#[spirv_bindgen]
-#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
-#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 #[unroll_for_loops]
-pub fn gpu_g2p(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_kin: &mut [Kinematics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] particles_cdf: &mut [Cdf],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_mprops: &[BodyMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
+pub fn gpu_g2p_generic<const USE_CPIC: bool>(
+    block_id: spirv_std::glam::UVec3,
+    tid: spirv_std::glam::UVec3,
+    tid_flat: u32,
+    params: &SimulationParams,
+    grid_data: &[Grid],
+    hmap_entries: &[GridHashMapEntry],
+    active_blocks: &[ActiveBlockHeader],
+    nodes: &[Node],
+    sorted_particle_ids: &[u32],
+    particles_pos: &[Position],
+    particles_kin: &mut [Kinematics],
+    particles_cdf: &mut [Cdf],
+    body_vels: &[BodyVelocity],
+    body_mprops: &[BodyMassProperties],
     body_materials: &[BoundaryCondition],
-    // Shared memory.
-    #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
+    shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
     let bid = block_id.x;
     // Force copy of the virtual ID (naga bug workaround).
@@ -297,7 +307,7 @@ pub fn gpu_g2p(
     let vid = BlockVirtualId::new(vid_);
 
     // Block -> shared memory transfer.
-    global_shared_memory_transfers(
+    global_shared_memory_transfers::<USE_CPIC>(
         grid_data,
         hmap_entries,
         nodes,
@@ -323,7 +333,7 @@ pub fn gpu_g2p(
             break;
         }
         let particle_id = sorted_particle_ids.read(sorted_particle_id as usize);
-        particle_g2p(
+        particle_g2p::<USE_CPIC>(
             body_vels,
             body_mprops,
             body_materials,
@@ -373,4 +383,69 @@ fn outer_product(a: Vec2, b: Vec2) -> Mat2 {
 #[inline]
 fn outer_product(a: Vec3, b: Vec3) -> Mat3 {
     Mat3::from_cols(a * b.x, a * b.y, a * b.z)
+}
+
+
+/*
+ * Specialized entry points.
+ */
+#[spirv_bindgen]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
+#[unroll_for_loops]
+pub fn gpu_g2p(
+    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_index)] tid_flat: u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_kin: &mut [Kinematics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] particles_cdf: &mut [Cdf],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_mprops: &[BodyMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
+    body_materials: &[BoundaryCondition],
+    // Shared memory.
+    #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
+) {
+
+    gpu_g2p_generic::<false>(block_id, tid, tid_flat, params, grid_data, hmap_entries, active_blocks, nodes, sorted_particle_ids, particles_pos, particles_kin, particles_cdf,
+                            body_vels, body_mprops, body_materials, shared_nodes_vel_mass, shared_nodes_vel_mass_incompatible, shared_nodes_cdf)
+}
+
+#[spirv_bindgen]
+#[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
+#[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
+#[unroll_for_loops]
+pub fn gpu_g2p_cpic(
+    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_index)] tid_flat: u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_kin: &mut [Kinematics],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] particles_cdf: &mut [Cdf],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_mprops: &[BodyMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
+    body_materials: &[BoundaryCondition],
+    // Shared memory.
+    #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
+) {
+gpu_g2p_generic::<true>(block_id, tid, tid_flat, params, grid_data, hmap_entries, active_blocks, nodes, sorted_particle_ids, particles_pos, particles_kin, particles_cdf,
+body_vels, body_mprops, body_materials, shared_nodes_vel_mass, shared_nodes_vel_mass_incompatible, shared_nodes_cdf)
 }

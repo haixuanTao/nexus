@@ -247,11 +247,13 @@ impl Shape {
     pub fn to_trimesh(&self) -> TriMesh {
         // Trimesh layout:
         //     vec4(bvh_vtx_root_id, bvh_idx_root_id, bvh_node_len, shape_type)
-        //     vec4(root_aabb.mins, _)
-        //     vec4(root_aabb.maxs, _)
+        //     vec4(root_aabb.mins.xyz, num_triangles)
+        //     vec4(root_aabb.maxs.xyz, num_vertices)
         let bvh_vtx_root_id = f32::to_bits(self.a.x);
         let bvh_idx_root_id = f32::to_bits(self.a.y);
         let bvh_node_len = f32::to_bits(self.a.z);
+        let num_triangles = f32::to_bits(self.b.w);
+        let num_vertices = f32::to_bits(self.c.w);
         #[cfg(feature = "dim2")]
         let root_aabb = Aabb::new(
             Vector::new(self.b.x, self.b.y),
@@ -262,7 +264,7 @@ impl Shape {
             Vector::new(self.b.x, self.b.y, self.b.z),
             Vector::new(self.c.x, self.c.y, self.c.z),
         );
-        TriMesh::new(bvh_vtx_root_id, bvh_idx_root_id, bvh_node_len, root_aabb)
+        TriMesh::new(bvh_vtx_root_id, bvh_idx_root_id, bvh_node_len, num_triangles, num_vertices, root_aabb)
     }
 
     /// Converts a Shape to a Polyline.
@@ -733,6 +735,8 @@ impl Shape {
         bvh_vtx_root_id: u32,
         bvh_idx_root_id: u32,
         bvh_node_len: u32,
+        num_triangles: u32,
+        num_vertices: u32,
         aabb_mins: Vector,
         aabb_maxs: Vector,
     ) -> Self {
@@ -740,17 +744,19 @@ impl Shape {
         let a0 = f32::from_bits(bvh_vtx_root_id);
         let a1 = f32::from_bits(bvh_idx_root_id);
         let a2 = f32::from_bits(bvh_node_len);
+        let num_triangles = f32::from_bits(num_triangles);
+        let num_vertices = f32::from_bits(num_vertices);
         #[cfg(feature = "dim2")]
         return Self {
             a: Vec4::new(a0, a1, a2, tag),
-            b: Vec4::new(aabb_mins.x, aabb_mins.y, 0.0, 0.0),
-            c: Vec4::new(aabb_maxs.x, aabb_maxs.y, 0.0, 0.0),
+            b: Vec4::new(aabb_mins.x, aabb_mins.y, 0.0, num_triangles),
+            c: Vec4::new(aabb_maxs.x, aabb_maxs.y, 0.0, num_vertices),
         };
         #[cfg(feature = "dim3")]
         return Self {
             a: Vec4::new(a0, a1, a2, tag),
-            b: Vec4::new(aabb_mins.x, aabb_mins.y, aabb_mins.z, 0.0),
-            c: Vec4::new(aabb_maxs.x, aabb_maxs.y, aabb_maxs.z, 0.0),
+            b: Vec4::new(aabb_mins.x, aabb_mins.y, aabb_mins.z, num_triangles),
+            c: Vec4::new(aabb_maxs.x, aabb_maxs.y, aabb_maxs.z, num_vertices),
         };
     }
 

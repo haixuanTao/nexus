@@ -287,10 +287,10 @@ fn trimesh_convex(
             break;
         }
 
-        let idx = mesh.bvh_node_idx(curr, indices);
+        let idx = mesh.bvh_node_idx(indices, curr);
         if idx.entry_index == 0xffffffff {
             // This is a leaf.
-            let tri = mesh.triangle(idx.shape_index, vertices, indices);
+            let tri = mesh.triangle(indices, vertices, idx.shape_index);
             let tri_shape = Shape::from_triangle(&tri);
             let sub1 = tri_shape.pfm_subshape();
             // TODO PERF: add special-cases for pairs that can be handled more efficiently than with GJK/EPA.
@@ -308,7 +308,7 @@ fn trimesh_convex(
             // Continue traversal.
             curr = idx.exit_index;
         } else {
-            let node_aabb = mesh.bvh_node_aabb(curr, vertices);
+            let node_aabb = mesh.bvh_node_aabb(vertices, curr);
             if test_aabb.intersects(&node_aabb) {
                 curr = idx.entry_index;
             } else {

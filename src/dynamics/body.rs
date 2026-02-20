@@ -39,6 +39,7 @@ pub struct GpuBodySet {
     pub shapes: Tensor<Shape>,
     pub shapes_local_vertex_buffers: Tensor<VectorWithPadding>,
     pub shapes_vertex_buffers: Tensor<VectorWithPadding>,
+    pub shapes_index_buffers: Tensor<u32>,
     pub shapes_vertex_collider_id: Tensor<u32>,
 }
 
@@ -226,6 +227,7 @@ impl GpuBodySet {
                 BufferUsages::STORAGE,
             )
             .unwrap(),
+            shapes_index_buffers: Tensor::vector(backend, &shape_buffers.indices, BufferUsages::STORAGE).unwrap(),
             shapes_vertex_collider_id: Tensor::vector(
                 backend,
                 pt_collider_ids,

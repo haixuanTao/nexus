@@ -187,6 +187,28 @@ pub fn shape_from_parry(
             buffers
                 .vertices
                 .extend(shape.vertices().iter().copied().map(VectorWithPadding::new));
+
+            // Append pseudo-normals (vertex + edge) needed by project_local_point
+            // to determine inside/outside status.
+            #[cfg(feature = "dim3")]
+            {
+                let pn = shape
+                    .pseudo_normals()
+                    .expect("trimeshes without pseudo-normals are not supported");
+                buffers.vertices.extend(
+                    pn.vertices_pseudo_normal
+                        .iter()
+                        .copied()
+                        .map(VectorWithPadding::new),
+                );
+                buffers.vertices.extend(
+                    pn.edges_pseudo_normal
+                        .iter()
+                        .flat_map(|n| *n)
+                        .map(VectorWithPadding::new),
+                );
+            }
+
             buffers
                 .indices
                 .extend(shape.indices().iter().flat_map(|tri| tri.iter().copied()));
@@ -196,6 +218,8 @@ pub fn shape_from_parry(
                 bvh_vtx_root_id as u32,
                 bvh_idx_root_id as u32,
                 bvh_node_len as u32,
+                shape.indices().len() as u32,
+                shape.vertices().len() as u32,
                 aabb.mins,
                 aabb.maxs,
             ))

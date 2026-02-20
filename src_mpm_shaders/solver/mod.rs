@@ -12,3 +12,4 @@ pub mod prep_readback;
 pub mod rigid_impulses;
 pub mod rigid_particle_update;
 pub mod timestep_bound;
+pub mod grid_update_collide;

@@ -45,14 +45,13 @@ impl WgGrid {
         backend: &GpuBackend,
         pass: &mut GpuPass,
         particles: &mut GpuParticles<GpuModel>,
-        rigid_particles: &mut GpuRigidParticles,
+        mut rigid_particles: Option<&mut GpuRigidParticles>,
         grid: &mut GpuGrid,
         prefix_sum: &mut PrefixSumWorkspace,
         sort_module: &WgSort,
         prefix_sum_module: &WgPrefixSum,
     ) -> Result<(), GpuBackendError> {
         let particles_len = particles.len() as u32;
-        let rigid_particles_len = rigid_particles.len() as u32;
         let hmap_capacity = grid.cpu_meta.hmap_capacity;
 
         // Retry until we allocated enough room on the sparse grid for all the blocks.
@@ -82,25 +81,28 @@ impl WgGrid {
             // other blocks. This is done in two passes:
             // 1. Mark all rigid particles that need to ensure its associated block exists
             // 2. Touch the blocks with marked rigid particles.
-            if !rigid_particles.is_empty() {
-                sort_module.mark_rigid_particles_needing_block.call(
-                    pass,
-                    rigid_particles_len,
-                    &grid.meta,
-                    &grid.hmap_entries,
-                    &rigid_particles.sample_points,
-                    &mut rigid_particles.rigid_particle_needs_block,
-                )?;
+            if let Some(rigid_particles) = rigid_particles.as_deref_mut() {
+                if !rigid_particles.is_empty() {
+                    let rigid_particles_len = rigid_particles.len() as u32;
+                    sort_module.mark_rigid_particles_needing_block.call(
+                        pass,
+                        rigid_particles_len,
+                        &grid.meta,
+                        &grid.hmap_entries,
+                        &rigid_particles.sample_points,
+                        &mut rigid_particles.rigid_particle_needs_block,
+                    )?;
 
-                sort_module.touch_rigid_particle_blocks.call(
-                    pass,
-                    rigid_particles_len,
-                    &mut grid.meta,
-                    &mut grid.hmap_entries,
-                    &mut grid.active_blocks,
-                    &rigid_particles.sample_points,
-                    &rigid_particles.rigid_particle_needs_block,
-                )?;
+                    sort_module.touch_rigid_particle_blocks.call(
+                        pass,
+                        rigid_particles_len,
+                        &mut grid.meta,
+                        &mut grid.hmap_entries,
+                        &mut grid.active_blocks,
+                        &rigid_particles.sample_points,
+                        &rigid_particles.rigid_particle_needs_block,
+                    )?;
+                }
             }
 
             // TODO: handle grid buffer resizing

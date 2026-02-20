@@ -5,7 +5,7 @@
 
 use crate::cast_tensor_mut;
 use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
-use crate::mpm_shaders::solver::p2g::{GpuP2g, IntegerImpulseAtomic};
+use crate::mpm_shaders::solver::p2g::{GpuP2g, GpuP2gCpic, IntegerImpulseAtomic};
 use crate::solver::{GpuImpulses, GpuMaterials, GpuParticleModelData, GpuParticles};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
@@ -19,6 +19,8 @@ use nexus::dynamics::GpuBodySet;
 pub struct WgP2G {
     /// Compiled P2G compute shader.
     p2g: GpuP2g,
+    /// Compiled P2G compute shader with CPIC enabled.
+    p2g_cpic: GpuP2gCpic,
 }
 
 impl WgP2G {
@@ -35,27 +37,43 @@ impl WgP2G {
     pub fn launch<GpuModel: GpuParticleModelData>(
         &self,
         pass: &mut GpuPass,
+        use_cpic: bool,
         grid: &mut GpuGrid,
         particles: &GpuParticles<GpuModel>,
         impulses: &mut GpuImpulses,
         bodies: &GpuBodySet,
         body_materials: &GpuMaterials,
     ) -> Result<(), GpuBackendError> {
-        self.p2g.call(
-            pass,
-            indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
-            &grid.meta,
-            &grid.hmap_entries,
-            &grid.active_blocks,
-            &grid.nodes_linked_lists,
-            particles.node_linked_lists(),
-            particles.positions(),
-            particles.kinematics(),
-            particles.cdf(),
-            &mut grid.nodes,
-            &bodies.vels,
-            cast_tensor_mut::<_, IntegerImpulseAtomic>(&mut impulses.incremental_impulses),
-            &body_materials.materials,
-        )
+        if use_cpic {
+            self.p2g_cpic.call(
+                pass,
+                indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
+                &grid.meta,
+                &grid.hmap_entries,
+                &grid.active_blocks,
+                &grid.nodes_linked_lists,
+                particles.node_linked_lists(),
+                particles.positions(),
+                particles.kinematics(),
+                particles.cdf(),
+                &mut grid.nodes,
+                &bodies.vels,
+                cast_tensor_mut::<_, IntegerImpulseAtomic>(&mut impulses.incremental_impulses),
+                &body_materials.materials,
+            )
+        } else {
+            self.p2g.call(
+                pass,
+                indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
+                &grid.meta,
+                &grid.hmap_entries,
+                &grid.active_blocks,
+                &grid.nodes_linked_lists,
+                particles.node_linked_lists(),
+                particles.positions(),
+                particles.kinematics(),
+                &mut grid.nodes,
+            )
+        }
     }
 }

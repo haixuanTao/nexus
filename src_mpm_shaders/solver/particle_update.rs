@@ -89,15 +89,9 @@ pub fn gpu_particle_update(
     let props = particles_props.read(particle_id as usize);
     let particle_pos = particles_pos.at(particle_id as usize).pt;
 
-    // If the particle is fixed, clear its velocity.
-    // This isn't ideal (this should typically be handled on the grid) but we sometimes
-    // need sub-grid-sized fixed particles.
-    if props.fixed != 0 {
-        kin.velocity = Vector::ZERO;
-    }
 
     /*
-     * Advection.
+     * Update velocity.
      */
     // Reproject velocity if the particle is penetrating a rigid collider.
     // TODO: double check that we never need the reprojection below.
@@ -122,6 +116,16 @@ pub fn gpu_particle_update(
     // v_new = v / (1 + damping * dt)
     kin.velocity = kin.velocity / (1.0 + props.damping * dt);
 
+    // If the particle is fixed, clear its velocity.
+    // This isn't ideal (this should typically be handled on the grid) but we sometimes
+    // need sub-grid-sized fixed particles.
+    if props.fixed != 0 {
+        kin.velocity = Vector::ZERO;
+    }
+
+    /*
+     * Update position.
+     */
     let new_particle_pos = particle_pos + kin.velocity * dt;
 
     /*

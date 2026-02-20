@@ -142,6 +142,7 @@ pub struct MpmData<GpuModel: GpuParticleModelData> {
     /// The simulation timestep.
     pub base_dt: f32,
     pub gravity: Vector,
+    pub use_cpic: bool,
     /// Global simulation parameters (gravity, timestep).
     pub sim_params: GpuSimulationParams,
     /// Spatial grid for momentum transfer.
@@ -259,6 +260,7 @@ impl<GpuModel: GpuParticleModelData> MpmData<GpuModel> {
             sim_params,
             particles,
             gravity: params.gravity,
+            use_cpic: false,
             rigid_particles,
             bodies,
             body_materials,
@@ -331,47 +333,53 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
                 backend,
                 &mut pass,
                 &mut data.particles,
-                &mut data.rigid_particles,
+                data.use_cpic.then_some(&mut data.rigid_particles),
                 &mut data.grid,
                 &mut data.prefix_sum,
                 &self.sort,
                 &self.prefix_sum,
             )?;
+
+            if data.use_cpic {
             self.sort.launch_sort_rigid_particles(
                 &mut pass,
                 &mut data.rigid_particles,
                 &mut data.grid,
             )?;
+                }
         }
 
         hooks.after_particle_sort(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
 
-        {
-            let mut pass = encoder.begin_pass("CDF grid update", timestamps.as_deref_mut());
-            self.grid_update_cdf
-                .launch(&mut pass, &mut data.grid, &data.bodies)?;
-        }
+        if data.use_cpic {
+            {
+                let mut pass = encoder.begin_pass("CDF grid update", timestamps.as_deref_mut());
+                self.grid_update_cdf
+                    .launch(&mut pass, &mut data.grid, &data.bodies)?;
+            }
 
-        {
-            let mut pass = encoder.begin_pass("CDF P2G", timestamps.as_deref_mut());
-            self.p2g_cdf.launch(
-                &mut pass,
-                &mut data.grid,
-                &data.rigid_particles,
-                &data.bodies,
-            )?;
-        }
+            {
+                let mut pass = encoder.begin_pass("CDF P2G", timestamps.as_deref_mut());
+                self.p2g_cdf.launch(
+                    &mut pass,
+                    &mut data.grid,
+                    &data.rigid_particles,
+                    &data.bodies,
+                )?;
+            }
 
-        {
-            let mut pass = encoder.begin_pass("CDF G2P", timestamps.as_deref_mut());
-            self.g2p_cdf
-                .launch(&mut pass, &data.sim_params, &data.grid, &mut data.particles)?;
+            {
+                let mut pass = encoder.begin_pass("CDF G2P", timestamps.as_deref_mut());
+                self.g2p_cdf
+                    .launch(&mut pass, &data.sim_params, &data.grid, &mut data.particles)?;
+            }
         }
 
         {
             let mut pass = encoder.begin_pass("P2G", timestamps.as_deref_mut());
             self.p2g.launch(
                 &mut pass,
+                data.use_cpic,
                 &mut data.grid,
                 &data.particles,
                 &mut data.impulses,
@@ -385,7 +393,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
         {
             let mut pass = encoder.begin_pass("Grid update", timestamps.as_deref_mut());
             self.grid_update
-                .launch(&mut pass, &data.sim_params, &mut data.grid)?;
+                .launch(&mut pass, data.use_cpic, &data.sim_params, &mut data.grid, &data.bodies, &data.body_materials)?;
         }
 
         hooks.after_grid_update(backend, encoder, timestamps.as_deref_mut(), data, hooks_state)?;
@@ -394,6 +402,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             let mut pass = encoder.begin_pass("G2P", timestamps.as_deref_mut());
             self.g2p.launch(
                 &mut pass,
+                data.use_cpic,
                 &data.sim_params,
                 &data.grid,
                 &mut data.particles,

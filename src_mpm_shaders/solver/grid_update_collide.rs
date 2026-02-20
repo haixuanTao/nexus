@@ -1,0 +1,202 @@
+//! Grid update CDF kernel: runs collision detection on each grid node.
+//!
+//! This kernel detects collisions between the grid nodes and the collision shapes,
+//! storing the resulting contact distance field (CDF) data in each node's `cdf` field.
+
+use crate::grid::grid::*;
+use crate::nexus_shaders::dynamics::{Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties};
+use crate::nexus_shaders::shapes::Shape;
+use crate::{MaybeIndexUnchecked, Pose, Vector};
+use glamx::*;
+use khal_derive::spirv_bindgen;
+use spirv_std::spirv;
+use nexus_shaders::VectorWithPadding;
+use crate::solver::boundary_condition::BoundaryCondition;
+use crate::solver::params::SimulationParams;
+use crate::nexus_shaders::dynamics::velocity_at_point;
+
+struct Collision {
+    normal: Vector,
+    distance: f32,
+    closest_id: usize,
+}
+
+const MAX_FLT: f32 = 1.0e10;
+
+/// Performs collision detection for a single grid node against all collision shapes.
+///
+/// Returns a `NodeCdf` with the closest collider distance, affinity bits, and collider ID.
+#[inline]
+fn collide(
+    collision_shapes: &[Shape],
+    collision_shape_poses: &[Pose],
+    collision_shape_indices: &[u32],
+    collision_shape_vertices: &[VectorWithPadding],
+    cell_width: f32,
+    point: Vector,
+) -> Collision {
+    let dist_cap = Vector::splat(cell_width * 1.5);
+    let mut collision =  Collision { normal: Vector::ZERO, distance: MAX_FLT, closest_id: 0 };
+
+    // Iterate over all collision shapes.
+    // NOTE: we iterate using a fixed upper bound to avoid dynamic buffer length queries
+    //       that may not be available in all SPIR-V environments. The caller must ensure
+    //       the shapes buffer length matches the actual number of shapes.
+    for i in 0..collision_shapes.len() {
+        let shape = collision_shapes.read(i);
+        let shape_pose = collision_shape_poses.read(i);
+        let shape_type = shape.shape_type();
+
+        use crate::nexus_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
+
+        let (proj, valid) = if shape_type == SHAPE_TYPE_TRIMESH {
+            let mesh = shape.to_trimesh();
+            let local_pt = shape_pose.inverse() * point;
+            let (mut proj, valid) = mesh.project_local_point(collision_shape_indices, collision_shape_vertices, local_pt, dist_cap.x);
+            // Transform the projected point back to world space.
+            proj.point = shape_pose * proj.point;
+            (proj, valid)
+        } else {
+            (shape.project_point_on_boundary(shape_pose, point), true)
+        };
+
+        if valid {
+            let dpt = proj.point - point;
+            let abs_dpt = dpt.abs();
+            #[cfg(feature = "dim2")]
+            let within_cap = abs_dpt.x <= dist_cap.x && abs_dpt.y <= dist_cap.y;
+            #[cfg(feature = "dim3")]
+            let within_cap =
+                abs_dpt.x <= dist_cap.x && abs_dpt.y <= dist_cap.y && abs_dpt.z <= dist_cap.z;
+
+            if proj.is_inside || within_cap {
+                let sign = if proj.is_inside { -1.0 } else { 1.0 };
+                let distance = dpt.length();
+                let normal = dpt / (distance * -sign);
+                let signed_dist = sign * distance;
+                if signed_dist < collision.distance {
+                    collision.distance = signed_dist;
+                    collision.normal = normal;
+                    collision.closest_id = i;
+                }
+            }
+        }
+    }
+
+    collision
+}
+
+/// GPU kernel: grid update CDF.
+///
+/// For each active grid node, runs collision detection against all collision shapes
+/// and writes the resulting `NodeCdf` (distance, affinity bits, closest collider ID).
+///
+/// Dispatched with one workgroup per active block, one thread per node in the block.
+#[cfg(feature = "dim2")]
+#[spirv_bindgen]
+#[spirv(compute(threads(8, 8)))]
+pub fn gpu_grid_update_collide(
+    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_shapes: &[Shape],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] collision_shape_poses: &[Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_materials: &[BoundaryCondition],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] nodes: &mut [Node],
+) {
+    let bid = block_id.x;
+    let vid = active_blocks.at(bid as usize).virtual_id;
+
+    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
+    let tid_xy = UVec2::new(tid.x, tid.y);
+    let global_node_id = node_id(global_chunk_id, tid_xy);
+    let cell_pt = Vec2::new(
+        (vid.id.x * 8 + tid.x as i32) as f32,
+        (vid.id.y * 8 + tid.y as i32) as f32,
+    ) * grid_data.at(0).cell_width;
+
+    let global_id = global_node_id.id;
+    let collision = collide(
+        collision_shapes,
+        collision_shape_poses,
+        grid_data.at(0).cell_width,
+        cell_pt,
+    );
+
+    if collision.distance != MAX_FLT {
+        // Found a collision, apply the boundary condition (hard-coded to stick for now).
+        nodes.at_mut(global_id as usize).momentum_velocity_mass.x = 0.0;
+        nodes.at_mut(global_id as usize).momentum_velocity_mass.y = 0.0;
+    }
+}
+
+/// GPU kernel: grid update CDF (3D version).
+#[cfg(feature = "dim3")]
+#[spirv_bindgen]
+#[spirv(compute(threads(4, 4, 4)))]
+pub fn gpu_grid_update_collide(
+    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] collision_shapes: &[Shape],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] collision_shape_poses: &[Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] collision_shape_vertices: &[VectorWithPadding],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] collision_shape_indices: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_mprops: &[BodyMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_materials: &[BoundaryCondition],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] nodes: &mut [Node],
+) {
+    let dt = params.dt;
+    let bid = block_id.x;
+    let vid = active_blocks.at(bid as usize).virtual_id;
+
+    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
+    let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
+    let global_node_id = node_id(global_chunk_id, tid_xyz);
+    let cell_pt = Vec3::new(
+        (vid.id.x * 4 + tid.x as i32) as f32,
+        (vid.id.y * 4 + tid.y as i32) as f32,
+        (vid.id.z * 4 + tid.z as i32) as f32,
+    ) * grid_data.at(0).cell_width;
+
+    let global_id = global_node_id.id;
+    let cell_width = grid_data.at(0).cell_width;
+    let collision = collide(
+        collision_shapes,
+        collision_shape_poses,
+        collision_shape_indices,
+        collision_shape_vertices,
+        cell_width,
+        cell_pt,
+    );
+
+    if collision.distance != MAX_FLT {
+        // Found a collision, apply the boundary condition (hard-coded to stick for now).
+        let body_vel = body_vels.at(collision.closest_id);
+        let body_com = body_mprops.at(collision.closest_id).com;
+        let body_vel_at_grid_pos = velocity_at_point(body_com, body_vel, cell_pt);
+        let node_vel = nodes.at(global_id as usize).momentum_velocity_mass.xyz();
+        let body_material = body_materials.read(collision.closest_id);
+        let delta_vel = node_vel - body_vel_at_grid_pos;
+        let normal_vel = delta_vel.dot(collision.normal);
+        let margin = cell_width;
+
+        if collision.distance <= margin {
+            let corrected_vel = body_vel_at_grid_pos + body_material.project_velocity(delta_vel, collision.normal);
+
+            nodes.at_mut(global_id as usize).momentum_velocity_mass.x = corrected_vel.x;
+            nodes.at_mut(global_id as usize).momentum_velocity_mass.y = corrected_vel.y;
+            nodes.at_mut(global_id as usize).momentum_velocity_mass.z = corrected_vel.z;
+        } else if -normal_vel * dt > collision.distance - margin {
+            let excess_vel = (normal_vel + (collision.distance - margin) / dt) * collision.normal;
+            nodes.at_mut(global_id as usize).momentum_velocity_mass.x -= excess_vel.x;
+            nodes.at_mut(global_id as usize).momentum_velocity_mass.y -= excess_vel.y;
+            nodes.at_mut(global_id as usize).momentum_velocity_mass.z -= excess_vel.z;
+        }
+    }
+}
