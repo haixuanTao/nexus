@@ -10,7 +10,7 @@ use crate::solver::{
     BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData,
     GpuParticles, GpuRigidParticles, GpuSimulationParams, GpuTimestepBounds, Particle,
     SimulationParams, WgG2P, WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgP2G, WgP2GCdf,
-    WgParticleUpdate, WgRigidImpulses, WgRigidParticleUpdate, WgTimestepBounds,
+    WgParticleUpdate, WgIntegrateBodies, WgRigidParticleUpdate, WgTimestepBounds,
 };
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
@@ -53,7 +53,7 @@ pub struct MpmPipeline<GpuModel: GpuParticleModelData> {
     /// Maximum timestep bound calculation.
     pub timestep_bounds: WgTimestepBounds,
     /// Rigid body impulse computation kernel (publicly accessible for external use).
-    pub impulses: WgRigidImpulses,
+    pub integrate_bodies: WgIntegrateBodies,
     _phantom: PhantomData<GpuModel>,
 }
 
@@ -307,7 +307,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             rigid_particles_update: WgRigidParticleUpdate::from_backend(backend)?,
             g2p: WgG2P::from_backend(backend)?,
             g2p_cdf: WgG2PCdf::from_backend(backend)?,
-            impulses: WgRigidImpulses::from_backend(backend)?,
+            integrate_bodies: WgIntegrateBodies::from_backend(backend)?,
             timestep_bounds: WgTimestepBounds::from_backend(backend)?,
             _phantom: PhantomData,
         })
@@ -325,7 +325,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
     ) -> Result<(), GpuBackendError> {
         {
             let mut pass = encoder.begin_pass("Rigid update", timestamps.as_deref_mut());
-            self.impulses.launch_update_world_mass_properties(
+            self.integrate_bodies.launch_update_world_mass_properties(
                 &mut pass,
                 &mut data.impulses,
                 &mut data.bodies,
@@ -478,7 +478,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
 
         {
             let mut pass = encoder.begin_pass("Integrate bodies", timestamps.as_deref_mut());
-            self.impulses.launch(
+            self.integrate_bodies.launch(
                 &mut pass,
                 &data.grid,
                 &data.sim_params,

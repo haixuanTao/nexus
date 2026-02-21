@@ -15,7 +15,7 @@ use vortx::tensor::Tensor;
 /// Accumulates forces from MPM particles and applies them as impulses to
 /// coupled rigid bodies for two-way interaction.
 #[derive(Shader)]
-pub struct WgRigidImpulses {
+pub struct WgIntegrateBodies {
     /// Kernel for computing and applying impulses.
     update: GpuRigidImpulsesUpdate,
     /// Kernel for updating world-space mass properties.
@@ -41,7 +41,7 @@ impl GpuImpulses {
     }
 }
 
-impl WgRigidImpulses {
+impl WgIntegrateBodies {
     /// Computes and applies impulses to rigid bodies from MPM grid.
     ///
     /// # Arguments

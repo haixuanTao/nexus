@@ -11,7 +11,7 @@ pub use params::{GpuSimulationParams, SimulationParams};
 pub use particle::*;
 pub use particle_model::*;
 pub use particle_update::WgParticleUpdate;
-pub use rigid_impulses::{GpuImpulses, WgRigidImpulses};
+pub use rigid_integrate::{GpuImpulses, WgIntegrateBodies};
 pub use rigid_particle_update::WgRigidParticleUpdate;
 pub use timestep_bound::WgTimestepBounds;
 
@@ -30,6 +30,6 @@ mod particle;
 mod particle_model;
 mod particle_update;
 pub mod prep_readback;
-mod rigid_impulses;
+mod rigid_integrate;
 mod rigid_particle_update;
 mod timestep_bound;
