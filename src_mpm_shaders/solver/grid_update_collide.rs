@@ -168,10 +168,7 @@ pub fn gpu_grid_update_collide(
         let body_vel = body_vels.at(collision.closest_id);
         let body_com = body_mprops.at(collision.closest_id).com;
         let body_vel_at_grid_pos = velocity_at_point(body_com, body_vel, cell_pt);
-        #[cfg(feature = "dim2")]
-        let node_vel = nodes.at(global_id as usize).momentum_velocity_mass.xy();
-        #[cfg(feature = "dim3")]
-        let node_vel = nodes.at(global_id as usize).momentum_velocity_mass.xyz();
+        let node_vel = nodes.at(global_id as usize).momentum_velocity;
         let body_material = body_materials.read(collision.closest_id);
         let delta_vel = node_vel - body_vel_at_grid_pos;
         let normal_vel = delta_vel.dot(collision.normal);
@@ -181,20 +178,10 @@ pub fn gpu_grid_update_collide(
             let corrected_vel =
                 body_vel_at_grid_pos + body_material.project_velocity(delta_vel, collision.normal);
 
-            nodes.at_mut(global_id as usize).momentum_velocity_mass.x = corrected_vel.x;
-            nodes.at_mut(global_id as usize).momentum_velocity_mass.y = corrected_vel.y;
-            #[cfg(feature = "dim3")]
-            {
-                nodes.at_mut(global_id as usize).momentum_velocity_mass.z = corrected_vel.z;
-            }
+            nodes.at_mut(global_id as usize).momentum_velocity = corrected_vel;
         } else if -normal_vel * dt > collision.distance - margin {
             let excess_vel = (normal_vel + (collision.distance - margin) / dt) * collision.normal;
-            nodes.at_mut(global_id as usize).momentum_velocity_mass.x -= excess_vel.x;
-            nodes.at_mut(global_id as usize).momentum_velocity_mass.y -= excess_vel.y;
-            #[cfg(feature = "dim3")]
-            {
-                nodes.at_mut(global_id as usize).momentum_velocity_mass.z -= excess_vel.z;
-            }
+            nodes.at_mut(global_id as usize).momentum_velocity -= excess_vel;
         }
     }
 }

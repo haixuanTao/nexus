@@ -6,9 +6,7 @@
 
 use crate::grid::grid::*;
 use crate::solver::params::SimulationParams;
-use crate::{
-    scalar_part, vector_part, vector_plus_one, MaybeIndexUnchecked, Vector, VectorPlusOne,
-};
+use crate::{MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
@@ -52,23 +50,22 @@ pub fn gpu_grid_update(
     ) * cell_width;
 
     let global_id = global_node_id.id as usize;
-    let momentum_velocity_mass = nodes.at(global_id).momentum_velocity_mass;
-    let momentum_velocity_mass_incompatible =
-        nodes.at(global_id).momentum_velocity_mass_incompatible;
-    let new_grid_velocity_mass =
-        update_single_cell(sim_params, cell_width, cell_pos, momentum_velocity_mass);
-    let new_grid_velocity_mass_incompatible = update_single_cell(
+    let momentum = nodes.at(global_id).momentum_velocity;
+    let mass = nodes.at(global_id).mass;
+    let momentum_incompatible = nodes.at(global_id).momentum_velocity_incompatible;
+    let mass_incompatible = nodes.at(global_id).mass_incompatible;
+    nodes.at_mut(global_id).momentum_velocity =
+        update_single_cell(sim_params, cell_width, cell_pos, momentum, mass);
+    nodes.at_mut(global_id).momentum_velocity_incompatible = update_single_cell(
         sim_params,
         cell_width,
         cell_pos,
-        momentum_velocity_mass_incompatible,
+        momentum_incompatible,
+        mass_incompatible,
     );
-    nodes.at_mut(global_id).momentum_velocity_mass = new_grid_velocity_mass;
-    nodes.at_mut(global_id).momentum_velocity_mass_incompatible =
-        new_grid_velocity_mass_incompatible;
 }
 
-/// Updates a single cell's momentum+mass to velocity+mass.
+/// Updates a single cell's momentum to velocity.
 ///
 /// Converts momentum to velocity by dividing by mass, adds gravity,
 /// and clamps velocity to at most one cell width per timestep.
@@ -77,16 +74,15 @@ fn update_single_cell(
     sim_params: &SimulationParams,
     cell_width: f32,
     _cell_pos: Vector,
-    momentum_velocity_mass: VectorPlusOne,
-) -> VectorPlusOne {
-    let mass = scalar_part(momentum_velocity_mass);
+    momentum: Vector,
+    mass: f32,
+) -> Vector {
     let inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
-    let momentum = vector_part(momentum_velocity_mass);
     let mut velocity = (momentum + sim_params.gravity * (mass * sim_params.dt)) * inv_mass;
 
     // Clamp the velocity so it doesn't exceed 1 grid cell in one step.
     let vel_limit = Vector::splat(cell_width / sim_params.dt);
     velocity = velocity.clamp(-vel_limit, vel_limit);
 
-    vector_plus_one(velocity, mass)
+    velocity
 }

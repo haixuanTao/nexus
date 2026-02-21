@@ -61,14 +61,6 @@ pub type UVector = UVec2;
 #[cfg(feature = "dim3")]
 pub type UVector = UVec3;
 
-/// Vector with one extra component for packing velocity+mass.
-/// Vec3 in 2D (velocity.xy + mass), Vec4 in 3D (velocity.xyz + mass).
-#[cfg(feature = "dim2")]
-pub type VectorPlusOne = Vec3;
-/// Vector with one extra component for packing velocity+mass.
-#[cfg(feature = "dim3")]
-pub type VectorPlusOne = Vec4;
-
 /// The square matrix type for the current dimension (Mat2 in 2D, Mat3 in 3D).
 #[cfg(feature = "dim2")]
 pub type Matrix = Mat2;
@@ -120,46 +112,6 @@ pub fn trace(m: Matrix) -> f32 {
 #[inline]
 pub fn trace(m: Matrix) -> f32 {
     m.x_axis.x + m.y_axis.y + m.z_axis.z
-}
-
-/// Construct a VectorPlusOne from a Vector and a scalar.
-#[cfg(feature = "dim2")]
-#[inline]
-pub fn vector_plus_one(v: Vector, w: f32) -> VectorPlusOne {
-    Vec3::new(v.x, v.y, w)
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-pub fn vector_plus_one(v: Vector, w: f32) -> VectorPlusOne {
-    Vec4::new(v.x, v.y, v.z, w)
-}
-
-/// Extract the Vector part from a VectorPlusOne.
-#[cfg(feature = "dim2")]
-#[inline]
-pub fn vector_part(v: VectorPlusOne) -> Vector {
-    Vec2::new(v.x, v.y)
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-pub fn vector_part(v: VectorPlusOne) -> Vector {
-    Vec3::new(v.x, v.y, v.z)
-}
-
-/// Extract the scalar (mass) part from a VectorPlusOne.
-#[cfg(feature = "dim2")]
-#[inline]
-// FIXME: remove this. Split the vector for an additional field.
-pub fn scalar_part(v: VectorPlusOne) -> f32 {
-    v.z
-}
-
-#[cfg(feature = "dim3")]
-#[inline]
-pub fn scalar_part(v: VectorPlusOne) -> f32 {
-    v.w
 }
 
 /// The length of a vector as AngVector. In 2D this is abs, in 3D it's the standard length.

@@ -17,10 +17,7 @@ use crate::solver::particle::{
     Position,
 };
 use crate::PaddingExt;
-use crate::{
-    scalar_part, vector_part, vector_plus_one, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector,
-    VectorPlusOne,
-};
+use crate::{Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
@@ -49,8 +46,8 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
     nodes: &[Node],
     tid: spirv_std::glam::UVec3,
     active_block_vid: BlockVirtualId,
-    shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_nodes_vel: &mut [Vector; NUM_SHARED_CELLS],
+    shared_nodes_vel_incompatible: &mut [Vector; NUM_SHARED_CELLS],
     shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
     let base_block_pos_int = active_block_vid.id;
@@ -77,19 +74,18 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                         let tid_xy = UVec2::new(tid.x, tid.y);
                         let global_node_id = node_id(global_chunk_id, tid_xy);
                         let node = nodes.read(global_node_id.id as usize);
-                        shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
+                        shared_nodes_vel[flat_shared_index] = node.momentum_velocity;
 
                         if USE_CPIC {
-                            shared_nodes_vel_mass_incompatible[flat_shared_index] =
-                                node.momentum_velocity_mass_incompatible;
+                            shared_nodes_vel_incompatible[flat_shared_index] =
+                                node.momentum_velocity_incompatible;
                             shared_nodes_cdf[flat_shared_index] = node.cdf;
                         }
                     } else {
-                        shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
+                        shared_nodes_vel[flat_shared_index] = Vector::ZERO;
 
                         if USE_CPIC {
-                            shared_nodes_vel_mass_incompatible[flat_shared_index] =
-                                VectorPlusOne::ZERO;
+                            shared_nodes_vel_incompatible[flat_shared_index] = Vector::ZERO;
                             shared_nodes_cdf[flat_shared_index] = NodeCdf::NONE;
                         }
                     }
@@ -126,17 +122,16 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                             let global_chunk_id = block_header_id_to_physical_id(octant_hid);
                             let global_node_id = node_id(global_chunk_id, tid_xyz);
                             let node = nodes.read(global_node_id.id as usize);
-                            shared_nodes_vel_mass[flat_shared_index] = node.momentum_velocity_mass;
+                            shared_nodes_vel[flat_shared_index] = node.momentum_velocity;
                             if USE_CPIC {
-                                shared_nodes_vel_mass_incompatible[flat_shared_index] =
-                                    node.momentum_velocity_mass_incompatible;
+                                shared_nodes_vel_incompatible[flat_shared_index] =
+                                    node.momentum_velocity_incompatible;
                                 shared_nodes_cdf[flat_shared_index] = node.cdf;
                             }
                         } else {
-                            shared_nodes_vel_mass[flat_shared_index] = VectorPlusOne::ZERO;
+                            shared_nodes_vel[flat_shared_index] = Vector::ZERO;
                             if USE_CPIC {
-                                shared_nodes_vel_mass_incompatible[flat_shared_index] =
-                                    VectorPlusOne::ZERO;
+                                shared_nodes_vel_incompatible[flat_shared_index] = Vector::ZERO;
                                 shared_nodes_cdf[flat_shared_index] = NodeCdf::NONE;
                             }
                         }
@@ -164,12 +159,12 @@ fn particle_g2p<const USE_CPIC: bool>(
     particle_id: u32,
     cell_width: f32,
     _dt: f32,
-    shared_nodes_vel_mass: &[VectorPlusOne; NUM_SHARED_CELLS],
-    shared_nodes_vel_mass_incompatible: &[VectorPlusOne; NUM_SHARED_CELLS],
+    shared_nodes_vel: &[Vector; NUM_SHARED_CELLS],
+    shared_nodes_vel_incompatible: &[Vector; NUM_SHARED_CELLS],
     shared_nodes_cdf: &[NodeCdf; NUM_SHARED_CELLS],
 ) {
     let mut rigid_vel = Vector::ZERO;
-    let mut momentum_velocity_mass = VectorPlusOne::ZERO;
+    let mut velocity = Vector::ZERO;
     let mut velocity_gradient = Matrix::ZERO;
     let mut vel_grad_det = 0.0f32;
 
@@ -206,7 +201,7 @@ fn particle_g2p<const USE_CPIC: bool>(
                 let shift = NBH_SHIFTS.read(i as usize);
                 let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
                 let shared_id = (packed_cell_index_in_block + packed_shift) as usize;
-                let mut cell_data = shared_nodes_vel_mass[shared_id];
+                let mut cell_vel = shared_nodes_vel[shared_id];
 
                 #[cfg(feature = "dim2")]
                 let dpt = ref_elt_pos_minus_particle_pos
@@ -221,7 +216,7 @@ fn particle_g2p<const USE_CPIC: bool>(
                         particle_cdf.affinity.is_compatible(cell_cdf.affinities);
 
                     if !is_compatible {
-                        cell_data = shared_nodes_vel_mass_incompatible[shared_id];
+                        cell_vel = shared_nodes_vel_incompatible[shared_id];
 
                         if cell_cdf.closest_id != NONE {
                             let body_vel = body_vels.read(cell_cdf.closest_id as usize);
@@ -230,11 +225,9 @@ fn particle_g2p<const USE_CPIC: bool>(
                             let cell_center = dpt + particle_pos.pt;
                             let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
 
-                            let cpic_vel = vector_part(cell_data);
-                            let particle_ghost_vel = body_pt_vel
+                            cell_vel = body_pt_vel
                                 + body_material
-                                    .project_velocity(cpic_vel - body_pt_vel, particle_cdf.normal);
-                            cell_data = vector_plus_one(particle_ghost_vel, scalar_part(cell_data));
+                                    .project_velocity(cell_vel - body_pt_vel, particle_cdf.normal);
                         }
                     }
                 }
@@ -246,11 +239,9 @@ fn particle_g2p<const USE_CPIC: bool>(
                     * vec3_extract(w[1], shift.y)
                     * vec3_extract(w[2], shift.z);
 
-                let cpic_vel = vector_part(cell_data);
-
-                momentum_velocity_mass += cell_data * weight;
-                velocity_gradient += outer_product(cpic_vel, dpt) * (weight * inv_d);
-                vel_grad_det += weight * inv_d * cpic_vel.dot(dpt);
+                velocity += cell_vel * weight;
+                velocity_gradient += outer_product(cell_vel, dpt) * (weight * inv_d);
+                vel_grad_det += weight * inv_d * cell_vel.dot(dpt);
             }
         }
 
@@ -275,7 +266,7 @@ fn particle_g2p<const USE_CPIC: bool>(
     particles_kin.at_mut(particle_id as usize).affine =
         PaddedMatrix::add_padding(velocity_gradient);
     particles_kin.at_mut(particle_id as usize).vel_grad_det = vel_grad_det;
-    particles_kin.at_mut(particle_id as usize).velocity = vector_part(momentum_velocity_mass);
+    particles_kin.at_mut(particle_id as usize).velocity = velocity;
 }
 
 /*
@@ -303,8 +294,8 @@ pub fn gpu_g2p_generic<const USE_CPIC: bool>(
     body_vels: &[BodyVelocity],
     body_mprops: &[BodyMassProperties],
     body_materials: &[BoundaryCondition],
-    shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_nodes_vel: &mut [Vector; NUM_SHARED_CELLS],
+    shared_nodes_vel_incompatible: &mut [Vector; NUM_SHARED_CELLS],
     shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
     let bid = block_id.x;
@@ -319,8 +310,8 @@ pub fn gpu_g2p_generic<const USE_CPIC: bool>(
         nodes,
         tid,
         vid,
-        shared_nodes_vel_mass,
-        shared_nodes_vel_mass_incompatible,
+        shared_nodes_vel,
+        shared_nodes_vel_incompatible,
         shared_nodes_cdf,
     );
 
@@ -349,8 +340,8 @@ pub fn gpu_g2p_generic<const USE_CPIC: bool>(
             particle_id,
             grid_data.at(0).cell_width,
             params.dt,
-            shared_nodes_vel_mass,
-            shared_nodes_vel_mass_incompatible,
+            shared_nodes_vel,
+            shared_nodes_vel_incompatible,
             shared_nodes_cdf,
         );
         sorted_particle_id += WORKGROUP_SIZE;
@@ -416,8 +407,8 @@ pub fn gpu_g2p(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
     body_materials: &[BoundaryCondition],
     // Shared memory.
-    #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_vel: &mut [Vector; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_vel_incompatible: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
     gpu_g2p_generic::<false>(
@@ -436,8 +427,8 @@ pub fn gpu_g2p(
         body_vels,
         body_mprops,
         body_materials,
-        shared_nodes_vel_mass,
-        shared_nodes_vel_mass_incompatible,
+        shared_nodes_vel,
+        shared_nodes_vel_incompatible,
         shared_nodes_cdf,
     )
 }
@@ -464,8 +455,8 @@ pub fn gpu_g2p_cpic(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
     body_materials: &[BoundaryCondition],
     // Shared memory.
-    #[spirv(workgroup)] shared_nodes_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_nodes_vel_mass_incompatible: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_vel: &mut [Vector; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_nodes_vel_incompatible: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes_cdf: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
     gpu_g2p_generic::<true>(
@@ -484,8 +475,8 @@ pub fn gpu_g2p_cpic(
         body_vels,
         body_mprops,
         body_materials,
-        shared_nodes_vel_mass,
-        shared_nodes_vel_mass_incompatible,
+        shared_nodes_vel,
+        shared_nodes_vel_incompatible,
         shared_nodes_cdf,
     )
 }

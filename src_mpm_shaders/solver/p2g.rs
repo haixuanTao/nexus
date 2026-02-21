@@ -15,8 +15,7 @@ use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::particle::{dir_to_associated_grid_node, Cdf, Kinematics, Position};
 use crate::{
-    scalar_part, vector_part, vector_plus_one, AngVector, Matrix, MaybeIndexUnchecked, PaddingExt,
-    Vector, VectorPlusOne, TWO_WAYS_COUPLING_ENABLED,
+    AngVector, Matrix, MaybeIndexUnchecked, PaddingExt, Vector, TWO_WAYS_COUPLING_ENABLED,
 };
 use glamx::*;
 use khal_derive::spirv_bindgen;
@@ -51,8 +50,10 @@ pub struct SharedNode {
 /// Result of a single P2G step (one particle iteration).
 #[derive(Clone, Copy)]
 struct P2GStepResult {
-    new_momentum_velocity_mass: VectorPlusOne,
-    new_momentum_velocity_mass_incompatible: VectorPlusOne,
+    new_momentum_velocity: Vector,
+    new_mass: f32,
+    new_momentum_velocity_incompatible: Vector,
+    new_mass_incompatible: f32,
     impulse: Vector,
     ang_impulse: AngVector,
 }
@@ -60,8 +61,10 @@ struct P2GStepResult {
 impl P2GStepResult {
     fn zero() -> Self {
         Self {
-            new_momentum_velocity_mass: VectorPlusOne::ZERO,
-            new_momentum_velocity_mass_incompatible: VectorPlusOne::ZERO,
+            new_momentum_velocity: Vector::ZERO,
+            new_mass: 0.0,
+            new_momentum_velocity_incompatible: Vector::ZERO,
+            new_mass_incompatible: 0.0,
             impulse: Vector::ZERO,
             #[cfg(feature = "dim2")]
             ang_impulse: 0.0,
@@ -117,9 +120,9 @@ fn p2g_step<const USE_CPIC: bool>(
     node_affinity: AffinityBits,
     collider_id: u32,
     shared_pos: &[Position; NUM_SHARED_CELLS],
-    shared_vel_mass: &[VectorPlusOne; NUM_SHARED_CELLS],
+    shared_vel_mass: &[(Vector, f32); NUM_SHARED_CELLS],
+    // shared_mass: &[f32; NUM_SHARED_CELLS],
     shared_affine: &[Matrix; NUM_SHARED_CELLS],
-    shared_force_dt: &[Vector; NUM_SHARED_CELLS],
     shared_affinities: &[AffinityBits; NUM_SHARED_CELLS],
     shared_normals: &[Vector; NUM_SHARED_CELLS],
 ) -> P2GStepResult {
@@ -129,8 +132,10 @@ fn p2g_step<const USE_CPIC: bool>(
     #[cfg(feature = "dim3")]
     let bottommost_contributing_node = flatten_shared_shift(2, 2, 2);
 
-    let mut new_momentum_velocity_mass = VectorPlusOne::ZERO;
-    let mut new_momentum_velocity_mass_incompatible = VectorPlusOne::ZERO;
+    let mut new_momentum_velocity = Vector::ZERO;
+    let mut new_mass = 0.0f32;
+    let mut new_momentum_velocity_incompatible = Vector::ZERO;
+    let mut new_mass_incompatible = 0.0f32;
     let mut impulse = Vector::ZERO;
     #[cfg(feature = "dim2")]
     let mut ang_impulse: AngVector = 0.0;
@@ -142,18 +147,14 @@ fn p2g_step<const USE_CPIC: bool>(
         let nbh_shared_index =
             (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
         let particle_pos = shared_pos.read(nbh_shared_index);
-        let particle_vel_mass = shared_vel_mass.read(nbh_shared_index);
+        let (particle_vel, particle_mass) = shared_vel_mass.read(nbh_shared_index);
+        // let particle_mass = shared_mass.read(nbh_shared_index);
         let particle_affine = shared_affine.read(nbh_shared_index);
-        let particle_force_dt = shared_force_dt.read(nbh_shared_index);
         let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
         let w = QuadraticKernel::precompute_weights(ref_elt_pos_minus_particle_pos, cell_width);
 
         let shift = NBH_SHIFTS.read(i as usize);
 
-        #[cfg(feature = "dim2")]
-        let particle_vel = Vec2::new(particle_vel_mass.x, particle_vel_mass.y);
-        #[cfg(feature = "dim2")]
-        let particle_mass = particle_vel_mass.z;
         #[cfg(feature = "dim2")]
         let inv_shift = UVec2::new(2, 2) - shift;
         #[cfg(feature = "dim2")]
@@ -165,17 +166,9 @@ fn p2g_step<const USE_CPIC: bool>(
         let weight = vec3_extract(w[0], inv_shift.x) * vec3_extract(w[1], inv_shift.y);
 
         #[cfg(feature = "dim3")]
-        let particle_vel = Vec3::new(
-            particle_vel_mass.x,
-            particle_vel_mass.y,
-            particle_vel_mass.z,
-        );
-        #[cfg(feature = "dim3")]
-        let particle_mass = particle_vel_mass.w;
-        #[cfg(feature = "dim3")]
         let inv_shift = UVec3::new(2, 2, 2) - shift;
         #[cfg(feature = "dim3")]
-        let momentum = particle_vel * particle_mass; // + particle_force_dt;
+        let momentum = particle_vel * particle_mass;
         #[cfg(feature = "dim3")]
         let dpt = ref_elt_pos_minus_particle_pos
             + Vec3::new(inv_shift.x as f32, inv_shift.y as f32, inv_shift.z as f32) * cell_width;
@@ -184,8 +177,8 @@ fn p2g_step<const USE_CPIC: bool>(
             * vec3_extract(w[1], inv_shift.y)
             * vec3_extract(w[2], inv_shift.z);
 
-        let contribution =
-            vector_plus_one(particle_affine * dpt + momentum, particle_mass) * weight;
+        let vel_contribution = (particle_affine * dpt + momentum) * weight;
+        let mass_contribution = particle_mass * weight;
 
         if USE_CPIC {
             let particle_affinity = shared_affinities.read(nbh_shared_index);
@@ -220,18 +213,23 @@ fn p2g_step<const USE_CPIC: bool>(
                     impulse += delta_impulse;
                 }
 
-                new_momentum_velocity_mass_incompatible += contribution;
+                new_momentum_velocity_incompatible += vel_contribution;
+                new_mass_incompatible += mass_contribution;
             } else {
-                new_momentum_velocity_mass += contribution;
+                new_momentum_velocity += vel_contribution;
+                new_mass += mass_contribution;
             }
         } else {
-            new_momentum_velocity_mass += contribution;
+            new_momentum_velocity += vel_contribution;
+            new_mass += mass_contribution;
         }
     }
 
     P2GStepResult {
-        new_momentum_velocity_mass,
-        new_momentum_velocity_mass_incompatible,
+        new_momentum_velocity,
+        new_mass,
+        new_momentum_velocity_incompatible,
+        new_mass_incompatible,
         impulse,
         ang_impulse,
     }
@@ -411,9 +409,8 @@ fn fetch_next_particle<const USE_CPIC: bool>(
     tid: spirv_std::glam::UVec3,
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     shared_pos: &mut [Position; NUM_SHARED_CELLS],
-    shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_vel_mass: &mut [(Vector, f32); NUM_SHARED_CELLS],
     shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
-    shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
     shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     shared_normals: &mut [Vector; NUM_SHARED_CELLS],
 ) {
@@ -460,9 +457,7 @@ fn fetch_next_particle<const USE_CPIC: bool>(
                             particles_pos.read(curr_particle_id as usize),
                         );
                         shared_affine.write(shared_flat_index, pkin.affine.remove_padding());
-                        shared_force_dt.write(shared_flat_index, pkin.force_dt);
-                        shared_vel_mass
-                            .write(shared_flat_index, vector_plus_one(pkin.velocity, pkin.mass));
+                        shared_vel_mass.write(shared_flat_index, (pkin.velocity, pkin.mass));
                     } else {
                         if USE_CPIC {
                             shared_affinities.write(shared_flat_index, AffinityBits::EMPTY);
@@ -471,8 +466,7 @@ fn fetch_next_particle<const USE_CPIC: bool>(
 
                         shared_pos.at_mut(shared_flat_index).pt = Vector::ZERO;
                         shared_affine.write(shared_flat_index, Matrix::ZERO);
-                        shared_vel_mass.write(shared_flat_index, VectorPlusOne::ZERO);
-                        shared_force_dt.write(shared_flat_index, Vector::ZERO);
+                        shared_vel_mass.write(shared_flat_index, (Vector::ZERO, 0.0));
                     }
 
                     if curr_particle_id != NONE {
@@ -514,11 +508,10 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     body_impulses: &mut [IntegerImpulseAtomic],
     body_materials: &[BoundaryCondition],
     // Shared memory arrays.
-    shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    shared_vel_mass: &mut [(Vector, f32); NUM_SHARED_CELLS],
     shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     shared_pos: &mut [Position; NUM_SHARED_CELLS],
-    shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
     shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     max_linked_list_length: &mut u32,
@@ -590,7 +583,6 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
             shared_pos,
             shared_vel_mass,
             shared_affine,
-            shared_force_dt,
             shared_affinities,
             shared_normals,
         );
@@ -606,29 +598,29 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
             shared_pos,
             shared_vel_mass,
             shared_affine,
-            shared_force_dt,
             shared_affinities,
             shared_normals,
         );
-        total_result.new_momentum_velocity_mass += partial_result.new_momentum_velocity_mass;
+        total_result.new_momentum_velocity += partial_result.new_momentum_velocity;
+        total_result.new_mass += partial_result.new_mass;
 
         if USE_CPIC {
-            total_result.new_momentum_velocity_mass_incompatible +=
-                partial_result.new_momentum_velocity_mass_incompatible;
+            total_result.new_momentum_velocity_incompatible +=
+                partial_result.new_momentum_velocity_incompatible;
+            total_result.new_mass_incompatible += partial_result.new_mass_incompatible;
             total_result.impulse += partial_result.impulse;
             total_result.ang_impulse += partial_result.ang_impulse;
         }
     }
 
     // Write the node state to global memory.
-    nodes.at_mut(global_id as usize).momentum_velocity_mass =
-        total_result.new_momentum_velocity_mass;
+    nodes.at_mut(global_id as usize).momentum_velocity = total_result.new_momentum_velocity;
+    nodes.at_mut(global_id as usize).mass = total_result.new_mass;
 
     if USE_CPIC {
-        nodes
-            .at_mut(global_id as usize)
-            .momentum_velocity_mass_incompatible =
-            total_result.new_momentum_velocity_mass_incompatible;
+        nodes.at_mut(global_id as usize).momentum_velocity_incompatible =
+            total_result.new_momentum_velocity_incompatible;
+        nodes.at_mut(global_id as usize).mass_incompatible = total_result.new_mass_incompatible;
 
         // Apply the impulse to the closest body using integer atomics.
         if TWO_WAYS_COUPLING_ENABLED && collider_id != NONE {
@@ -786,11 +778,12 @@ pub fn gpu_p2g(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_kin: &[Kinematics],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] nodes: &mut [Node],
     // Shared memory arrays.
-    #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    // TODO PERF: analyze shared memory access patterns to avoid bank conflicts
+    // (https://feldmann.nyc/blog/smem-microbenchmarks)
+    #[spirv(workgroup)] shared_vel_mass: &mut [(Vector, f32); NUM_SHARED_CELLS], // P2G runs 10ms slower in the 3D sand demo unless we group vel and mass.
     #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
@@ -816,7 +809,6 @@ pub fn gpu_p2g(
         shared_affine,
         shared_nodes,
         shared_pos,
-        shared_force_dt,
         shared_affinities,
         shared_normals,
         max_linked_list_length,
@@ -853,11 +845,12 @@ pub fn gpu_p2g_cpic(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
     body_materials: &[BoundaryCondition],
     // Shared memory arrays.
-    #[spirv(workgroup)] shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
+    // TODO PERF: analyze shared memory access patterns to avoid bank conflicts
+    // (https://feldmann.nyc/blog/smem-microbenchmarks)
+    #[spirv(workgroup)] shared_vel_mass: &mut [(Vector, f32); NUM_SHARED_CELLS],  // P2G runs 10ms slower in the 3D sand demo unless we group vel and mass.
     #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
@@ -883,7 +876,6 @@ pub fn gpu_p2g_cpic(
         shared_affine,
         shared_nodes,
         shared_pos,
-        shared_force_dt,
         shared_affinities,
         shared_normals,
         max_linked_list_length,

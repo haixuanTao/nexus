@@ -8,7 +8,7 @@
 //! and atomic compare-exchange for lock-free insertion.
 
 use core::ops::BitOrAssign;
-use crate::{atomic_add_u32, IVector, MaybeIndexUnchecked, Vector, VectorPlusOne};
+use crate::{atomic_add_u32, IVector, MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
@@ -223,24 +223,24 @@ impl NodeCdf {
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Node {
-    /// The first DIM components contain either momentum or velocity (depending on context).
-    /// The last component contains the node's mass.
-    // TODO: split momentum_velocity and mass in two separate fields.
-    pub momentum_velocity_mass: VectorPlusOne,
-    /// SPIR-V padding: Vec3 has align(16) so stride must be multiple of 16.
-    #[cfg(feature = "dim2")]
-    pub _pad0: u32,
-    /// Momentum/velocity/mass for particles that are incompatible with this node
+    /// Contains either momentum or velocity (depending on context).
+    pub momentum_velocity: Vector,
+    /// The node’s mass.
+    #[cfg(feature = "dim3")] // The field ordering is different in 2D and 3D to reduce padding.
+    pub mass: f32,
+    /// Momentum/velocity for particles that are incompatible with this node
     /// (per CPIC's affinity-based compatibility). This ensures P2G/G2P transfers
     /// on incompatible nodes still work properly without losing contributions from
     /// other compatible particles.
-    pub momentum_velocity_mass_incompatible: VectorPlusOne,
-    /// SPIR-V padding: Vec3 has align(16) so stride must be multiple of 16.
-    #[cfg(feature = "dim2")]
-    pub _pad1: u32,
+    pub momentum_velocity_incompatible: Vector,
+    /// The node’s mass.
+    #[cfg(feature = "dim2")] // The field ordering is different in 2D and 3D to reduce padding.
+    pub mass: f32,
+    /// Mass for particles that are incompatible with this node.
+    pub mass_incompatible: f32,
     /// Contact distance field data for rigid body coupling.
     pub cdf: NodeCdf,
-    /// SPIR-V padding: NodeCdf is 12 bytes, pad to 16 for struct stride alignment.
+    /// SPIR-V padding.
     pub _padding: u32,
 }
 
@@ -731,8 +731,10 @@ pub fn gpu_reset(
     if i < num_nodes {
         let idx = i as usize;
         let node = nodes.at_mut(idx);
-        node.momentum_velocity_mass = VectorPlusOne::ZERO;
-        node.momentum_velocity_mass_incompatible = VectorPlusOne::ZERO;
+        node.momentum_velocity = Vector::ZERO;
+        node.mass = 0.0;
+        node.momentum_velocity_incompatible = Vector::ZERO;
+        node.mass_incompatible = 0.0;
         node.cdf = NodeCdf::NONE;
 
         let ll = nodes_linked_lists.at_mut(idx);
