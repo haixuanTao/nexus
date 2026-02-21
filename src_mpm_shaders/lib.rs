@@ -38,6 +38,11 @@ pub use nexus_shaders::{
     AngVector, Pad, Pose, RotMatrix, Rotation, Vector, VectorWithPadding, DIM,
 };
 
+// NOTE: we disable two-ways coupling for now since it’s quite expensive and not very
+//       stable anyway. We’d need some deeper integration with Nexus’ solver for it
+//       to look really good.
+pub const TWO_WAYS_COUPLING_ENABLED: bool = false;
+
 //
 // MPM-specific type aliases
 //

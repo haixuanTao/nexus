@@ -14,10 +14,7 @@ use crate::grid::kernel::*;
 use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::particle::{dir_to_associated_grid_node, Cdf, Kinematics, Position};
-use crate::{
-    scalar_part, vector_part, vector_plus_one, AngVector, Matrix, MaybeIndexUnchecked, PaddingExt,
-    Vector, VectorPlusOne,
-};
+use crate::{scalar_part, vector_part, vector_plus_one, AngVector, Matrix, MaybeIndexUnchecked, PaddingExt, Vector, VectorPlusOne, TWO_WAYS_COUPLING_ENABLED};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
@@ -190,7 +187,7 @@ fn p2g_step<const USE_CPIC: bool>(
         if USE_CPIC {
             let particle_affinity = shared_affinities.read(nbh_shared_index);
             if !affinities_are_compatible(node_affinity, particle_affinity) {
-                if collider_id != NONE {
+                if TWO_WAYS_COUPLING_ENABLED && collider_id != NONE {
                     let particle_normal = shared_normals.read(nbh_shared_index);
                     let body_vel = body_vels.read(collider_id as usize);
                     let body_com = body_impulses.at(collider_id as usize).com;
@@ -631,7 +628,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
             total_result.new_momentum_velocity_mass_incompatible;
 
         // Apply the impulse to the closest body using integer atomics.
-        if collider_id != NONE {
+        if TWO_WAYS_COUPLING_ENABLED && collider_id != NONE {
             let ci = collider_id as usize;
             #[cfg(feature = "dim2")]
             {
