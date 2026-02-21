@@ -710,7 +710,7 @@ impl Shape {
     /// - `bvh_node_len`: Number of BVH nodes
     /// - `aabb_mins`: Minimum point of the bounding box
     /// - `aabb_maxs`: Maximum point of the bounding box
-    pub fn polyline_raw(
+    pub fn polyline(
         bvh_vtx_root_id: u32,
         bvh_idx_root_id: u32,
         bvh_node_len: u32,
@@ -738,7 +738,7 @@ impl Shape {
     /// Creates a triangle mesh shape from BVH data.
     ///
     /// A trimesh is a collection of triangles sharing vertices.
-    pub fn trimesh_raw(
+    pub fn trimesh(
         bvh_vtx_root_id: u32,
         bvh_idx_root_id: u32,
         bvh_node_len: u32,

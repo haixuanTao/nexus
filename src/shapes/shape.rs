@@ -122,7 +122,7 @@ pub fn shape_from_parry(
                 .extend(shape.indices().iter().flat_map(|seg| seg.iter().copied()));
 
             let aabb = shape.local_aabb();
-            Some(Shape::polyline_raw(
+            Some(Shape::polyline(
                 bvh_vtx_root_id as u32,
                 bvh_idx_root_id as u32,
                 bvh_node_len as u32,
@@ -214,7 +214,7 @@ pub fn shape_from_parry(
                 .extend(shape.indices().iter().flat_map(|tri| tri.iter().copied()));
 
             let aabb = shape.local_aabb();
-            Some(Shape::trimesh_raw(
+            Some(Shape::trimesh(
                 bvh_vtx_root_id as u32,
                 bvh_idx_root_id as u32,
                 bvh_node_len as u32,
