@@ -189,9 +189,9 @@ fn fetch_max_linked_lists_length(
                         },
                     );
                     if octant_hid.id != NONE {
-                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let global_chunk_id = octant_hid.physical_id();
                         let tid_xy = UVec2::new(tid.x, tid.y);
-                        let global_node_id = node_id(global_chunk_id, tid_xy);
+                        let global_node_id = global_chunk_id.node_id(tid_xy);
                         let len = rigid_nodes_linked_lists.at(global_node_id.id as usize).len;
                         atomic_max_u32_workgroup(max_linked_list_length, len);
                     }
@@ -298,9 +298,9 @@ fn fetch_nodes(
                     };
 
                     if octant_hid.id != NONE {
-                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let global_chunk_id = octant_hid.physical_id();
                         #[cfg(feature = "dim2")]
-                        let global_node_id = node_id(global_chunk_id, UVec2::new(tid.x, tid.y));
+                        let global_node_id = global_chunk_id.node_id(UVec2::new(tid.x, tid.y));
                         #[cfg(feature = "dim3")]
                         let global_node_id = node_id(global_chunk_id, UVec3::new(tid.x, tid.y, tid.z));
                         let particle_id = rigid_nodes_linked_lists.at(global_node_id.id as usize).head;

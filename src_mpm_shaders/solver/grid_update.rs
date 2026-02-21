@@ -30,12 +30,12 @@ pub fn gpu_grid_update(
     let vid = active_blocks.at(bid as usize).virtual_id;
     let cell_width = grid.cell_width;
 
-    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
+    let global_chunk_id = BlockHeaderId { id: bid }.physical_id();
 
     #[cfg(feature = "dim2")]
-    let global_node_id = node_id(global_chunk_id, UVec2::new(tid.x, tid.y));
+    let global_node_id = global_chunk_id.node_id(UVec2::new(tid.x, tid.y));
     #[cfg(feature = "dim3")]
-    let global_node_id = node_id(global_chunk_id, UVec3::new(tid.x, tid.y, tid.z));
+    let global_node_id = global_chunk_id.node_id(UVec3::new(tid.x, tid.y, tid.z));
 
     #[cfg(feature = "dim2")]
     let cell_pos = Vec2::new(

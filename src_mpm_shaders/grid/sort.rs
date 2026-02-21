@@ -46,7 +46,7 @@ pub fn gpu_touch_particle_blocks(
     if id < *particles_len {
         let cell_width = grid.cell_width;
         let particle = particles_pos.read(id as usize);
-        let blocks = blocks_associated_to_point(cell_width, particle.pt);
+        let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
         for i in 0..NUM_ASSOC_BLOCKS {
             grid.mark_block_as_active(hmap_entries, active_blocks, &blocks[i]);
         }
@@ -82,7 +82,7 @@ pub fn gpu_touch_rigid_particle_blocks(
 
         if needs_block {
             let particle = rigid_particles_pos.read(id as usize);
-            let block = block_associated_to_point(cell_width, particle.pt);
+            let block = BlockVirtualId::block_associated_to_point(cell_width, particle.pt);
             grid.mark_block_as_active(hmap_entries, active_blocks, &block);
         }
     }
@@ -110,7 +110,7 @@ pub fn gpu_mark_rigid_particles_needing_block(
     if id < rigid_particles_pos.len() as u32 {
         let cell_width = grid.cell_width;
         let particle = rigid_particles_pos.read(id as usize);
-        let blocks = blocks_associated_to_point(cell_width, particle.pt);
+        let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
 
         // Find the first block that already has a header in the hashmap.
         let mut i = 0u32;
@@ -167,7 +167,7 @@ pub fn gpu_update_block_particle_count(
     if id < *particles_len {
         let cell_width = grid.cell_width;
         let particle = particles_pos.read(id as usize);
-        let block_vid = block_associated_to_point(cell_width, particle.pt);
+        let block_vid = BlockVirtualId::block_associated_to_point(cell_width, particle.pt);
         let active_block_id = grid.find_block_header_id(hmap_entries, &block_vid);
         atomic_add_u32(
             &mut active_blocks
@@ -242,7 +242,7 @@ pub fn gpu_finalize_particles_sort(
     if id < *particles_len {
         let cell_width = grid.cell_width;
         let particle = particles_pos.read(id as usize);
-        let block_vid = block_associated_to_point(cell_width, particle.pt);
+        let block_vid = BlockVirtualId::block_associated_to_point(cell_width, particle.pt);
 
         // Place the particle at its sorted position.
         let active_block_id = grid.find_block_header_id(hmap_entries, &block_vid);
@@ -251,8 +251,7 @@ pub fn gpu_finalize_particles_sort(
 
         // Build per-node particle linked list.
         let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
-        let node_global_id = node_id(
-            block_header_id_to_physical_id(active_block_id),
+        let node_global_id = active_block_id.physical_id().node_id(
             node_local_id,
         );
         let prev_head = unsafe {
@@ -294,7 +293,7 @@ pub fn gpu_sort_rigid_particles(
     if id < rigid_particles_pos.len() as u32 {
         let cell_width = grid.cell_width;
         let particle = rigid_particles_pos.read(id as usize);
-        let block_vid = block_associated_to_point(cell_width, particle.pt);
+        let block_vid = BlockVirtualId::block_associated_to_point(cell_width, particle.pt);
 
         let active_block_id = grid.find_block_header_id(hmap_entries, &block_vid);
 
@@ -303,8 +302,7 @@ pub fn gpu_sort_rigid_particles(
         if active_block_id.id != NONE {
             // Build per-node rigid particle linked list.
             let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
-            let node_global_id = node_id(
-                block_header_id_to_physical_id(active_block_id),
+            let node_global_id = active_block_id.physical_id().node_id(
                 node_local_id,
             );
             let prev_head = unsafe {

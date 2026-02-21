@@ -351,6 +351,7 @@ pub async fn run_with_hooks<GpuModel: GpuParticleModelData>(
                     stage.step_result.timings.readback_time
                 ));
                 ui.label(format!("particles: {}", stage.physics.data.particles.len()));
+                ui.label(format!("substeps: {}", stage.app_state.num_substeps));
 
                 if !stage.step_result.timings.gpu_pass_times.is_empty() {
                     ui.separator();

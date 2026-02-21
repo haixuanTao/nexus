@@ -126,7 +126,7 @@ pub fn gpu_grid_update_collide(
     let bid = block_id.x;
     let vid = active_blocks.at(bid as usize).virtual_id;
 
-    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
+    let global_chunk_id = BlockHeaderId { id: bid }.physical_id();
 
     let global_node_id;
     let cell_pt;
@@ -134,7 +134,7 @@ pub fn gpu_grid_update_collide(
     #[cfg(feature = "dim2")]
     {
         let tid_xy = UVec2::new(tid.x, tid.y);
-        global_node_id = node_id(global_chunk_id, tid_xy);
+        global_node_id = global_chunk_id.node_id(tid_xy);
         cell_pt = Vec2::new(
             (vid.id.x * 8 + tid.x as i32) as f32,
             (vid.id.y * 8 + tid.y as i32) as f32,

@@ -85,6 +85,115 @@ impl BlockVirtualId {
             | (((self.id.y + 0x000001FF) as u32 & 0x000003FF) << 11)
             | (((self.id.z + 0x000003FF) as u32 & 0x000007FF) << 21)
     }
+
+    /// Returns the primary block associated with a world-space point.
+    ///
+    /// The associated block is determined by rounding the point's position to the nearest
+    /// cell, subtracting one (for the quadratic kernel offset), then dividing by the block
+    /// size (8 in 2D, 4 in 3D).
+    #[cfg(feature = "dim2")]
+    #[inline]
+    pub fn block_associated_to_point(cell_width: f32, pt: Vector) -> BlockVirtualId {
+        let assoc_cell = (pt / cell_width).round() - Vector::ONE;
+        let assoc_block = (assoc_cell / 8.0).floor();
+        BlockVirtualId {
+            id: IVec2::new(assoc_block.x as i32, assoc_block.y as i32),
+        }
+    }
+
+    /// Returns the primary block associated with a world-space point.
+    #[cfg(feature = "dim3")]
+    #[inline]
+    pub fn block_associated_to_point(cell_width: f32, pt: Vector) -> BlockVirtualId {
+        let assoc_cell = (pt / cell_width).round() - Vector::ONE;
+        let assoc_block = (assoc_cell / 4.0).floor();
+        BlockVirtualId {
+            id: IVec3::new(
+                assoc_block.x as i32,
+                assoc_block.y as i32,
+                assoc_block.z as i32,
+            ),
+            #[cfg(feature = "dim3")]
+            padding: 0,
+        }
+    }
+
+    /// Returns all blocks associated with a world-space point.
+    ///
+    /// A particle's quadratic kernel stencil can span into neighboring blocks,
+    /// so we need to mark all potentially affected blocks as active.
+    /// This returns 4 blocks in 2D or 8 blocks in 3D.
+    #[inline]
+    pub fn blocks_associated_to_point(
+        cell_width: f32,
+        pt: Vector,
+    ) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
+        let main_block = Self::block_associated_to_point(cell_width, pt);
+        Self::blocks_associated_to_block(&main_block)
+    }
+
+    /// Returns all blocks neighboring a given block (including itself).
+    ///
+    /// For a main block at position B, returns all blocks in the 2x2 (2D) or 2x2x2 (3D)
+    /// neighborhood starting at B.
+    #[cfg(feature = "dim2")]
+    #[inline]
+    pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
+        [
+            BlockVirtualId {
+                id: block.id + IVec2::new(0, 0),
+            },
+            BlockVirtualId {
+                id: block.id + IVec2::new(0, 1),
+            },
+            BlockVirtualId {
+                id: block.id + IVec2::new(1, 0),
+            },
+            BlockVirtualId {
+                id: block.id + IVec2::new(1, 1),
+            },
+        ]
+    }
+
+    /// Returns all blocks neighboring a given block (including itself).
+    #[cfg(feature = "dim3")]
+    #[inline]
+    pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
+        [
+            BlockVirtualId {
+                id: block.id + IVec3::new(0, 0, 0),
+                padding: 0,
+            },
+            BlockVirtualId {
+                id: block.id + IVec3::new(0, 0, 1),
+                padding: 0,
+            },
+            BlockVirtualId {
+                id: block.id + IVec3::new(0, 1, 0),
+                padding: 0,
+            },
+            BlockVirtualId {
+                id: block.id + IVec3::new(0, 1, 1),
+                padding: 0,
+            },
+            BlockVirtualId {
+                id: block.id + IVec3::new(1, 0, 0),
+                padding: 0,
+            },
+            BlockVirtualId {
+                id: block.id + IVec3::new(1, 0, 1),
+                padding: 0,
+            },
+            BlockVirtualId {
+                id: block.id + IVec3::new(1, 1, 0),
+                padding: 0,
+            },
+            BlockVirtualId {
+                id: block.id + IVec3::new(1, 1, 1),
+                padding: 0,
+            },
+        ]
+    }
 }
 
 /// Index into the active block headers array.
@@ -98,6 +207,18 @@ pub struct BlockHeaderId {
     pub id: u32,
 }
 
+impl BlockHeaderId {
+    /// Converts a block header ID to a physical storage ID.
+    ///
+    /// The physical ID is the index of the block's first node in the flat node arrays.
+    #[inline]
+    pub fn physical_id(self) -> BlockPhysicalId {
+        BlockPhysicalId {
+            id: self.id * NUM_CELL_PER_BLOCK,
+        }
+    }
+}
+
 /// Physical (storage) index for a block's first node.
 ///
 /// Computed as `header_id * NUM_CELL_PER_BLOCK`. Used to index into the flat
@@ -107,6 +228,29 @@ pub struct BlockHeaderId {
 #[repr(C)]
 pub struct BlockPhysicalId {
     pub id: u32,
+}
+
+impl BlockPhysicalId {
+    /// Computes the physical node ID from a block's physical ID and a local offset within the block.
+    ///
+    /// In 2D: nodes are laid out in row-major order within 8x8 blocks.
+    /// In 3D: nodes are laid out in row-major order within 4x4x4 blocks.
+    #[cfg(feature = "dim2")]
+    #[inline]
+    pub fn node_id(self, shift_in_block: UVec2) -> NodePhysicalId {
+        NodePhysicalId {
+            id: self.id + shift_in_block.x + shift_in_block.y * 8,
+        }
+    }
+
+    /// Computes the physical node ID from a block's physical ID and a local offset within the block.
+    #[cfg(feature = "dim3")]
+    #[inline]
+    pub fn node_id(self, shift_in_block: UVec3) -> NodePhysicalId {
+        NodePhysicalId {
+            id: self.id + shift_in_block.x + shift_in_block.y * 4 + shift_in_block.z * 4 * 4,
+        }
+    }
 }
 
 /// Physical (storage) index for a single grid node.
@@ -428,154 +572,6 @@ impl Grid {
             };
         }
     }
-}
-
-/*
- * Index conversion functions.
- */
-
-/// Converts a block header ID to a physical storage ID.
-///
-/// The physical ID is the index of the block's first node in the flat node arrays.
-#[inline]
-pub fn block_header_id_to_physical_id(hid: BlockHeaderId) -> BlockPhysicalId {
-    BlockPhysicalId {
-        id: hid.id * NUM_CELL_PER_BLOCK,
-    }
-}
-
-/// Computes the physical node ID from a block's physical ID and a local offset within the block.
-///
-/// In 2D: nodes are laid out in row-major order within 8x8 blocks.
-/// In 3D: nodes are laid out in row-major order within 4x4x4 blocks.
-#[cfg(feature = "dim2")]
-#[inline]
-pub fn node_id(pid: BlockPhysicalId, shift_in_block: UVec2) -> NodePhysicalId {
-    NodePhysicalId {
-        id: pid.id + shift_in_block.x + shift_in_block.y * 8,
-    }
-}
-
-/// Computes the physical node ID from a block's physical ID and a local offset within the block.
-#[cfg(feature = "dim3")]
-#[inline]
-pub fn node_id(pid: BlockPhysicalId, shift_in_block: UVec3) -> NodePhysicalId {
-    NodePhysicalId {
-        id: pid.id + shift_in_block.x + shift_in_block.y * 4 + shift_in_block.z * 4 * 4,
-    }
-}
-
-/*
- * Block-to-point association functions.
- */
-
-/// Returns the primary block associated with a world-space point.
-///
-/// The associated block is determined by rounding the point's position to the nearest
-/// cell, subtracting one (for the quadratic kernel offset), then dividing by the block
-/// size (8 in 2D, 4 in 3D).
-#[cfg(feature = "dim2")]
-#[inline]
-pub fn block_associated_to_point(cell_width: f32, pt: Vector) -> BlockVirtualId {
-    let assoc_cell = (pt / cell_width).round() - Vector::ONE;
-    let assoc_block = (assoc_cell / 8.0).floor();
-    BlockVirtualId {
-        id: IVec2::new(assoc_block.x as i32, assoc_block.y as i32),
-    }
-}
-
-/// Returns the primary block associated with a world-space point.
-#[cfg(feature = "dim3")]
-#[inline]
-pub fn block_associated_to_point(cell_width: f32, pt: Vector) -> BlockVirtualId {
-    let assoc_cell = (pt / cell_width).round() - Vector::ONE;
-    let assoc_block = (assoc_cell / 4.0).floor();
-    BlockVirtualId {
-        id: IVec3::new(
-            assoc_block.x as i32,
-            assoc_block.y as i32,
-            assoc_block.z as i32,
-        ),
-        #[cfg(feature = "dim3")]
-        padding: 0,
-    }
-}
-
-/// Returns all blocks associated with a world-space point.
-///
-/// A particle's quadratic kernel stencil can span into neighboring blocks,
-/// so we need to mark all potentially affected blocks as active.
-/// This returns 4 blocks in 2D or 8 blocks in 3D.
-#[inline]
-pub fn blocks_associated_to_point(
-    cell_width: f32,
-    pt: Vector,
-) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
-    let main_block = block_associated_to_point(cell_width, pt);
-    blocks_associated_to_block(&main_block)
-}
-
-/// Returns all blocks neighboring a given block (including itself).
-///
-/// For a main block at position B, returns all blocks in the 2x2 (2D) or 2x2x2 (3D)
-/// neighborhood starting at B.
-#[cfg(feature = "dim2")]
-#[inline]
-pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
-    [
-        BlockVirtualId {
-            id: block.id + IVec2::new(0, 0),
-        },
-        BlockVirtualId {
-            id: block.id + IVec2::new(0, 1),
-        },
-        BlockVirtualId {
-            id: block.id + IVec2::new(1, 0),
-        },
-        BlockVirtualId {
-            id: block.id + IVec2::new(1, 1),
-        },
-    ]
-}
-
-/// Returns all blocks neighboring a given block (including itself).
-#[cfg(feature = "dim3")]
-#[inline]
-pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
-    [
-        BlockVirtualId {
-            id: block.id + IVec3::new(0, 0, 0),
-            padding: 0,
-        },
-        BlockVirtualId {
-            id: block.id + IVec3::new(0, 0, 1),
-            padding: 0,
-        },
-        BlockVirtualId {
-            id: block.id + IVec3::new(0, 1, 0),
-            padding: 0,
-        },
-        BlockVirtualId {
-            id: block.id + IVec3::new(0, 1, 1),
-            padding: 0,
-        },
-        BlockVirtualId {
-            id: block.id + IVec3::new(1, 0, 0),
-            padding: 0,
-        },
-        BlockVirtualId {
-            id: block.id + IVec3::new(1, 0, 1),
-            padding: 0,
-        },
-        BlockVirtualId {
-            id: block.id + IVec3::new(1, 1, 0),
-            padding: 0,
-        },
-        BlockVirtualId {
-            id: block.id + IVec3::new(1, 1, 1),
-            padding: 0,
-        },
-    ]
 }
 
 /*

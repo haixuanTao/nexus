@@ -108,9 +108,9 @@ fn global_shared_memory_transfers(
                     let flat_id = flatten_shared_index(shared_index.x, shared_index.y) as usize;
 
                     if octant_hid.id != NONE {
-                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        let global_chunk_id = octant_hid.physical_id();
                         let tid_xy = UVec2::new(tid.x, tid.y);
-                        let global_node_id = node_id(global_chunk_id, tid_xy);
+                        let global_node_id = global_chunk_id.node_id(tid_xy);
                         shared_nodes[flat_id] = nodes.at(global_node_id.id as usize).cdf;
                     } else {
                         shared_nodes[flat_id] = NodeCdf::NONE;
