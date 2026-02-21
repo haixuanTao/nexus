@@ -8,7 +8,7 @@ use nexus_mpm::{
 };
 use nexus_mpm_testbed3d::{AppState, PhysicsContext};
 use rapier3d::parry::utils::Array2;
-use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder};
+use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
 #[allow(dead_code)]
 fn main() {
@@ -68,7 +68,7 @@ pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physi
         });
         let rb = RigidBodyBuilder::fixed();
         let rb_handle = rapier_data.bodies.insert(rb);
-        let co = ColliderBuilder::trimesh(vtx, idx).unwrap();
+        let co = ColliderBuilder::trimesh_with_flags(vtx, idx, TriMeshFlags::ORIENTED).unwrap();
         rapier_data
             .colliders
             .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);

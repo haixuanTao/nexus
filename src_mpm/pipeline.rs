@@ -121,6 +121,14 @@ pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
         true
     }
 
+    fn g2p_enabled(&self) -> bool {
+        true
+    }
+
+    fn p2g_enabled(&self) -> bool {
+        true
+    }
+
     /// Custom operation run after updating particles.
     fn after_particles_update(
         &mut self,
@@ -388,7 +396,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             }
         }
 
-        {
+        if hooks.p2g_enabled() {
             let mut pass = encoder.begin_pass("P2G", timestamps.as_deref_mut());
             self.p2g.launch(
                 &mut pass,
@@ -429,7 +437,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             hooks_state,
         )?;
 
-        {
+        if hooks.g2p_enabled() {
             let mut pass = encoder.begin_pass("G2P", timestamps.as_deref_mut());
             self.g2p.launch(
                 &mut pass,
