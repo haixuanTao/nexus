@@ -14,7 +14,10 @@ use crate::grid::kernel::*;
 use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::particle::{dir_to_associated_grid_node, Cdf, Kinematics, Position};
-use crate::{scalar_part, vector_part, vector_plus_one, AngVector, Matrix, MaybeIndexUnchecked, PaddingExt, Vector, VectorPlusOne, TWO_WAYS_COUPLING_ENABLED};
+use crate::{
+    scalar_part, vector_part, vector_plus_one, AngVector, Matrix, MaybeIndexUnchecked, PaddingExt,
+    Vector, VectorPlusOne, TWO_WAYS_COUPLING_ENABLED,
+};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;

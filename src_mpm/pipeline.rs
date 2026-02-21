@@ -9,8 +9,8 @@ use crate::grid::sort::WgSort;
 use crate::solver::{
     BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData,
     GpuParticles, GpuRigidParticles, GpuSimulationParams, GpuTimestepBounds, Particle,
-    SimulationParams, WgG2P, WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgP2G, WgP2GCdf,
-    WgParticleUpdate, WgIntegrateBodies, WgRigidParticleUpdate, WgTimestepBounds,
+    SimulationParams, WgG2P, WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgIntegrateBodies, WgP2G,
+    WgP2GCdf, WgParticleUpdate, WgRigidParticleUpdate, WgTimestepBounds,
 };
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
