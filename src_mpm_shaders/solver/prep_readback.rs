@@ -223,8 +223,8 @@ fn compute_color(
         }
     } else if mode == RENDER_MODE_CDF_SIGNS {
         let d = cdf.affinity;
-        let a = (d >> 16) & (d & 0x0000ffff);
-        if d == 0 {
+        let a = (d.0 >> 16) & (d.0 & 0x0000ffff);
+        if d.0 == 0 {
             Vec4::new(0.0, 0.0, 0.0, base_color.w)
         } else if a == 0 {
             Vec4::new(0.0, 1.0, 0.0, base_color.w)
@@ -280,8 +280,8 @@ fn compute_color(
         }
     } else if mode == RENDER_MODE_CDF_SIGNS {
         let d = cdf.affinity;
-        let a = (d >> 16) & (d & 0x0000ffff);
-        if d == 0 {
+        let a = (d.0 >> 16) & (d.0 & 0x0000ffff);
+        if d.0 == 0 {
             Vec4::new(0.0, 0.0, 0.0, base_color.w)
         } else if a == 0 {
             Vec4::new(0.0, 1.0, 0.0, base_color.w)

@@ -114,7 +114,7 @@ fn global_shared_memory_transfers(
                         let global_node_id = node_id(global_chunk_id, tid_xy);
                         shared_nodes[flat_id] = nodes.at(global_node_id.id as usize).cdf;
                     } else {
-                        shared_nodes[flat_id] = NodeCdf::new(0.0, 0, NONE);
+                        shared_nodes[flat_id] = NodeCdf::NONE;
                     }
                 }
             }
@@ -150,7 +150,7 @@ fn global_shared_memory_transfers(
                             let global_node_id = node_id(global_chunk_id, tid_xyz);
                             shared_nodes[shared_node_id] = nodes.at(global_node_id.id as usize).cdf;
                         } else {
-                            shared_nodes[shared_node_id] = NodeCdf::new(0.0, 0, NONE);
+                            shared_nodes[shared_node_id] = NodeCdf::NONE;
                         }
                     }
                 }
@@ -174,7 +174,7 @@ fn particle_g2p(
     shared_nodes: &[NodeCdf; NUM_SHARED_CELLS],
 ) {
     let mut contact_dist = 0.0f32;
-    let mut particle_affinity = 0u32;
+    let mut particle_affinity = AffinityBits::EMPTY;
     let mut affinity_signs = [0.0f32; 16];
 
     let prev_affinity = particles_cdf.at(particle_id as usize).affinity;
@@ -203,7 +203,7 @@ fn particle_g2p(
             let shift = NBH_SHIFTS.read(i as usize);
             let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
             let cell_data = shared_nodes[(packed_cell_index_in_block + packed_shift) as usize];
-            particle_affinity |= cell_data.affinities & AFFINITY_BITS_MASK;
+            particle_affinity.set_unsigned_bits(cell_data.affinities);
 
             #[cfg(feature = "dim2")]
             let weight = vec3_extract(w[0], shift.x) * vec3_extract(w[1], shift.y);
@@ -216,12 +216,12 @@ fn particle_g2p(
             // NOTE: `unroll_for_loops` doesn’t see through the closure so we use crunchy::unroll instead.
             unroll! {
                 for i_collider in 0..16 {
-                    let compatible = if affinity_bit(i_collider as u32, cell_data.affinities) {
+                    let compatible = if cell_data.affinities.bit(i_collider as u32) {
                         1.0f32
                     } else {
                         0.0f32
                     };
-                    let sign = if sign_bit(i_collider as u32, cell_data.affinities)
+                    let sign = if cell_data.affinities.sign_bit(i_collider as u32)
                         && !shape_has_solid_interior(i_collider as u32)
                     {
                         -1.0f32
@@ -236,17 +236,13 @@ fn particle_g2p(
 
     // Convert the affinity signs to bits.
     for i_collider in 0..16 {
-        let mask = 1u32 << (i_collider as u32 + SIGN_BITS_SHIFT);
-        if (prev_affinity & (1u32 << i_collider)) == 0 {
+        if !prev_affinity.bit(i_collider as u32) {
             // Only set the sign bit for affinities that didn't exist before.
-            let sgn_bit = if affinity_signs[i_collider as usize] < 0.0 {
-                mask
-            } else {
-                0u32
-            };
-            particle_affinity |= sgn_bit;
+            if affinity_signs[i_collider] < 0.0 {
+                particle_affinity.set_sign_bit(i_collider as u32);
+            }
         } else {
-            particle_affinity |= prev_affinity & mask;
+            particle_affinity.or_sign_bit(prev_affinity, i_collider as u32);
         }
     }
 
@@ -280,9 +276,9 @@ fn particle_g2p(
                 * vec3_extract(w[1], shift.y)
                 * vec3_extract(w[2], shift.z);
 
-            let combined_affinity = cell_data.affinities & particle_affinity & AFFINITY_BITS_MASK;
-            let sign_differences = ((cell_data.affinities >> SIGN_BITS_SHIFT)
-                ^ (particle_affinity >> SIGN_BITS_SHIFT))
+            let combined_affinity = cell_data.affinities.0 & particle_affinity.0 & AffinityBits::AFFINITY_BITS_MASK;
+            let sign_differences = ((cell_data.affinities.0 >> AffinityBits::SIGN_BITS_SHIFT)
+                ^ (particle_affinity.0 >> AffinityBits::SIGN_BITS_SHIFT))
                 & combined_affinity;
 
             #[cfg(feature = "dim2")]

@@ -90,7 +90,7 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                         if USE_CPIC {
                             shared_nodes_vel_mass_incompatible[flat_shared_index] =
                                 VectorPlusOne::ZERO;
-                            shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                            shared_nodes_cdf[flat_shared_index] = NodeCdf::NONE;
                         }
                     }
                 }
@@ -137,7 +137,7 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                             if USE_CPIC {
                                 shared_nodes_vel_mass_incompatible[flat_shared_index] =
                                     VectorPlusOne::ZERO;
-                                shared_nodes_cdf[flat_shared_index] = NodeCdf::new(0.0, 0, NONE);
+                                shared_nodes_cdf[flat_shared_index] = NodeCdf::NONE;
                             }
                         }
                     }
@@ -218,7 +218,7 @@ fn particle_g2p<const USE_CPIC: bool>(
                 if USE_CPIC {
                     let cell_cdf = shared_nodes_cdf[shared_id];
                     let is_compatible =
-                        affinities_are_compatible(particle_cdf.affinity, cell_cdf.affinities);
+                        particle_cdf.affinity.is_compatible(cell_cdf.affinities);
 
                     if !is_compatible {
                         cell_data = shared_nodes_vel_mass_incompatible[shared_id];
@@ -257,7 +257,7 @@ fn particle_g2p<const USE_CPIC: bool>(
         if USE_CPIC {
             // Accumulate rigid body velocities for all affinity-linked colliders.
             for i_collider in 0..16 {
-                if affinity_bit(i_collider as u32, particle_cdf.affinity) {
+                if particle_cdf.affinity.bit(i_collider as u32) {
                     let body_vel = body_vels.read(i_collider as usize);
                     let body_com = body_mprops.at(i_collider as usize).com;
                     rigid_vel += velocity_at_point(body_com, &body_vel, particle_pos.pt);

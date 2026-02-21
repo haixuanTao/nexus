@@ -3,7 +3,7 @@
 //! Provides the `collide` function that tests a point against all collision
 //! shapes and returns the nearest contact distance field (CDF) data.
 
-use crate::grid::grid::{NodeCdf, NONE};
+use crate::grid::grid::{AffinityBits, NodeCdf, NONE};
 use crate::nexus_shaders::shapes::{Shape, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 
@@ -31,7 +31,7 @@ pub fn collide(
     point: Vector,
 ) -> NodeCdf {
     const MAX_FLT: f32 = 1.0e10;
-    let mut cdf = NodeCdf::new(MAX_FLT, 0, NONE);
+    let mut cdf = NodeCdf::NONE;
 
     let dist_cap = Vector::splat(cell_width * 1.5);
 
@@ -67,11 +67,7 @@ pub fn collide(
                     cdf.closest_id = i;
                 }
                 cdf.distance = cdf.distance.min(dist);
-                if proj.is_inside {
-                    cdf.affinities |= 0x00010001u32 << i;
-                } else {
-                    cdf.affinities |= 0x00000001u32 << i;
-                }
+                cdf.affinities.set_bit(i, proj.is_inside);
             }
         }
     }

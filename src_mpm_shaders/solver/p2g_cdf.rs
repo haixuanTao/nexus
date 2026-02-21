@@ -91,7 +91,7 @@ fn p2g_cdf_step(
     #[cfg(feature = "dim3")]
     let bottommost_contributing_node = flatten_shared_shift(2, 2, 2);
 
-    let mut result = NodeCdf::new(1.0e10, 0, NONE);
+    let mut result = NodeCdf::NONE;
 
     for i in 0..NBH_LEN as u32 {
         let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
@@ -118,9 +118,7 @@ fn p2g_cdf_step(
                 let distance = dpt.length();
                 let ab = primitive.b - primitive.a;
                 let sign = dpt.dot(Vec2::new(-ab.y, ab.x)) < 0.0;
-
-                result.affinities |=
-                    (1u32 << collider_id) | ((sign as u32) << (collider_id + SIGN_BITS_SHIFT));
+                result.affinities.set_bit(collider_id, sign);
 
                 if distance < result.distance {
                     result.distance = distance;
@@ -149,10 +147,8 @@ fn p2g_cdf_step(
             {
                 // Valid projection on the face interior.
                 let signed_dist = n.dot(ap) / n_length;
-                let sign = signed_dist < 0.0;
                 let distance = abs(signed_dist);
-                result.affinities |=
-                    (1u32 << collider_id) | ((sign as u32) << (collider_id + SIGN_BITS_SHIFT));
+                result.affinities.set_bit(collider_id, signed_dist < 0.0);
 
                 if distance < result.distance {
                     result.distance = distance;

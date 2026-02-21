@@ -22,7 +22,7 @@ fn collide(
     point: Vector,
 ) -> NodeCdf {
     const MAX_FLT: f32 = 1.0e10;
-    let mut cdf = NodeCdf::new(MAX_FLT, 0, NONE);
+    let mut cdf = NodeCdf::NONE;
 
     let dist_cap = Vector::splat(cell_width * 1.5);
 
@@ -53,12 +53,7 @@ fn collide(
                     cdf.closest_id = i as u32;
                     cdf.distance = dist;
                 }
-                let affinity_bit = if proj.is_inside {
-                    0x00010001u32
-                } else {
-                    0x00000001u32
-                };
-                cdf.affinities |= affinity_bit << (i as u32);
+                cdf.affinities.set_bit(i as u32, proj.is_inside);
             }
         }
     }

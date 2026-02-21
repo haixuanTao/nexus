@@ -26,6 +26,7 @@ use spirv_std::arch::{control_barrier, workgroup_memory_barrier_with_group_sync}
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 use vortx_shaders::utils::step::StepRng;
+use crate::utils::div_ceil;
 
 const WORKGROUP_SIZE: u32 = 64;
 const REDUCTION_WORKGROUP_SIZE: u32 = 128;
@@ -589,9 +590,4 @@ pub fn prefix_len(
     } else {
         fallback_prefix_len
     }
-}
-
-/// Division with ceiling.
-pub fn div_ceil(x: i32, y: i32) -> i32 {
-    (x + y - 1) / y
 }

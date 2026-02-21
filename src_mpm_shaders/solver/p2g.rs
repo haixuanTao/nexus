@@ -114,13 +114,13 @@ fn p2g_step<const USE_CPIC: bool>(
     body_materials: &[BoundaryCondition],
     packed_cell_index_in_block: u32,
     cell_width: f32,
-    node_affinity: u32,
+    node_affinity: AffinityBits,
     collider_id: u32,
     shared_pos: &[Position; NUM_SHARED_CELLS],
     shared_vel_mass: &[VectorPlusOne; NUM_SHARED_CELLS],
     shared_affine: &[Matrix; NUM_SHARED_CELLS],
     shared_force_dt: &[Vector; NUM_SHARED_CELLS],
-    shared_affinities: &[u32; NUM_SHARED_CELLS],
+    shared_affinities: &[AffinityBits; NUM_SHARED_CELLS],
     shared_normals: &[Vector; NUM_SHARED_CELLS],
 ) -> P2GStepResult {
     // Shift to reach the first node with particles contributing to the current cell's data.
@@ -189,7 +189,7 @@ fn p2g_step<const USE_CPIC: bool>(
 
         if USE_CPIC {
             let particle_affinity = shared_affinities.read(nbh_shared_index);
-            if !affinities_are_compatible(node_affinity, particle_affinity) {
+            if !particle_affinity.is_compatible(node_affinity) {
                 if TWO_WAYS_COUPLING_ENABLED && collider_id != NONE {
                     let particle_normal = shared_normals.read(nbh_shared_index);
                     let body_vel = body_vels.read(collider_id as usize);
@@ -414,7 +414,7 @@ fn fetch_next_particle<const USE_CPIC: bool>(
     shared_vel_mass: &mut [VectorPlusOne; NUM_SHARED_CELLS],
     shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
     shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
-    shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     shared_normals: &mut [Vector; NUM_SHARED_CELLS],
 ) {
     for i_loop in 0..2 {
@@ -465,7 +465,7 @@ fn fetch_next_particle<const USE_CPIC: bool>(
                             .write(shared_flat_index, vector_plus_one(pkin.velocity, pkin.mass));
                     } else {
                         if USE_CPIC {
-                            shared_affinities.write(shared_flat_index, 0);
+                            shared_affinities.write(shared_flat_index, AffinityBits::EMPTY);
                             shared_normals.write(shared_flat_index, Vector::ZERO);
                         }
 
@@ -519,7 +519,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     shared_pos: &mut [Position; NUM_SHARED_CELLS],
     shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
-    shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     max_linked_list_length: &mut u32,
     max_linked_list_length_uniform: &mut u32,
@@ -791,7 +791,7 @@ pub fn gpu_p2g(
     #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
     #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,
@@ -858,7 +858,7 @@ pub fn gpu_p2g_cpic(
     #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_force_dt: &mut [Vector; NUM_SHARED_CELLS],
-    #[spirv(workgroup)] shared_affinities: &mut [u32; NUM_SHARED_CELLS],
+    #[spirv(workgroup)] shared_affinities: &mut [AffinityBits; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_normals: &mut [Vector; NUM_SHARED_CELLS],
     #[spirv(workgroup)] max_linked_list_length: &mut u32,
     #[spirv(workgroup)] max_linked_list_length_uniform: &mut u32,

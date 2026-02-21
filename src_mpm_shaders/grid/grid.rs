@@ -7,10 +7,13 @@
 //! to physical storage indices. The hashmap uses open addressing with linear probing
 //! and atomic compare-exchange for lock-free insertion.
 
+use core::ops::BitOrAssign;
 use crate::{atomic_add_u32, IVector, MaybeIndexUnchecked, Vector, VectorPlusOne};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
+use nexus_shaders::MAX_FLT;
+use crate::nexus_shaders::utils::udiv_ceil;
 
 /*
  * Constants.
@@ -40,12 +43,6 @@ pub const NUM_ASSOC_BLOCKS: usize = 8;
 
 /// Offset applied when computing cell indices within a block.
 pub const OFF_BY_ONE: i32 = 1;
-
-/// Mask for the lower 16 affinity bits in the CDF affinity field.
-pub const AFFINITY_BITS_MASK: u32 = 0x0000FFFF;
-
-/// Bit shift to access the sign bits in the upper 16 bits of the affinity field.
-pub const SIGN_BITS_SHIFT: u32 = 16;
 
 /*
  * Index newtypes.
@@ -196,15 +193,21 @@ pub struct NodeCdf {
     pub distance: f32,
     /// Affinity bits: lower 16 bits are affinity flags, upper 16 bits are sign flags.
     /// Two bits per collider.
-    pub affinities: u32,
+    pub affinities: AffinityBits,
     /// Index of the closest collider, or `NONE` if no collider is nearby.
     pub closest_id: u32,
 }
 
 impl NodeCdf {
+    pub const NONE: NodeCdf = NodeCdf {
+        distance: MAX_FLT,
+        affinities: AffinityBits(0),
+        closest_id: NONE
+    };
+
     /// Creates a new `NodeCdf` with the given values.
     #[inline]
-    pub fn new(distance: f32, affinities: u32, closest_id: u32) -> Self {
+    pub fn new(distance: f32, affinities: AffinityBits, closest_id: u32) -> Self {
         Self {
             distance,
             affinities,
@@ -581,36 +584,72 @@ pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NU
  * Affinity functions for CPIC.
  */
 
-/// Checks if a specific collider's affinity bit is set.
-#[inline]
-pub fn affinity_bit(i_collider: u32, affinity: u32) -> bool {
-    (affinity & (1 << i_collider)) != 0
+/// Affinity bits: lower 16 bits are affinity flags, upper 16 bits are sign flags.
+/// Two bits per collider.
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
+)]
+#[repr(C)]
+pub struct AffinityBits(pub u32);
+
+impl AffinityBits {
+    pub const EMPTY: AffinityBits = AffinityBits(0);
+    /// Mask for the lower 16 affinity bits in the CDF affinity field.
+    pub const AFFINITY_BITS_MASK: u32 = 0x0000FFFF;
+    /// Bit shift to access the sign bits in the upper 16 bits of the affinity field.
+    pub const SIGN_BITS_SHIFT: u32 = 16;
+
+    /// Checks if a specific collider's affinity bit is set.
+    #[inline]
+    pub fn bit(self, i_collider: u32) -> bool {
+        (self.0 & (1 << i_collider)) != 0
+    }
+
+    /// Checks if a specific collider's sign bit is set.
+    #[inline]
+    pub fn sign_bit(self, i_collider: u32) -> bool {
+        ((self.0 >> Self::SIGN_BITS_SHIFT) & (1 << i_collider)) != 0
+    }
+
+    pub fn set_unsigned_bits(&mut  self, other: Self) {
+        self.0 |= (other.0 & Self::AFFINITY_BITS_MASK);
+    }
+
+    pub fn set_bit(&mut self, i_collider: u32, signed: bool) {
+        if signed {
+            self.0 |= 0x00010001u32 << i_collider;
+        } else {
+            self.0 |= 0x00000001u32 << i_collider;
+        }
+    }
+
+    pub fn set_sign_bit(&mut self, i_collider: u32) {
+        self.0 |= 0x00010000u32 << i_collider;
+    }
+
+    pub fn or_sign_bit(&mut self, affinity2: Self, i_collider: u32) {
+        self.0 |= (affinity2.0 & (0x00010000u32 << i_collider));
+    }
+
+    /// Checks if two affinity fields are compatible (same sign for all shared affinities).
+    ///
+    /// Two nodes/particles are compatible if, for every collider they both have affinity to,
+    /// they agree on the sign (i.e., they are on the same side of the collider surface).
+    #[inline]
+    pub fn is_compatible(self, affinity2: Self) -> bool {
+        let affinities_in_common = self.0 & affinity2.0 & Self::AFFINITY_BITS_MASK;
+        let signs1 = (self.0 >> Self::SIGN_BITS_SHIFT) & affinities_in_common;
+        let signs2 = (affinity2.0 >> Self::SIGN_BITS_SHIFT) & affinities_in_common;
+        signs1 == signs2
+    }
 }
 
-/// Checks if a specific collider's sign bit is set.
-#[inline]
-pub fn sign_bit(i_collider: u32, affinity: u32) -> bool {
-    ((affinity >> SIGN_BITS_SHIFT) & (1 << i_collider)) != 0
-}
-
-/// Checks if two affinity fields are compatible (same sign for all shared affinities).
-///
-/// Two nodes/particles are compatible if, for every collider they both have affinity to,
-/// they agree on the sign (i.e., they are on the same side of the collider surface).
-#[inline]
-pub fn affinities_are_compatible(affinity1: u32, affinity2: u32) -> bool {
-    let affinities_in_common = affinity1 & affinity2 & AFFINITY_BITS_MASK;
-    let signs1 = (affinity1 >> SIGN_BITS_SHIFT) & affinities_in_common;
-    let signs2 = (affinity2 >> SIGN_BITS_SHIFT) & affinities_in_common;
-    signs1 == signs2
-}
-
-/*
- * Helper: integer division rounding up.
- */
-#[inline]
-fn div_ceil(x: u32, y: u32) -> u32 {
-    (x + y - 1) / y
+impl BitOrAssign for AffinityBits {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
 }
 
 /*
@@ -664,7 +703,7 @@ pub fn gpu_init_indirect_workgroups(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] n_g2p_p2g_groups: &mut [u32],
 ) {
     let num_active_blocks = grid_data.at(0).num_active_blocks;
-    n_block_groups.write(0, div_ceil(num_active_blocks, GRID_WORKGROUP_SIZE));
+    n_block_groups.write(0, udiv_ceil(num_active_blocks, GRID_WORKGROUP_SIZE));
     n_block_groups.write(1, 1);
     n_block_groups.write(2, 1);
     n_g2p_p2g_groups.write(0, num_active_blocks);
@@ -694,7 +733,7 @@ pub fn gpu_reset(
         let node = nodes.at_mut(idx);
         node.momentum_velocity_mass = VectorPlusOne::ZERO;
         node.momentum_velocity_mass_incompatible = VectorPlusOne::ZERO;
-        node.cdf = NodeCdf::new(0.0, 0, NONE);
+        node.cdf = NodeCdf::NONE;
 
         let ll = nodes_linked_lists.at_mut(idx);
         ll.head = NONE;

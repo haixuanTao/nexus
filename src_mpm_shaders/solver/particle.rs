@@ -1,4 +1,5 @@
 use crate::{Matrix, PaddedMatrix, UVector, Vector};
+use crate::grid::grid::AffinityBits;
 
 /// A particle position in the MPM grid.
 #[derive(Clone, Copy, Default)]
@@ -45,7 +46,7 @@ pub struct Cdf {
     #[cfg(feature = "dim2")]
     pub signed_distance: f32,
     /// Affinity bits for CPIC compatibility checks.
-    pub affinity: u32,
+    pub affinity: AffinityBits,
 }
 
 impl Cdf {
@@ -55,12 +56,12 @@ impl Cdf {
             normal: Vector::ZERO,
             rigid_vel: Vector::ZERO,
             signed_distance: 0.0,
-            affinity: 0,
+            affinity: AffinityBits::default(),
         }
     }
 
     /// Creates a new Cdf with the given values.
-    pub fn new(normal: Vector, rigid_vel: Vector, signed_distance: f32, affinity: u32) -> Self {
+    pub fn new(normal: Vector, rigid_vel: Vector, signed_distance: f32, affinity: AffinityBits) -> Self {
         Self {
             normal,
             rigid_vel,
