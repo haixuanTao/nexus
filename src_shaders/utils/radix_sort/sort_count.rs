@@ -20,7 +20,7 @@ use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
-use crate::atomic_add_u32_workgroup;
+use vortx_shaders::utils::atomic_add_u32_workgroup;
 use crate::MaybeIndexUnchecked;
 
 use super::sorting::{div_ceil, SortUniforms, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};

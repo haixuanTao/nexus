@@ -25,9 +25,8 @@ use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
-use vortx_shaders::utils::step::StepRng;
+use vortx_shaders::utils::{StepRng, atomic_add_u32_workgroup};
 
-use crate::atomic_add_u32_workgroup;
 use crate::MaybeIndexUnchecked;
 
 use super::sorting::{

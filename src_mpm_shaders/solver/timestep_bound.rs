@@ -7,9 +7,10 @@ use crate::grid::grid::Grid;
 use crate::models::default::{DefaultParticleModel, GpuParticleModel};
 use crate::solver::particle::{Kinematics, ParticleProperties};
 use crate::PaddingExt;
-use crate::{atomic_min_u32, sqrt, Matrix, MaybeIndexUnchecked, PaddedMatrix, DIM};
+use crate::{sqrt, Matrix, MaybeIndexUnchecked, PaddedMatrix, DIM};
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
+use vortx_shaders::utils::atomic_min_u32;
 
 /// GPU-side timestep bound result.
 ///

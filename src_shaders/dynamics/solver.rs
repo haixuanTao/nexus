@@ -6,9 +6,9 @@ use khal_derive::spirv_bindgen;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
-use vortx_shaders::utils::step::StepRng;
+use vortx_shaders::utils::{StepRng, atomic_add_u32};
 
-use crate::{atomic_add_u32, AngVector, MaybeIndexUnchecked, Pose, Vector};
+use crate::{AngVector, MaybeIndexUnchecked, Pose, Vector};
 
 use super::body::{integrate_velocity, LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};

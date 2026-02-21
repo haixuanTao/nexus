@@ -20,13 +20,13 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
-use crate::{atomic_add_u32, MaybeIndexUnchecked, Pose, Vector, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Pose, Vector, VectorWithPadding};
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::{control_barrier, workgroup_memory_barrier_with_group_sync};
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
-use vortx_shaders::utils::step::StepRng;
-use crate::utils::div_ceil;
+use vortx_shaders::utils::{StepRng, atomic_add_u32};
+use crate::utils::{div_ceil};
 
 const WORKGROUP_SIZE: u32 = 64;
 const REDUCTION_WORKGROUP_SIZE: u32 = 128;

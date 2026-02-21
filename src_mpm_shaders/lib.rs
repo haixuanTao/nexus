@@ -31,7 +31,7 @@ use glamx::*;
 pub use nexus_shaders::MaybeIndexUnchecked;
 pub use nexus_shaders::{abs, acos, asin, atan2, cos, safe_div, sin, sqrt};
 pub use nexus_shaders::{
-    atomic_add_u32, atomic_add_u32_workgroup, atomic_max_u32, atomic_min_u32, udiv, umod,
+    udiv, umod,
 };
 pub use nexus_shaders::{gcross, gcross_av, gdot, maybe_inv, rotation_to_matrix};
 pub use nexus_shaders::{

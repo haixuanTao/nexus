@@ -17,9 +17,10 @@
 
 use crate::grid::grid::*;
 use crate::solver::particle::{associated_cell_index_in_block_off_by_one, Position};
-use crate::{atomic_add_u32, MaybeIndexUnchecked};
+use crate::{MaybeIndexUnchecked};
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
+use vortx_shaders::utils::atomic_add_u32;
 
 /// Marks all blocks associated with each particle as active.
 ///

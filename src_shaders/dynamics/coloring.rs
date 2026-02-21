@@ -37,9 +37,9 @@ use khal_derive::spirv_bindgen;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
-use vortx_shaders::utils::step::StepRng;
+use vortx_shaders::utils::{StepRng, atomic_add_u32, atomic_max_u32};
 
-use crate::{atomic_add_u32, atomic_max_u32, MaybeIndexUnchecked};
+use crate::{MaybeIndexUnchecked};
 
 use super::constraint::TwoBodyConstraint;
 

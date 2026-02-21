@@ -22,6 +22,7 @@ use khal_derive::spirv_bindgen;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
 use unroll::unroll_for_loops;
+use vortx_shaders::utils::{atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup};
 /*
  * Shared memory layout constants.
  */
@@ -32,12 +33,6 @@ use unroll::unroll_for_loops;
 const NUM_SHARED_CELLS: usize = 10 * 10;
 #[cfg(feature = "dim3")]
 const NUM_SHARED_CELLS: usize = 6 * 6 * 6;
-
-/// K_RANGE: in 2D the k loop is trivial (0..=0), in 3D it's (0..=1).
-#[cfg(feature = "dim2")]
-const K_RANGE: u32 = 0;
-#[cfg(feature = "dim3")]
-const K_RANGE: u32 = 1;
 
 /// A shared-memory node entry: particle ID and global node ID.
 #[derive(Clone, Copy, Default)]
@@ -706,59 +701,7 @@ fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
 }
 
 /*
- * Atomic max for workgroup memory.
- */
-
-/// Atomically computes max(ptr, value) in workgroup-scope memory.
-#[inline]
-fn atomic_max_u32_workgroup(ptr: &mut u32, value: u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_u_max::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value)
-    }
-}
-
-/// Atomically stores 0 in workgroup-scope memory.
-#[inline]
-fn atomic_store_u32_workgroup(ptr: &mut u32, value: u32) {
-    unsafe {
-        spirv_std::arch::atomic_exchange::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value);
-    }
-}
-
-/// Atomically loads from workgroup-scope memory.
-#[inline]
-fn atomic_load_u32_workgroup(ptr: &mut u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_load::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr)
-    }
-}
-
-/// Atomic add for i32 (storage buffer scope) for impulse accumulation.
-#[inline]
-fn atomic_add_i32(ptr: &mut i32, value: i32) {
-    unsafe {
-        spirv_std::arch::atomic_i_add::<
-            i32,
-            { spirv_std::memory::Scope::QueueFamily as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value);
-    }
-}
-
-/*
-Entrupoint specializations (with our without CPIC)
+ Entrypoint specializations (with our without CPIC)
 */
 
 #[spirv_bindgen]

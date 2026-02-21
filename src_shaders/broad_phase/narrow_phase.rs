@@ -19,12 +19,8 @@
 use khal_derive::spirv_bindgen;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
-
-use vortx_shaders::utils::step::StepRng;
-
-use crate::MaybeIndexUnchecked;
-use crate::{atomic_add_u32, Pose, Vector, VectorWithPadding};
-
+use vortx_shaders::utils::{StepRng, atomic_add_u32};
+use crate::{MaybeIndexUnchecked, Pose, Vector, VectorWithPadding};
 use crate::queries::{
     ball_ball, ball_convex, convex_ball, cuboid_cuboid, pfm_pfm, ContactManifold, IndexedManifold,
 };

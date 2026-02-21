@@ -18,6 +18,7 @@ use nexus_shaders::VectorWithPadding;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
 use unroll::unroll_for_loops;
+use vortx_shaders::utils::{atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup};
 /*
  * Constants.
  */
@@ -26,11 +27,6 @@ use unroll::unroll_for_loops;
 const NUM_SHARED_CELLS: usize = 100; // 10 * 10
 #[cfg(feature = "dim3")]
 const NUM_SHARED_CELLS: usize = 216; // 6 * 6 * 6
-
-#[cfg(feature = "dim2")]
-const K_RANGE: u32 = 0;
-#[cfg(feature = "dim3")]
-const K_RANGE: u32 = 1;
 
 /*
  * Shared memory types.
@@ -247,10 +243,10 @@ fn fetch_nodes(
 
     for i_loop in 0..2u32 {
         for j_loop in 0..2u32 {
-            for k_loop in 0..K_RANGE + 1 {
+            for k_loop in 0..2 {
                 #[cfg(feature = "dim2")]
                 let (skip, shared_node_index) = {
-                    if (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
+                    if k_loop != 0 || (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6) {
                         (true, 0usize)
                     } else {
                         let octant = UVec2::new(i_loop as u32, j_loop as u32);
@@ -280,45 +276,43 @@ fn fetch_nodes(
                     }
                 };
 
-                if skip {
-                    continue;
-                }
-
-                #[cfg(feature = "dim2")]
-                let octant_hid = {
-                    let octant = UVec2::new(i_loop as u32, j_loop as u32);
-                    find_block_header_id(
-                        grid_data,
-                        hmap_entries,
-                        &BlockVirtualId {
-                            id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
-                        },
-                    )
-                };
-                #[cfg(feature = "dim3")]
-                let octant_hid = {
-                    let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
-                    find_block_header_id(
-                        grid_data,
-                        hmap_entries,
-                        &BlockVirtualId::new(
-                            base_block_pos_int
-                                + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
-                        ),
-                    )
-                };
-
-                if octant_hid.id != NONE {
-                    let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                if !skip {
                     #[cfg(feature = "dim2")]
-                    let global_node_id = node_id(global_chunk_id, UVec2::new(tid.x, tid.y));
+                    let octant_hid = {
+                        let octant = UVec2::new(i_loop as u32, j_loop as u32);
+                        find_block_header_id(
+                            grid_data,
+                            hmap_entries,
+                            &BlockVirtualId {
+                                id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
+                            },
+                        )
+                    };
                     #[cfg(feature = "dim3")]
-                    let global_node_id = node_id(global_chunk_id, UVec3::new(tid.x, tid.y, tid.z));
-                    let particle_id = rigid_nodes_linked_lists.at(global_node_id.id as usize).head;
-                    shared_nodes[shared_node_index].particle_id = particle_id;
-                    shared_nodes[shared_node_index].global_id = global_node_id.id;
-                } else {
-                    shared_nodes[shared_node_index].particle_id = NONE;
+                    let octant_hid = {
+                        let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
+                        find_block_header_id(
+                            grid_data,
+                            hmap_entries,
+                            &BlockVirtualId::new(
+                                base_block_pos_int
+                                    + IVec3::new(octant.x as i32, octant.y as i32, octant.z as i32),
+                            ),
+                        )
+                    };
+
+                    if octant_hid.id != NONE {
+                        let global_chunk_id = block_header_id_to_physical_id(octant_hid);
+                        #[cfg(feature = "dim2")]
+                        let global_node_id = node_id(global_chunk_id, UVec2::new(tid.x, tid.y));
+                        #[cfg(feature = "dim3")]
+                        let global_node_id = node_id(global_chunk_id, UVec3::new(tid.x, tid.y, tid.z));
+                        let particle_id = rigid_nodes_linked_lists.at(global_node_id.id as usize).head;
+                        shared_nodes[shared_node_index].particle_id = particle_id;
+                        shared_nodes[shared_node_index].global_id = global_node_id.id;
+                    } else {
+                        shared_nodes[shared_node_index].particle_id = NONE;
+                    }
                 }
             }
         }
@@ -337,9 +331,9 @@ fn fetch_next_particle(
 ) {
     for i_loop in 0..2u32 {
         for j_loop in 0..2u32 {
-            for k_loop in 0..K_RANGE + 1 {
+            for k_loop in 0..2u32 {
                 #[cfg(feature = "dim2")]
-                let skip = (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6);
+                let skip = k_loop != 0 || (i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6);
                 #[cfg(feature = "dim3")]
                 let skip = (i_loop == 0 && tid.x < 2)
                     || (j_loop == 0 && tid.y < 2)
@@ -547,41 +541,4 @@ fn flatten_shared_index(x: u32, y: u32, z: u32) -> u32 {
 #[inline]
 fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
     x + y * 6 + z * 6 * 6
-}
-
-/*
- * Workgroup atomic helpers.
- */
-
-#[inline]
-fn atomic_max_u32_workgroup(ptr: &mut u32, value: u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_u_max::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value)
-    }
-}
-
-#[inline]
-fn atomic_store_u32_workgroup(ptr: &mut u32, value: u32) {
-    unsafe {
-        spirv_std::arch::atomic_exchange::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr, value);
-    }
-}
-
-#[inline]
-fn atomic_load_u32_workgroup(ptr: &mut u32) -> u32 {
-    unsafe {
-        spirv_std::arch::atomic_load::<
-            u32,
-            { spirv_std::memory::Scope::Workgroup as u32 },
-            { spirv_std::memory::Semantics::NONE.bits() },
-        >(ptr)
-    }
 }

@@ -8,12 +8,13 @@
 //! and atomic compare-exchange for lock-free insertion.
 
 use core::ops::BitOrAssign;
-use crate::{atomic_add_u32, IVector, MaybeIndexUnchecked, Vector};
+use crate::{IVector, MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
 use nexus_shaders::MAX_FLT;
 use crate::nexus_shaders::utils::udiv_ceil;
+use vortx_shaders::utils::atomic_add_u32;
 
 /*
  * Constants.
