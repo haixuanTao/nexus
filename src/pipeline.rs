@@ -8,9 +8,9 @@ use crate::broad_phase::{GpuNarrowPhase, Lbvh, LbvhState};
 use crate::dynamics::{
     ColoringArgs, GpuColoring, GpuImpulseJointSet, GpuJointSolver, GpuMpropsUpdate, GpuSolver,
     GpuWarmstart, JointSolverArgs, SolverArgs,
-    prefix_sum::{GpuPrefixSum, PrefixSumWorkspace},
     warmstart::WarmstartArgs,
 };
+use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use crate::math::{Pose, Vector};
 use crate::queries::GpuIndexedContact;
 use crate::shaders::VectorWithPadding;

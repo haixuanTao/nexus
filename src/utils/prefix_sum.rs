@@ -11,7 +11,7 @@
 //! Note the special variant used here: a 0 is prepended as the first element, which is useful
 //! for computing array indices and offsets.
 
-use crate::shaders::dynamics::{GpuAddDataGrp, GpuPrefixSumSweep};
+use crate::shaders::utils::prefix_sum::{GpuAddDataGrp, GpuPrefixSumSweep};
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
 use vortx::tensor::Tensor;
@@ -42,7 +42,7 @@ impl GpuPrefixSum {
     /// # Panics
     ///
     /// Panics if `THREADS` is not 256, as the shared memory size is hardcoded in the shader.
-    pub fn dispatch(
+    pub fn launch(
         &self,
         backend: &GpuBackend,
         pass: &mut GpuPass,
@@ -177,7 +177,7 @@ impl PrefixSumWorkspace {
 
     /// Ensures the workspace has sufficient capacity for a given buffer size.
     ///
-    /// Resizes auxiliary buffers if needed. This is called automatically by [`GpuPrefixSum::dispatch`].
+    /// Resizes auxiliary buffers if needed. This is called automatically by [`GpuPrefixSum::launch`].
     ///
     /// # Parameters
     ///

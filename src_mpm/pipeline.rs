@@ -4,7 +4,7 @@
 //! coordinates the execution of all MPM algorithm stages on the GPU.
 
 use crate::grid::grid::{GpuGrid, WgGrid};
-use crate::grid::prefix_sum::{PrefixSumWorkspace, WgPrefixSum};
+use nexus::utils::{PrefixSumWorkspace, GpuPrefixSum};
 use crate::grid::sort::WgSort;
 use crate::solver::{
     BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData,
@@ -40,7 +40,7 @@ use nexus::dynamics::body::{BodyCoupling, RapierBodyCouplingEntry};
 /// * `GpuModel` - Particle material model data layout (must match shader expectations)
 pub struct MpmPipeline<GpuModel: GpuParticleModelData> {
     grid: WgGrid,
-    prefix_sum: WgPrefixSum,
+    prefix_sum: GpuPrefixSum,
     sort: WgSort,
     p2g: WgP2G,
     p2g_cdf: WgP2GCdf,
@@ -297,7 +297,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
     pub fn new(backend: &GpuBackend) -> Result<Self, GpuBackendError> {
         Ok(Self {
             grid: WgGrid::from_backend(backend)?,
-            prefix_sum: WgPrefixSum::from_backend(backend)?,
+            prefix_sum: GpuPrefixSum::from_backend(backend)?,
             sort: WgSort::from_backend(backend)?,
             p2g: WgP2G::from_backend(backend)?,
             p2g_cdf: WgP2GCdf::from_backend(backend)?,

@@ -49,7 +49,6 @@ pub mod body;
 mod coloring;
 mod joint;
 mod mprops_update;
-pub mod prefix_sum;
 mod sim_params;
 mod solver;
 pub mod warmstart;

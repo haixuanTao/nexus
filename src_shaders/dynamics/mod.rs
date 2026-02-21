@@ -20,7 +20,6 @@ mod warmstart;
 // GPU compute shader kernels
 mod coloring;
 mod mprops_update;
-mod prefix_sum;
 mod solver;
 
 pub use body::*;
@@ -42,7 +41,6 @@ pub use sim_params::*;
 // Re-export solver items; update_constraint comes from joint_constraint_builder for joints
 pub use coloring::*;
 pub use mprops_update::*;
-pub use prefix_sum::*;
 pub use solver::*;
 pub use solver_utils::{
     contact_to_constraint, integrate_pose, remove_cfm_and_bias, solve_constraint_gauss_seidel,

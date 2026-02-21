@@ -1,6 +1,5 @@
 //! Grid data structures and GPU kernels for sparse grid management.
 
-use crate::grid::prefix_sum::{PrefixSumWorkspace, WgPrefixSum};
 use crate::grid::sort::WgSort;
 use crate::mpm_shaders::grid::grid::{
     ActiveBlockHeader, Grid, GridHashMapEntry, Node, NodeLinkedList,
@@ -9,6 +8,7 @@ use crate::solver::{GpuParticleModelData, GpuParticles, GpuRigidParticles};
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
 use vortx::tensor::Tensor;
+use nexus::utils::{GpuPrefixSum, PrefixSumWorkspace};
 
 /// GPU kernels for grid initialization and management.
 ///
@@ -49,7 +49,7 @@ impl WgGrid {
         grid: &mut GpuGrid,
         prefix_sum: &mut PrefixSumWorkspace,
         sort_module: &WgSort,
-        prefix_sum_module: &WgPrefixSum,
+        prefix_sum_module: &GpuPrefixSum,
     ) -> Result<(), GpuBackendError> {
         let particles_len = particles.len() as u32;
         let hmap_capacity = grid.cpu_meta.hmap_capacity;

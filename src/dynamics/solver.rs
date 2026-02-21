@@ -13,7 +13,7 @@
 //!   (without bias).
 
 use crate::dynamics::joint::{GpuJointSolver, JointSolverArgs};
-use crate::dynamics::prefix_sum::{GpuPrefixSum, PrefixSumWorkspace};
+use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
@@ -166,7 +166,7 @@ impl GpuSolver {
         )?;
 
         // Prefix sum
-        args.prefix_sum.dispatch(
+        args.prefix_sum.launch(
             backend,
             pass,
             prefix_sum_workspace,
