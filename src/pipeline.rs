@@ -13,7 +13,7 @@ use crate::dynamics::{
 use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use crate::math::{Pose, Vector};
 use crate::queries::GpuIndexedContact;
-use crate::shaders::VectorWithPadding;
+use crate::shaders::PaddedVector;
 use crate::shaders::broad_phase::{LbvhNode, NarrowPhasePfmPair};
 use crate::shaders::dynamics::{
     LocalMassProperties as GpuLocalMassProperties, SimParams as GpuSimParams, TwoBodyConstraint,
@@ -94,7 +94,7 @@ pub struct GpuPhysicsState {
     solver_vels: Tensor<GpuVelocity>,
     solver_vels_out: Tensor<GpuVelocity>,
     solver_vels_inc: Tensor<GpuVelocity>,
-    vertex_buffers: Tensor<VectorWithPadding>,
+    vertex_buffers: Tensor<PaddedVector>,
     index_buffers: Tensor<u32>,
     shapes: Tensor<Shape>,
     num_shapes: Tensor<u32>,

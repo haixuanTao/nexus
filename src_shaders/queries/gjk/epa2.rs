@@ -7,7 +7,7 @@ use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::queries::gjk::gjk::cso_point_from_shapes;
 use crate::queries::gjk::voronoi_simplex2::VoronoiSimplex;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Pose, PaddedVector};
 use glamx::Vec2;
 
 // TODO: find the ideal values.
@@ -194,7 +194,7 @@ impl Epa2 {
         g1: &Shape,
         g2: &Shape,
         simplex: &VoronoiSimplex,
-        vertices: &[VectorWithPadding],
+        vertices: &[PaddedVector],
     ) -> EpaResult {
         let _eps = FLT_EPS;
         let _eps_tol = _eps * 100.0;

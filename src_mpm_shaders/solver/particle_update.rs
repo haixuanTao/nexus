@@ -62,7 +62,7 @@ fn vector_has_nan(v: Vector) -> bool {
 pub fn gpu_particle_update(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     particles_model: &mut [GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_pos: &mut [Position],
@@ -82,7 +82,7 @@ pub fn gpu_particle_update(
 
     let flags = DefaultParticleModel::model_flags(particles_model, particle_id);
     let dt = params.dt;
-    let cell_width = grid_data.at(0).cell_width;
+    let cell_width = grid.cell_width;
     let mut kin = particles_kin.read(particle_id as usize);
     let cdf = particles_cdf.read(particle_id as usize);
     let mut def_grad = particles_def_grad.read(particle_id as usize);

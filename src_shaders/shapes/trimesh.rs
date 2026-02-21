@@ -13,7 +13,7 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::triangle::Triangle;
-use crate::{MaybeIndexUnchecked, Vector, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Vector, PaddedVector};
 
 /// A triangle mesh with BVH acceleration structure.
 #[derive(Clone, Copy, Default)]
@@ -72,7 +72,7 @@ impl TriMesh {
 
     /// Gets the AABB of a BVH node.
     #[inline]
-    pub fn bvh_node_aabb(&self, vertices: &[VectorWithPadding], node_id: u32) -> Aabb {
+    pub fn bvh_node_aabb(&self, vertices: &[PaddedVector], node_id: u32) -> Aabb {
         // Multiply by 2 since there are two values per AABB (min/max).
         let vid = (self.bvh_vtx_root_id + node_id * 2) as usize;
         Aabb::new(*vertices.read(vid), *vertices.read(vid + 1))
@@ -102,7 +102,7 @@ impl TriMesh {
 
     /// Gets a triangle from the mesh by its index.
     #[inline]
-    pub fn triangle(&self, idx: &[u32], vtx: &[VectorWithPadding], tri_id: u32) -> Triangle {
+    pub fn triangle(&self, idx: &[u32], vtx: &[PaddedVector], tri_id: u32) -> Triangle {
         let vids = self.triangle_vids(idx, tri_id);
         let a = vtx.read(vids.x as usize).0;
         let b = vtx.read(vids.y as usize).0;
@@ -118,7 +118,7 @@ impl TriMesh {
     pub fn pseudo_normal(
         &self,
         idx: &[u32],
-        vtx: &[VectorWithPadding],
+        vtx: &[PaddedVector],
         tri_id: u32,
         feat_type: u32,
         feat_id: u32,
@@ -165,7 +165,7 @@ impl TriMesh {
     pub fn project_local_point(
         &self,
         idx: &[u32],
-        vtx: &[VectorWithPadding],
+        vtx: &[PaddedVector],
         pt: Vector,
         max_dist: f32,
     ) -> (ProjectionResult, bool) {

@@ -5,7 +5,7 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::queries::PolygonalFeature;
-use crate::{MaybeIndexUnchecked, Vector, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Vector, PaddedVector};
 
 /// A convex polyhedron defined by vertex and face indices.
 #[derive(Clone, Copy, Default)]
@@ -36,7 +36,7 @@ impl ConvexPolyhedron {
     // TODO: cache the AABB (for example as the first two entries of the shape's index buffer)
     //       so it doesn't get recomputed at each frame?
     /// Computes the AABB of a convex polyhedron.
-    pub fn aabb(&self, vertices: &[VectorWithPadding]) -> Aabb {
+    pub fn aabb(&self, vertices: &[PaddedVector]) -> Aabb {
         let mut mins = *vertices.read(self.first_vtx_id as usize);
         let mut maxs = *vertices.read(self.first_vtx_id as usize);
 
@@ -49,7 +49,7 @@ impl ConvexPolyhedron {
     }
 
     /// Computes the local support point of a convex polyhedron.
-    pub fn local_support_point(&self, vertices: &[VectorWithPadding], dir: Vector) -> Vector {
+    pub fn local_support_point(&self, vertices: &[PaddedVector], dir: Vector) -> Vector {
         let mut best_dot = -1.0e20f32;
         let mut best = Vector::default();
 
@@ -66,7 +66,7 @@ impl ConvexPolyhedron {
 
     /// Computes the support face of a 2D convex polygon.
     #[cfg(feature = "dim2")]
-    pub fn support_face(&self, vertices: &[VectorWithPadding], dir: Vector) -> PolygonalFeature {
+    pub fn support_face(&self, vertices: &[PaddedVector], dir: Vector) -> PolygonalFeature {
         use glamx::Vec2;
 
         let mut result = PolygonalFeature::default();
@@ -106,7 +106,7 @@ impl ConvexPolyhedron {
     #[cfg(feature = "dim3")]
     pub fn support_face(
         &self,
-        vertices: &[VectorWithPadding],
+        vertices: &[PaddedVector],
         indices: &[u32],
         dir: Vector,
     ) -> PolygonalFeature {

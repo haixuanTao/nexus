@@ -100,7 +100,7 @@ pub fn int_impulse_to_float(imp: &IntegerImpulse) -> Impulse {
 pub fn gpu_rigid_impulses_update(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
@@ -126,7 +126,7 @@ pub fn gpu_rigid_impulses_update(
         // Cap the velocities to not move more than a fraction of a cell-width in a given substep.
         let linvel_norm = new_vel.linear.length();
         let angvel_norm = ang_length(new_vel.angular);
-        let lin_limit = 0.1 * grid_data.at(0).cell_width / sim_params.dt;
+        let lin_limit = 0.1 * grid.cell_width / sim_params.dt;
         let ang_limit = 1.0; // TODO: what's a good angular limit?
 
         let impulse_linear_len = inc_impulse.linear.length();

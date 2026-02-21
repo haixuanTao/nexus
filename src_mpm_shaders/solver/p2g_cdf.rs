@@ -14,7 +14,7 @@ use crate::solver::particle::{Position, RigidParticleIndices};
 use crate::{abs, MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use nexus_shaders::VectorWithPadding;
+use nexus_shaders::PaddedVector;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
 use unroll::unroll_for_loops;
@@ -164,7 +164,7 @@ fn p2g_cdf_step(
 #[inline]
 #[unroll_for_loops]
 fn fetch_max_linked_lists_length(
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     rigid_nodes_linked_lists: &[NodeLinkedList],
     tid: spirv_std::glam::UVec3,
@@ -182,8 +182,7 @@ fn fetch_max_linked_lists_length(
             {
                 if !((i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6)) {
                     let octant = UVec2::new(i_loop as u32, j_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
@@ -205,8 +204,7 @@ fn fetch_max_linked_lists_length(
                     || (k_loop == 0 && tid.z < 2))
                 {
                     let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId::new(
                             base_block_pos_int
@@ -229,7 +227,7 @@ fn fetch_max_linked_lists_length(
 #[inline]
 #[unroll_for_loops]
 fn fetch_nodes(
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     rigid_nodes_linked_lists: &[NodeLinkedList],
     tid: spirv_std::glam::UVec3,
@@ -280,8 +278,7 @@ fn fetch_nodes(
                     #[cfg(feature = "dim2")]
                     let octant_hid = {
                         let octant = UVec2::new(i_loop as u32, j_loop as u32);
-                        find_block_header_id(
-                            grid_data,
+                        grid.find_block_header_id(
                             hmap_entries,
                             &BlockVirtualId {
                                 id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
@@ -291,8 +288,7 @@ fn fetch_nodes(
                     #[cfg(feature = "dim3")]
                     let octant_hid = {
                         let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
-                        find_block_header_id(
-                            grid_data,
+                        grid.find_block_header_id(
                             hmap_entries,
                             &BlockVirtualId::new(
                                 base_block_pos_int
@@ -322,7 +318,7 @@ fn fetch_nodes(
 #[inline]
 fn fetch_next_particle(
     particle_node_linked_lists: &[u32],
-    collider_vertices: &[VectorWithPadding],
+    collider_vertices: &[PaddedVector],
     rigid_particle_indices: &[RigidParticleIndices],
     tid: spirv_std::glam::UVec3,
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
@@ -408,14 +404,14 @@ pub fn gpu_p2g_cdf(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
     rigid_nodes_linked_lists: &[NodeLinkedList],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
-    collider_vertices: &[VectorWithPadding],
+    collider_vertices: &[PaddedVector],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     rigid_particle_indices: &[RigidParticleIndices],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
@@ -437,7 +433,7 @@ pub fn gpu_p2g_cdf(
 
     workgroup_memory_barrier_with_group_sync();
     fetch_max_linked_lists_length(
-        grid_data,
+        grid,
         hmap_entries,
         rigid_nodes_linked_lists,
         tid,
@@ -450,7 +446,7 @@ pub fn gpu_p2g_cdf(
 
     // Block -> shared memory transfer.
     fetch_nodes(
-        grid_data,
+        grid,
         hmap_entries,
         rigid_nodes_linked_lists,
         tid,
@@ -465,7 +461,7 @@ pub fn gpu_p2g_cdf(
     let cell_pos = Vec2::new(
         (vid.id.x * 8 + tid.x as i32) as f32,
         (vid.id.y * 8 + tid.y as i32) as f32,
-    ) * grid_data.at(0).cell_width;
+    ) * grid.cell_width;
     #[cfg(feature = "dim3")]
     let packed_cell_index_in_block = flatten_shared_index(tid.x + 4, tid.y + 4, tid.z + 4);
     #[cfg(feature = "dim3")]
@@ -473,7 +469,7 @@ pub fn gpu_p2g_cdf(
         (vid.id.x * 4 + tid.x as i32) as f32,
         (vid.id.y * 4 + tid.y as i32) as f32,
         (vid.id.z * 4 + tid.z as i32) as f32,
-    ) * grid_data.at(0).cell_width;
+    ) * grid.cell_width;
 
     let global_id = shared_nodes[packed_cell_index_in_block as usize].global_id;
     let mut node_cdf = nodes.at(global_id as usize).cdf;
@@ -495,7 +491,7 @@ pub fn gpu_p2g_cdf(
 
         let partial_result = p2g_cdf_step(
             packed_cell_index_in_block,
-            grid_data.at(0).cell_width,
+            grid.cell_width,
             cell_pos,
             shared_primitives,
             shared_collider_ids,

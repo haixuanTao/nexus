@@ -2,7 +2,7 @@
 
 use crate::cast_tensor;
 use crate::cast_tensor_mut;
-use crate::mpm_shaders::VectorWithPadding;
+use crate::mpm_shaders::PaddedVector;
 use crate::mpm_shaders::solver::rigid_particle_update::{
     GpuTransformSamplePoints, GpuTransformShapePoints,
 };
@@ -51,8 +51,8 @@ impl WgRigidParticleUpdate {
             [sample_len, 1, 1],
             &rigid_particles.sample_ids,
             &bodies.poses,
-            cast_tensor::<_, VectorWithPadding>(&rigid_particles.local_sample_points),
-            cast_tensor_mut::<_, VectorWithPadding>(&mut rigid_particles.sample_points),
+            cast_tensor::<_, PaddedVector>(&rigid_particles.local_sample_points),
+            cast_tensor_mut::<_, PaddedVector>(&mut rigid_particles.sample_points),
         )?;
 
         // TODO: this is now incorrect since the vertex buffer also contains the BVH.

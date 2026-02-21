@@ -37,8 +37,6 @@ impl GpuTimestepBounds {
     }
 }
 
-pub const WORKGROUP_SIZE: u32 = 64;
-
 /// Resets the timestep bound to the maximum possible value.
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
@@ -60,7 +58,7 @@ pub fn gpu_reset_timestep_bound(
 #[spirv(compute(threads(64)))]
 pub fn gpu_estimate_timestep_bound(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     particles_model: &[GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
@@ -84,7 +82,7 @@ pub fn gpu_estimate_timestep_bound(
 
     let def_grad = particles_def_grad.read(particle_id as usize);
     let props = particles_props.read(particle_id as usize);
-    let cell_width = grid_data.at(0).cell_width;
+    let cell_width = grid.cell_width;
 
     // Model-specific restrictions (usually based on sound speed, section 4.1).
     let density0 = kin.mass / props.init_volume;
@@ -118,25 +116,8 @@ pub fn gpu_estimate_timestep_bound(
 /// Computes the squared Frobenius norm of a matrix (sum of squares of all elements).
 #[inline]
 fn frobenius_norm_squared(m: Matrix) -> f32 {
-    let mut result = 0.0;
     #[cfg(feature = "dim2")]
-    {
-        result += m.x_axis.x * m.x_axis.x;
-        result += m.x_axis.y * m.x_axis.y;
-        result += m.y_axis.x * m.y_axis.x;
-        result += m.y_axis.y * m.y_axis.y;
-    }
+    return m.x_axis.length_squared() + m.y_axis.length_squared();
     #[cfg(feature = "dim3")]
-    {
-        result += m.x_axis.x * m.x_axis.x;
-        result += m.x_axis.y * m.x_axis.y;
-        result += m.x_axis.z * m.x_axis.z;
-        result += m.y_axis.x * m.y_axis.x;
-        result += m.y_axis.y * m.y_axis.y;
-        result += m.y_axis.z * m.y_axis.z;
-        result += m.z_axis.x * m.z_axis.x;
-        result += m.z_axis.y * m.z_axis.y;
-        result += m.z_axis.z * m.z_axis.z;
-    }
-    result
+    return m.x_axis.length_squared() + m.y_axis.length_squared() + m.z_axis.length_squared();
 }

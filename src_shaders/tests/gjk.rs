@@ -5,7 +5,7 @@ use crate::queries::gjk::gjk::{
 };
 use crate::queries::gjk::voronoi_simplex;
 use crate::shapes::shape::Shape;
-use crate::{Pose, Vector, VectorWithPadding};
+use crate::{Pose, Vector, PaddedVector};
 
 #[test]
 fn test_separated_cuboids() {

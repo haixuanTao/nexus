@@ -22,13 +22,13 @@ pub fn gpu_grid_update(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes: &mut [Node],
 ) {
     let bid = block_id.x;
     let vid = active_blocks.at(bid as usize).virtual_id;
-    let cell_width = grid_data.at(0).cell_width;
+    let cell_width = grid.cell_width;
 
     let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
 

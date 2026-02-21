@@ -25,7 +25,7 @@ use crate::shapes::{Ball, Cuboid, Shape};
 #[cfg(feature = "dim3")]
 use crate::{MaybeIndexUnchecked, Pad, Pose};
 #[cfg(feature = "dim2")]
-use crate::{MaybeIndexUnchecked, Pose, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Pose, PaddedVector};
 use glamx::UVec2;
 
 use super::contact_pfm_pfm;
@@ -105,7 +105,7 @@ pub fn pfm_pfm(
     shape2: &Shape,
     thickness2: f32,
     prediction: f32,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
 ) -> ContactManifold {
     contact_pfm_pfm::contact_manifold_pfm_pfm(
         pose12, shape1, thickness1, shape2, thickness2, prediction, vertices,

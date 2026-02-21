@@ -20,16 +20,13 @@ use vortx_shaders::utils::atomic_add_u32;
  * Constants.
  */
 
-/// Workgroup size for P2G and G2P transfers.
-pub const G2P_P2G_WORKGROUP_SIZE: u32 = 64;
-
 /// Number of cells (nodes) per block.
 /// 8 * 8 = 64 in 2D, 4 * 4 * 4 = 64 in 3D.
-pub const NUM_CELL_PER_BLOCK: u32 = 64;
+const NUM_CELL_PER_BLOCK: u32 = 64;
 
 /// Workgroup size for grid-level operations.
 /// Must match `NUM_CELL_PER_BLOCK` because some kernels (like reset) rely on it.
-pub const GRID_WORKGROUP_SIZE: u32 = NUM_CELL_PER_BLOCK;
+const GRID_WORKGROUP_SIZE: u32 = NUM_CELL_PER_BLOCK;
 
 /// Sentinel value indicating "no entry" / "empty slot" in the hashmap and linked lists.
 pub const NONE: u32 = 0xFFFFFFFF;
@@ -43,7 +40,7 @@ pub const NUM_ASSOC_BLOCKS: usize = 4;
 pub const NUM_ASSOC_BLOCKS: usize = 8;
 
 /// Offset applied when computing cell indices within a block.
-pub const OFF_BY_ONE: i32 = 1;
+const OFF_BY_ONE: i32 = 1;
 
 /*
  * Index newtypes.
@@ -69,6 +66,24 @@ impl BlockVirtualId {
             #[cfg(feature = "dim3")]
             padding: 0,
         }
+    }
+
+    /// Packs a virtual block ID into a single u32 for use as a hashmap key.
+    ///
+    /// In 2D: 16 bits for X, 16 bits for Y.
+    /// In 3D: 11 bits for X, 10 bits for Y, 11 bits for Z (Y gets fewer bits
+    ///         assuming Y-up, since the vertical extent is typically smaller).
+    #[cfg(feature = "dim2")]
+    fn pack(&self) -> u32 {
+        ((self.id.x + 0x00007FFF) as u32 & 0x0000FFFF)
+            | (((self.id.y + 0x00007FFF) as u32 & 0x0000FFFF) << 16)
+    }
+
+    #[cfg(feature = "dim3")]
+    fn pack(&self) -> u32 {
+        ((self.id.x + 0x000003FF) as u32 & 0x000007FF)
+            | (((self.id.y + 0x000001FF) as u32 & 0x000003FF) << 11)
+            | (((self.id.z + 0x000003FF) as u32 & 0x000007FF) << 21)
     }
 }
 
@@ -249,32 +264,11 @@ pub struct Node {
  * Hashmap functions.
  */
 
-/// Packs a virtual block ID into a single u32 for use as a hashmap key.
-///
-/// In 2D: 16 bits for X, 16 bits for Y.
-/// In 3D: 11 bits for X, 10 bits for Y, 11 bits for Z (Y gets fewer bits
-///         assuming Y-up, since the vertical extent is typically smaller).
-#[cfg(feature = "dim2")]
-#[inline]
-pub fn pack_key(key: &BlockVirtualId) -> u32 {
-    ((key.id.x + 0x00007FFF) as u32 & 0x0000FFFF)
-        | (((key.id.y + 0x00007FFF) as u32 & 0x0000FFFF) << 16)
-}
-
-/// Packs a virtual block ID into a single u32 for use as a hashmap key.
-#[cfg(feature = "dim3")]
-#[inline]
-pub fn pack_key(key: &BlockVirtualId) -> u32 {
-    ((key.id.x + 0x000003FF) as u32 & 0x000007FF)
-        | (((key.id.y + 0x000001FF) as u32 & 0x000003FF) << 11)
-        | (((key.id.z + 0x000003FF) as u32 & 0x000007FF) << 21)
-}
-
 /// Computes a Murmur3-based hash of a packed key.
 ///
 /// The hash is used to determine the initial probe slot in the hashmap.
 #[inline]
-pub fn hash(packed_key: u32) -> u32 {
+fn hash(packed_key: u32) -> u32 {
     let mut key = packed_key;
     key = key.wrapping_mul(0xCC9E2D51);
     key = (key << 15) | (key >> 17);
@@ -282,154 +276,157 @@ pub fn hash(packed_key: u32) -> u32 {
     key
 }
 
-/// Attempts to insert a block into the hashmap using atomic compare-exchange.
-///
-/// Uses open addressing with linear probing. Returns the slot index if a new
-/// entry was created, or `NONE` if the key already exists or the hashmap is full.
-///
-/// This function handles weak CAS semantics (as found on WebGPU/WGSL targets
-/// where SPIR-V's `OpAtomicCompareExchange` is translated to
-/// `atomicCompareExchangeWeak`):
-/// - After a CAS that returns `NONE`, it verifies the write via `atomic_load`
-///   (which is always strong). On spurious failure (load still shows `NONE`),
-///   the same slot is retried on the next loop iteration.
-/// - Uses `atomic_exchange` on the entry's `ownership` field to resolve races
-///   where multiple threads with the same key all see `NONE` from CAS. Only
-///   the thread that exchanges `0 → 1` is considered the inserter.
-///
-/// The hashmap implementation is inspired by:
-/// <https://nosferalatu.com/SimpleGPUHashTable.html>
-#[inline]
-pub fn insertion_index(
-    hmap_entries: &mut [GridHashMapEntry],
-    capacity: u32,
-    key: &BlockVirtualId,
-) -> u32 {
-    let packed_key = pack_key(key);
-    let mut slot = hash(packed_key) & (capacity - 1);
+// TODO: refactor the hash-map code into something that doesn’t depends on the grid types?
+impl Grid {
+    /// Attempts to insert a block into the hashmap using atomic compare-exchange.
+    ///
+    /// Uses open addressing with linear probing. Returns the slot index if a new
+    /// entry was created, or `NONE` if the key already exists or the hashmap is full.
+    ///
+    /// This function handles weak CAS semantics (as found on WebGPU/WGSL targets
+    /// where SPIR-V's `OpAtomicCompareExchange` is translated to
+    /// `atomicCompareExchangeWeak`):
+    /// - After a CAS that returns `NONE`, it verifies the write via `atomic_load`
+    ///   (which is always strong). On spurious failure (load still shows `NONE`),
+    ///   the same slot is retried on the next loop iteration.
+    /// - Uses `atomic_exchange` on the entry's `ownership` field to resolve races
+    ///   where multiple threads with the same key all see `NONE` from CAS. Only
+    ///   the thread that exchanges `0 → 1` is considered the inserter.
+    ///
+    /// The hashmap implementation is inspired by:
+    /// <https://nosferalatu.com/SimpleGPUHashTable.html>
+    #[inline]
+    pub fn insertion_index(
+        &self,
+        hmap_entries: &mut [GridHashMapEntry],
+        key: &BlockVirtualId,
+    ) -> u32 {
+        let packed_key = key.pack();
+        let mut slot = hash(packed_key) & (self.hmap_capacity - 1);
 
-    // NOTE: if there is no more room in the hashmap to store the data, we just do nothing.
-    // It is up to the user to detect the high occupancy, resize the hashmap, and re-run
-    // the failed insertion.
-    for _ in 0..capacity {
-        let old_value = unsafe {
-            spirv_std::arch::atomic_compare_exchange::<
-                u32,
-                { spirv_std::memory::Scope::QueueFamily as u32 },
-                { spirv_std::memory::Semantics::NONE.bits() },
-                { spirv_std::memory::Semantics::NONE.bits() },
-            >(
-                &mut hmap_entries.at_mut(slot as usize).state,
-                packed_key,
-                NONE,
-            )
-        };
-
-        if old_value == packed_key {
-            // The entry already exists.
-            return NONE;
-        }
-
-        if old_value != NONE {
-            // Slot occupied by a different key. Probe next.
-            slot = (slot + 1) & (capacity - 1);
-            continue;
-        }
-
-        // CAS returned NONE. Either we wrote successfully, or it was a spurious
-        // failure (weak CAS on WGSL/Metal). Verify with atomic_load (which is always strong).
-        let current = unsafe {
-            spirv_std::arch::atomic_load::<
-                u32,
-                { spirv_std::memory::Scope::QueueFamily as u32 },
-                { spirv_std::memory::Semantics::NONE.bits() },
-            >(&hmap_entries.at(slot as usize).state)
-        };
-
-        if current == packed_key {
-            // Slot contains our key (we wrote it, or a same-key thread did).
-            // Use atomic_exchange on ownership to determine the unique owner.
-            // atomic_exchange is always strong (no weak variant in WGSL).
-            hmap_entries.at_mut(slot as usize).key = *key;
-            let prev = unsafe {
-                spirv_std::arch::atomic_exchange::<
+        // NOTE: if there is no more room in the hashmap to store the data, we just do nothing.
+        // It is up to the user to detect the high occupancy, resize the hashmap, and re-run
+        // the failed insertion.
+        for _ in 0..self.hmap_capacity {
+            let old_value = unsafe {
+                spirv_std::arch::atomic_compare_exchange::<
                     u32,
                     { spirv_std::memory::Scope::QueueFamily as u32 },
                     { spirv_std::memory::Semantics::NONE.bits() },
-                >(&mut hmap_entries.at_mut(slot as usize).ownership, 1)
+                    { spirv_std::memory::Semantics::NONE.bits() },
+                >(
+                    &mut hmap_entries.at_mut(slot as usize).state,
+                    packed_key,
+                    NONE,
+                )
             };
-            if prev == 0 {
-                return slot; // We are the owner (new insertion).
+
+            if old_value == packed_key {
+                // The entry already exists.
+                return NONE;
             }
-            return NONE; // Another thread owns this slot.
+
+            if old_value != NONE {
+                // Slot occupied by a different key. Probe next.
+                slot = (slot + 1) & (self.hmap_capacity - 1);
+                continue;
+            }
+
+            // CAS returned NONE. Either we wrote successfully, or it was a spurious
+            // failure (weak CAS on WGSL/Metal). Verify with atomic_load (which is always strong).
+            let current = unsafe {
+                spirv_std::arch::atomic_load::<
+                    u32,
+                    { spirv_std::memory::Scope::QueueFamily as u32 },
+                    { spirv_std::memory::Semantics::NONE.bits() },
+                >(&hmap_entries.at(slot as usize).state)
+            };
+
+            if current == packed_key {
+                // Slot contains our key (we wrote it, or a same-key thread did).
+                // Use atomic_exchange on ownership to determine the unique owner.
+                // atomic_exchange is always strong (no weak variant in WGSL).
+                hmap_entries.at_mut(slot as usize).key = *key;
+                let prev = unsafe {
+                    spirv_std::arch::atomic_exchange::<
+                        u32,
+                        { spirv_std::memory::Scope::QueueFamily as u32 },
+                        { spirv_std::memory::Semantics::NONE.bits() },
+                    >(&mut hmap_entries.at_mut(slot as usize).ownership, 1)
+                };
+                if prev == 0 {
+                    return slot; // We are the owner (new insertion).
+                }
+                return NONE; // Another thread owns this slot.
+            }
+
+            if current != NONE {
+                // A different key was written between our CAS and load. Probe next.
+                slot = (slot + 1) & (self.hmap_capacity - 1);
+                continue;
+            }
+
+            // current == NONE: spurious CAS failure. Retry the same slot on the
+            // next iteration (slot is not advanced). This wastes one iteration of
+            // the capacity-bounded loop but spurious failures are extremely rare.
         }
 
-        if current != NONE {
-            // A different key was written between our CAS and load. Probe next.
+        NONE
+    }
+
+    /// Looks up a block's header ID in the hashmap.
+    ///
+    /// Returns the `BlockHeaderId` for the given virtual block coordinate,
+    /// or a `BlockHeaderId` with `id == NONE` if the block is not active.
+    #[inline]
+    pub fn find_block_header_id(
+        &self,
+        hmap_entries: &[GridHashMapEntry],
+        key: &BlockVirtualId,
+    ) -> BlockHeaderId {
+        let packed_key = key.pack();
+        let capacity = self.hmap_capacity;
+        let mut slot = hash(packed_key) & (capacity - 1);
+
+        for _ in 0..capacity {
+            let state = hmap_entries.at(slot as usize).state;
+            if state == packed_key {
+                return hmap_entries.at(slot as usize).value;
+            } else if state == NONE {
+                break;
+            }
+
             slot = (slot + 1) & (capacity - 1);
-            continue;
         }
 
-        // current == NONE: spurious CAS failure. Retry the same slot on the
-        // next iteration (slot is not advanced). This wastes one iteration of
-        // the capacity-bounded loop but spurious failures are extremely rare.
+        BlockHeaderId { id: NONE }
     }
 
-    NONE
-}
+    /// Marks a block as active by inserting it into the hashmap and allocating a header.
+    ///
+    /// If the block is successfully inserted (i.e., it was not already active),
+    /// a new `ActiveBlockHeader` entry is created and the hashmap entry is linked
+    /// to it via an atomically-assigned header ID.
+    #[inline]
+    pub fn mark_block_as_active(
+        &mut self,
+        hmap_entries: &mut [GridHashMapEntry],
+        active_blocks: &mut [ActiveBlockHeader],
+        block: &BlockVirtualId,
+    ) {
+        let slot = self.insertion_index(hmap_entries, block);
 
-/// Looks up a block's header ID in the hashmap.
-///
-/// Returns the `BlockHeaderId` for the given virtual block coordinate,
-/// or a `BlockHeaderId` with `id == NONE` if the block is not active.
-#[inline]
-pub fn find_block_header_id(
-    grid: &[Grid],
-    hmap_entries: &[GridHashMapEntry],
-    key: &BlockVirtualId,
-) -> BlockHeaderId {
-    let packed_key = pack_key(key);
-    let capacity = grid.at(0).hmap_capacity;
-    let mut slot = hash(packed_key) & (capacity - 1);
-
-    for _ in 0..capacity {
-        let state = hmap_entries.at(slot as usize).state;
-        if state == packed_key {
-            return hmap_entries.at(slot as usize).value;
-        } else if state == NONE {
-            break;
+        if slot != NONE {
+            let block_header_id = atomic_add_u32(&mut self.num_active_blocks, 1);
+            active_blocks.at_mut(block_header_id as usize).virtual_id = *block;
+            active_blocks
+                .at_mut(block_header_id as usize)
+                .first_particle = 0;
+            active_blocks.at_mut(block_header_id as usize).num_particles = 0;
+            hmap_entries.at_mut(slot as usize).value = BlockHeaderId {
+                id: block_header_id,
+            };
         }
-
-        slot = (slot + 1) & (capacity - 1);
-    }
-
-    BlockHeaderId { id: NONE }
-}
-
-/// Marks a block as active by inserting it into the hashmap and allocating a header.
-///
-/// If the block is successfully inserted (i.e., it was not already active),
-/// a new `ActiveBlockHeader` entry is created and the hashmap entry is linked
-/// to it via an atomically-assigned header ID.
-#[inline]
-pub fn mark_block_as_active(
-    grid: &mut [Grid],
-    hmap_entries: &mut [GridHashMapEntry],
-    active_blocks: &mut [ActiveBlockHeader],
-    block: &BlockVirtualId,
-) {
-    let slot = insertion_index(hmap_entries, grid.at(0).hmap_capacity, block);
-
-    if slot != NONE {
-        let block_header_id = atomic_add_u32(&mut grid.at_mut(0).num_active_blocks, 1);
-        active_blocks.at_mut(block_header_id as usize).virtual_id = *block;
-        active_blocks
-            .at_mut(block_header_id as usize)
-            .first_particle = 0;
-        active_blocks.at_mut(block_header_id as usize).num_particles = 0;
-        hmap_entries.at_mut(slot as usize).value = BlockHeaderId {
-            id: block_header_id,
-        };
     }
 }
 
@@ -699,11 +696,11 @@ pub fn gpu_reset_hmap(
 #[spirv(compute(threads(1)))]
 pub fn gpu_init_indirect_workgroups(
     #[spirv(global_invocation_id)] _invocation_id: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] n_block_groups: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] n_g2p_p2g_groups: &mut [u32],
 ) {
-    let num_active_blocks = grid_data.at(0).num_active_blocks;
+    let num_active_blocks = grid.num_active_blocks;
     n_block_groups.write(0, udiv_ceil(num_active_blocks, GRID_WORKGROUP_SIZE));
     n_block_groups.write(1, 1);
     n_block_groups.write(2, 1);
@@ -720,7 +717,7 @@ pub fn gpu_init_indirect_workgroups(
 #[spirv(compute(threads(64)))]
 pub fn gpu_reset(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] nodes: &mut [Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     nodes_linked_lists: &mut [NodeLinkedList],
@@ -728,7 +725,7 @@ pub fn gpu_reset(
     rigid_nodes_linked_lists: &mut [NodeLinkedList],
 ) {
     let i = invocation_id.x;
-    let num_nodes = grid_data.at(0).num_active_blocks * NUM_CELL_PER_BLOCK;
+    let num_nodes = grid.num_active_blocks * NUM_CELL_PER_BLOCK;
     if i < num_nodes {
         let idx = i as usize;
         let node = nodes.at_mut(idx);

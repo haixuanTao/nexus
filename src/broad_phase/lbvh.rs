@@ -4,7 +4,7 @@
 //! providing O(n log n) collision detection suitable for large dynamic scenes.
 
 use crate::math::Pose;
-use crate::shaders::VectorWithPadding;
+use crate::shaders::PaddedVector;
 use crate::shaders::bounding_volumes::Aabb;
 use crate::shaders::broad_phase::{
     GpuLbvhBuild, GpuLbvhComputeDomain, GpuLbvhComputeMorton, GpuLbvhFindCollisionPairs,
@@ -148,7 +148,7 @@ impl Lbvh {
         state: &mut LbvhState,
         colliders_len: u32,
         poses: &Tensor<Pose>,
-        vertex_buffers: &Tensor<VectorWithPadding>,
+        vertex_buffers: &Tensor<PaddedVector>,
         shapes: &Tensor<Shape>,
         num_shapes: &Tensor<u32>,
     ) -> Result<(), GpuBackendError> {

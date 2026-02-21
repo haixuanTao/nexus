@@ -20,7 +20,7 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, Vector, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
 use khal_derive::spirv_bindgen;
 use spirv_std::arch::{control_barrier, workgroup_memory_barrier_with_group_sync};
 use spirv_std::glam::UVec3;
@@ -278,7 +278,7 @@ pub fn gpu_lbvh_refit_leaves(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sorted_colliders: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] tree: &mut [LbvhNode],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] num_colliders: &u32,
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[VectorWithPadding],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
     //            workgroup.
@@ -387,7 +387,7 @@ pub fn gpu_lbvh_refit(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sorted_colliders: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] tree: &mut [LbvhNode],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] num_colliders: &u32,
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[VectorWithPadding],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
     //            workgroup.

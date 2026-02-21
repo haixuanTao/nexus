@@ -83,7 +83,7 @@ fn shape_has_solid_interior(_i_collider: u32) -> bool {
 #[inline]
 #[unroll_for_loops]
 fn global_shared_memory_transfers(
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes: &[Node],
     tid: spirv_std::glam::UVec3,
@@ -98,8 +98,7 @@ fn global_shared_memory_transfers(
             for j_loop in 0..2 {
                 if !((i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1)) {
                     let octant = UVec2::new(i_loop as u32, j_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
@@ -131,8 +130,7 @@ fn global_shared_memory_transfers(
                         || (k_loop == 1 && tid.z > 1))
                     {
                         let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
-                        let octant_hid = find_block_header_id(
-                            grid_data,
+                        let octant_hid = grid.find_block_header_id(
                             hmap_entries,
                             &BlockVirtualId::new(
                                 base_block_pos_int
@@ -367,7 +365,7 @@ pub fn gpu_g2p_cdf(
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
@@ -382,7 +380,7 @@ pub fn gpu_g2p_cdf(
     let vid = BlockVirtualId::new(vid_);
 
     // Block -> shared memory transfer.
-    global_shared_memory_transfers(grid_data, hmap_entries, nodes, tid, vid, shared_nodes);
+    global_shared_memory_transfers(grid, hmap_entries, nodes, tid, vid, shared_nodes);
 
     // Sync after shared memory initialization.
     workgroup_memory_barrier_with_group_sync();
@@ -403,7 +401,7 @@ pub fn gpu_g2p_cdf(
             particles_pos,
             particles_cdf,
             particle_id,
-            grid_data.at(0).cell_width,
+            grid.cell_width,
             params.dt,
             shared_nodes,
         );

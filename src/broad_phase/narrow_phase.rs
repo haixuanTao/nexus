@@ -12,7 +12,7 @@
 
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
-use crate::shaders::VectorWithPadding;
+use crate::shaders::PaddedVector;
 use crate::shaders::broad_phase::{
     GpuInitPfmPfmDispatch, GpuNarrowPhaseInitContactsDispatch, GpuNarrowPhasePfmPfm,
     GpuNarrowPhaseShapeShape, GpuResetNarrowPhase, NarrowPhasePfmPair,
@@ -67,7 +67,7 @@ impl GpuNarrowPhase {
         _num_colliders: u32,
         poses: &Tensor<Pose>,
         shapes: &Tensor<Shape>,
-        vertices: &Tensor<VectorWithPadding>,
+        vertices: &Tensor<PaddedVector>,
         indices: &Tensor<u32>,
         collision_pairs: &Tensor<[u32; 2]>,
         collision_pairs_len: &Tensor<u32>,

@@ -35,7 +35,7 @@ pub use nexus_shaders::{
 };
 pub use nexus_shaders::{gcross, gcross_av, gdot, maybe_inv, rotation_to_matrix};
 pub use nexus_shaders::{
-    AngVector, Pad, Pose, RotMatrix, Rotation, Vector, VectorWithPadding, DIM,
+    AngVector, Pad, Pose, RotMatrix, Rotation, Vector, PaddedVector, DIM,
 };
 
 // NOTE: we disable two-ways coupling for now since it’s quite expensive and not very

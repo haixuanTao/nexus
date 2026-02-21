@@ -10,7 +10,7 @@ use crate::queries::gjk::{
 };
 use crate::queries::polygonal_feature;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, Vector, VectorWithPadding, DIM};
+use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector, DIM};
 
 /// Computes contact between two support map shapes using GJK.
 #[cfg(feature = "dim2")]
@@ -19,7 +19,7 @@ pub fn contact_support_map_support_map(
     g1: &Shape,
     g2: &Shape,
     prediction: f32,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
 ) -> GjkResult {
     let mut dir = pose12.translation;
 
@@ -60,7 +60,7 @@ pub fn contact_support_map_support_map(
     g1: &Shape,
     g2: &Shape,
     prediction: f32,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
 ) -> GjkResult {
     let mut dir = pose12.translation;
 
@@ -103,7 +103,7 @@ pub fn contact_manifold_pfm_pfm(
     pfm2: &Shape,
     border_radius2: f32,
     prediction: f32,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
 ) -> ContactManifold {
     let total_prediction = prediction + border_radius1 + border_radius2;
     let contact = contact_support_map_support_map(pose12, pfm1, pfm2, total_prediction, vertices);
@@ -165,7 +165,7 @@ pub fn contact_manifold_pfm_pfm(
     pfm2: &Shape,
     border_radius2: f32,
     prediction: f32,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
     indices: &[u32],
 ) -> ContactManifold {
     let total_prediction = prediction + border_radius1 + border_radius2;

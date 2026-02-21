@@ -73,7 +73,7 @@ fn collide(
 pub fn gpu_grid_update_cdf(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_shapes: &[Shape],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] collision_shape_poses: &[Pose],
@@ -88,13 +88,13 @@ pub fn gpu_grid_update_cdf(
     let cell_pos = Vec2::new(
         (vid.id.x * 8 + tid.x as i32) as f32,
         (vid.id.y * 8 + tid.y as i32) as f32,
-    ) * grid_data.at(0).cell_width;
+    ) * grid.cell_width;
 
     let global_id = global_node_id.id;
     nodes.at_mut(global_id as usize).cdf = collide(
         collision_shapes,
         collision_shape_poses,
-        grid_data.at(0).cell_width,
+        grid.cell_width,
         cell_pos,
     );
 }
@@ -106,7 +106,7 @@ pub fn gpu_grid_update_cdf(
 pub fn gpu_grid_update_cdf(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_shapes: &[Shape],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] collision_shape_poses: &[Pose],
@@ -122,13 +122,13 @@ pub fn gpu_grid_update_cdf(
         (vid.id.x * 4 + tid.x as i32) as f32,
         (vid.id.y * 4 + tid.y as i32) as f32,
         (vid.id.z * 4 + tid.z as i32) as f32,
-    ) * grid_data.at(0).cell_width;
+    ) * grid.cell_width;
 
     let global_id = global_node_id.id;
     nodes.at_mut(global_id as usize).cdf = collide(
         collision_shapes,
         collision_shape_poses,
-        grid_data.at(0).cell_width,
+        grid.cell_width,
         cell_pos,
     );
 }

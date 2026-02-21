@@ -41,7 +41,7 @@ const WORKGROUP_SIZE: u32 = 64;
 #[inline]
 #[unroll_for_loops]
 fn global_shared_memory_transfers<const USE_CPIC: bool>(
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes: &[Node],
     tid: spirv_std::glam::UVec3,
@@ -58,8 +58,7 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
             for j_loop in 0..2 {
                 if !((i_loop == 1 && tid.x > 1) || (j_loop == 1 && tid.y > 1)) {
                     let octant = UVec2::new(i_loop as u32, j_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
@@ -104,8 +103,7 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                         || (k_loop == 1 && tid.z > 1))
                     {
                         let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
-                        let octant_hid = find_block_header_id(
-                            grid_data,
+                        let octant_hid = grid.find_block_header_id(
                             hmap_entries,
                             &BlockVirtualId::new(
                                 base_block_pos_int
@@ -283,7 +281,7 @@ pub fn gpu_g2p_generic<const USE_CPIC: bool>(
     tid: spirv_std::glam::UVec3,
     tid_flat: u32,
     params: &SimulationParams,
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     active_blocks: &[ActiveBlockHeader],
     nodes: &[Node],
@@ -305,7 +303,7 @@ pub fn gpu_g2p_generic<const USE_CPIC: bool>(
 
     // Block -> shared memory transfer.
     global_shared_memory_transfers::<USE_CPIC>(
-        grid_data,
+        grid,
         hmap_entries,
         nodes,
         tid,
@@ -338,7 +336,7 @@ pub fn gpu_g2p_generic<const USE_CPIC: bool>(
             particles_kin,
             particles_cdf,
             particle_id,
-            grid_data.at(0).cell_width,
+            grid.cell_width,
             params.dt,
             shared_nodes_vel,
             shared_nodes_vel_incompatible,
@@ -394,7 +392,7 @@ pub fn gpu_g2p(
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
@@ -416,7 +414,7 @@ pub fn gpu_g2p(
         tid,
         tid_flat,
         params,
-        grid_data,
+        grid,
         hmap_entries,
         active_blocks,
         nodes,
@@ -442,7 +440,7 @@ pub fn gpu_g2p_cpic(
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
@@ -464,7 +462,7 @@ pub fn gpu_g2p_cpic(
         tid,
         tid_flat,
         params,
-        grid_data,
+        grid,
         hmap_entries,
         active_blocks,
         nodes,

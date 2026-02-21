@@ -316,9 +316,9 @@ impl<T, P> Pad<T, P> {
 }
 
 #[cfg(feature = "dim2")]
-pub type VectorWithPadding = Pad<Vector, ()>;
+pub type PaddedVector = Pad<Vector, ()>;
 #[cfg(feature = "dim3")]
-pub type VectorWithPadding = Pad<Vector, u32>;
+pub type PaddedVector = Pad<Vector, u32>;
 
 impl<T, P: Default> From<T> for Pad<T, P> {
     #[inline(always)]

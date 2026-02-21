@@ -11,7 +11,7 @@
 //! holds these vertex buffers.
 
 use crate::math::Point;
-use crate::shaders::VectorWithPadding;
+use crate::shaders::PaddedVector;
 use crate::shaders::shapes::Shape;
 
 #[cfg(feature = "from_rapier")]
@@ -27,7 +27,7 @@ pub struct ShapeBuffers {
     ///
     /// Polyline and TriMesh shapes reference ranges within this buffer.
     /// The shape stores the start and end indices of its vertices in this buffer.
-    pub vertices: Vec<VectorWithPadding>,
+    pub vertices: Vec<PaddedVector>,
     /// Index buffers for polylines, triangle meshes, and convex polyhedrons.
     pub indices: Vec<u32>,
 }
@@ -105,7 +105,7 @@ pub fn shape_from_parry(
                 flat_bvh
                     .iter()
                     .flat_map(|n| [bvh_to_point(n.aabb.min), bvh_to_point(n.aabb.max)])
-                    .map(VectorWithPadding::new),
+                    .map(PaddedVector::new),
             );
             let bvh_node_len = flat_bvh.len();
             buffers.indices.extend(
@@ -116,7 +116,7 @@ pub fn shape_from_parry(
 
             buffers
                 .vertices
-                .extend(shape.vertices().iter().copied().map(VectorWithPadding::new));
+                .extend(shape.vertices().iter().copied().map(PaddedVector::new));
             buffers
                 .indices
                 .extend(shape.indices().iter().flat_map(|seg| seg.iter().copied()));
@@ -175,7 +175,7 @@ pub fn shape_from_parry(
                 flat_bvh
                     .iter()
                     .flat_map(|n| [bvh_to_point(n.aabb.min), bvh_to_point(n.aabb.max)])
-                    .map(VectorWithPadding::new),
+                    .map(PaddedVector::new),
             );
             let bvh_node_len = flat_bvh.len();
             buffers.indices.extend(
@@ -186,7 +186,7 @@ pub fn shape_from_parry(
 
             buffers
                 .vertices
-                .extend(shape.vertices().iter().copied().map(VectorWithPadding::new));
+                .extend(shape.vertices().iter().copied().map(PaddedVector::new));
 
             // Append pseudo-normals (vertex + edge) needed by project_local_point
             // to determine inside/outside status.
@@ -199,13 +199,13 @@ pub fn shape_from_parry(
                     pn.vertices_pseudo_normal
                         .iter()
                         .copied()
-                        .map(VectorWithPadding::new),
+                        .map(PaddedVector::new),
                 );
                 buffers.vertices.extend(
                     pn.edges_pseudo_normal
                         .iter()
                         .flat_map(|n| *n)
-                        .map(VectorWithPadding::new),
+                        .map(PaddedVector::new),
                 );
             }
 
@@ -229,7 +229,7 @@ pub fn shape_from_parry(
             let first_vtx_id = buffers.vertices.len() as u32;
             buffers
                 .vertices
-                .extend(poly.points().iter().copied().map(VectorWithPadding::new));
+                .extend(poly.points().iter().copied().map(PaddedVector::new));
             let end_vtx_id = buffers.vertices.len() as u32;
             Some(Shape::convex_poly(first_vtx_id, end_vtx_id, 0, 0))
         }
@@ -241,7 +241,7 @@ pub fn shape_from_parry(
 
             buffers
                 .vertices
-                .extend(poly.points().iter().copied().map(VectorWithPadding::new));
+                .extend(poly.points().iter().copied().map(PaddedVector::new));
             for face in poly.faces() {
                 let id = face.first_vertex_or_edge as usize;
 

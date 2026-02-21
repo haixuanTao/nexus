@@ -238,7 +238,7 @@ fn p2g_step<const USE_CPIC: bool>(
 #[inline]
 #[unroll_for_loops]
 fn fetch_max_linked_lists_length(
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes_linked_lists: &[NodeLinkedList],
     tid: spirv_std::glam::UVec3,
@@ -257,8 +257,7 @@ fn fetch_max_linked_lists_length(
             {
                 if !((i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6)) {
                     let octant = UVec2::new(i_loop as u32, j_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
@@ -280,8 +279,7 @@ fn fetch_max_linked_lists_length(
                     || (k_loop == 0 && tid.z < 2))
                 {
                     let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int
@@ -309,7 +307,7 @@ fn fetch_max_linked_lists_length(
 #[inline]
 #[unroll_for_loops]
 fn fetch_nodes(
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes_linked_lists: &[NodeLinkedList],
     tid: spirv_std::glam::UVec3,
@@ -328,8 +326,7 @@ fn fetch_nodes(
             {
                 if !((i_loop == 0 && tid.x < 6) || (j_loop == 0 && tid.y < 6)) {
                     let octant = UVec2::new(i_loop as u32, j_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
@@ -358,8 +355,7 @@ fn fetch_nodes(
                     || (k_loop == 0 && tid.z < 2))
                 {
                     let octant = UVec3::new(i_loop as u32, j_loop as u32, k_loop as u32);
-                    let octant_hid = find_block_header_id(
-                        grid_data,
+                    let octant_hid = grid.find_block_header_id(
                         hmap_entries,
                         &BlockVirtualId {
                             id: base_block_pos_int
@@ -490,7 +486,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     block_id: spirv_std::glam::UVec3,
     tid: spirv_std::glam::UVec3,
     tid_flat: u32,
-    grid_data: &[Grid],
+    grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     active_blocks: &[ActiveBlockHeader],
     nodes_linked_lists: &[NodeLinkedList],
@@ -524,7 +520,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
 
     workgroup_memory_barrier_with_group_sync();
     fetch_max_linked_lists_length(
-        grid_data,
+        grid,
         hmap_entries,
         nodes_linked_lists,
         tid,
@@ -538,7 +534,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
 
     // Block -> shared memory transfer.
     fetch_nodes(
-        grid_data,
+        grid,
         hmap_entries,
         nodes_linked_lists,
         tid,
@@ -587,7 +583,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
             body_impulses,
             body_materials,
             packed_cell_index_in_block,
-            grid_data.at(0).cell_width,
+            grid.cell_width,
             node_affinities,
             collider_id,
             shared_pos,
@@ -711,7 +707,7 @@ pub fn gpu_p2g(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
@@ -736,7 +732,7 @@ pub fn gpu_p2g(
         block_id,
         tid,
         tid_flat,
-        grid_data,
+        grid,
         hmap_entries,
         active_blocks,
         nodes_linked_lists,
@@ -772,7 +768,7 @@ pub fn gpu_p2g_cpic(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
@@ -803,7 +799,7 @@ pub fn gpu_p2g_cpic(
         block_id,
         tid,
         tid_flat,
-        grid_data,
+        grid,
         hmap_entries,
         active_blocks,
         nodes_linked_lists,

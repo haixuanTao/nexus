@@ -317,7 +317,7 @@ pub fn gpu_prep_readback(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_def_grad: &[PaddedMatrix],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     particles_props: &[ParticleProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] base_colors: &[Vec4],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] params: &SimulationParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] config: &[RenderConfig],
@@ -336,7 +336,7 @@ pub fn gpu_prep_readback(
     let props = particles_props.at(pid);
     let pos = particles_pos.at(pid);
     let base_color = *base_colors.at(pid);
-    let cell_width = grid_data.at(0).cell_width;
+    let cell_width = grid.cell_width;
     let mode = config.at(0).mode;
     let dt = params.dt;
 
@@ -375,7 +375,7 @@ pub fn gpu_prep_readback_rigid(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] instances: &mut [ReadbackData],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] base_colors: &[Vec4],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] grid: &Grid,
     #[spirv(uniform, descriptor_set = 0, binding = 4)] particles_len: &u32,
 ) {
     let particle_id = invocation_id.x;
@@ -387,7 +387,7 @@ pub fn gpu_prep_readback_rigid(
     let pid = particle_id as usize;
     let pos = particles_pos.at(pid);
     let base_color = *base_colors.at(pid);
-    let cell_width = grid_data.at(0).cell_width;
+    let cell_width = grid.cell_width;
     let scale = cell_width * 0.4;
 
     #[cfg(feature = "dim2")]

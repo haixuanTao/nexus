@@ -19,7 +19,7 @@ use crate::shapes::capsule::Capsule;
 use crate::shapes::segment::Segment;
 use crate::shapes::triangle::Triangle;
 use crate::shapes::{Ball, Cuboid};
-use crate::{Pose, Vector, VectorWithPadding};
+use crate::{Pose, Vector, PaddedVector};
 use glamx::Vec4;
 use parry::{query::PointQuery, shape::SupportMap};
 
@@ -410,7 +410,7 @@ impl Shape {
         &self,
         pose: Pose,
         axis: Vector,
-        vertices: &[VectorWithPadding],
+        vertices: &[PaddedVector],
     ) -> Vector {
         let local_axis = pose.rotation.inverse() * axis;
         let local_pt = self.local_support_point(local_axis, vertices);
@@ -418,7 +418,7 @@ impl Shape {
     }
 
     /// Computes the local support point of a self.
-    pub fn local_support_point(&self, dir: Vector, vertices: &[VectorWithPadding]) -> Vector {
+    pub fn local_support_point(&self, dir: Vector, vertices: &[PaddedVector]) -> Vector {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_BALL {
             return self.to_ball().local_support_point(dir);
@@ -451,7 +451,7 @@ impl Shape {
 
     /// Computes the support face of a self.
     #[cfg(feature = "dim2")]
-    pub fn support_face(&self, dir: Vector, vertices: &[VectorWithPadding]) -> PolygonalFeature {
+    pub fn support_face(&self, dir: Vector, vertices: &[PaddedVector]) -> PolygonalFeature {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_CUBOID {
             return self.to_cuboid().support_face(dir).into();
@@ -475,7 +475,7 @@ impl Shape {
     pub fn support_face(
         &self,
         dir: Vector,
-        vertices: &[VectorWithPadding],
+        vertices: &[PaddedVector],
         indices: &[u32],
     ) -> PolygonalFeature {
         let ty = self.shape_type();
@@ -548,7 +548,7 @@ impl Shape {
     }
 
     /// Creates an AABB from a transformed self.
-    pub fn compute_aabb(&self, pose: Pose, vertices: &[VectorWithPadding]) -> Aabb {
+    pub fn compute_aabb(&self, pose: Pose, vertices: &[PaddedVector]) -> Aabb {
         let ty = self.shape_type();
         if ty == SHAPE_TYPE_BALL {
             let ball = self.to_ball();

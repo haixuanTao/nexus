@@ -1,6 +1,6 @@
 // TODO: move this to nexus?
 
-use crate::mpm_shaders::VectorWithPadding;
+use crate::mpm_shaders::PaddedVector;
 use encase::ShaderType;
 use nexus::math::Vector;
 use rapier::geometry::TriMesh;
@@ -21,7 +21,7 @@ pub struct ShapeBuffers {
     ///
     /// Polyline and TriMesh shapes reference ranges within this buffer.
     /// The shape stores the start and end indices of its vertices in this buffer.
-    pub vertices: Vec<VectorWithPadding>,
+    pub vertices: Vec<PaddedVector>,
     /// Index buffers for polylines, triangle meshes, and convex polyhedrons.
     pub indices: Vec<u32>,
 }
@@ -87,8 +87,8 @@ pub fn convert_trimesh_to_gpu(shape: &TriMesh, buffers: &mut ShapeBuffers) -> Gp
     let flat_bvh = bvh.flatten();
     buffers.vertices.extend(flat_bvh.iter().flat_map(|n| {
         [
-            VectorWithPadding::new(from_bvh_point(n.aabb.min)),
-            VectorWithPadding::new(from_bvh_point(n.aabb.max)),
+            PaddedVector::new(from_bvh_point(n.aabb.min)),
+            PaddedVector::new(from_bvh_point(n.aabb.max)),
         ]
     }));
     let bvh_node_len = flat_bvh.len();
@@ -106,18 +106,18 @@ pub fn convert_trimesh_to_gpu(shape: &TriMesh, buffers: &mut ShapeBuffers) -> Gp
             .expect("trimeshes without pseudo-normals are not supported");
         buffers
             .vertices
-            .extend(shape.vertices().iter().map(|v| VectorWithPadding::new(*v)));
+            .extend(shape.vertices().iter().map(|v| PaddedVector::new(*v)));
         buffers.vertices.extend(
             pn.vertices_pseudo_normal
                 .iter()
-                .map(|v| VectorWithPadding::new(*v)),
+                .map(|v| PaddedVector::new(*v)),
         );
         assert_eq!(shape.vertices().len(), pn.vertices_pseudo_normal.len());
         buffers.vertices.extend(
             pn.edges_pseudo_normal
                 .iter()
                 .flat_map(|n| *n)
-                .map(|v| VectorWithPadding::new(v)),
+                .map(|v| PaddedVector::new(v)),
         );
     }
     buffers

@@ -13,7 +13,7 @@ use khal::BufferUsages;
 use khal::backend::GpuBackend;
 use vortx::tensor::Tensor;
 
-use crate::shaders::VectorWithPadding;
+use crate::shaders::PaddedVector;
 /// Re-export types from the shader crate for convenience.
 pub use crate::shaders::dynamics::{
     Force, Impulse, LocalMassProperties as GpuLocalMassProperties, Velocity as GpuVelocity,
@@ -37,8 +37,8 @@ pub struct GpuBodySet {
     pub vels: Tensor<Velocity>,
     pub poses: Tensor<Pose>,
     pub shapes: Tensor<Shape>,
-    pub shapes_local_vertex_buffers: Tensor<VectorWithPadding>,
-    pub shapes_vertex_buffers: Tensor<VectorWithPadding>,
+    pub shapes_local_vertex_buffers: Tensor<PaddedVector>,
+    pub shapes_vertex_buffers: Tensor<PaddedVector>,
     pub shapes_index_buffers: Tensor<u32>,
     pub shapes_vertex_collider_id: Tensor<u32>,
 }
@@ -202,7 +202,7 @@ impl GpuBodySet {
         let vertex_buffer = if !shape_buffers.vertices.is_empty() {
             &shape_buffers.vertices[..]
         } else {
-            &[VectorWithPadding::default()]
+            &[PaddedVector::default()]
         };
         let index_buffer = if !shape_buffers.indices.is_empty() {
             &shape_buffers.indices[..]
@@ -290,19 +290,19 @@ impl GpuBodySet {
     /// Returns the GPU buffer containing shape vertices in world-space.
     ///
     /// This buffer is updated each frame as bodies move.
-    pub fn shapes_vertex_buffers(&self) -> &Tensor<VectorWithPadding> {
+    pub fn shapes_vertex_buffers(&self) -> &Tensor<PaddedVector> {
         &self.shapes_vertex_buffers
     }
 
     /// Mutable reference to the GPU buffer containing shape vertices in world-space.
-    pub fn shapes_vertex_buffers_mut(&mut self) -> &mut Tensor<VectorWithPadding> {
+    pub fn shapes_vertex_buffers_mut(&mut self) -> &mut Tensor<PaddedVector> {
         &mut self.shapes_vertex_buffers
     }
 
     /// Returns the GPU buffer containing shape vertices in local-space.
     ///
     /// These are the original vertex positions before transformation.
-    pub fn shapes_local_vertex_buffers(&self) -> &Tensor<VectorWithPadding> {
+    pub fn shapes_local_vertex_buffers(&self) -> &Tensor<PaddedVector> {
         &self.shapes_local_vertex_buffers
     }
 

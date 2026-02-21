@@ -6,7 +6,7 @@
 use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::queries::gjk::VoronoiSimplex;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, Vector, VectorWithPadding, DIM};
+use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector, DIM};
 
 /// GJK result status codes.
 pub const INTERSECTION: u32 = 0;
@@ -57,7 +57,7 @@ pub fn closest_points(
     max_dist: f32,
     exact_dist: bool,
     simplex: &mut VoronoiSimplex,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
 ) -> GjkResult {
     let _eps = FLT_EPS;
     let _eps_tol: f32 = EPS_TOL;
@@ -205,7 +205,7 @@ pub fn cso_point_from_shapes(
     g1: &Shape,
     g2: &Shape,
     dir: Vector,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
 ) -> CsoPoint {
     let sp1 = g1.local_support_point(dir, vertices);
     let sp2 = g2.support_point(pos12, -dir, vertices);

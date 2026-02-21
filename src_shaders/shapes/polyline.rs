@@ -13,7 +13,7 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::segment::Segment;
-use crate::{MaybeIndexUnchecked, Vector, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Vector, PaddedVector};
 
 /// A polyline (connected line segments) with BVH acceleration structure.
 #[derive(Clone, Copy, Default)]
@@ -65,7 +65,7 @@ impl Polyline {
 
     /// Gets the AABB of a BVH node.
     #[inline]
-    pub fn bvh_node_aabb(&self, node_id: u32, vertices: &[VectorWithPadding]) -> Aabb {
+    pub fn bvh_node_aabb(&self, node_id: u32, vertices: &[PaddedVector]) -> Aabb {
         // Multiply by 2 since there are two values per AABB (min/max).
         let vid = (self.bvh_vtx_root_id + node_id * 2) as usize;
         Aabb::new(*vertices.read(vid), *vertices.read(vid + 1))
@@ -84,7 +84,7 @@ impl Polyline {
 
     /// Gets a segment from the polyline by its index.
     #[inline]
-    pub fn segment(&self, seg_id: u32, vertices: &[VectorWithPadding], indices: &[u32]) -> Segment {
+    pub fn segment(&self, seg_id: u32, vertices: &[PaddedVector], indices: &[u32]) -> Segment {
         let base_id = (self.bvh_idx_root_id + self.bvh_node_len * 3 + seg_id * 2) as usize;
         let base_vid = (self.bvh_vtx_root_id + self.bvh_node_len * 2) as usize;
         let a = *vertices.read(base_vid + indices.read(base_id) as usize);

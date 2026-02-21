@@ -14,7 +14,7 @@ use crate::solver::params::SimulationParams;
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use nexus_shaders::VectorWithPadding;
+use nexus_shaders::PaddedVector;
 use spirv_std::spirv;
 
 struct Collision {
@@ -33,7 +33,7 @@ fn collide(
     collision_shapes: &[Shape],
     collision_shape_poses: &[Pose],
     collision_shape_indices: &[u32],
-    collision_shape_vertices: &[VectorWithPadding],
+    collision_shape_vertices: &[PaddedVector],
     cell_width: f32,
     point: Vector,
 ) -> Collision {
@@ -109,12 +109,12 @@ pub fn gpu_grid_update_collide(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid_data: &[Grid],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] collision_shapes: &[Shape],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] collision_shape_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
-    collision_shape_vertices: &[VectorWithPadding],
+    collision_shape_vertices: &[PaddedVector],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] collision_shape_indices: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_vels: &[BodyVelocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_mprops: &[BodyMassProperties],
@@ -138,7 +138,7 @@ pub fn gpu_grid_update_collide(
         cell_pt = Vec2::new(
             (vid.id.x * 8 + tid.x as i32) as f32,
             (vid.id.y * 8 + tid.y as i32) as f32,
-        ) * grid_data.at(0).cell_width;
+        ) * grid.cell_width;
     }
 
     #[cfg(feature = "dim3")]
@@ -149,11 +149,11 @@ pub fn gpu_grid_update_collide(
             (vid.id.x * 4 + tid.x as i32) as f32,
             (vid.id.y * 4 + tid.y as i32) as f32,
             (vid.id.z * 4 + tid.z as i32) as f32,
-        ) * grid_data.at(0).cell_width;
+        ) * grid.cell_width;
     }
 
     let global_id = global_node_id.id;
-    let cell_width = grid_data.at(0).cell_width;
+    let cell_width = grid.cell_width;
     let collision = collide(
         collision_shapes,
         collision_shape_poses,

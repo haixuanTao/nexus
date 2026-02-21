@@ -20,7 +20,7 @@ use khal_derive::spirv_bindgen;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 use vortx_shaders::utils::{StepRng, atomic_add_u32};
-use crate::{MaybeIndexUnchecked, Pose, Vector, VectorWithPadding};
+use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
 use crate::queries::{
     ball_ball, ball_convex, convex_ball, cuboid_cuboid, pfm_pfm, ContactManifold, IndexedManifold,
 };
@@ -82,7 +82,7 @@ pub fn gpu_narrow_phase_shape_shape(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     pfm_pairs: &mut [NarrowPhasePfmPair],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] pfm_pairs_len: &mut u32,
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[VectorWithPadding],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] indices: &[u32],
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
@@ -256,7 +256,7 @@ fn trimesh_convex(
     pair: UVec2,
     pfm_pairs: &mut [NarrowPhasePfmPair],
     pfm_pairs_len: &mut u32,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
     indices: &[u32],
 ) {
     let sub2 = convex.pfm_subshape();
@@ -325,7 +325,7 @@ fn polyline_convex(
     pair: UVec2,
     pfm_pairs: &mut [NarrowPhasePfmPair],
     pfm_pairs_len: &mut u32,
-    vertices: &[VectorWithPadding],
+    vertices: &[PaddedVector],
     indices: &[u32],
 ) {
     let sub2 = convex.pfm_subshape();
@@ -418,7 +418,7 @@ pub fn gpu_narrow_phase_pfm_pfm(
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &mut [IndexedManifold],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &mut u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] vertices: &[VectorWithPadding],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] vertices: &[PaddedVector],
     #[allow(unused_variables)]
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
     indices: &[u32],
