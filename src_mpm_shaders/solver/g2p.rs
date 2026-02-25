@@ -73,19 +73,19 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                         let tid_xy = UVec2::new(tid.x, tid.y);
                         let global_node_id = global_chunk_id.node_id(tid_xy);
                         let node = nodes.read(global_node_id.id as usize);
-                        shared_nodes_vel[flat_shared_index] = node.momentum_velocity;
+                        shared_nodes_vel.write(flat_shared_index, node.momentum_velocity);
 
                         if USE_CPIC {
                             shared_nodes_vel_incompatible[flat_shared_index] =
                                 node.momentum_velocity_incompatible;
-                            shared_nodes_cdf[flat_shared_index] = node.cdf;
+                            shared_nodes_cdf.write(flat_shared_index, node.cdf);
                         }
                     } else {
-                        shared_nodes_vel[flat_shared_index] = Vector::ZERO;
+                        shared_nodes_vel.write(flat_shared_index, Vector::ZERO);
 
                         if USE_CPIC {
-                            shared_nodes_vel_incompatible[flat_shared_index] = Vector::ZERO;
-                            shared_nodes_cdf[flat_shared_index] = NodeCdf::NONE;
+                            shared_nodes_vel_incompatible.write(flat_shared_index, Vector::ZERO);
+                            shared_nodes_cdf.write(flat_shared_index, NodeCdf::NONE);
                         }
                     }
                 }
@@ -120,17 +120,17 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                             let global_chunk_id = octant_hid.physical_id();
                             let global_node_id = global_chunk_id.node_id(tid_xyz);
                             let node = nodes.read(global_node_id.id as usize);
-                            shared_nodes_vel[flat_shared_index] = node.momentum_velocity;
+                            shared_nodes_vel.write(flat_shared_index, node.momentum_velocity);
                             if USE_CPIC {
-                                shared_nodes_vel_incompatible[flat_shared_index] =
-                                    node.momentum_velocity_incompatible;
-                                shared_nodes_cdf[flat_shared_index] = node.cdf;
+                                shared_nodes_vel_incompatible.write(flat_shared_index,
+                                    node.momentum_velocity_incompatible);
+                                shared_nodes_cdf.write(flat_shared_index, node.cdf);
                             }
                         } else {
-                            shared_nodes_vel[flat_shared_index] = Vector::ZERO;
+                            shared_nodes_vel.write(flat_shared_index, Vector::ZERO);
                             if USE_CPIC {
-                                shared_nodes_vel_incompatible[flat_shared_index] = Vector::ZERO;
-                                shared_nodes_cdf[flat_shared_index] = NodeCdf::NONE;
+                                shared_nodes_vel_incompatible.write(flat_shared_index, Vector::ZERO);
+                                shared_nodes_cdf.write(flat_shared_index, NodeCdf::NONE);
                             }
                         }
                     }
@@ -199,7 +199,7 @@ fn particle_g2p<const USE_CPIC: bool>(
                 let shift = NBH_SHIFTS.read(i as usize);
                 let packed_shift = NBH_SHIFT_SHARED.read(i as usize);
                 let shared_id = (packed_cell_index_in_block + packed_shift) as usize;
-                let mut cell_vel = shared_nodes_vel[shared_id];
+                let mut cell_vel = shared_nodes_vel.read(shared_id);
 
                 #[cfg(feature = "dim2")]
                 let dpt = ref_elt_pos_minus_particle_pos
@@ -209,12 +209,12 @@ fn particle_g2p<const USE_CPIC: bool>(
                     + Vec3::new(shift.x as f32, shift.y as f32, shift.z as f32) * cell_width;
 
                 if USE_CPIC {
-                    let cell_cdf = shared_nodes_cdf[shared_id];
+                    let cell_cdf = shared_nodes_cdf.read(shared_id);
                     let is_compatible =
                         particle_cdf.affinity.is_compatible(cell_cdf.affinities);
 
                     if !is_compatible {
-                        cell_vel = shared_nodes_vel_incompatible[shared_id];
+                        cell_vel = shared_nodes_vel_incompatible.read(shared_id);
 
                         if cell_cdf.closest_id != NONE {
                             let body_vel = body_vels.read(cell_cdf.closest_id as usize);
@@ -399,10 +399,9 @@ pub fn gpu_g2p(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_kin: &mut [Kinematics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] particles_cdf: &mut [Cdf],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] body_mprops: &[BodyMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_mprops: &[BodyMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
     body_materials: &[BoundaryCondition],
     // Shared memory.
     #[spirv(workgroup)] shared_nodes_vel: &mut [Vector; NUM_SHARED_CELLS],
@@ -421,7 +420,7 @@ pub fn gpu_g2p(
         sorted_particle_ids,
         particles_pos,
         particles_kin,
-        particles_cdf,
+        &mut [],
         body_vels,
         body_mprops,
         body_materials,

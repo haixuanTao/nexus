@@ -111,9 +111,9 @@ fn global_shared_memory_transfers(
                         let global_chunk_id = octant_hid.physical_id();
                         let tid_xy = UVec2::new(tid.x, tid.y);
                         let global_node_id = global_chunk_id.node_id(tid_xy);
-                        shared_nodes[flat_id] = nodes.at(global_node_id.id as usize).cdf;
+                        shared_nodes.write(flat_id, nodes.at(global_node_id.id as usize).cdf);
                     } else {
-                        shared_nodes[flat_id] = NodeCdf::NONE;
+                        shared_nodes.write(flat_id, NodeCdf::NONE);
                     }
                 }
             }
@@ -146,9 +146,9 @@ fn global_shared_memory_transfers(
                         if octant_hid.id != NONE {
                             let global_chunk_id = octant_hid.physical_id();
                             let global_node_id = global_chunk_id.node_id(tid_xyz);
-                            shared_nodes[shared_node_id] = nodes.at(global_node_id.id as usize).cdf;
+                            shared_nodes.write(shared_node_id, nodes.at(global_node_id.id as usize).cdf);
                         } else {
-                            shared_nodes[shared_node_id] = NodeCdf::NONE;
+                            shared_nodes.write(shared_node_id, NodeCdf::NONE);
                         }
                     }
                 }

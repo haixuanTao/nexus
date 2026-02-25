@@ -75,9 +75,13 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         builders: SceneBuilders<GpuModel>,
     ) -> Stage<GpuModel> {
         let limits = Limits {
+            #[cfg(target_arch = "wasm32")]
+            max_storage_buffers_per_shader_stage: 10,
+            #[cfg(not(target_arch = "wasm32"))]
             max_storage_buffers_per_shader_stage: 12,
             max_buffer_size: 1_000_000_000,
             max_storage_buffer_binding_size: 1_000_000_000,
+            max_compute_workgroup_storage_size: 19040, // For P2G
             ..Limits::default()
         };
         let gpu = WebGpu::new(Default::default(), limits).await.unwrap();

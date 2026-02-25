@@ -562,45 +562,54 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
 
     // Iterate through linked lists with uniform control flow.
     let len = *max_linked_list_length_uniform;
-    for _k in 0..len {
-        workgroup_memory_barrier_with_group_sync();
-        fetch_next_particle::<USE_CPIC>(
-            particles_pos,
-            particles_kin,
-            particles_cdf,
-            particle_node_linked_lists,
-            tid,
-            shared_nodes,
-            shared_pos,
-            shared_vel_mass,
-            shared_affine,
-            shared_affinities,
-            shared_normals,
-        );
-        workgroup_memory_barrier_with_group_sync();
-        let partial_result = p2g_step::<USE_CPIC>(
-            body_vels,
-            body_impulses,
-            body_materials,
-            packed_cell_index_in_block,
-            grid.cell_width,
-            node_affinities,
-            collider_id,
-            shared_pos,
-            shared_vel_mass,
-            shared_affine,
-            shared_affinities,
-            shared_normals,
-        );
-        total_result.new_momentum_velocity += partial_result.new_momentum_velocity;
-        total_result.new_mass += partial_result.new_mass;
 
-        if USE_CPIC {
-            total_result.new_momentum_velocity_incompatible +=
-                partial_result.new_momentum_velocity_incompatible;
-            total_result.new_mass_incompatible += partial_result.new_mass_incompatible;
-            total_result.impulse += partial_result.impulse;
-            total_result.ang_impulse += partial_result.ang_impulse;
+    const MAX_ITERS: u32 = 64;
+
+    for k in 0..MAX_ITERS {
+        workgroup_memory_barrier_with_group_sync();
+        if k < len {
+            fetch_next_particle::<USE_CPIC>(
+                particles_pos,
+                particles_kin,
+                particles_cdf,
+                particle_node_linked_lists,
+                tid,
+                shared_nodes,
+                shared_pos,
+                shared_vel_mass,
+                shared_affine,
+                shared_affinities,
+                shared_normals,
+            );
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+
+        if k < len {
+            let partial_result = p2g_step::<USE_CPIC>(
+                body_vels,
+                body_impulses,
+                body_materials,
+                packed_cell_index_in_block,
+                grid.cell_width,
+                node_affinities,
+                collider_id,
+                shared_pos,
+                shared_vel_mass,
+                shared_affine,
+                shared_affinities,
+                shared_normals,
+            );
+            total_result.new_momentum_velocity += partial_result.new_momentum_velocity;
+            total_result.new_mass += partial_result.new_mass;
+
+            if USE_CPIC {
+                total_result.new_momentum_velocity_incompatible +=
+                    partial_result.new_momentum_velocity_incompatible;
+                total_result.new_mass_incompatible += partial_result.new_mass_incompatible;
+                total_result.impulse += partial_result.impulse;
+                total_result.ang_impulse += partial_result.ang_impulse;
+            }
         }
     }
 
@@ -780,9 +789,9 @@ pub fn gpu_p2g_cpic(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] nodes: &mut [Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
-    body_impulses: &mut [IntegerImpulseAtomic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
     body_materials: &[BoundaryCondition],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
+    body_impulses: &mut [IntegerImpulseAtomic],
     // Shared memory arrays.
     // TODO PERF: analyze shared memory access patterns to avoid bank conflicts
     // (https://feldmann.nyc/blog/smem-microbenchmarks)

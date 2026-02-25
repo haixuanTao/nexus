@@ -24,9 +24,9 @@ use vortx_shaders::utils::{atomic_load_u32_workgroup, atomic_max_u32_workgroup, 
  */
 
 #[cfg(feature = "dim2")]
-const NUM_SHARED_CELLS: usize = 100; // 10 * 10
+const NUM_SHARED_CELLS: usize = 10 * 10;
 #[cfg(feature = "dim3")]
-const NUM_SHARED_CELLS: usize = 216; // 6 * 6 * 6
+const NUM_SHARED_CELLS: usize = 6 * 6 * 6;
 
 /*
  * Shared memory types.
@@ -94,13 +94,13 @@ fn p2g_cdf_step(
         let nbh_shared_index =
             (packed_cell_index_in_block - bottommost_contributing_node + packed_shift) as usize;
 
-        let collider_id = shared_collider_ids[nbh_shared_index];
+        let collider_id = shared_collider_ids.read(nbh_shared_index);
 
         if collider_id == NONE {
             continue;
         }
 
-        let primitive = shared_primitives[nbh_shared_index];
+        let primitive = shared_primitives.read(nbh_shared_index);
 
         #[cfg(feature = "dim2")]
         {
@@ -304,10 +304,10 @@ fn fetch_nodes(
                         #[cfg(feature = "dim3")]
                         let global_node_id = global_chunk_id.node_id(UVec3::new(tid.x, tid.y, tid.z));
                         let particle_id = rigid_nodes_linked_lists.at(global_node_id.id as usize).head;
-                        shared_nodes[shared_node_index].particle_id = particle_id;
-                        shared_nodes[shared_node_index].global_id = global_node_id.id;
+                        shared_nodes.at_mut(shared_node_index).particle_id = particle_id;
+                        shared_nodes.at_mut(shared_node_index).global_id = global_node_id.id;
                     } else {
-                        shared_nodes[shared_node_index].particle_id = NONE;
+                        shared_nodes.at_mut(shared_node_index).particle_id = NONE;
                     }
                 }
             }
@@ -353,39 +353,39 @@ fn fetch_next_particle(
                     flatten_shared_index(shared_index.x, shared_index.y, shared_index.z) as usize
                 };
 
-                let curr_particle_id = shared_nodes[shared_flat_index].particle_id;
+                let curr_particle_id = shared_nodes.at(shared_flat_index).particle_id;
 
                 if curr_particle_id != NONE {
                     let rigid_idx = rigid_particle_indices.read(curr_particle_id as usize);
-                    shared_collider_ids[shared_flat_index] = rigid_idx.collider;
+                    shared_collider_ids.write(shared_flat_index, rigid_idx.collider);
 
                     #[cfg(feature = "dim2")]
                     {
-                        shared_primitives[shared_flat_index] = SharedPrimitive {
+                        shared_primitives.write(shared_flat_index, SharedPrimitive {
                             a: collider_vertices.read(rigid_idx.segment.x as usize).0,
                             b: collider_vertices.read(rigid_idx.segment.y as usize).0,
-                        };
+                        });
                     }
                     #[cfg(feature = "dim3")]
                     {
-                        shared_primitives[shared_flat_index] = SharedPrimitive {
+                        shared_primitives.write(shared_flat_index, SharedPrimitive {
                             a: collider_vertices.read(rigid_idx.triangle.x as usize).0,
                             b: collider_vertices.read(rigid_idx.triangle.y as usize).0,
                             c: collider_vertices.read(rigid_idx.triangle.z as usize).0,
-                        };
+                        });
                     }
 
                     let next_particle_id =
                         particle_node_linked_lists.read(curr_particle_id as usize);
-                    shared_nodes[shared_flat_index].particle_id = next_particle_id;
+                    shared_nodes.at_mut(shared_flat_index).particle_id = next_particle_id;
                 } else {
-                    shared_collider_ids[shared_flat_index] = NONE;
-                    shared_primitives[shared_flat_index] = SharedPrimitive {
+                    shared_collider_ids.write(shared_flat_index, NONE);
+                    shared_primitives.write(shared_flat_index, SharedPrimitive {
                         a: Vector::ZERO,
                         b: Vector::ZERO,
                         #[cfg(feature = "dim3")]
                         c: Vector::ZERO,
-                    };
+                    });
                 }
             }
         }
@@ -471,38 +471,42 @@ pub fn gpu_p2g_cdf(
         (vid.id.z * 4 + tid.z as i32) as f32,
     ) * grid.cell_width;
 
-    let global_id = shared_nodes[packed_cell_index_in_block as usize].global_id;
+    let global_id = shared_nodes.at(packed_cell_index_in_block as usize).global_id;
     let mut node_cdf = nodes.at(global_id as usize).cdf;
 
     // Iterate through the linked list with uniform control flow.
     let len = *max_linked_list_length_uniform;
-    for _ in 0..len {
+    const MAX_LEN: u32 = 64; // Needs to be a fixed limit for WASM.
+    for k in 0..MAX_LEN {
         workgroup_memory_barrier_with_group_sync();
-        fetch_next_particle(
-            particle_node_linked_lists,
-            collider_vertices,
-            rigid_particle_indices,
-            tid,
-            shared_nodes,
-            shared_primitives,
-            shared_collider_ids,
-        );
+        if k < len {
+            fetch_next_particle(
+                particle_node_linked_lists,
+                collider_vertices,
+                rigid_particle_indices,
+                tid,
+                shared_nodes,
+                shared_primitives,
+                shared_collider_ids,
+            );
+        }
         workgroup_memory_barrier_with_group_sync();
+        if k < len {
+            let partial_result = p2g_cdf_step(
+                packed_cell_index_in_block,
+                grid.cell_width,
+                cell_pos,
+                shared_primitives,
+                shared_collider_ids,
+            );
 
-        let partial_result = p2g_cdf_step(
-            packed_cell_index_in_block,
-            grid.cell_width,
-            cell_pos,
-            shared_primitives,
-            shared_collider_ids,
-        );
+            if partial_result.closest_id != NONE {
+                node_cdf.affinities |= partial_result.affinities;
 
-        if partial_result.closest_id != NONE {
-            node_cdf.affinities |= partial_result.affinities;
-
-            if partial_result.distance < node_cdf.distance {
-                node_cdf.distance = partial_result.distance;
-                node_cdf.closest_id = partial_result.closest_id;
+                if partial_result.distance < node_cdf.distance {
+                    node_cdf.distance = partial_result.distance;
+                    node_cdf.closest_id = partial_result.closest_id;
+                }
             }
         }
     }

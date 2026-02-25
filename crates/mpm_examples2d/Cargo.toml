@@ -12,6 +12,9 @@ nexus-mpm2d = { path = "../nexus-mpm2d", features = ["from_rapier"] }
 rapier2d = "0.32"
 kiss3d = "0.40"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
 [[bin]]
 name = "mpm_testbed2"
 path = "mpm_testbed2.rs"
