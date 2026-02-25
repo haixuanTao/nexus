@@ -22,7 +22,7 @@ pub fn gpu_grid_update(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
+    #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] nodes: &mut [Node],
 ) {

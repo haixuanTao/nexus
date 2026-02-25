@@ -28,9 +28,9 @@ use unroll::unroll_for_loops;
  */
 
 #[cfg(feature = "dim2")]
-const NUM_SHARED_CELLS: usize = 100; // 10 * 10
+const NUM_SHARED_CELLS: usize = 10 * 10;
 #[cfg(feature = "dim3")]
-const NUM_SHARED_CELLS: usize = 216; // 6 * 6 * 6
+const NUM_SHARED_CELLS: usize = 6 * 6 * 6;
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -392,7 +392,7 @@ pub fn gpu_g2p(
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
+    #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
@@ -439,7 +439,7 @@ pub fn gpu_g2p_cpic(
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] grid: &Grid,
+    #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],

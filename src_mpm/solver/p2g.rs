@@ -58,8 +58,8 @@ impl WgP2G {
                 particles.cdf(),
                 &mut grid.nodes,
                 &bodies.vels,
-                cast_tensor_mut::<_, IntegerImpulseAtomic>(&mut impulses.incremental_impulses),
                 &body_materials.materials,
+                cast_tensor_mut::<_, IntegerImpulseAtomic>(&mut impulses.incremental_impulses),
             )
         } else {
             self.p2g.call(

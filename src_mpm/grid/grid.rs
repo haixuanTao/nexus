@@ -273,12 +273,12 @@ impl GpuGrid {
         let meta = Tensor::scalar(
             backend,
             cpu_meta,
-            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            BufferUsages::UNIFORM | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )?;
         let prev_meta = Tensor::scalar(
             backend,
             cpu_meta,
-            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            BufferUsages::UNIFORM | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )?;
         let default_entry = GridHashMapEntry {
             state: 0xFFFFFFFF,

@@ -404,7 +404,7 @@ pub fn gpu_p2g_cdf(
     #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
     #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]

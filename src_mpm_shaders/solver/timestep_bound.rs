@@ -58,7 +58,7 @@ pub fn gpu_reset_timestep_bound(
 #[spirv(compute(threads(64)))]
 pub fn gpu_estimate_timestep_bound(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     particles_model: &[GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],

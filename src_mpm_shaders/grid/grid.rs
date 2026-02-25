@@ -692,7 +692,7 @@ pub fn gpu_reset_hmap(
 #[spirv(compute(threads(1)))]
 pub fn gpu_init_indirect_workgroups(
     #[spirv(global_invocation_id)] _invocation_id: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] n_block_groups: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] n_g2p_p2g_groups: &mut [u32],
 ) {
@@ -713,7 +713,7 @@ pub fn gpu_init_indirect_workgroups(
 #[spirv(compute(threads(64)))]
 pub fn gpu_reset(
     #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] nodes: &mut [Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     nodes_linked_lists: &mut [NodeLinkedList],
