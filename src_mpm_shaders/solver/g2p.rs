@@ -117,8 +117,8 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                                 as usize;
 
                         if octant_hid.id != NONE {
-                            let global_chunk_id = block_header_id_to_physical_id(octant_hid);
-                            let global_node_id = node_id(global_chunk_id, tid_xyz);
+                            let global_chunk_id = octant_hid.physical_id();
+                            let global_node_id = global_chunk_id.node_id(tid_xyz);
                             let node = nodes.read(global_node_id.id as usize);
                             shared_nodes_vel[flat_shared_index] = node.momentum_velocity;
                             if USE_CPIC {

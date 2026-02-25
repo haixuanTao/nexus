@@ -144,7 +144,7 @@ pub fn gpu_grid_update_collide(
     #[cfg(feature = "dim3")]
     {
         let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
-        global_node_id = node_id(global_chunk_id, tid_xyz);
+        global_node_id = global_chunk_id.node_id(tid_xyz);
         cell_pt = Vec3::new(
             (vid.id.x * 4 + tid.x as i32) as f32,
             (vid.id.y * 4 + tid.y as i32) as f32,
@@ -164,7 +164,7 @@ pub fn gpu_grid_update_collide(
     );
 
     if collision.distance != MAX_FLT {
-        // Found a collision, apply the boundary condition (hard-coded to stick for now).
+        // Found a collision, apply the boundary condition.
         let body_vel = body_vels.at(collision.closest_id);
         let body_com = body_mprops.at(collision.closest_id).com;
         let body_vel_at_grid_pos = velocity_at_point(body_com, body_vel, cell_pt);

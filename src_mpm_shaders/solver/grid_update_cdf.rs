@@ -115,9 +115,9 @@ pub fn gpu_grid_update_cdf(
     let bid = block_id.x;
     let vid = active_blocks.at(bid as usize).virtual_id;
 
-    let global_chunk_id = block_header_id_to_physical_id(BlockHeaderId { id: bid });
+    let global_chunk_id = BlockHeaderId { id: bid }.physical_id();
     let tid_xyz = UVec3::new(tid.x, tid.y, tid.z);
-    let global_node_id = node_id(global_chunk_id, tid_xyz);
+    let global_node_id = global_chunk_id.node_id(tid_xyz);
     let cell_pos = Vec3::new(
         (vid.id.x * 4 + tid.x as i32) as f32,
         (vid.id.y * 4 + tid.y as i32) as f32,
