@@ -33,6 +33,11 @@ fn main() {
 
     let mut features = vec!["dim3"];
 
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    if target_arch == "wasm32" {
+        features.push("web-compat");
+    }
+
     // #[cfg(feature = "unsafe_remove_boundchecks")]
     features.push("unsafe_remove_boundchecks");
 

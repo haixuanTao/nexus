@@ -9,6 +9,7 @@
 //! to the node's `incompatible` momentum field instead, and impulses are computed for
 //! the rigid body coupling.
 
+use core::ops::Range;
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
@@ -479,7 +480,6 @@ fn fetch_next_particle<const USE_CPIC: bool>(
 /// Handles CPIC compatibility checks and rigid body impulse accumulation.
 ///
 /// Dispatched with one workgroup per active block.
-#[unroll_for_loops]
 pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     block_id: spirv_std::glam::UVec3,
     tid: spirv_std::glam::UVec3,
@@ -560,11 +560,19 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     // Iterate through linked lists with uniform control flow.
     let len = *max_linked_list_length_uniform;
 
-    const MAX_ITERS: u32 = 64;
+    #[cfg(feature = "web-compat")] // Need to cap the iteration count on the web.
+    const K_RANGE: Range<u32> = 0..64;
+    #[cfg(not(feature = "web-compat"))]
+    let K_RANGE: Range<u32> = 0..len;
 
-    for k in 0..MAX_ITERS {
+    for _k in K_RANGE {
+        #[cfg(feature = "web-compat")]
+        let ok = _k < len;
+        #[cfg(not(feature = "web-compat"))]
+        const ok: bool = true;
+
         workgroup_memory_barrier_with_group_sync();
-        if k < len {
+        if ok {
             fetch_next_particle::<USE_CPIC>(
                 particles_pos,
                 particles_kin,
@@ -581,7 +589,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
 
         workgroup_memory_barrier_with_group_sync();
 
-        if k < len {
+        if ok {
             let partial_result = p2g_step::<USE_CPIC>(
                 body_vels,
                 body_impulses,

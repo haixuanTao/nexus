@@ -21,6 +21,8 @@ default = ["dim2"]
 dim2 = []
 unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
 push_constants = []
+# Enables some changes in the shaders for compatibility with web platforms.
+web-compat = []
 
 [dependencies]
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git" }

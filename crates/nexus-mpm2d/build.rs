@@ -18,6 +18,9 @@ fn main() {
 
     let mut features = vec!["dim2"];
 
+    #[cfg(target_arch = "wasm32")]
+    features.push("web-compat");
+    
     // #[cfg(feature = "unsafe_remove_boundchecks")]
     features.push("unsafe_remove_boundchecks");
 

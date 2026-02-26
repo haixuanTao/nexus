@@ -8,6 +8,7 @@
 //! Uses the same linked-list traversal and shared-memory pattern as P2G, but
 //! transfers geometry primitives instead of particle dynamics.
 
+use core::ops::Range;
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::solver::particle::{Position, RigidParticleIndices};
@@ -476,10 +477,21 @@ pub fn gpu_p2g_cdf(
 
     // Iterate through the linked list with uniform control flow.
     let len = *max_linked_list_length_uniform;
-    const MAX_LEN: u32 = 64; // Needs to be a fixed limit for WASM.
-    for k in 0..MAX_LEN {
+
+    // Need to cap the iteration count on the web.
+    #[cfg(feature = "web-compat")]
+    const K_RANGE: Range<u32> = 0..64;
+    #[cfg(not(feature = "web-compat"))]
+    let K_RANGE: Range<u32> = 0..len;
+
+    for _k in K_RANGE {
+        #[cfg(feature = "web-compat")]
+        let ok = _k < len;
+        #[cfg(not(feature = "web-compat"))]
+        const ok: bool = true;
+
         workgroup_memory_barrier_with_group_sync();
-        if k < len {
+        if ok {
             fetch_next_particle(
                 particle_node_linked_lists,
                 collider_vertices,
@@ -491,7 +503,7 @@ pub fn gpu_p2g_cdf(
             );
         }
         workgroup_memory_barrier_with_group_sync();
-        if k < len {
+        if ok {
             let partial_result = p2g_cdf_step(
                 packed_cell_index_in_block,
                 grid.cell_width,
