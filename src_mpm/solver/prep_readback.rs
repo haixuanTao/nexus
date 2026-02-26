@@ -148,7 +148,6 @@ impl WgPrepReadback {
                 &mut readback.instances,
                 &particles.positions,
                 &particles.kinematics,
-                &particles.cdf,
                 &particles.def_grad,
                 &particles.properties,
                 &grid.meta,

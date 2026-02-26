@@ -1,5 +1,5 @@
 use crate::mpm_shaders::solver::particle::{
-    Cdf, Kinematics, ParticleProperties, Position, RigidParticleIndices,
+    Kinematics, ParticleProperties, Position, RigidParticleIndices,
 };
 use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use crate::solver::particle_model::GpuParticleModelData;
@@ -125,13 +125,11 @@ impl ParticleDynamics {
             force_dt: self.force_dt,
             mass: self.mass,
             enabled: self.enabled,
-            padding: Default::default(),
+            _padding: Default::default(),
+            cdf: self.cdf,
+            #[cfg(feature = "dim2")]
+            _tail_padding: Default::default(),
         }
-    }
-
-    /// Converts to the GPU `Cdf` struct.
-    fn to_gpu_cdf(&self) -> Cdf {
-        self.cdf
     }
 
     /// Converts the deformation gradient to a GPU `PaddedMatrix`.
@@ -155,7 +153,6 @@ impl ParticleDynamics {
 struct SoAParticles<GpuModel: GpuParticleModelData> {
     positions: Vec<Position>,
     kinematics: Vec<Kinematics>,
-    cdf: Vec<Cdf>,
     def_grad: Vec<PaddedMatrix>,
     properties: Vec<ParticleProperties>,
     models: Vec<GpuModel>,
@@ -171,7 +168,6 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
             .iter()
             .map(|p| p.dynamics.to_gpu_kinematics())
             .collect();
-        let cdf: Vec<_> = particles.iter().map(|p| p.dynamics.to_gpu_cdf()).collect();
         let def_grad: Vec<_> = particles
             .iter()
             .map(|p| p.dynamics.to_gpu_def_grad())
@@ -188,7 +184,6 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
         Self {
             positions,
             kinematics,
-            cdf,
             def_grad,
             properties,
             models,
@@ -332,7 +327,6 @@ pub struct GpuParticles<GpuModel: GpuParticleModelData> {
     pub gpu_len: Tensor<u32>,
     pub positions: Tensor<Position>,
     pub kinematics: Tensor<Kinematics>,
-    pub cdf: Tensor<Cdf>,
     pub def_grad: Tensor<PaddedMatrix>,
     pub properties: Tensor<ParticleProperties>,
     pub models: Tensor<GpuModel>,
@@ -372,7 +366,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             )?,
             positions: Tensor::vector(backend, &data.positions, resizeable)?,
             kinematics: Tensor::vector(backend, &data.kinematics, resizeable)?,
-            cdf: Tensor::vector(backend, &data.cdf, resizeable)?,
             def_grad: Tensor::vector(backend, &data.def_grad, resizeable)?,
             properties: Tensor::vector(backend, &data.properties, resizeable)?,
             models: Tensor::vector(backend, &data.models, resizeable)?,
@@ -409,16 +402,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
     /// Returns mutable reference to kinematics buffer.
     pub fn kinematics_mut(&mut self) -> &mut Tensor<Kinematics> {
         &mut self.kinematics
-    }
-
-    /// Returns reference to CDF buffer.
-    pub fn cdf(&self) -> &Tensor<Cdf> {
-        &self.cdf
-    }
-
-    /// Returns mutable reference to CDF buffer.
-    pub fn cdf_mut(&mut self) -> &mut Tensor<Cdf> {
-        &mut self.cdf
     }
 
     /// Returns reference to deformation gradient buffer.
@@ -474,7 +457,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             gpu_len,
             positions,
             kinematics,
-            cdf,
             def_grad,
             properties,
             models,
@@ -484,7 +466,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
 
         let removed = positions.shift_remove(backend, range.clone())?;
         kinematics.shift_remove(backend, range.clone())?;
-        cdf.shift_remove(backend, range.clone())?;
         def_grad.shift_remove(backend, range.clone())?;
         properties.shift_remove(backend, range.clone())?;
         models.shift_remove(backend, range)?;
@@ -505,7 +486,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             gpu_len,
             positions,
             kinematics,
-            cdf,
             def_grad,
             properties,
             models,
@@ -518,7 +498,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
 
         positions.append(backend, &data.positions)?;
         kinematics.append(backend, &data.kinematics)?;
-        cdf.append(backend, &data.cdf)?;
         def_grad.append(backend, &data.def_grad)?;
         properties.append(backend, &data.properties)?;
         models.append(backend, &data.models)?;

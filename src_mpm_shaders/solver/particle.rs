@@ -125,11 +125,20 @@ pub struct Kinematics {
     pub mass: f32,
     /// Whether this particle is enabled (non-zero = enabled).
     pub enabled: u32,
-    /// 2D: pad to 48 bytes (multiple of 8). 3D: pad to 112 bytes (multiple of 16).
+    /// Alignment padding before CDF field.
+    /// 2D: 4 bytes to align Cdf (align 8) at offset 48. 3D: 12 bytes to align Cdf (align 16) at offset 112.
     #[cfg(feature = "dim2")]
-    pub padding: u32,
+    pub _padding: u32,
     #[cfg(feature = "dim3")]
-    pub padding: [u32; 3],
+    pub _padding: [u32; 3],
+    /// Contact distance field data for CPIC rigid body coupling.
+    pub cdf: Cdf,
+    /// Tail padding so the struct size is a multiple of its alignment.
+    /// On x86_64/arm64, Mat2 (PaddedMatrix in 2D) wraps __m128 with align(16),
+    /// making the struct alignment 16. Without this padding the 2D struct is
+    /// 72 bytes, which is not a multiple of 16.
+    #[cfg(feature = "dim2")]
+    pub _tail_padding: [u32; 2],
 }
 
 /// Static per-particle properties that are read-only on the GPU.

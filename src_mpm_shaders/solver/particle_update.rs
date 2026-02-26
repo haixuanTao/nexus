@@ -18,7 +18,7 @@ use crate::models::default::{DefaultParticleModel, GpuParticleModel};
 use crate::models::interfaces::{ParticleUpdateData, MODEL_FLAGS_FLUID};
 use crate::solver::boundary_condition::{BoundaryCondition, BOUNDARY_CONDITION_SLIP};
 use crate::solver::params::SimulationParams;
-use crate::solver::particle::{Cdf, Kinematics, ParticleProperties, Position};
+use crate::solver::particle::{Kinematics, ParticleProperties, Position};
 use crate::PaddingExt;
 use crate::{diag, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
@@ -67,12 +67,11 @@ pub fn gpu_particle_update(
     particles_model: &mut [GpuParticleModel],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_pos: &mut [Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_kin: &mut [Kinematics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_cdf: &[Cdf],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     particles_def_grad: &mut [PaddedMatrix],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     particles_props: &[ParticleProperties],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] particles_len: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] particles_len: &u32,
 ) {
     let particle_id = invocation_id.x;
 
@@ -84,7 +83,7 @@ pub fn gpu_particle_update(
     let dt = params.dt;
     let cell_width = grid.cell_width;
     let mut kin = particles_kin.read(particle_id as usize);
-    let cdf = particles_cdf.read(particle_id as usize);
+    let cdf = kin.cdf;
     let mut def_grad = particles_def_grad.read(particle_id as usize);
     let props = particles_props.read(particle_id as usize);
     let particle_pos = particles_pos.at(particle_id as usize).pt;

@@ -42,7 +42,7 @@ impl WgG2PCdf {
             &grid.nodes,
             &particles.sorted_ids,
             &particles.positions,
-            &mut particles.cdf,
+            &mut particles.kinematics,
         )
     }
 }

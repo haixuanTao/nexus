@@ -11,7 +11,8 @@ use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{
-    associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Cdf, Position,
+    associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Cdf, Kinematics,
+    Position,
 };
 use crate::{abs, MaybeIndexUnchecked, Vector};
 use crunchy::unroll;
@@ -165,7 +166,7 @@ fn global_shared_memory_transfers(
 #[unroll_for_loops]
 fn particle_g2p(
     particles_pos: &[Position],
-    particles_cdf: &mut [Cdf],
+    particles_kin: &mut [Kinematics],
     particle_id: u32,
     cell_width: f32,
     _dt: f32,
@@ -175,7 +176,7 @@ fn particle_g2p(
     let mut particle_affinity = AffinityBits::EMPTY;
     let mut affinity_signs = [0.0f32; 16];
 
-    let prev_affinity = particles_cdf.at(particle_id as usize).affinity;
+    let prev_affinity = particles_kin.at(particle_id as usize).cdf.affinity;
     let particle_pos = particles_pos.read(particle_id as usize);
     let inv_d = QuadraticKernel::inv_d(cell_width);
     let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
@@ -324,7 +325,7 @@ fn particle_g2p(
             } else {
                 Vec2::ZERO
             };
-            *particles_cdf.at_mut(particle_id as usize) = Cdf::new(
+            particles_kin.at_mut(particle_id as usize).cdf = Cdf::new(
                 normal,
                 Vec2::ZERO, // PERF: init the rigid-velocities here instead of in g2p?
                 result.z,
@@ -341,12 +342,12 @@ fn particle_g2p(
             } else {
                 Vec3::ZERO
             };
-            *particles_cdf.at_mut(particle_id as usize) =
+            particles_kin.at_mut(particle_id as usize).cdf =
                 Cdf::new(normal, Vec3::ZERO, result.w, particle_affinity);
         }
     } else {
         // TODO: store the affinity in this case too?
-        *particles_cdf.at_mut(particle_id as usize) = Cdf::zero();
+        particles_kin.at_mut(particle_id as usize).cdf = Cdf::zero();
     }
 }
 
@@ -371,7 +372,7 @@ pub fn gpu_g2p_cdf(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] nodes: &[Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] sorted_particle_ids: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_pos: &[Position],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_cdf: &mut [Cdf],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_kin: &mut [Kinematics],
     // Shared memory.
     #[spirv(workgroup)] shared_nodes: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
@@ -399,7 +400,7 @@ pub fn gpu_g2p_cdf(
         let particle_id = sorted_particle_ids.read(sorted_particle_id as usize);
         particle_g2p(
             particles_pos,
-            particles_cdf,
+            particles_kin,
             particle_id,
             grid.cell_width,
             params.dt,

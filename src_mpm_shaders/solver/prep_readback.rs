@@ -313,15 +313,14 @@ pub fn gpu_prep_readback(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] instances: &mut [ReadbackData],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_cdf: &[Cdf],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_def_grad: &[PaddedMatrix],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_def_grad: &[PaddedMatrix],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
     particles_props: &[ParticleProperties],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] grid: &Grid,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] base_colors: &[Vec4],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] params: &SimulationParams,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] config: &[RenderConfig],
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] particles_len: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] grid: &Grid,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] base_colors: &[Vec4],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] params: &SimulationParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] config: &[RenderConfig],
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] particles_len: &u32,
 ) {
     let particle_id = invocation_id.x;
 
@@ -331,7 +330,7 @@ pub fn gpu_prep_readback(
 
     let pid = particle_id as usize;
     let kin = particles_kin.at(pid);
-    let cdf = particles_cdf.at(pid);
+    let cdf = &kin.cdf;
     let def_grad = particles_def_grad.at(pid);
     let props = particles_props.at(pid);
     let pos = particles_pos.at(pid);

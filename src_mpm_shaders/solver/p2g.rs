@@ -13,7 +13,7 @@ use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
 use crate::solver::boundary_condition::BoundaryCondition;
-use crate::solver::particle::{dir_to_associated_grid_node, Cdf, Kinematics, Position};
+use crate::solver::particle::{dir_to_associated_grid_node, Kinematics, Position};
 use crate::{
     AngVector, Matrix, MaybeIndexUnchecked, PaddingExt, Vector, TWO_WAYS_COUPLING_ENABLED,
 };
@@ -395,7 +395,6 @@ fn fetch_nodes(
 fn fetch_next_particle<const USE_CPIC: bool>(
     particles_pos: &[Position],
     particles_kin: &[Kinematics],
-    particles_cdf: &[Cdf],
     particle_node_linked_lists: &[u32],
     tid: spirv_std::glam::UVec3,
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
@@ -436,13 +435,12 @@ fn fetch_next_particle<const USE_CPIC: bool>(
                     if curr_particle_id != NONE
                         && particles_kin.at(curr_particle_id as usize).enabled != 0
                     {
-                        if USE_CPIC {
-                            let pcdf = particles_cdf.read(curr_particle_id as usize);
-                            shared_affinities.write(shared_flat_index, pcdf.affinity);
-                            shared_normals.write(shared_flat_index, pcdf.normal);
-                        }
-
                         let pkin = particles_kin.read(curr_particle_id as usize);
+
+                        if USE_CPIC {
+                            shared_affinities.write(shared_flat_index, pkin.cdf.affinity);
+                            shared_normals.write(shared_flat_index, pkin.cdf.normal);
+                        }
                         shared_pos.write(
                             shared_flat_index,
                             particles_pos.read(curr_particle_id as usize),
@@ -493,7 +491,6 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     particle_node_linked_lists: &[u32],
     particles_pos: &[Position],
     particles_kin: &[Kinematics],
-    particles_cdf: &[Cdf],
     nodes: &mut [Node],
     body_vels: &[BodyVelocity],
     body_impulses: &mut [IntegerImpulseAtomic],
@@ -571,7 +568,6 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
             fetch_next_particle::<USE_CPIC>(
                 particles_pos,
                 particles_kin,
-                particles_cdf,
                 particle_node_linked_lists,
                 tid,
                 shared_nodes,
@@ -748,7 +744,6 @@ pub fn gpu_p2g(
         particle_node_linked_lists,
         particles_pos,
         particles_kin,
-        &[],
         nodes,
         &[],
         &mut [],
@@ -785,12 +780,11 @@ pub fn gpu_p2g_cpic(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] particles_kin: &[Kinematics],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] particles_cdf: &[Cdf],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] nodes: &mut [Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] body_vels: &[BodyVelocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)]
     body_materials: &[BoundaryCondition],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
     body_impulses: &mut [IntegerImpulseAtomic],
     // Shared memory arrays.
     // TODO PERF: analyze shared memory access patterns to avoid bank conflicts
@@ -815,7 +809,6 @@ pub fn gpu_p2g_cpic(
         particle_node_linked_lists,
         particles_pos,
         particles_kin,
-        particles_cdf,
         nodes,
         body_vels,
         body_impulses,

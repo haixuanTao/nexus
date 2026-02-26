@@ -55,7 +55,6 @@ impl WgP2G {
                 particles.node_linked_lists(),
                 particles.positions(),
                 particles.kinematics(),
-                particles.cdf(),
                 &mut grid.nodes,
                 &bodies.vels,
                 &body_materials.materials,
