@@ -4,8 +4,8 @@
 //! storing the resulting contact distance field (CDF) data in each node's `cdf` field.
 
 use crate::grid::grid::*;
-use crate::nexus_shaders::dynamics::Velocity as BodyVelocity;
-use crate::nexus_shaders::shapes::Shape;
+use crate::nexus_rbd_shaders::dynamics::Velocity as BodyVelocity;
+use crate::nexus_rbd_shaders::shapes::Shape;
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
@@ -35,7 +35,7 @@ fn collide(
         let shape_pose = collision_shape_poses.read(i);
         let shape_type = shape.shape_type();
 
-        use crate::nexus_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
+        use crate::nexus_rbd_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
         if shape_type != SHAPE_TYPE_POLYLINE && shape_type != SHAPE_TYPE_TRIMESH {
             let proj = shape.project_point_on_boundary(shape_pose, point);
             let dpt = proj.point - point;

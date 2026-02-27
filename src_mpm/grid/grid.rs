@@ -8,7 +8,7 @@ use crate::solver::{GpuParticleModelData, GpuParticles, GpuRigidParticles};
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
 use vortx::tensor::Tensor;
-use nexus::utils::{GpuPrefixSum, PrefixSumWorkspace};
+use nexus_rbd::utils::{GpuPrefixSum, PrefixSumWorkspace};
 
 /// GPU kernels for grid initialization and management.
 ///

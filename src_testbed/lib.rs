@@ -2,9 +2,9 @@
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(feature = "dim2")]
-use nexus2d as nexus;
+use nexus_rbd2d as nexus_rbd;
 #[cfg(feature = "dim3")]
-use nexus3d as nexus;
+use nexus_rbd3d as nexus_rbd;
 #[cfg(feature = "dim2")]
 use rapier2d as rapier;
 #[cfg(feature = "dim3")]
@@ -18,7 +18,7 @@ use backend::{BackendType, CpuBackend, GpuBackend, PhysicsBackend};
 use graphics::{RenderContext, setup_graphics, update_instances};
 use khal::backend::{GpuBackend as KhalGpuBackend, WebGpu};
 use khal::re_exports::wgpu::Limits;
-use nexus::pipeline::{GpuPhysicsPipeline, RunStats};
+use nexus_rbd::pipeline::{GpuPhysicsPipeline, RunStats};
 use ui::{PhysicsContext, RunState, render_compiling_message, render_ui};
 
 #[cfg(feature = "dim3")]

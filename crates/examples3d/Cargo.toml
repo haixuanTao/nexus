@@ -1,5 +1,5 @@
 [package]
-name = "nexus-examples-3d"
+name = "nexus_examples_3d"
 version = "0.4.0"
 authors = ["Sébastien Crozet <developer@crozet.re>"]
 edition = "2024"
@@ -7,7 +7,7 @@ edition = "2024"
 [dependencies]
 glamx = { version = "0.1", default-features = false }
 nexus_testbed3d = { path = "../nexus_testbed3d" }
-nexus3d = { path = "../nexus3d" }
+nexus_rbd3d = { path = "../nexus_rbd3d" }
 rapier3d = "0.32"
 Inflector = "0.11"
 kiss3d = "0.40"

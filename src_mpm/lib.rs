@@ -30,9 +30,9 @@ pub use nexus_mpm_shaders2d as mpm_shaders;
 pub use nexus_mpm_shaders3d as mpm_shaders;
 
 #[cfg(feature = "dim2")]
-pub extern crate nexus2d as nexus;
+pub extern crate nexus_rbd2d as nexus_rbd;
 #[cfg(feature = "dim3")]
-pub extern crate nexus3d as nexus;
+pub extern crate nexus_rbd3d as nexus_rbd;
 
 #[cfg(all(feature = "from_rapier", feature = "dim2"))]
 pub extern crate rapier2d as rapier;

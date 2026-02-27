@@ -1,7 +1,7 @@
 #[cfg(feature = "dim2")]
-use nexus2d as nexus;
+use nexus_rbd2d as nexus_rbd;
 #[cfg(feature = "dim3")]
-use nexus3d as nexus;
+use nexus_rbd3d as nexus_rbd;
 #[cfg(feature = "dim2")]
 use rapier2d as rapier;
 #[cfg(feature = "dim3")]
@@ -10,7 +10,7 @@ use rapier3d as rapier;
 use crate::SimulationState;
 use crate::backend::PhysicsBackend;
 use glamx::Vec3;
-use nexus::math::Pose;
+use nexus_rbd::math::Pose;
 
 #[cfg(feature = "dim3")]
 use kiss3d::color::Color;

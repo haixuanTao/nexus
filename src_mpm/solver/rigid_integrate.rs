@@ -7,7 +7,7 @@ use crate::mpm_shaders::solver::rigid_impulses::{
 use crate::solver::GpuSimulationParams;
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
-use nexus::dynamics::GpuBodySet;
+use nexus_rbd::dynamics::GpuBodySet;
 use vortx::tensor::Tensor;
 
 /// GPU kernels for computing and applying impulses to rigid bodies from MPM.

@@ -1,5 +1,5 @@
 [package]
-name = "nexus-mpm2d"
+name = "nexus_rbd2d"
 authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
 description = "Cross-platform 2D GPU-accelerated rigid-body physics."
 repository = "https://github.com/dimforge/nexus"
@@ -8,8 +8,8 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [lib]
-name = "nexus_mpm2d"
-path = "../../src_mpm/lib.rs"
+name = "nexus_rbd2d"
+path = "../../src_rbd/lib.rs"
 required-features = ["dim2"]
 
 [lints]
@@ -24,17 +24,15 @@ f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
 vulkan = ["khal/vulkan"]
-from_rapier = ["rapier2d", "parry2d", "nexus2d/from_rapier"]
+from_rapier = ["rapier2d", "parry2d"]
 
 [dependencies]
-nexus-mpm-shaders2d = { path = "../nexus-mpm-shaders2d" }
-nexus2d = { path = "../nexus2d", default-features = false, features = ["dim2"] }
+nexus_rbd_shaders2d = { path = "../nexus_rbd_shaders2d" }
 glamx = { version = "0.1", default-features = false, features = ["nostd-libm", "bytemuck", "encase"] }
 include_dir = "0.7"
 khal = { version = "0.2", features = ["derive"] }
 vortx = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
-static_assertions = "1"
 encase = "0.12"
 bvh = "0.7"
 num-traits = "0.2"

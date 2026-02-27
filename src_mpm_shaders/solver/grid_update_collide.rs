@@ -4,17 +4,17 @@
 //! storing the resulting contact distance field (CDF) data in each node's `cdf` field.
 
 use crate::grid::grid::*;
-use crate::nexus_shaders::dynamics::velocity_at_point;
-use crate::nexus_shaders::dynamics::{
+use crate::nexus_rbd_shaders::dynamics::velocity_at_point;
+use crate::nexus_rbd_shaders::dynamics::{
     Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties,
 };
-use crate::nexus_shaders::shapes::Shape;
+use crate::nexus_rbd_shaders::shapes::Shape;
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::params::SimulationParams;
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use nexus_shaders::PaddedVector;
+use nexus_rbd_shaders::PaddedVector;
 use spirv_std::spirv;
 
 struct Collision {
@@ -53,7 +53,7 @@ fn collide(
         let shape_pose = collision_shape_poses.read(i);
         let shape_type = shape.shape_type();
 
-        use crate::nexus_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
+        use crate::nexus_rbd_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
 
         #[cfg(feature = "dim3")]
         let (proj, valid) = if shape_type == SHAPE_TYPE_TRIMESH {

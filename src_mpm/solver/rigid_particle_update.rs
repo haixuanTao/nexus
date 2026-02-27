@@ -9,8 +9,8 @@ use crate::mpm_shaders::solver::rigid_particle_update::{
 use crate::solver::GpuRigidParticles;
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
-use nexus::dynamics::GpuBodySet;
-use nexus::math::Vector;
+use nexus_rbd::dynamics::GpuBodySet;
+use nexus_rbd::math::Vector;
 
 /// GPU kernels for updating rigid body particle positions.
 ///

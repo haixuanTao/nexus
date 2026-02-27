@@ -9,7 +9,7 @@ use crate::mpm_shaders::solver::p2g::{GpuP2g, GpuP2gCpic, IntegerImpulseAtomic};
 use crate::solver::{GpuImpulses, GpuMaterials, GpuParticleModelData, GpuParticles};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
-use nexus::dynamics::GpuBodySet;
+use nexus_rbd::dynamics::GpuBodySet;
 
 /// GPU compute kernel for Particle-to-Grid (P2G) momentum transfer.
 ///

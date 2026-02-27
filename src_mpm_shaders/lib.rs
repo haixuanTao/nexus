@@ -1,6 +1,6 @@
 //! Nexus MPM (Material Point Method) GPU shaders.
 //!
-//! This crate contains Rust GPU shaders for the nexus-mpm solver,
+//! This crate contains Rust GPU shaders for the nexus_mpm solver,
 //! providing GPU-accelerated MPM simulation.
 
 #![cfg_attr(target_arch = "spirv", no_std)]
@@ -11,11 +11,11 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
-// Re-export the nexus-shaders crate for shared types.
+// Re-export the nexus_rbd_shaders crate for shared types.
 #[cfg(feature = "dim2")]
-pub extern crate nexus_shaders2d as nexus_shaders;
+pub extern crate nexus_rbd_shaders2d as nexus_rbd_shaders;
 #[cfg(feature = "dim3")]
-pub extern crate nexus_shaders3d as nexus_shaders;
+pub extern crate nexus_rbd_shaders3d as nexus_rbd_shaders;
 
 // Re-export parry for collision shapes.
 #[cfg(feature = "dim2")]
@@ -27,14 +27,14 @@ pub extern crate parry3d as parry;
 pub use glamx;
 use glamx::*;
 
-// Re-export key types and utilities from nexus-shaders.
-pub use nexus_shaders::MaybeIndexUnchecked;
-pub use nexus_shaders::{abs, acos, asin, atan2, cos, safe_div, sin, sqrt};
-pub use nexus_shaders::{
+// Re-export key types and utilities from nexus_rbd_shaders.
+pub use nexus_rbd_shaders::MaybeIndexUnchecked;
+pub use nexus_rbd_shaders::{abs, acos, asin, atan2, cos, safe_div, sin, sqrt};
+pub use nexus_rbd_shaders::{
     udiv, umod,
 };
-pub use nexus_shaders::{gcross, gcross_av, gdot, maybe_inv, rotation_to_matrix};
-pub use nexus_shaders::{
+pub use nexus_rbd_shaders::{gcross, gcross_av, gdot, maybe_inv, rotation_to_matrix};
+pub use nexus_rbd_shaders::{
     AngVector, Pad, Pose, RotMatrix, Rotation, Vector, PaddedVector, DIM,
 };
 

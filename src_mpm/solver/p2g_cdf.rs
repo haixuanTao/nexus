@@ -5,7 +5,7 @@ use crate::mpm_shaders::solver::p2g_cdf::GpuP2gCdf;
 use crate::solver::GpuRigidParticles;
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
-use nexus::dynamics::GpuBodySet;
+use nexus_rbd::dynamics::GpuBodySet;
 
 /// GPU kernel for P2G transfer from rigid body particles.
 ///

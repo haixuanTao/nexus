@@ -27,9 +27,9 @@ use rapier3d as rapier;
 
 // Re-export the shader crate
 #[cfg(feature = "dim2")]
-pub use nexus_shaders2d as shaders;
+pub use nexus_rbd_shaders2d as shaders;
 #[cfg(feature = "dim3")]
-pub use nexus_shaders3d as shaders;
+pub use nexus_rbd_shaders3d as shaders;
 
 use khal::re_exports::include_dir::{Dir, include_dir};
 

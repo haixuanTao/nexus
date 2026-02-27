@@ -44,7 +44,7 @@ pub fn sand_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
         dt: 1.0 / 60.0,
     };
 
-    const ANGVEL: f32 = 1.0; // 2.0;
+    const ANGVEL: f32 = 2.0;
 
     /*
      * Static platforms.

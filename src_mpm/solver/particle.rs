@@ -6,16 +6,16 @@ use crate::solver::particle_model::GpuParticleModelData;
 use glamx::{Mat2, Mat3, Vec2, Vec3, Vec4};
 use khal::BufferUsages;
 use khal::backend::{Backend, GpuBackend, GpuBackendError};
-use nexus::dynamics::GpuBodySet;
-use nexus::math::{Matrix, Vector};
+use nexus_rbd::dynamics::GpuBodySet;
+use nexus_rbd::math::{Matrix, Vector};
 use std::ops::RangeBounds;
 use vortx::tensor::Tensor;
 
 #[cfg(feature = "from_rapier")]
 use {
     crate::sampling::{self, SamplingBuffers, SamplingParams},
-    nexus::dynamics::body::RapierBodyCouplingEntry,
-    nexus::shapes::ShapeBuffers,
+    nexus_rbd::dynamics::body::RapierBodyCouplingEntry,
+    nexus_rbd::shapes::ShapeBuffers,
 };
 
 /// Particle position type used on the GPU.

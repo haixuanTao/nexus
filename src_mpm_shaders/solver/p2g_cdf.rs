@@ -15,7 +15,7 @@ use crate::solver::particle::{Position, RigidParticleIndices};
 use crate::{abs, MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use nexus_shaders::PaddedVector;
+use nexus_rbd_shaders::PaddedVector;
 use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
 use unroll::unroll_for_loops;

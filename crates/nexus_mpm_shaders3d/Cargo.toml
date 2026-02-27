@@ -1,5 +1,5 @@
 [package]
-name = "nexus-shaders3d"
+name = "nexus_mpm_shaders3d"
 authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
 description = "3D GPU shaders for nexus physics engine (rust-gpu)."
 repository = "https://github.com/dimforge/nexus"
@@ -8,7 +8,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [lib]
-path = "../../src_shaders/lib.rs"
+path = "../../src_mpm_shaders/lib.rs"
 
 [lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
@@ -21,6 +21,8 @@ default = ["dim3"]
 dim3 = []
 unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
 push_constants = []
+# Enables some changes in the shaders for compatibility with web platforms.
+web-compat = []
 
 [dependencies]
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git" }
@@ -29,6 +31,9 @@ vortx-shaders = { path = "../../../vortx/vortx-shaders", default-features = fals
 # Proc-macro crate - always compiles on host, so unconditional dependency is fine
 khal-derive = { path = "../../../khal/crates/khal-derive" }
 parry3d = { version = "0.26", default-features = false, features = ["dim3","f32"] }
+nexus_rbd_shaders3d = { path = "../nexus_rbd_shaders3d", default-features = false, features = ["dim3"] }
+unroll = "0.1"
+crunchy = "0.2"
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
 bytemuck = { version = "1", features = ["derive"] }

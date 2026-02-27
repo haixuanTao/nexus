@@ -8,7 +8,7 @@ use crate::mpm_shaders::solver::g2p::{GpuG2p, GpuG2pCpic};
 use crate::solver::{GpuMaterials, GpuParticleModelData, GpuParticles, GpuSimulationParams};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
-use nexus::dynamics::GpuBodySet;
+use nexus_rbd::dynamics::GpuBodySet;
 
 /// GPU compute kernel for Grid-to-Particle (G2P) velocity interpolation.
 ///

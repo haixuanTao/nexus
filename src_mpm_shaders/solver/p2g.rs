@@ -12,7 +12,7 @@
 use core::ops::Range;
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
-use crate::nexus_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
+use crate::nexus_rbd_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::particle::{dir_to_associated_grid_node, Kinematics, Position};
 use crate::{

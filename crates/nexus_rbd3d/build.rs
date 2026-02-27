@@ -1,14 +1,14 @@
-//! Build script for nexus3d - compiles 3D rust-gpu shaders to SPIR-V.
+//! Build script for nexus_rbd3d - compiles 3D rust-gpu shaders to SPIR-V.
 
 use std::process::Command;
 
 fn main() {
-    let shader_crate = "../nexus-shaders3d";
-    let output_dir = "../../crates/nexus3d/shaders-spirv";
+    let shader_crate = "../nexus_rbd_shaders3d";
+    let output_dir = "../../crates/nexus_rbd3d/shaders-spirv";
 
     println!("cargo:rerun-if-changed={}", shader_crate);
-    // Watch all files in src_shaders recursively
-    for entry in walkdir::WalkDir::new("../../src_shaders")
+    // Watch all files in src_rbd_shaders recursively
+    for entry in walkdir::WalkDir::new("../../src_rbd_shaders")
         .into_iter()
         .filter_map(|e| e.ok())
     {

@@ -4,7 +4,7 @@ use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::grid_update_cdf::GpuGridUpdateCdf;
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
-use nexus::dynamics::GpuBodySet;
+use nexus_rbd::dynamics::GpuBodySet;
 
 /// GPU kernel for updating grid node CDF data from rigid bodies.
 ///

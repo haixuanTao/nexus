@@ -2,7 +2,7 @@
 
 use crate::mpm_shaders::PaddedVector;
 use encase::ShaderType;
-use nexus::math::Vector;
+use nexus_rbd::math::Vector;
 use rapier::geometry::TriMesh;
 
 /// Convert a glamx Vec3 to bvh's Point3 (different glam versions).

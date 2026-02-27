@@ -1,6 +1,6 @@
 use crate::mpm_shaders::solver::particle::{Position, RigidParticleIndices};
 use glamx::UVec3;
-use nexus::math::Vector;
+use nexus_rbd::math::Vector;
 use rapier::geometry::{Segment, TriMesh, Triangle};
 use std::collections::HashSet;
 

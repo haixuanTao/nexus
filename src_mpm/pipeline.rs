@@ -4,7 +4,7 @@
 //! coordinates the execution of all MPM algorithm stages on the GPU.
 
 use crate::grid::grid::{GpuGrid, WgGrid};
-use nexus::utils::{PrefixSumWorkspace, GpuPrefixSum};
+use nexus_rbd::utils::{PrefixSumWorkspace, GpuPrefixSum};
 use crate::grid::sort::WgSort;
 use crate::solver::{
     BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData,
@@ -14,14 +14,14 @@ use crate::solver::{
 };
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
-use nexus::dynamics::GpuBodySet;
-use nexus::math::{Pose, Vector};
+use nexus_rbd::dynamics::GpuBodySet;
+use nexus_rbd::math::{Pose, Vector};
 use std::any::Any;
 use std::marker::PhantomData;
 use vortx::tensor::Tensor;
 
 #[cfg(feature = "from_rapier")]
-use nexus::dynamics::body::{BodyCoupling, RapierBodyCouplingEntry};
+use nexus_rbd::dynamics::body::{BodyCoupling, RapierBodyCouplingEntry};
 
 /// GPU compute pipeline for Material Point Method simulation.
 ///

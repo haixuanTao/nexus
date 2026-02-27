@@ -12,8 +12,8 @@ use crate::{IVector, MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
-use nexus_shaders::MAX_FLT;
-use crate::nexus_shaders::utils::udiv_ceil;
+use nexus_rbd_shaders::MAX_FLT;
+use crate::nexus_rbd_shaders::utils::udiv_ceil;
 use vortx_shaders::utils::atomic_add_u32;
 
 /*

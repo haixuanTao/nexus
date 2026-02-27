@@ -1,14 +1,14 @@
 #[cfg(feature = "dim2")]
-use nexus2d as nexus;
+use nexus_rbd2d as nexus_rbd;
 #[cfg(feature = "dim3")]
-use nexus3d as nexus;
+use nexus_rbd3d as nexus_rbd;
 
 use crate::SimulationBuilders;
 use crate::backend::{BackendType, PhysicsBackend};
 use khal::backend::GpuBackend as KhalGpuBackend;
 use kiss3d::egui::CollapsingHeader;
 use kiss3d::window::Window;
-use nexus::pipeline::RunStats;
+use nexus_rbd::pipeline::RunStats;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RunState {

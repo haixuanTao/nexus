@@ -7,7 +7,7 @@
 
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
-use crate::nexus_shaders::dynamics::{
+use crate::nexus_rbd_shaders::dynamics::{
     velocity_at_point, Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties,
 };
 use crate::solver::boundary_condition::BoundaryCondition;

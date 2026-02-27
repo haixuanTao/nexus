@@ -2,9 +2,9 @@
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(feature = "dim2")]
-pub extern crate nexus2d as nexus;
+pub extern crate nexus_rbd2d as nexus_rbd;
 #[cfg(feature = "dim3")]
-pub extern crate nexus3d as nexus;
+pub extern crate nexus_rbd3d as nexus_rbd;
 #[cfg(feature = "dim2")]
 pub extern crate nexus_mpm2d as nexus_mpm;
 #[cfg(feature = "dim3")]

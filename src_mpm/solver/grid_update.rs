@@ -9,7 +9,7 @@ use crate::mpm_shaders::solver::grid_update_collide::GpuGridUpdateCollide;
 use crate::solver::{GpuMaterials, GpuSimulationParams};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
-use nexus::dynamics::GpuBodySet;
+use nexus_rbd::dynamics::GpuBodySet;
 
 /// GPU compute kernel for updating grid node velocities.
 ///

@@ -207,7 +207,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         // Step rapier to update kinematic bodies.
         let rapier = &mut self.physics.rapier_data;
         rapier.physics_pipeline.step(
-            nexus::math::Vector::ZERO,
+            nexus_rbd::math::Vector::ZERO,
             &rapier.params,
             &mut rapier.islands,
             &mut rapier.broad_phase,

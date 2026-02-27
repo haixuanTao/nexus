@@ -3,7 +3,7 @@
 use crate::solver::particle::RigidParticleIndices;
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 use khal_derive::spirv_bindgen;
-use nexus_shaders::PaddedVector;
+use nexus_rbd_shaders::PaddedVector;
 use spirv_std::spirv;
 
 /// Transforms rigid body sample points from local space to world space.

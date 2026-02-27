@@ -6,7 +6,7 @@
 //! 3. Updating world-space mass properties after pose changes.
 
 use crate::grid::grid::Grid;
-use crate::nexus_shaders::dynamics::{
+use crate::nexus_rbd_shaders::dynamics::{
     apply_impulse, integrate_velocity, update_mprops, Impulse, LocalMassProperties, Velocity,
     WorldMassProperties,
 };
