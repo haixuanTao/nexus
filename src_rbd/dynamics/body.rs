@@ -25,7 +25,6 @@ use {
     crate::rapier::geometry::{ColliderHandle, ColliderSet},
     crate::rapier::prelude::MassProperties,
     crate::shapes::shape_from_parry,
-    num_traits::Zero,
 };
 
 /// A set of rigid-bodies stored on the gpu.
@@ -156,7 +155,7 @@ impl GpuBodySet {
                 pt_collider_ids.push(co_id as u32);
             }
 
-            let zero_mprops = MassProperties::zero();
+            let zero_mprops = MassProperties::default();
             let two_ways_coupling = rb.is_dynamic() && coupling.mode == BodyCoupling::TwoWays;
             let desc = BodyDesc {
                 vel: Velocity::new(

@@ -1,7 +1,6 @@
 // TODO: move this to nexus?
 
 use crate::mpm_shaders::PaddedVector;
-use encase::ShaderType;
 use nexus_rbd::math::Vector;
 use rapier::geometry::TriMesh;
 
@@ -26,7 +25,7 @@ pub struct ShapeBuffers {
     pub indices: Vec<u32>,
 }
 
-#[derive(Copy, Clone, ShaderType)]
+#[derive(Copy, Clone)]
 pub struct GpuTriMesh {
     /// Index of the root AABB in the vertex buffer.
     pub bvh_vtx_root_id: u32,

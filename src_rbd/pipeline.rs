@@ -127,13 +127,7 @@ pub struct GpuPhysicsState {
     uncolored_staging: Tensor<u32>,
     lbvh: LbvhState,
     joints: GpuImpulseJointSet,
-
     prefix_sum_workspace: PrefixSumWorkspace,
-
-    #[allow(dead_code)]
-    debug_aabb_mins: Tensor<Vector>,
-    #[allow(dead_code)]
-    debug_aabb_maxs: Tensor<Vector>,
 }
 
 #[cfg(feature = "from_rapier")]
@@ -311,7 +305,7 @@ impl GpuPhysicsState {
         };
 
         Self {
-            sim_params: Tensor::scalar_encased(
+            sim_params: Tensor::scalar(
                 backend,
                 sim_params,
                 BufferUsages::STORAGE | BufferUsages::UNIFORM,
@@ -379,10 +373,6 @@ impl GpuPhysicsState {
             old_body_constraint_ids,
             new_body_constraint_ids,
             prefix_sum_workspace: PrefixSumWorkspace::default(),
-            debug_aabb_mins: Tensor::vector_uninit_encased(backend, num_bodies as u32, storage)
-                .unwrap(),
-            debug_aabb_maxs: Tensor::vector_uninit_encased(backend, num_bodies as u32, storage)
-                .unwrap(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
         }
     }

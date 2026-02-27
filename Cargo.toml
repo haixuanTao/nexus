@@ -19,6 +19,12 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dimforge/nexus"
+
 [workspace.features]
 default = ["webgpu", "f32"]
 dim2 = []
@@ -37,6 +43,15 @@ khal = { version = "0.2", features = ["derive"] }
 vortx = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
 encase = "0.12"
+web-time = "1"
+static_assertions = "1"
+
+# Shaders deps
+khal-derive = { path = "../khal/crates/khal-derive" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git" }
+vortx-shaders = { path = "../vortx/vortx-shaders", default-features = false }
+unroll = "0.1"
+crunchy = "0.2.4"
 
 [workspace.lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [

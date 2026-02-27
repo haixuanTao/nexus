@@ -13,7 +13,7 @@ pub const TWO_PI: f32 = core::f32::consts::TAU;
 #[derive(Clone, Copy)]
 #[cfg_attr(
     not(target_arch = "spirv"),
-    derive(bytemuck::Pod, bytemuck::Zeroable, encase::ShaderType)
+    derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
 pub struct SimParams {

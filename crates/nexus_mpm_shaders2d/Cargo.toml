@@ -2,10 +2,11 @@
 name = "nexus_mpm_shaders2d"
 authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
 description = "2D GPU shaders for nexus physics engine (rust-gpu)."
-repository = "https://github.com/dimforge/nexus"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
+repository = { workspace = true }
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+
 
 [lib]
 path = "../../src_mpm_shaders/lib.rs"
@@ -25,18 +26,16 @@ push_constants = []
 web-compat = []
 
 [dependencies]
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git" }
-glamx = { path = "../../../glamx", default-features = false, features = ["libm"] }
-vortx-shaders = { path = "../../../vortx/vortx-shaders", default-features = false }
-# Proc-macro crate - always compiles on host, so unconditional dependency is fine
-khal-derive = { path = "../../../khal/crates/khal-derive" }
-parry2d = { version = "0.26", default-features = false, features = ["dim2","f32"] }
 nexus_rbd_shaders2d = { path = "../nexus_rbd_shaders2d", default-features = false, features = ["dim2"] }
-unroll = "0.1"
-crunchy = "0.2.4"
+vortx-shaders = { workspace = true }
+khal-derive = { workspace = true }
+spirv-std = { workspace = true }
+unroll = { workspace = true }
+crunchy = { workspace = true }
+glamx = { workspace = true }
+parry2d = { version = "0.26", default-features = false, features = ["dim2","f32"] }
+
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
-bytemuck = { version = "1", features = ["derive"] }
-encase = "0.12"
-khal = { path = "../../../khal/crates/khal", features = ["derive"] }
-glamx = { path = "../../../glamx", features = ["bytemuck"] }
+bytemuck = { workspace = true }
+khal = { workspace = true }
