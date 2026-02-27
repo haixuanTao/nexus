@@ -1,13 +1,8 @@
-#[cfg(feature = "dim2")]
-use nexus_rbd2d as nexus_rbd;
-#[cfg(feature = "dim3")]
-use nexus_rbd3d as nexus_rbd;
-
 use super::SimulationBackend;
 use crate::SimulationState;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend};
-use nexus_rbd::math::Pose;
-use nexus_rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};
+use nexus::rbd::math::Pose;
+use nexus::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};
 
 /// GPU-based physics backend using nexus
 pub struct GpuBackend {

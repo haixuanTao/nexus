@@ -1,8 +1,8 @@
 use crate::{PhysicsState, RunState, Stage};
 use khal::backend::Backend;
-use nexus_mpm::solver::{GpuParticleModelData, SimulationParams};
+use nexus::mpm::solver::{GpuParticleModelData, SimulationParams};
 
-pub use nexus_mpm::solver::prep_readback::{
+pub use nexus::mpm::solver::prep_readback::{
     GpuReadbackData, ReadbackData, RenderConfig, WgPrepReadback,
 };
 
@@ -207,7 +207,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         // Step rapier to update kinematic bodies.
         let rapier = &mut self.physics.rapier_data;
         rapier.physics_pipeline.step(
-            nexus_rbd::math::Vector::ZERO,
+            nexus::rbd::math::Vector::ZERO,
             &rapier.params,
             &mut rapier.islands,
             &mut rapier.broad_phase,

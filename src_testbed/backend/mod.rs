@@ -4,14 +4,9 @@ mod gpu;
 pub use cpu::CpuBackend;
 pub use gpu::GpuBackend;
 
-#[cfg(feature = "dim2")]
-use nexus_rbd2d as nexus_rbd;
-#[cfg(feature = "dim3")]
-use nexus_rbd3d as nexus_rbd;
-
 use khal::backend::GpuBackend as KhalGpuBackend;
-use nexus_rbd::math::Pose;
-use nexus_rbd::pipeline::RunStats;
+use nexus::rbd::math::Pose;
+use nexus::rbd::pipeline::RunStats;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BackendType {

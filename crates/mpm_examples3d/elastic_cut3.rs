@@ -1,8 +1,8 @@
-use nexus_mpm_testbed3d::{RapierData, nexus_mpm};
+use nexus_mpm_testbed3d::{RapierData, nexus};
 
 use glamx::{Pose3, vec3};
 use khal::backend::GpuBackend;
-use nexus_mpm::{
+use nexus::mpm::{
     pipeline::MpmData,
     solver::{Particle, ParticleModel, SimulationParams},
 };

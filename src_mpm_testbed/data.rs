@@ -1,7 +1,7 @@
 use crate::step::SimulationStepResult;
 use khal::backend::GpuBackend;
-use nexus_mpm::pipeline::{MpmData, MpmPipeline};
-use nexus_mpm::solver::{GpuParticleModel, GpuParticleModelData};
+use nexus::mpm::pipeline::{MpmData, MpmPipeline};
+use nexus::mpm::solver::{GpuParticleModel, GpuParticleModelData};
 use rapier::prelude::{
     CCDSolver, ColliderSet, DefaultBroadPhase, ImpulseJointSet, IntegrationParameters,
     IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, RigidBodySet,

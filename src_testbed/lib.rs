@@ -2,13 +2,13 @@
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(feature = "dim2")]
-use nexus_rbd2d as nexus_rbd;
+extern crate nexus2d as nexus;
 #[cfg(feature = "dim3")]
-use nexus_rbd3d as nexus_rbd;
+extern crate nexus3d as nexus;
 #[cfg(feature = "dim2")]
-use rapier2d as rapier;
+extern crate rapier2d as rapier;
 #[cfg(feature = "dim3")]
-use rapier3d as rapier;
+extern crate rapier3d as rapier;
 
 mod backend;
 mod graphics;
@@ -18,7 +18,7 @@ use backend::{BackendType, CpuBackend, GpuBackend, PhysicsBackend};
 use graphics::{RenderContext, setup_graphics, update_instances};
 use khal::backend::{GpuBackend as KhalGpuBackend, WebGpu};
 use khal::re_exports::wgpu::Limits;
-use nexus_rbd::pipeline::{GpuPhysicsPipeline, RunStats};
+use nexus::rbd::pipeline::{GpuPhysicsPipeline, RunStats};
 use ui::{PhysicsContext, RunState, render_compiling_message, render_ui};
 
 #[cfg(feature = "dim3")]

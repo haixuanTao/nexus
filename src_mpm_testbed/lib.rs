@@ -2,13 +2,9 @@
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(feature = "dim2")]
-pub extern crate nexus_rbd2d as nexus_rbd;
+pub extern crate nexus2d as nexus;
 #[cfg(feature = "dim3")]
-pub extern crate nexus_rbd3d as nexus_rbd;
-#[cfg(feature = "dim2")]
-pub extern crate nexus_mpm2d as nexus_mpm;
-#[cfg(feature = "dim3")]
-pub extern crate nexus_mpm3d as nexus_mpm;
+pub extern crate nexus3d as nexus;
 #[cfg(feature = "dim2")]
 pub extern crate rapier2d as rapier;
 #[cfg(feature = "dim3")]
@@ -28,8 +24,8 @@ use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps, WebGpu
 use khal::re_exports::wgpu::Limits;
 use kiss3d::egui;
 use kiss3d::prelude::*;
-use nexus_mpm::pipeline::{MpmPipeline, MpmPipelineHooks};
-use nexus_mpm::solver::GpuParticleModelData;
+use nexus::mpm::pipeline::{MpmPipeline, MpmPipelineHooks};
+use nexus::mpm::solver::GpuParticleModelData;
 use rapier::geometry::{ColliderHandle, Shape, ShapeType};
 
 #[cfg(feature = "dim3")]
@@ -176,7 +172,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
         #[cfg(feature = "dim3")]
         self.instances
             .extend(self.step_result.instances.iter().map(|d| {
-                use nexus_mpm::mpm_shaders::PaddingExt;
+                use nexus::mpm::mpm_shaders::PaddingExt;
                 InstanceData3d {
                     position: d.position,
                     color: Color::new(d.color.x, d.color.y, d.color.z, d.color.w),
@@ -203,7 +199,7 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             #[cfg(feature = "dim3")]
             self.rigid_instances
                 .extend(self.step_result.rigid_instances.iter().map(|d| {
-                    use nexus_mpm::mpm_shaders::PaddingExt;
+                    use nexus::mpm::mpm_shaders::PaddingExt;
                     InstanceData3d {
                         position: d.position,
                         color: Color::new(d.color.x, d.color.y, d.color.z, d.color.w),

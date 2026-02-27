@@ -22,11 +22,10 @@ dim2 = []
 webgpu = ["khal/webgpu"]
 
 [dependencies]
+nexus2d = { path = "../nexus2d", features = ["rbd", "mpm", "from_rapier"]}
 glamx = { version = "0.1", default-features = false }
 khal = { version = "0.2", features = ["derive"] }
 vortx = "0.2"
-nexus_mpm2d = { path = "../nexus_mpm2d", default-features = false, features = ["dim2", "from_rapier"] }
-nexus_rbd2d = { path = "../nexus_rbd2d", features = ["from_rapier"] }
 rapier2d = "0.32"
 bytemuck = { version = "1", features = ["derive"] }
 kiss3d = { version = "0.40", features = ["egui"] }

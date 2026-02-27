@@ -1,8 +1,8 @@
-use nexus_mpm_testbed3d::{PhysicsState, RapierData, nexus_mpm};
+use nexus_mpm_testbed3d::{PhysicsState, RapierData, nexus};
 
 use glamx::vec3;
 use khal::backend::GpuBackend;
-use nexus_mpm::{
+use nexus::mpm::{
     pipeline::MpmData,
     solver::{BoundaryCondition, BoundaryConditionExt, Particle, ParticleModel, SimulationParams},
 };
