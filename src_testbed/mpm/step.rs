@@ -1,4 +1,6 @@
-use crate::{PhysicsState, RunState, Stage};
+use crate::RunState;
+use crate::mpm::data::PhysicsState;
+use crate::mpm::MpmStage;
 use khal::backend::Backend;
 use nexus::mpm::solver::{GpuParticleModelData, SimulationParams};
 
@@ -11,9 +13,7 @@ pub struct SimulationTimes {
     pub total_step_time: f32,
     pub encoding_time: f32,
     pub readback_time: f32,
-    /// Per-pass GPU timings aggregated by label (ordered).
     pub gpu_pass_times: Vec<(String, f64)>,
-    /// Total GPU time across all passes.
     pub gpu_total_time: f64,
 }
 
@@ -24,12 +24,8 @@ pub struct SimulationStepResult {
     pub timings: SimulationTimes,
 }
 
-impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
+impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
     pub async fn step_simulation(&mut self) -> bool {
-        if self.app_state.run_state == RunState::Paused {
-            return false;
-        }
-
         let physics = &mut self.physics;
         let prev_particle_count = physics.data.particles.len();
 
@@ -220,10 +216,6 @@ impl<GpuModel: GpuParticleModelData> Stage<GpuModel> {
             &(),
             &(),
         );
-
-        if self.app_state.run_state == RunState::Step {
-            self.app_state.run_state = RunState::Paused;
-        }
 
         self.step_result.timings = SimulationTimes {
             total_step_time: t_total_step,

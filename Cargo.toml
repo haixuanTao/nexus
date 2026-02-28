@@ -14,10 +14,6 @@ members = [
     "crates/nexus_mpm_shaders3d",
     "crates/nexus_mpm2d",
     "crates/nexus_mpm3d",
-    "crates/nexus_mpm_testbed2d",
-    "crates/nexus_mpm_testbed3d",
-    "crates/mpm_examples2d",
-    "crates/mpm_examples3d",
 ]
 resolver = "2"
 

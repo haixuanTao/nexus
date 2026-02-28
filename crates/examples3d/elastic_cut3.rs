@@ -1,4 +1,5 @@
-use nexus_mpm_testbed3d::{RapierData, nexus};
+use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
+use nexus_testbed3d::nexus;
 
 use glamx::{Pose3, vec3};
 use khal::backend::GpuBackend;
@@ -6,16 +7,15 @@ use nexus::mpm::{
     pipeline::MpmData,
     solver::{Particle, ParticleModel, SimulationParams},
 };
-use nexus_mpm_testbed3d::{AppState, PhysicsContext};
 use rapier3d::parry::utils::Array2;
 use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
 #[allow(dead_code)]
 fn main() {
-    panic!("Run the `mpm_testbed3` binary instead.");
+    panic!("Run the `all_examples3` binary instead.");
 }
 
-pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsContext {
+pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
     let mut rapier_data = RapierData::default();
 
     let nxz = 50;
@@ -86,7 +86,7 @@ pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physi
     )
     .unwrap();
 
-    PhysicsContext {
+    MpmPhysicsContext {
         data,
         rapier_data,
         callbacks: vec![],

@@ -1,17 +1,18 @@
-use nexus_mpm_testbed2d::{AppState, PhysicsContext, RapierData, nexus_mpm, rapier};
+use nexus_testbed2d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
+use nexus_testbed2d::{nexus, rapier};
 
 use glamx::Vec2;
 use khal::backend::GpuBackend;
-use nexus_mpm::pipeline::MpmData;
-use nexus_mpm::solver::{Particle, ParticleModel, SimulationParams};
+use nexus::mpm::pipeline::MpmData;
+use nexus::mpm::solver::{Particle, ParticleModel, SimulationParams};
 use rapier::prelude::{ColliderBuilder, RigidBodyBuilder};
 
 #[allow(dead_code)]
 fn main() {
-    panic!("Run the `mpm_testbed2` binary instead.");
+    panic!("Run the `all_examples2` binary instead.");
 }
 
-pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsContext {
+pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
     let mut rapier_data = RapierData::default();
 
     let offset_y = 46.0;
@@ -98,7 +99,7 @@ pub fn elastic_cut_demo(backend: &GpuBackend, app_state: &mut AppState) -> Physi
         30_000,
     )
     .unwrap();
-    PhysicsContext {
+    MpmPhysicsContext {
         data,
         rapier_data,
         callbacks: vec![],

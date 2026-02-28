@@ -1,4 +1,5 @@
-use nexus_mpm_testbed3d::{PhysicsState, RapierData, nexus};
+use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, PhysicsState, RapierData};
+use nexus_testbed3d::nexus;
 
 use glamx::vec3;
 use khal::backend::GpuBackend;
@@ -6,15 +7,14 @@ use nexus::mpm::{
     pipeline::MpmData,
     solver::{BoundaryCondition, BoundaryConditionExt, Particle, ParticleModel, SimulationParams},
 };
-use nexus_mpm_testbed3d::{AppState, PhysicsContext};
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder};
 
 #[allow(dead_code)]
 fn main() {
-    panic!("Run the `mpm_testbed3` binary instead.");
+    panic!("Run the `all_examples3` binary instead.");
 }
 
-pub fn beam_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsContext {
+pub fn beam_demo(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
     let mut rapier_data = RapierData::default();
 
     let width = 10.0;
@@ -89,7 +89,7 @@ pub fn beam_demo(backend: &GpuBackend, app_state: &mut AppState) -> PhysicsConte
         println!("max diff: {} (all time: {})", max_diff, all_time_max);
     };
 
-    PhysicsContext {
+    MpmPhysicsContext {
         data,
         rapier_data,
         callbacks: vec![Box::new(callback)],

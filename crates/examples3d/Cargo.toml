@@ -9,6 +9,7 @@ glamx = { version = "0.1", default-features = false }
 nexus_testbed3d = { path = "../nexus_testbed3d" }
 nexus_rbd3d = { path = "../nexus_rbd3d" }
 rapier3d = "0.32"
+khal = { version = "0.2" }
 Inflector = "0.11"
 kiss3d = "0.40"
 oorandom = "11"

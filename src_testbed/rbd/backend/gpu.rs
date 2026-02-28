@@ -1,5 +1,5 @@
 use super::SimulationBackend;
-use crate::SimulationState;
+use crate::rbd::SimulationState;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend};
 use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};

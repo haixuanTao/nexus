@@ -1,4 +1,5 @@
-use crate::step::SimulationStepResult;
+use crate::mpm::step::SimulationStepResult;
+use crate::RunState;
 use khal::backend::GpuBackend;
 use nexus::mpm::pipeline::{MpmData, MpmPipeline};
 use nexus::mpm::solver::{GpuParticleModel, GpuParticleModelData};
@@ -8,8 +9,7 @@ use rapier::prelude::{
 };
 use std::any::Any;
 
-pub struct AppState<GpuModel: GpuParticleModelData = GpuParticleModel> {
-    pub run_state: RunState,
+pub struct MpmAppState<GpuModel: GpuParticleModelData = GpuParticleModel> {
     pub render_mode: RenderMode,
     pub pipeline: MpmPipeline<GpuModel>,
     pub min_num_substeps: u32,
@@ -60,18 +60,11 @@ impl<GpuModel: GpuParticleModelData> PhysicsState<'_, GpuModel> {
     }
 }
 
-pub struct PhysicsContext<GpuModel: GpuParticleModelData = GpuParticleModel> {
+pub struct MpmPhysicsContext<GpuModel: GpuParticleModelData = GpuParticleModel> {
     pub data: MpmData<GpuModel>,
     pub rapier_data: RapierData,
     pub callbacks: Vec<Box<dyn PhysicsCallback<GpuModel>>>,
     pub hooks_state: Option<Box<dyn Any>>,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum RunState {
-    Running,
-    Paused,
-    Step,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
