@@ -1,3 +1,4 @@
+use nexus_testbed3d::DemoBuilder;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, PhysicsState, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -14,7 +15,11 @@ fn main() {
     panic!("Run the `all_examples3` binary instead.");
 }
 
-pub fn beam_demo(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
+pub fn builder() -> DemoBuilder {
+    DemoBuilder::mpm("Cantilever beam", build)
+}
+
+fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
     let mut rapier_data = RapierData::default();
 
     let width = 10.0;

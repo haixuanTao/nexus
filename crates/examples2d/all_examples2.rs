@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use nexus_testbed2d::{DemoBuilder, Testbed};
+use nexus_testbed2d::Testbed;
 use std::cmp::Ordering;
 
 mod balls2;
@@ -43,21 +43,21 @@ fn demo_name_from_url() -> Option<String> {
 
 #[kiss3d::main]
 pub async fn main() {
-    let mut builders: Vec<DemoBuilder> = vec![
-        DemoBuilder::Rbd("Balls", balls2::init_world),
-        DemoBuilder::Rbd("Boxes", boxes2::init_world),
-        DemoBuilder::Rbd("Boxes & balls", boxes_and_balls2::init_world),
-        DemoBuilder::Rbd("Pyramid", pyramid2::init_world),
-        DemoBuilder::Rbd("Primitives", primitives2::init_world),
-        DemoBuilder::Rbd("Polyline", polyline2::init_world),
-        DemoBuilder::Rbd("Joints (spherical)", joint_ball2::init_world),
-        DemoBuilder::Rbd("Joints (prismatic)", joint_prismatic2::init_world),
-        DemoBuilder::Rbd("Joints (fixed)", joint_fixed2::init_world),
+    let mut builders = vec![
+        balls2::builder(),
+        boxes2::builder(),
+        boxes_and_balls2::builder(),
+        pyramid2::builder(),
+        primitives2::builder(),
+        polyline2::builder(),
+        joint_ball2::builder(),
+        joint_prismatic2::builder(),
+        joint_fixed2::builder(),
         // MPM demos.
-        DemoBuilder::Mpm("Cantilever beam".to_string(), centilever_beam2::beam_demo),
-        DemoBuilder::Mpm("Sand".to_string(), sand2::sand_demo),
-        DemoBuilder::Mpm("Elasticity".to_string(), elasticity2::elasticity_demo),
-        DemoBuilder::Mpm("Elastic cut".to_string(), elastic_cut2::elastic_cut_demo),
+        centilever_beam2::builder(),
+        sand2::builder(),
+        elasticity2::builder(),
+        elastic_cut2::builder(),
     ];
 
     // Lexicographic sort, with stress tests moved at the end of the list.

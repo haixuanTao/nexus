@@ -1,3 +1,4 @@
+use nexus_testbed2d::DemoBuilder;
 use nexus_testbed2d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed2d::{nexus, rapier};
 
@@ -12,7 +13,11 @@ fn main() {
     panic!("Run the `all_examples2` binary instead.");
 }
 
-pub fn sand_demo(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
+pub fn builder() -> DemoBuilder {
+    DemoBuilder::mpm("Sand", build)
+}
+
+fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
     let mut rapier_data = RapierData::default();
 
     let offset_y = 46.0;

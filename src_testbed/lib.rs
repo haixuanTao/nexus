@@ -10,12 +10,14 @@ pub extern crate rapier2d as rapier;
 #[cfg(feature = "dim3")]
 pub extern crate rapier3d as rapier;
 
+pub mod fem;
 pub mod mpm;
 pub mod rbd;
 mod ui;
 
 use std::collections::HashMap;
 
+use fem::FemStage;
 use mpm::MpmStage;
 use rbd::{BackendType, PhysicsBackend, RenderContext, setup_graphics, setup_physics, update_instances};
 use khal::backend::{GpuBackend as KhalGpuBackend, WebGpu};
@@ -58,16 +60,54 @@ pub struct UiSections {
     pub show_performance: bool,
 }
 
+/// Initial camera position for a demo.
+#[derive(Clone, Copy)]
+pub struct CameraSetup {
+    pub eye: glamx::Vec3,
+    pub target: glamx::Vec3,
+}
+
 pub enum DemoBuilder {
-    Rbd(&'static str, fn() -> SimulationState),
-    Mpm(String, mpm::MpmSceneBuildFn<GpuParticleModel>),
+    Rbd(&'static str, fn() -> SimulationState, Option<CameraSetup>),
+    Mpm(String, mpm::MpmSceneBuildFn<GpuParticleModel>, Option<CameraSetup>),
+    Fem(String, fem::FemSceneBuildFn, Option<CameraSetup>),
 }
 
 impl DemoBuilder {
+    pub fn rbd(name: &'static str, f: fn() -> SimulationState) -> Self {
+        Self::Rbd(name, f, None)
+    }
+
+    pub fn mpm(name: impl Into<String>, f: mpm::MpmSceneBuildFn<GpuParticleModel>) -> Self {
+        Self::Mpm(name.into(), f, None)
+    }
+
+    pub fn fem(name: impl Into<String>, f: fem::FemSceneBuildFn) -> Self {
+        Self::Fem(name.into(), f, None)
+    }
+
+    pub fn with_camera(mut self, eye: glamx::Vec3, target: glamx::Vec3) -> Self {
+        match &mut self {
+            Self::Rbd(_, _, c) | Self::Mpm(_, _, c) | Self::Fem(_, _, c) => {
+                *c = Some(CameraSetup { eye, target });
+            }
+        }
+        self
+    }
+
     pub fn name(&self) -> &str {
         match self {
-            DemoBuilder::Rbd(name, _) => name,
-            DemoBuilder::Mpm(name, _) => name.as_str(),
+            DemoBuilder::Rbd(name, ..) => name,
+            DemoBuilder::Mpm(name, ..) => name.as_str(),
+            DemoBuilder::Fem(name, ..) => name.as_str(),
+        }
+    }
+
+    pub fn camera(&self) -> Option<&CameraSetup> {
+        match self {
+            DemoBuilder::Rbd(_, _, c) | DemoBuilder::Mpm(_, _, c) | DemoBuilder::Fem(_, _, c) => {
+                c.as_ref()
+            }
         }
     }
 }
@@ -82,6 +122,10 @@ enum ActiveDemo {
         colliders_gfx: HashMap<ColliderHandle, RenderNode>,
         particle_node: RenderNode,
         rigid_particle_node: RenderNode,
+    },
+    Fem {
+        stage: FemStage,
+        vertex_node: RenderNode,
     },
 }
 
@@ -203,6 +247,12 @@ impl Testbed {
             )
             .await;
 
+        // Apply initial camera if the demo specifies one.
+        #[cfg(feature = "dim3")]
+        if let Some(cam) = self.builders[self.selected_demo].camera() {
+            camera3d = OrbitCamera3d::new(cam.eye, cam.target);
+        }
+
         while window
             .render(
                 Some(&mut scene3d),
@@ -250,6 +300,11 @@ impl Testbed {
                         particle_node.detach();
                         rigid_particle_node.detach();
                     }
+                    ActiveDemo::Fem {
+                        mut vertex_node, ..
+                    } => {
+                        vertex_node.detach();
+                    }
                 }
 
                 active_demo = self
@@ -259,6 +314,12 @@ impl Testbed {
                         &mut scene3d,
                     )
                     .await;
+
+                // Apply camera if the new demo specifies one.
+                #[cfg(feature = "dim3")]
+                if let Some(cam) = self.builders[self.selected_demo].camera() {
+                    camera3d = OrbitCamera3d::new(cam.eye, cam.target);
+                }
             }
 
             self.step_simulation(gpu.as_ref(), &mut active_demo).await;
@@ -272,7 +333,7 @@ impl Testbed {
         scene3d: &mut SceneNode3d,
     ) -> ActiveDemo {
         match &self.builders[self.selected_demo] {
-            DemoBuilder::Rbd(_, builder) => {
+            DemoBuilder::Rbd(_, builder, _) => {
                 let phys = builder();
                 let physics = setup_physics(
                     gpu,
@@ -288,7 +349,7 @@ impl Testbed {
                     render_ctx,
                 }
             }
-            DemoBuilder::Mpm(_, _builder) => {
+            DemoBuilder::Mpm(_, _builder, _) => {
                 let _builder = *_builder;
                 let gpu = gpu.expect("GPU required for MPM demos");
 
@@ -298,7 +359,7 @@ impl Testbed {
                     .builders
                     .iter()
                     .filter_map(|b| match b {
-                        DemoBuilder::Mpm(name, f) => Some((name.clone(), *f)),
+                        DemoBuilder::Mpm(name, f, _) => Some((name.clone(), *f)),
                         _ => None,
                     })
                     .collect();
@@ -359,6 +420,51 @@ impl Testbed {
                     rigid_particle_node,
                 }
             }
+            DemoBuilder::Fem(_, _builder, _) => {
+                let _builder = *_builder;
+                let gpu = gpu.expect("GPU required for FEM demos");
+
+                let fem_builders: Vec<_> = self
+                    .builders
+                    .iter()
+                    .filter_map(|b| match b {
+                        DemoBuilder::Fem(name, f, _) => Some((name.clone(), *f)),
+                        _ => None,
+                    })
+                    .collect();
+
+                let current_name = self.builders[self.selected_demo].name();
+                let fem_demo_idx = fem_builders
+                    .iter()
+                    .position(|(name, _)| name == current_name)
+                    .unwrap_or(0);
+
+                let init_builders = vec![fem_builders[fem_demo_idx].clone()];
+                let mut stage = FemStage::new(
+                    KhalGpuBackend::WebGpu(
+                        match gpu {
+                            KhalGpuBackend::WebGpu(w) => w.clone(),
+                            #[allow(unreachable_patterns)]
+                            _ => panic!("Expected WebGpu backend"),
+                        },
+                    ),
+                    init_builders,
+                )
+                .await;
+
+                stage.builders = fem_builders;
+                stage.selected_demo = fem_demo_idx;
+
+                #[cfg(feature = "dim2")]
+                let vertex_node = scene2d.add_rectangle(1.0, 1.0);
+                #[cfg(feature = "dim3")]
+                let vertex_node = scene3d.add_cube(1.0, 1.0, 1.0);
+
+                ActiveDemo::Fem {
+                    stage,
+                    vertex_node,
+                }
+            }
         }
     }
 
@@ -390,6 +496,15 @@ impl Testbed {
                 mpm::update_colliders(&stage.physics, colliders_gfx);
                 particle_node.set_instances(&stage.instances);
                 rigid_particle_node.set_instances(&stage.rigid_instances);
+            }
+            ActiveDemo::Fem {
+                stage,
+                vertex_node,
+            } => {
+                if self.run_state != RunState::Paused {
+                    stage.update().await;
+                }
+                vertex_node.set_instances(&stage.instances);
             }
         }
 

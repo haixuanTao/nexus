@@ -1,7 +1,11 @@
-use nexus_testbed3d::SimulationState;
+use nexus_testbed3d::{DemoBuilder, SimulationState};
 use rapier3d::prelude::*;
 
-pub fn init_world() -> SimulationState {
+pub fn builder() -> DemoBuilder {
+    DemoBuilder::rbd("Balls", build)
+}
+
+fn build() -> SimulationState {
     const NXZ: isize = 30;
     const NY: isize = 70;
 

@@ -22,7 +22,7 @@ dim3 = []
 webgpu = ["khal/webgpu"]
 
 [dependencies]
-nexus3d = { path = "../nexus3d", features = ["rbd", "mpm", "from_rapier"]}
+nexus3d = { path = "../nexus3d", features = ["rbd", "mpm", "fem", "from_rapier"]}
 glamx = { version = "0.1", default-features = false }
 khal = { version = "0.2", features = ["derive"] }
 vortx = "0.2"

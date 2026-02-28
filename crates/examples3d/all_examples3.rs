@@ -24,6 +24,9 @@ mod elastic_cut3;
 mod heightfield3;
 mod sand3;
 
+// FEM examples.
+mod fem_cube3;
+
 enum Command {
     Run(String),
     List,
@@ -47,23 +50,25 @@ fn parse_command_line() -> Command {
 #[allow(clippy::type_complexity)]
 pub fn demo_builders() -> Vec<DemoBuilder> {
     let mut builders: Vec<DemoBuilder> = vec![
-        DemoBuilder::Rbd("Balls", balls3::init_world),
-        DemoBuilder::Rbd("Boxes", boxes3::init_world),
-        DemoBuilder::Rbd("Boxes & balls", boxes_and_balls3::init_world),
-        DemoBuilder::Rbd("Primitives", primitives3::init_world),
-        DemoBuilder::Rbd("Pyramid", pyramid3::init_world),
-        DemoBuilder::Rbd("Many pyramids", many_pyramids3::init_world),
-        DemoBuilder::Rbd("Keva tower", keva3::init_world),
-        DemoBuilder::Rbd("Joints (Spherical)", joint_ball3::init_world),
-        DemoBuilder::Rbd("Joints (Fixed)", joint_fixed3::init_world),
-        DemoBuilder::Rbd("Joints (Prismatic)", joint_prismatic3::init_world),
-        DemoBuilder::Rbd("Joints (Revolute)", joint_revolute3::init_world),
-        DemoBuilder::Rbd("Trimesh", trimesh3::init_world),
+        balls3::builder(),
+        boxes3::builder(),
+        boxes_and_balls3::builder(),
+        primitives3::builder(),
+        pyramid3::builder(),
+        many_pyramids3::builder(),
+        keva3::builder(),
+        joint_ball3::builder(),
+        joint_fixed3::builder(),
+        joint_prismatic3::builder(),
+        joint_revolute3::builder(),
+        trimesh3::builder(),
         // MPM demos.
-        DemoBuilder::Mpm("Cantilever beam".to_string(), centilever_beam3::beam_demo),
-        DemoBuilder::Mpm("Sand".to_string(), sand3::sand_demo),
-        DemoBuilder::Mpm("Heightfield".to_string(), heightfield3::heightfield_demo),
-        DemoBuilder::Mpm("Elastic cut".to_string(), elastic_cut3::elastic_cut_demo),
+        centilever_beam3::builder(),
+        sand3::builder(),
+        heightfield3::builder(),
+        elastic_cut3::builder(),
+        // FEM demos.
+        fem_cube3::builder(),
     ];
 
     // Lexicographic sort, with stress tests moved at the end of the list.

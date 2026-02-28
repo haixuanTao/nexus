@@ -14,6 +14,10 @@ members = [
     "crates/nexus_mpm_shaders3d",
     "crates/nexus_mpm2d",
     "crates/nexus_mpm3d",
+    "crates/nexus_fem_shaders2d",
+    "crates/nexus_fem_shaders3d",
+    "crates/nexus_fem2d",
+    "crates/nexus_fem3d",
 ]
 resolver = "2"
 

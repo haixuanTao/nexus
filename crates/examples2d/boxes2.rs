@@ -1,7 +1,11 @@
-use nexus_testbed2d::SimulationState;
+use nexus_testbed2d::{DemoBuilder, SimulationState};
 use rapier2d::prelude::*;
 
-pub fn init_world() -> SimulationState {
+pub fn builder() -> DemoBuilder {
+    DemoBuilder::rbd("Boxes", build)
+}
+
+fn build() -> SimulationState {
     /*
      * World
      */

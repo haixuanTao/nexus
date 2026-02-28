@@ -1,0 +1,38 @@
+[package]
+name = "nexus_fem3d"
+authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
+description = "Cross-platform 3D GPU-accelerated FEM physics."
+repository = { workspace = true }
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+
+[lib]
+name = "nexus_fem3d"
+path = "../../src_fem/lib.rs"
+required-features = ["dim3"]
+
+[lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("dim2"))',
+] }
+
+[features]
+default = ["dim3", "f32", "webgpu"]
+dim3 = []
+f32 = []
+f64 = []
+webgpu = ["khal/webgpu"]
+vulkan = ["khal/vulkan"]
+
+[dependencies]
+nexus_fem_shaders3d = { path = "../nexus_fem_shaders3d" }
+glamx = { workspace = true }
+include_dir = { workspace = true }
+khal = { workspace = true }
+vortx = { workspace = true }
+bytemuck = { workspace = true }
+web-time = { workspace = true }
+
+[build-dependencies]
+walkdir = "2"

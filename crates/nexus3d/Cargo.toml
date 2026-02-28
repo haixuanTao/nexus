@@ -21,13 +21,15 @@ default = ["dim3", "f32", "webgpu"]
 dim3 = []
 f32 = []
 f64 = []
-webgpu = ["nexus_rbd3d?/webgpu", "nexus_mpm3d?/webgpu"]
+webgpu = ["nexus_rbd3d?/webgpu", "nexus_mpm3d?/webgpu", "nexus_fem3d?/webgpu"]
 from_rapier = ["nexus_rbd3d?/from_rapier", "nexus_mpm3d?/from_rapier"]
 
 rbd = ["dep:nexus_rbd3d"]
 mpm = ["dep:nexus_mpm3d"]
+fem = ["dep:nexus_fem3d"]
 
 [dependencies]
 nexus_rbd3d = { path = "../nexus_rbd3d", optional = true }
 nexus_mpm3d = { path = "../nexus_mpm3d", optional = true }
+nexus_fem3d = { path = "../nexus_fem3d", optional = true }
 

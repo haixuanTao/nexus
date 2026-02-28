@@ -258,7 +258,7 @@ fn examples_section(
         .iter()
         .enumerate()
         .filter_map(|(i, b)| match b {
-            DemoBuilder::Rbd(name, _) => Some((i, *name)),
+            DemoBuilder::Rbd(name, ..) => Some((i, *name)),
             _ => None,
         })
         .collect();
@@ -267,7 +267,7 @@ fn examples_section(
         .iter()
         .enumerate()
         .filter_map(|(i, b)| match b {
-            DemoBuilder::Mpm(name, _) => Some((i, name.as_str())),
+            DemoBuilder::Mpm(name, ..) => Some((i, name.as_str())),
             _ => None,
         })
         .collect();
@@ -319,6 +319,39 @@ fn examples_section(
                 }
             });
     }
+
+    let fem_demos: Vec<(usize, &str)> = builders
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| match b {
+            DemoBuilder::Fem(name, ..) => Some((i, name.as_str())),
+            _ => None,
+        })
+        .collect();
+
+    if !fem_demos.is_empty() {
+        CollapsingHeader::new(format!("FEM ({})", fem_demos.len()))
+            .default_open(true)
+            .show(ui, |ui| {
+                for (idx, name) in &fem_demos {
+                    let is_selected = *selected_demo == *idx;
+                    let text = if is_selected {
+                        RichText::new(*name).strong()
+                    } else {
+                        RichText::new(*name)
+                    };
+                    if ui
+                        .selectable_label(is_selected, text)
+                        .on_hover_text("Click to run this example")
+                        .clicked()
+                        && !is_selected
+                    {
+                        *selected_demo = *idx;
+                        result.new_selected_demo = Some(*idx);
+                    }
+                }
+            });
+    }
 }
 
 fn settings_section(
@@ -340,6 +373,9 @@ fn settings_section(
             ..
         } => {
             mpm_settings(ui, builders, stage, colliders_gfx, result);
+        }
+        ActiveDemo::Fem { stage, .. } => {
+            fem_settings(ui, builders, stage, result);
         }
     }
 }
@@ -466,6 +502,9 @@ fn performance_section(
         }
         ActiveDemo::Mpm { stage, .. } => {
             mpm_performance(ui, stage);
+        }
+        ActiveDemo::Fem { stage, .. } => {
+            fem_performance(ui, stage);
         }
     }
 }
@@ -639,6 +678,120 @@ fn mpm_performance(
             .default_open(false)
             .show(ui, |ui| {
                 egui::Grid::new("mpm_gpu_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 2.0])
+                    .show(ui, |ui| {
+                        for (label, ms) in &timings.gpu_pass_times {
+                            ui.label(format!("{}:", label));
+                            ui.label(format!("{:.2}ms", ms));
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+}
+
+fn fem_settings(
+    ui: &mut egui::Ui,
+    builders: &[DemoBuilder],
+    stage: &mut crate::fem::FemStage,
+    result: &mut UiInteractions,
+) {
+    ui.label(RichText::new("Scene").strong());
+    ui.add_space(2.0);
+
+    egui::Grid::new("fem_scene_info")
+        .num_columns(2)
+        .spacing([20.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("Vertices:");
+            ui.label(format!("{}", stage.data.num_vertices));
+            ui.end_row();
+
+            ui.label("Elements:");
+            ui.label(format!("{}", stage.data.num_elements));
+            ui.end_row();
+
+            ui.label("Substeps:");
+            ui.label(format!("{}", stage.data.num_substeps));
+            ui.end_row();
+        });
+
+    // Handle FEM demo switching within FEM demos.
+    if let Some(new_demo_idx) = result.new_selected_demo {
+        if matches!(builders[new_demo_idx], DemoBuilder::Fem(..)) {
+            let new_name = builders[new_demo_idx].name();
+            if let Some(fem_idx) = stage
+                .builders
+                .iter()
+                .position(|(name, _)| name == new_name)
+            {
+                stage.set_demo(fem_idx);
+            }
+        }
+    }
+}
+
+fn fem_performance(
+    ui: &mut egui::Ui,
+    stage: &crate::fem::FemStage,
+) {
+    ui.label(RichText::new("Scene").strong());
+    ui.add_space(2.0);
+
+    egui::Grid::new("fem_perf_scene_grid")
+        .num_columns(2)
+        .spacing([20.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("Vertices:");
+            ui.label(format!("{}", stage.data.num_vertices));
+            ui.end_row();
+
+            ui.label("Elements:");
+            ui.label(format!("{}", stage.data.num_elements));
+            ui.end_row();
+
+            ui.label("Substeps:");
+            ui.label(format!("{}", stage.data.num_substeps));
+            ui.end_row();
+        });
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    let timings = &stage.timings;
+    let total_ms = timings.total_step_time;
+    let fps = if total_ms > 0.0 {
+        (1000.0 / total_ms).round()
+    } else {
+        0.0
+    };
+
+    ui.label(RichText::new(format!("Total: {:.2}ms - {:.0} FPS", total_ms, fps)).strong());
+    ui.add_space(4.0);
+
+    egui::Grid::new("fem_timing_grid")
+        .num_columns(2)
+        .spacing([20.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("Encoding:");
+            ui.label(format!("{:.1}ms", timings.encoding_time));
+            ui.end_row();
+
+            ui.label("Readback:");
+            ui.label(format!("{:.1}ms", timings.readback_time));
+            ui.end_row();
+        });
+
+    if !timings.gpu_pass_times.is_empty() {
+        ui.add_space(4.0);
+
+        CollapsingHeader::new(format!("GPU passes: {:.2}ms", timings.gpu_total_time))
+            .id_salt("fem_gpu_passes")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("fem_gpu_grid")
                     .num_columns(2)
                     .spacing([20.0, 2.0])
                     .show(ui, |ui| {

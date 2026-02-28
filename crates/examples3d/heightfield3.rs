@@ -1,3 +1,4 @@
+use nexus_testbed3d::DemoBuilder;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -15,7 +16,11 @@ fn main() {
     panic!("Run the `all_examples3` binary instead.");
 }
 
-pub fn heightfield_demo(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
+pub fn builder() -> DemoBuilder {
+    DemoBuilder::mpm("Heightfield", build)
+}
+
+fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
     let mut rapier_data = RapierData::default();
 
     let nxz = 45;

@@ -1,5 +1,9 @@
-use nexus_testbed3d::SimulationState;
+use nexus_testbed3d::{DemoBuilder, SimulationState};
 use rapier3d::prelude::*;
+
+pub fn builder() -> DemoBuilder {
+    DemoBuilder::rbd("Keva tower", build)
+}
 
 pub fn build_block(
     bodies: &mut RigidBodySet,
@@ -73,7 +77,7 @@ pub fn build_block(
     }
 }
 
-pub fn init_world() -> SimulationState {
+fn build() -> SimulationState {
     /*
      * World
      */

@@ -1,3 +1,4 @@
+use nexus_testbed3d::DemoBuilder;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -18,7 +19,11 @@ const DENSITY: f32 = 2700.0;
 const YOUNG_MODULUS: f32 = 2.0e9;
 const POISSON_RATIO: f32 = 0.2;
 
-pub fn sand_demo(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
+pub fn builder() -> DemoBuilder {
+    DemoBuilder::mpm("Sand", build)
+}
+
+fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
     let mut rapier_data = RapierData::default();
 
     let nxz = 45;
