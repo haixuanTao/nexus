@@ -26,6 +26,7 @@ use spirv_std::spirv;
 
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
 use crate::MaybeIndexUnchecked;
+use crate::utils::{Slice, SliceMut};
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -44,19 +45,34 @@ pub fn gpu_transfer_warmstart_impulses(
     new_constraints: &mut [TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     new_constraint_builders: &[TwoBodyConstraintBuilder],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] colliders_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+
+    let old_body_constraint_counts = Slice(old_body_constraint_counts, colliders_start);
+    let old_body_constraint_ids = Slice(old_body_constraint_ids, bci_start);
+    let old_constraints = Slice(old_constraints, contacts_start);
+    let old_constraint_builders = Slice(old_constraint_builders, contacts_start);
+    let mut new_constraints = SliceMut(new_constraints, contacts_start);
+    let new_constraint_builders = Slice(new_constraint_builders, contacts_start);
+
+    let len = contacts_len.read(batch_id);
     let cid_new = invocation_id.x;
 
-    if cid_new < *contacts_len {
+    if cid_new < len {
         transfer_warmstart_impulses(
             cid_new,
-            old_body_constraint_counts,
-            old_body_constraint_ids,
-            old_constraints,
-            old_constraint_builders,
-            new_constraints,
-            new_constraint_builders,
+            &old_body_constraint_counts,
+            &old_body_constraint_ids,
+            &old_constraints,
+            &old_constraint_builders,
+            &mut new_constraints,
+            &new_constraint_builders,
         );
     }
 }
@@ -84,12 +100,12 @@ pub fn gpu_transfer_warmstart_impulses(
 ///       get swapped from one frame to another).
 pub fn transfer_warmstart_impulses(
     cid_new: u32,
-    old_body_constraint_counts: &[u32],
-    old_body_constraint_ids: &[u32],
-    old_constraints: &[TwoBodyConstraint],
-    old_constraint_builders: &[TwoBodyConstraintBuilder],
-    new_constraints: &mut [TwoBodyConstraint],
-    new_constraint_builders: &[TwoBodyConstraintBuilder],
+    old_body_constraint_counts: &Slice<u32>,
+    old_body_constraint_ids: &Slice<u32>,
+    old_constraints: &Slice<TwoBodyConstraint>,
+    old_constraint_builders: &Slice<TwoBodyConstraintBuilder>,
+    new_constraints: &mut SliceMut<TwoBodyConstraint>,
+    new_constraint_builders: &Slice<TwoBodyConstraintBuilder>,
 ) {
     let i = cid_new as usize;
 

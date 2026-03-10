@@ -37,18 +37,23 @@ pub fn gpu_prefix_sum_sweep(
     #[spirv(workgroup_id)] block_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] data: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] aux: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_stride: &u32,
     #[spirv(workgroup)] workspace: &mut [u32; 256],
 ) {
+    let batch_id = block_id.y as usize;
     let bid = block_id.x as usize;
     let tid = thread_id.x as usize;
-    let data_len = data.len();
+    let data_len = *batch_stride as usize;
+    let data_offset = batch_id * data_len;
+    let aux_stride = (data_len + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+    let aux_offset = batch_id * aux_stride;
 
-    // Global index for this thread's element
+    // Global index for this thread's element within the batch
     let elt_id = tid + bid * WORKGROUP_SIZE;
 
     // Phase 0: Load data into shared memory
     if elt_id < data_len {
-        workspace.write(tid, data.read(elt_id));
+        workspace.write(tid, data.read(data_offset + elt_id));
     } else {
         // Pad with zeros for out-of-bounds threads
         workspace.write(tid, 0);
@@ -82,7 +87,7 @@ pub fn gpu_prefix_sum_sweep(
     // Thread 0 saves the total sum and clears the root for down-sweep
     if tid == 0 {
         let total_sum = workspace.read(WORKGROUP_SIZE - 1);
-        aux.write(bid, total_sum);
+        aux.write(aux_offset + bid, total_sum);
         workspace.write(WORKGROUP_SIZE - 1, 0);
     }
 
@@ -115,7 +120,7 @@ pub fn gpu_prefix_sum_sweep(
 
     // Write results back to global memory
     if elt_id < data_len {
-        data.write(elt_id, workspace.read(tid));
+        data.write(data_offset + elt_id, workspace.read(tid));
     }
 }
 
@@ -131,13 +136,18 @@ pub fn gpu_add_data_grp(
     #[spirv(workgroup_id)] block_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] data: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] aux: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_stride: &u32,
 ) {
+    let batch_id = block_id.y as usize;
     let tid = thread_id.x as usize;
     let bid = block_id.x as usize;
-    let data_len = data.len();
+    let data_len = *batch_stride as usize;
+    let data_offset = batch_id * data_len;
+    let aux_stride = (data_len + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+    let aux_offset = batch_id * aux_stride;
 
     if tid < data_len {
         // Add the cumulative sum from all previous blocks
-        *data.at_mut(tid) += aux.read(bid);
+        *data.at_mut(data_offset + tid) += aux.read(aux_offset + bid);
     }
 }

@@ -39,7 +39,8 @@ use spirv_std::spirv;
 
 use vortx_shaders::utils::{StepRng, atomic_add_u32, atomic_max_u32};
 
-use crate::{MaybeIndexUnchecked};
+use crate::MaybeIndexUnchecked;
+use crate::utils::{Slice, SliceMut};
 
 use super::constraint::TwoBodyConstraint;
 
@@ -83,11 +84,18 @@ pub fn gpu_reset_luby(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] constraints_colors: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] constraints_rands: &mut [u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] contacts_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
+    let mut constraints_rands = SliceMut(constraints_rands, contacts_start);
+    let len = contacts_len.read(batch_id);
+
     let i = invocation_id.x;
 
-    if i < *contacts_len {
+    if i < len {
         let idx = i as usize;
         // Mark as uncolored
         constraints_colors.write(idx, MAX_U32);
@@ -115,10 +123,23 @@ pub fn gpu_step_graph_coloring_luby(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] constraints_rands: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] uncolored: &mut u32,
     #[spirv(uniform, descriptor_set = 0, binding = 6)] curr_color: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *contacts_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+
+    let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
+    let body_constraint_ids = Slice(body_constraint_ids, bci_start);
+    let constraints = Slice(constraints, contacts_start);
+    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
+    let constraints_rands = Slice(constraints_rands, contacts_start);
+
+    let len = contacts_len.read(batch_id);
     let color = *curr_color;
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -230,11 +251,18 @@ pub fn gpu_reset_topo_gc(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] constraints_colors: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] colored: &mut [u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] contacts_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
+    let mut colored = SliceMut(colored, contacts_start);
+    let len = contacts_len.read(batch_id);
+
     let i = invocation_id.x;
 
-    if i < *contacts_len {
+    if i < len {
         let idx = i as usize;
         // Color 0 is reserved for "uncolored" state
         constraints_colors.write(idx, 0);
@@ -283,10 +311,23 @@ pub fn gpu_step_graph_coloring_topo_gc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] constraints_colors: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colored: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colors: &mut u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *contacts_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+
+    let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
+    let body_constraint_ids = Slice(body_constraint_ids, bci_start);
+    let constraints = Slice(constraints, contacts_start);
+    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
+    let mut colored = SliceMut(colored, contacts_start);
+
+    let len = contacts_len.read(batch_id);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;
@@ -363,10 +404,23 @@ pub fn gpu_fix_conflicts_topo_gc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] constraints_colors: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colored: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colors: &mut u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *contacts_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+
+    let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
+    let body_constraint_ids = Slice(body_constraint_ids, bci_start);
+    let constraints = Slice(constraints, contacts_start);
+    let constraints_colors = Slice(constraints_colors, contacts_start);
+    let mut colored = SliceMut(colored, contacts_start);
+
+    let len = contacts_len.read(batch_id);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;

@@ -19,6 +19,7 @@ use super::solver_utils::{
 };
 
 use crate::queries::IndexedManifold;
+use crate::utils::{Slice, SliceMut};
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -28,7 +29,7 @@ const WORKGROUP_SIZE: u32 = 64;
 pub fn gpu_solver_reset_color(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] curr_color: &mut u32,
 ) {
-    // NOTE: this `for` loop is silly. It doesn’t do anything
+    // NOTE: this `for` loop is silly. It doesn't do anything
     //       more than a `*curr_color = 1` in a convoluted
     //       way because otherwise rustgpu apparently does not generate
     //       the spirv for this kernel (seems to happen if the kernel is
@@ -45,7 +46,7 @@ pub fn gpu_solver_reset_color(
 pub fn gpu_solver_inc_color(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] curr_color: &mut u32,
 ) {
-    // NOTE: this `for` loop is silly. It doesn’t do anything
+    // NOTE: this `for` loop is silly. It doesn't do anything
     //       more than a `*curr_color += 1` in a convoluted
     //       way because otherwise rustgpu apparently does not generate
     //       the spirv for this kernel (seems to happen if the kernel is
@@ -62,7 +63,7 @@ pub fn gpu_solver_init_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &[IndexedManifold],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     constraints: &mut [TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
@@ -72,16 +73,29 @@ pub fn gpu_solver_init_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] mprops: &[WorldMassProperties],
     #[spirv(uniform, descriptor_set = 1, binding = 3)] params: &SimParams,
+    #[spirv(uniform, descriptor_set = 1, binding = 4)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 1, binding = 5)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *contacts_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+
+    let contacts = Slice(contacts, contacts_start);
+    let mut constraints = SliceMut(constraints, contacts_start);
+    let mut constraint_builders = SliceMut(constraint_builders, contacts_start);
+    let mut body_constraint_counts = SliceMut(body_constraint_counts, colliders_start);
+    let poses = Slice(poses, colliders_start);
+    let vels = Slice(vels, colliders_start);
+    let mprops = Slice(mprops, colliders_start);
+    let len = contacts_len.read(batch_id);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         contact_to_constraint(
             contacts.at(i as usize),
-            mprops,
-            poses,
-            vels,
+            &mprops,
+            &poses,
+            &vels,
             params,
             constraints.at_mut(i as usize),
             constraint_builders.at_mut(i as usize),
@@ -111,18 +125,27 @@ pub fn gpu_solver_update_constraints(
     constraints: &mut [TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     constraint_builders: &[TwoBodyConstraintBuilder],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] poses: &[Pose],
     #[spirv(uniform, descriptor_set = 1, binding = 1)] params: &SimParams,
+    #[spirv(uniform, descriptor_set = 1, binding = 2)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 1, binding = 3)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *contacts_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+
+    let mut constraints = SliceMut(constraints, contacts_start);
+    let constraint_builders = Slice(constraint_builders, contacts_start);
+    let poses = Slice(poses, colliders_start);
+    let len = contacts_len.read(batch_id);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         update_constraint(
             constraints.at_mut(i as usize),
             constraint_builders.at(i as usize),
-            poses,
+            &poses,
             params,
         );
     }
@@ -136,11 +159,24 @@ pub fn gpu_solver_sort_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] body_constraint_counts: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts: &[IndexedManifold],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_constraint_ids: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    for i in StepRng::new(invocation_id.x..*contacts_len, num_threads) {
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+
+    let contacts = Slice(contacts, contacts_start);
+    let mut body_constraint_counts = SliceMut(body_constraint_counts, colliders_start);
+    let mprops = Slice(mprops, colliders_start);
+    let mut body_constraint_ids = SliceMut(body_constraint_ids, bci_start);
+    let len = contacts_len.read(batch_id);
+
+    for i in StepRng::new(invocation_id.x..len, num_threads) {
         let body1 = contacts.at(i as usize).colliders.x as usize;
         let body2 = contacts.at(i as usize).colliders.y as usize;
 
@@ -168,10 +204,18 @@ pub fn gpu_solver_cleanup(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] mprops: &[WorldMassProperties],
-    #[spirv(uniform, descriptor_set = 1, binding = 2)] num_colliders: &u32,
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] num_colliders: &[u32],
+    #[spirv(uniform, descriptor_set = 1, binding = 3)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let num_bodies = *num_colliders;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let num_bodies = num_colliders.read(batch_id);
+
+    let mut body_constraint_counts = SliceMut(body_constraint_counts, colliders_start);
+    let mut solver_vels = SliceMut(solver_vels, colliders_start);
+    let vels = Slice(vels, colliders_start);
+    let mprops = Slice(mprops, colliders_start);
 
     for i in StepRng::new(invocation_id.x..num_bodies, num_threads) {
         let idx = i as usize;
@@ -195,12 +239,19 @@ pub fn gpu_init_solver_vels_inc(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] solver_vels_inc: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] mprops: &[WorldMassProperties],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] num_colliders: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] params: &SimParams,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] colliders_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
     let i = invocation_id.x;
 
-    if i < *num_colliders {
+    let num_colliders = num_colliders.read(batch_id);
+    let mut solver_vels_inc = SliceMut(solver_vels_inc, colliders_start);
+    let mprops = Slice(mprops, colliders_start);
+
+    if i < num_colliders {
         let idx = i as usize;
         solver_vels_inc.at_mut(idx).linear = Vector::ZERO;
         solver_vels_inc.at_mut(idx).angular = AngVector::default();
@@ -222,10 +273,18 @@ pub fn gpu_apply_solver_vels_inc(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels_inc: &[Velocity],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] num_colliders: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] colliders_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
     let i = invocation_id.x;
-    if i < *num_colliders {
+
+    let num_colliders = num_colliders.read(batch_id);
+    let mut solver_vels = SliceMut(solver_vels, colliders_start);
+    let solver_vels_inc = Slice(solver_vels_inc, colliders_start);
+
+    if i < num_colliders {
         let idx = i as usize;
         solver_vels.at_mut(idx).linear += solver_vels_inc.at(idx).linear;
         solver_vels.at_mut(idx).angular += solver_vels_inc.at(idx).angular;
@@ -242,18 +301,29 @@ pub fn gpu_warmstart_without_colors(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_constraint_ids: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] constraints: &[TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] solver_vels: &mut [Velocity],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] num_colliders: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_colliders: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] contacts_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let num_bodies = *num_colliders;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+    let num_bodies = num_colliders.read(batch_id);
+
+    let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
+    let body_constraint_ids = Slice(body_constraint_ids, bci_start);
+    let constraints = Slice(constraints, contacts_start);
+    let mut solver_vels = SliceMut(solver_vels, colliders_start);
 
     for body_id in StepRng::new(invocation_id.x..num_bodies, num_threads) {
         let mut solver_vel = solver_vels.read(body_id as usize);
         warmstart_body(
             body_id,
-            body_constraint_counts,
-            body_constraint_ids,
-            constraints,
+            &body_constraint_counts,
+            &body_constraint_ids,
+            &constraints,
             &mut solver_vel,
         );
         solver_vels.write(body_id as usize, solver_vel);
@@ -269,11 +339,20 @@ pub fn gpu_warmstart(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] constraints: &[TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] constraints_colors: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contacts_len: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] curr_color: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *contacts_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+
+    let constraints = Slice(constraints, contacts_start);
+    let constraints_colors = Slice(constraints_colors, contacts_start);
+    let mut solver_vels = SliceMut(solver_vels, colliders_start);
+    let len = contacts_len.read(batch_id);
     let color = *curr_color;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -303,11 +382,20 @@ pub fn gpu_step_gauss_seidel(
     constraints: &mut [TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] constraints_colors: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contacts_len: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] curr_color: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] colliders_batch_capacity: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *contacts_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+
+    let mut constraints = SliceMut(constraints, contacts_start);
+    let constraints_colors = Slice(constraints_colors, contacts_start);
+    let mut solver_vels = SliceMut(solver_vels, colliders_start);
+    let len = contacts_len.read(batch_id);
     let color = *curr_color;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -340,12 +428,20 @@ pub fn gpu_integrate(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     local_mprops: &[LocalMassProperties],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] num_colliders: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] params: &SimParams,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] colliders_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
     let i = invocation_id.x;
 
-    if i < *num_colliders {
+    let num_colliders = num_colliders.read(batch_id);
+    let mut poses = SliceMut(poses, colliders_start);
+    let solver_vels = Slice(solver_vels, colliders_start);
+    let local_mprops = Slice(local_mprops, colliders_start);
+
+    if i < num_colliders {
         let idx = i as usize;
         let vels = solver_vels.at(idx);
         poses.write(
@@ -362,11 +458,18 @@ pub fn gpu_solver_finalize(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &[Velocity],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] num_colliders: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] colliders_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
     let i = invocation_id.x;
 
-    if i < *num_colliders {
+    let num_colliders = num_colliders.read(batch_id);
+    let mut vels = SliceMut(vels, colliders_start);
+    let solver_vels = Slice(solver_vels, colliders_start);
+
+    if i < num_colliders {
         let idx = i as usize;
         vels.at_mut(idx).linear = solver_vels.at(idx).linear;
         vels.at_mut(idx).angular = solver_vels.at(idx).angular;
@@ -380,10 +483,17 @@ pub fn gpu_remove_cfm_and_bias_kernel(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
     constraints: &mut [TwoBodyConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] contacts_batch_capacity: &u32,
 ) {
+    let batch_id = invocation_id.y as usize;
+    let contacts_start = batch_id * *contacts_batch_capacity as usize;
     let i = invocation_id.x;
-    if i < *contacts_len {
+
+    let mut constraints = SliceMut(constraints, contacts_start);
+    let len = contacts_len.read(batch_id);
+
+    if i < len {
         remove_cfm_and_bias(constraints.at_mut(i as usize));
     }
 }

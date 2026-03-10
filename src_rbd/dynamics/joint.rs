@@ -84,6 +84,7 @@ pub struct GpuImpulseJointSet {
     num_colors: u32,
     max_color_group_len: u32,
     num_joints: Tensor<u32>,
+    joints_batch_capacity: Tensor<u32>,
     curr_color: Tensor<u32>,
     color_groups: Tensor<u32>,
     joints: Tensor<ImpulseJoint>,
@@ -98,6 +99,7 @@ impl GpuImpulseJointSet {
         backend: &GpuBackend,
         joints: &ImpulseJointSet,
         body_ids: &HashMap<RigidBodyHandle, u32>,
+        num_batches: u32,
     ) -> Self {
         let usage = BufferUsages::STORAGE;
         let len = joints.len() as u32;
@@ -160,14 +162,17 @@ impl GpuImpulseJointSet {
             len,
             num_colors,
             max_color_group_len,
-            num_joints: Tensor::scalar_encased(backend, len, usage | BufferUsages::UNIFORM)
+            num_joints: Tensor::vector(backend, &vec![len; num_batches as usize], usage | BufferUsages::UNIFORM)
                 .unwrap(),
-            curr_color: Tensor::scalar_encased(backend, 0u32, usage | BufferUsages::UNIFORM)
+            joints_batch_capacity: Tensor::scalar(backend, len, usage | BufferUsages::UNIFORM)
                 .unwrap(),
+            curr_color: Tensor::scalar(backend, 0u32, usage | BufferUsages::UNIFORM)
+                .unwrap(),
+            // TODO: these two should be matrices? (one row per batch)
             color_groups: Tensor::vector(backend, &color_groups, usage).unwrap(),
             joints: Tensor::vector(backend, &sorted_gpu_joints, usage).unwrap(),
-            builders: Tensor::vector_uninit(backend, len, usage).unwrap(),
-            constraints: Tensor::vector_uninit(backend, len, usage).unwrap(),
+            builders: Tensor::matrix_uninit(backend, num_batches, len, usage).unwrap(),
+            constraints: Tensor::matrix_uninit(backend, num_batches, len, usage).unwrap(),
         }
     }
 
@@ -199,6 +204,7 @@ pub struct GpuJointSolver {
 
 /// Arguments given to the joint solver.
 pub struct JointSolverArgs<'a> {
+    pub num_batches: u32,
     /// The simulation parameters.
     pub sim_params: &'a Tensor<SimParams>,
     /// The set of joints to solve.
@@ -207,6 +213,8 @@ pub struct JointSolverArgs<'a> {
     pub mprops: &'a Tensor<WorldMassProperties>,
     /// Local-space mass properties.
     pub local_mprops: &'a Tensor<LocalMassProperties>,
+    /// Maximum colliders per batch (stride between batches in body buffers).
+    pub colliders_batch_capacity: &'a Tensor<u32>,
 }
 
 impl GpuJointSolver {
@@ -222,12 +230,14 @@ impl GpuJointSolver {
 
         self.init_joint_constraints.call(
             pass,
-            args.joints.len,
+            [args.joints.len, args.num_batches, 1],
             &args.joints.joints,
             &mut args.joints.builders,
             &mut args.joints.constraints,
-            &args.joints.num_joints,
             args.local_mprops,
+            &args.joints.num_joints,
+            &args.joints.joints_batch_capacity,
+            args.colliders_batch_capacity,
         )
     }
 
@@ -244,13 +254,15 @@ impl GpuJointSolver {
 
         self.update_joint_constraints.call(
             pass,
-            args.joints.len,
+            [args.joints.len, args.num_batches, 1],
             &args.joints.builders,
             &mut args.joints.constraints,
-            &args.joints.num_joints,
             poses,
             args.mprops,
+            &args.joints.num_joints,
             args.sim_params,
+            &args.joints.joints_batch_capacity,
+            args.colliders_batch_capacity,
         )
     }
 
@@ -269,9 +281,10 @@ impl GpuJointSolver {
         if !use_bias {
             self.remove_joint_bias.call(
                 pass,
-                args.joints.len,
+                [args.joints.len, args.num_batches, 1],
                 &mut args.joints.constraints,
                 &args.joints.num_joints,
+                &args.joints.joints_batch_capacity,
             )?;
         }
 
@@ -283,11 +296,13 @@ impl GpuJointSolver {
             //            more tightly the size of the current color.
             self.solve_joint_constraints.call(
                 pass,
-                args.joints.max_color_group_len,
+                [args.joints.max_color_group_len, args.num_batches, 1],
                 &mut args.joints.constraints,
                 solver_vels,
                 &args.joints.color_groups,
                 &args.joints.curr_color,
+                &args.joints.joints_batch_capacity,
+                args.colliders_batch_capacity,
             )?;
             self.inc_joint_color
                 .call(pass, 1u32, &mut args.joints.curr_color)?

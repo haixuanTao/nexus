@@ -12,31 +12,9 @@ use crate::Pose;
 
 use super::body::{update_mprops, LocalMassProperties, WorldMassProperties};
 use crate::MaybeIndexUnchecked;
+use crate::utils::{Slice, SliceMut};
 
 const WORKGROUP_SIZE: u32 = 64;
-
-/// Updates world-space mass properties for a rigid body.
-///
-/// For each body:
-/// 1. Transform center of mass from local to world space
-/// 2. Transform inertia tensor to world orientation (3D only)
-///
-/// In 2D: Only COM needs transformation (inertia is scalar)
-/// In 3D: Both COM and inertia tensor need transformation
-pub fn update_body_mprops(
-    body_id: usize,
-    poses: &[Pose],
-    local_mprops: &[LocalMassProperties],
-    mprops: &mut [WorldMassProperties],
-) {
-    // Transform mass properties from local to world space
-    // - Transforms COM position by pose
-    // - Rotates inertia tensor to world orientation (3D)
-    let new_mprops = update_mprops(poses.read(body_id), local_mprops.at(body_id));
-
-    // Write updated world-space mass properties
-    mprops.write(body_id, new_mprops);
-}
 
 /// Updates world-space mass properties for all rigid bodies.
 #[spirv_bindgen]
@@ -48,20 +26,21 @@ pub fn gpu_update_mprops(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] poses: &[Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] colliders_batch_capacity: &u32,
 ) {
-    // Total number of threads across all workgroups
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let num_bodies = poses.len() as u32;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let colliders_start = batch_id * *colliders_batch_capacity as usize;
 
-    // Grid-stride loop: each thread processes multiple bodies if necessary
-    for i in StepRng::new(invocation_id.x..num_bodies, num_threads) {
+    let num_colliders = num_colliders.read(batch_id);
+    let mut mprops = SliceMut(mprops, colliders_start);
+    let local_mprops = Slice(local_mprops, colliders_start);
+    let poses = Slice(poses, colliders_start);
+
+    for i in StepRng::new(invocation_id.x..num_colliders, num_threads) {
         let idx = i as usize;
-        // Transform mass properties from local to world space
-        // - Transforms COM position by pose
-        // - Rotates inertia tensor to world orientation (3D)
         let new_mprops = update_mprops(poses.read(idx), local_mprops.at(idx));
-
-        // Write updated world-space mass properties
         mprops.write(idx, new_mprops);
     }
 }

@@ -99,6 +99,9 @@ pub async fn setup_graphics(
     let mut polyhedron_instances: HashMap<Vec<u32>, InstancedNode> = HashMap::new();
     let mut singletons = vec![];
 
+    let num_colliders_per_batch = phys.colliders.len();
+    let num_batches = phys.num_batches.max(1) as usize;
+
     for (i, (_, co)) in phys.colliders.iter().enumerate() {
         let shape = co.shape();
         let is_fixed = co.parent().map(|h| phys.bodies[h].is_fixed()) != Some(false);
@@ -140,11 +143,13 @@ pub async fn setup_graphics(
                     }
                 });
                 let ball = shape.as_ball().unwrap();
-                instanced_node.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: [ball.radius * 2.0; DIM],
-                })
+                for batch in 0..num_batches {
+                    instanced_node.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: [ball.radius * 2.0; DIM],
+                    });
+                }
             }
             ShapeType::Cuboid => {
                 let instanced_node = instances.entry(ShapeType::Cuboid).or_insert_with(|| {
@@ -159,11 +164,13 @@ pub async fn setup_graphics(
                     }
                 });
                 let cuboid = shape.as_cuboid().unwrap();
-                instanced_node.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: (cuboid.half_extents * 2.0).into(),
-                })
+                for batch in 0..num_batches {
+                    instanced_node.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: (cuboid.half_extents * 2.0).into(),
+                    });
+                }
             }
             #[cfg(feature = "dim3")]
             ShapeType::Cylinder => {
@@ -176,11 +183,13 @@ pub async fn setup_graphics(
                     }
                 });
                 let cyl = shape.as_cylinder().unwrap();
-                instanced_node.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: [cyl.radius, cyl.half_height * 2.0, cyl.radius],
-                })
+                for batch in 0..num_batches {
+                    instanced_node.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: [cyl.radius, cyl.half_height * 2.0, cyl.radius],
+                    });
+                }
             }
             #[cfg(feature = "dim3")]
             ShapeType::Cone => {
@@ -193,11 +202,13 @@ pub async fn setup_graphics(
                     }
                 });
                 let c = shape.as_cone().unwrap();
-                instanced_node.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: [c.radius, c.half_height * 2.0, c.radius],
-                })
+                for batch in 0..num_batches {
+                    instanced_node.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: [c.radius, c.half_height * 2.0, c.radius],
+                    });
+                }
             }
             ShapeType::Capsule => {
                 let instanced_node = instances.entry(ShapeType::Capsule).or_insert_with(|| {
@@ -212,14 +223,16 @@ pub async fn setup_graphics(
                     }
                 });
                 let c = shape.as_capsule().unwrap();
-                instanced_node.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    #[cfg(feature = "dim2")]
-                    scale: [c.radius * 2.0, c.segment.length()],
-                    #[cfg(feature = "dim3")]
-                    scale: [c.radius * 2.0, c.segment.length(), c.radius * 2.0],
-                })
+                for batch in 0..num_batches {
+                    instanced_node.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        #[cfg(feature = "dim2")]
+                        scale: [c.radius * 2.0, c.segment.length()],
+                        #[cfg(feature = "dim3")]
+                        scale: [c.radius * 2.0, c.segment.length(), c.radius * 2.0],
+                    });
+                }
             }
             #[cfg(feature = "dim2")]
             ShapeType::ConvexPolygon => {
@@ -235,11 +248,13 @@ pub async fn setup_graphics(
                             entries: vec![],
                             data: vec![],
                         });
-                instanced_node.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: [1.0, 1.0],
-                });
+                for batch in 0..num_batches {
+                    instanced_node.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: [1.0, 1.0],
+                    });
+                }
             }
             #[cfg(feature = "dim3")]
             ShapeType::ConvexPolyhedron => {
@@ -262,11 +277,13 @@ pub async fn setup_graphics(
                         data: vec![],
                     }
                 });
-                instanced_node.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: [1.0, 1.0, 1.0],
-                });
+                for batch in 0..num_batches {
+                    instanced_node.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    });
+                }
             }
             #[cfg(feature = "dim3")]
             ShapeType::TriMesh => {
@@ -283,11 +300,13 @@ pub async fn setup_graphics(
                     entries: vec![],
                     data: vec![],
                 };
-                singleton.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: [1.0; DIM],
-                });
+                for batch in 0..num_batches {
+                    singleton.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: [1.0; DIM],
+                    });
+                }
                 singletons.push(singleton);
             }
             #[cfg(feature = "dim2")]
@@ -327,11 +346,13 @@ pub async fn setup_graphics(
                     entries: vec![],
                     data: vec![],
                 };
-                singleton.entries.push(InstancedNodeEntry {
-                    index: i,
-                    color: [color.x, color.y, color.z, 1.0],
-                    scale: [1.0; DIM],
-                });
+                for batch in 0..num_batches {
+                    singleton.entries.push(InstancedNodeEntry {
+                        index: batch * num_colliders_per_batch + i,
+                        color: [color.x, color.y, color.z, 1.0],
+                        scale: [1.0; DIM],
+                    });
+                }
                 singletons.push(singleton);
             }
             _ => todo!(),

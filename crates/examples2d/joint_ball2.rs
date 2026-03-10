@@ -67,6 +67,8 @@ fn build() -> SimulationState {
         bodies,
         colliders,
         impulse_joints,
+        num_batches: 1,
+        batch_offsets: vec![],
     }
     // testbed.look_at(point![numk as f32 * rad, numi as f32 * -rad], 5.0);
 }

@@ -42,8 +42,14 @@ impl GpuBackend {
     /// - Memory allocation fails
     pub async fn try_new(gpu: &KhalGpuBackend, phys: &SimulationState) -> Result<Self, String> {
         let pipeline = GpuPhysicsPipeline::from_backend(gpu);
-        let state =
-            GpuPhysicsState::from_rapier(gpu, &phys.bodies, &phys.colliders, &phys.impulse_joints);
+        let state = GpuPhysicsState::from_rapier(
+            gpu,
+            &phys.bodies,
+            &phys.colliders,
+            &phys.impulse_joints,
+            phys.num_batches,
+            &phys.batch_offsets,
+        );
         let poses_cache = Self::read_poses(gpu, &state).await?;
 
         Ok(Self {
@@ -62,8 +68,14 @@ impl GpuBackend {
         pipeline: GpuPhysicsPipeline,
         phys: &SimulationState,
     ) -> Self {
-        let state =
-            GpuPhysicsState::from_rapier(gpu, &phys.bodies, &phys.colliders, &phys.impulse_joints);
+        let state = GpuPhysicsState::from_rapier(
+            gpu,
+            &phys.bodies,
+            &phys.colliders,
+            &phys.impulse_joints,
+            phys.num_batches,
+            &phys.batch_offsets,
+        );
         let poses_cache = Self::read_poses(gpu, &state).await.unwrap_or_default();
 
         Self {

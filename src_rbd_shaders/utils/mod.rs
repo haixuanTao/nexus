@@ -3,8 +3,10 @@
 mod basis;
 pub mod radix_sort;
 pub mod prefix_sum;
+mod slice;
 
-pub use basis::*;
+pub use basis::orthonormal_basis3;
+pub use slice::{Slice, SliceMut};
 
 /// Division with ceiling (signed).
 pub fn div_ceil(x: i32, y: i32) -> i32 {

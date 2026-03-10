@@ -30,6 +30,7 @@ use crate::shapes::{
 };
 
 use glamx::UVec2;
+use crate::utils::{Slice, SliceMut};
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -37,17 +38,20 @@ const WORKGROUP_SIZE: u32 = 64;
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_reset_narrow_phase(
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &mut u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] pfm_pairs_len: &mut u32,
+    #[spirv(workgroup_id)] workgroup_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] pfm_pairs_len: &mut [u32],
 ) {
+    let batch_id = workgroup_id.y as usize;
+
     // NOTE: this `for` loop is silly. It doesn’t do anything
     //       more than a `*contacts_len = 0` in a convoluted
     //       way because otherwise rustgpu apparently does not generate
     //       the spirv for this kernel (seems to happen if the kernel is
     //       too trivial.
     for k in 0..1 {
-        *contacts_len = k;
-        *pfm_pairs_len = k;
+        contacts_len.write(batch_id, k);
+        pfm_pairs_len.write(batch_id, k);
     }
 }
 
@@ -55,11 +59,17 @@ pub fn gpu_reset_narrow_phase(
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_narrow_phase_init_contacts_dispatch(
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
 ) {
-    *indirect_args.at_mut(0) = contacts_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = 1;
+    // For indirect dispatch, get the largest length along all batch dimensions.
+    let mut highest_contacts_len = 0;
+    for i in 0..contacts_len.len() {
+        highest_contacts_len = highest_contacts_len.max(contacts_len.read(i));
+    }
+
+    *indirect_args.at_mut(0) = highest_contacts_len.div_ceil(WORKGROUP_SIZE);
+    *indirect_args.at_mut(1) = contacts_len.len() as u32;
     *indirect_args.at_mut(2) = 1;
 }
 
@@ -74,19 +84,37 @@ pub fn gpu_narrow_phase_shape_shape(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] collision_pairs: &[[u32; 2]],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] collision_pairs_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] collision_pairs_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] shapes: &[Shape],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contacts: &mut [IndexedManifold],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contacts_len: &mut u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contacts_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     pfm_pairs: &mut [NarrowPhasePfmPair],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] pfm_pairs_len: &mut u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] pfm_pairs_len: &mut [u32],
+    // NOTE: we assume that max_pfm_pairs == contacts_batch_capacity
+    //       And we assume all batch dimensions are given the same buffer allocation sizes
+    //       (i.e. the same `contacts_batch_capacity`).
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] indices: &[u32],
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *collision_pairs_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_batch_capacity = *contacts_batch_capacity as usize;
+    let colliders_batch_capacity = *colliders_batch_capacity as usize;
+    let contacts_start = batch_id * contacts_batch_capacity;
+    let colliders_start = batch_id * colliders_batch_capacity;
+
+    let collision_pairs = Slice(collision_pairs, contacts_start);
+    let poses = Slice(poses, colliders_start);
+    let shapes = Slice(shapes, colliders_start);
+    let mut contacts = SliceMut(contacts, contacts_start);
+    let mut pfm_pairs = SliceMut(pfm_pairs, contacts_start);
+    let contacts_len = contacts_len.at_mut(batch_id);
+    let pfm_pairs_len = pfm_pairs_len.at_mut(batch_id);
+    let len = collision_pairs_len.read(batch_id);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let pair = collision_pairs.read(i as usize);
@@ -173,7 +201,7 @@ pub fn gpu_narrow_phase_shape_shape(
                 &mesh,
                 convex,
                 UVec2::new(pair.read(0), pair.read(1)),
-                pfm_pairs,
+                &mut pfm_pairs,
                 pfm_pairs_len,
                 vertices,
                 indices,
@@ -190,7 +218,7 @@ pub fn gpu_narrow_phase_shape_shape(
                 &mesh,
                 convex,
                 UVec2::new(pair.read(1), pair.read(0)),
-                pfm_pairs,
+                &mut pfm_pairs,
                 pfm_pairs_len,
                 vertices,
                 indices,
@@ -208,7 +236,7 @@ pub fn gpu_narrow_phase_shape_shape(
                 &pline,
                 convex,
                 UVec2::new(pair.read(0), pair.read(1)),
-                pfm_pairs,
+                &mut pfm_pairs,
                 pfm_pairs_len,
                 vertices,
                 indices,
@@ -225,7 +253,7 @@ pub fn gpu_narrow_phase_shape_shape(
                 &pline,
                 convex,
                 UVec2::new(pair.read(1), pair.read(0)),
-                pfm_pairs,
+                &mut pfm_pairs,
                 pfm_pairs_len,
                 vertices,
                 indices,
@@ -234,16 +262,22 @@ pub fn gpu_narrow_phase_shape_shape(
         }
 
         if manifold.len > 0 && manifold.points_a.at(0).dist < PREDICTION {
-            let target_contact_index = atomic_add_u32(contacts_len, 1);
-            contacts.write(
-                target_contact_index as usize,
-                IndexedManifold {
-                    contact: manifold,
-                    colliders: UVec2::new(pair.read(0), pair.read(1)),
-                    #[cfg(feature = "dim3")]
-                    padding: [0; _],
-                },
-            );
+            let target_contact_index = atomic_add_u32(contacts_len, 1) as usize;
+
+            // NOTE: if we exceed the contacts allocation size, just skip
+            //       the contact. It’s up to the caller to resize the buffer
+            //       and re-run the narrow-phase.
+            if target_contact_index < contacts_batch_capacity {
+                contacts.write(
+                    target_contact_index,
+                    IndexedManifold {
+                        contact: manifold,
+                        colliders: UVec2::new(pair.read(0), pair.read(1)),
+                        #[cfg(feature = "dim3")]
+                        padding: [0; _],
+                    },
+                );
+            }
         }
     }
 }
@@ -254,7 +288,7 @@ fn trimesh_convex(
     mesh: &TriMesh,
     convex: &Shape,
     pair: UVec2,
-    pfm_pairs: &mut [NarrowPhasePfmPair],
+    pfm_pairs: &mut SliceMut<NarrowPhasePfmPair>,
     pfm_pairs_len: &mut u32,
     vertices: &[PaddedVector],
     indices: &[u32],
@@ -323,7 +357,7 @@ fn polyline_convex(
     mesh: &Polyline,
     convex: &Shape,
     pair: UVec2,
-    pfm_pairs: &mut [NarrowPhasePfmPair],
+    pfm_pairs: &mut SliceMut<NarrowPhasePfmPair>,
     pfm_pairs_len: &mut u32,
     vertices: &[PaddedVector],
     indices: &[u32],
@@ -402,12 +436,16 @@ pub struct NarrowPhasePfmPair {
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_init_pfm_pfm_dispatch(
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] pfm_pairs_len: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] pfm_pairs_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
 ) {
+    let mut highest_pfm_pairs_len = 0;
+    for batch_id in 0..pfm_pairs_len.len() {
+        highest_pfm_pairs_len = highest_pfm_pairs_len.max(pfm_pairs_len.read(batch_id));
+    }
     // TODO PERF: pfm_pfm is very divergent. Use a smaller workgroup size?
-    *indirect_args.at_mut(0) = pfm_pairs_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = 1;
+    *indirect_args.at_mut(0) = highest_pfm_pairs_len.div_ceil(WORKGROUP_SIZE);
+    *indirect_args.at_mut(1) = pfm_pairs_len.len() as u32;
     *indirect_args.at_mut(2) = 1;
 }
 
@@ -417,18 +455,29 @@ pub fn gpu_narrow_phase_pfm_pfm(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &mut [IndexedManifold],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &mut u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] vertices: &[PaddedVector],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] pfm_pairs: &[NarrowPhasePfmPair],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] pfm_pairs_len: &[u32],
+    // NOTE: we assume that max_pfm_pairs == contacts_batch_capacity
+    //       And we assume all batch dimensions are given the same buffer allocation sizes
+    //       (i.e. the same `contacts_batch_capacity`).
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] contacts_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] vertices: &[PaddedVector],
     #[allow(unused_variables)]
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     indices: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] pfm_pairs: &[NarrowPhasePfmPair],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] pfm_pairs_len: &u32,
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE * num_workgroups.y * num_workgroups.z;
-    let len = *pfm_pairs_len;
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y as usize;
+    let contacts_batch_capacity = *contacts_batch_capacity as usize;
+    let start_id = batch_id * contacts_batch_capacity;
 
-    for i in StepRng::new(invocation_id.x..len, num_threads) {
+    let mut contacts = SliceMut(contacts, start_id);
+    let pfm_pairs = Slice(pfm_pairs, start_id);
+    let contacts_len = contacts_len.at_mut(batch_id);
+    let pfm_pairs_len = pfm_pairs_len.read(batch_id);
+
+    for i in StepRng::new(invocation_id.x..pfm_pairs_len, num_threads) {
         let pair = pfm_pairs.read(i as usize);
         let manifold = pfm_pfm(
             pair.pose12,
@@ -443,16 +492,22 @@ pub fn gpu_narrow_phase_pfm_pfm(
         );
 
         if manifold.len > 0 && manifold.points_a.at(0).dist < PREDICTION {
-            let target_contact_index = atomic_add_u32(contacts_len, 1);
-            contacts.write(
-                target_contact_index as usize,
-                IndexedManifold {
-                    contact: manifold,
-                    colliders: pair.colliders,
-                    #[cfg(feature = "dim3")]
-                    padding: [0; _],
-                },
-            );
+            let target_contact_index = atomic_add_u32(contacts_len, 1) as usize;
+
+            // NOTE: if we exceed the contacts allocation size, just skip
+            //       the contact. It’s up to the caller to resize the buffer
+            //       and re-run the narrow-phase.
+            if target_contact_index < contacts_batch_capacity {
+                contacts.write(
+                    target_contact_index,
+                    IndexedManifold {
+                        contact: manifold,
+                        colliders: pair.colliders,
+                        #[cfg(feature = "dim3")]
+                        padding: [0; _],
+                    },
+                );
+            }
         }
     }
 }

@@ -49,6 +49,10 @@ pub struct WarmstartArgs<'a> {
     pub new_constraint_builders: &'a Tensor<TwoBodyConstraintBuilder>,
     /// Indirect dispatch arguments based on contact count.
     pub contacts_len_indirect: &'a Tensor<[u32; 3]>,
+    /// Maximum contacts per batch (stride between batches in contact buffers).
+    pub contacts_batch_capacity: &'a Tensor<u32>,
+    /// Maximum colliders per batch (stride between batches in body buffers).
+    pub colliders_batch_capacity: &'a Tensor<u32>,
 }
 
 impl GpuWarmstart {
@@ -77,6 +81,8 @@ impl GpuWarmstart {
             args.new_constraints,
             args.new_constraint_builders,
             args.contacts_len,
+            args.contacts_batch_capacity,
+            args.colliders_batch_capacity,
         )
     }
 }

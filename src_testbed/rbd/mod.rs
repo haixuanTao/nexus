@@ -5,6 +5,7 @@ pub use backend::{BackendType, CpuBackend, GpuBackend, PhysicsBackend};
 pub use graphics::{RenderContext, setup_graphics, update_instances};
 
 use khal::backend::GpuBackend as KhalGpuBackend;
+use nexus::rbd::math::Vector;
 use nexus::rbd::pipeline::GpuPhysicsPipeline;
 use rapier::geometry::ColliderSet;
 use rapier::prelude::{ImpulseJointSet, RigidBodySet};
@@ -13,6 +14,8 @@ pub struct SimulationState {
     pub bodies: RigidBodySet,
     pub colliders: ColliderSet,
     pub impulse_joints: ImpulseJointSet,
+    pub num_batches: u32,
+    pub batch_offsets: Vec<Vector>,
 }
 
 pub struct PhysicsContext {
@@ -51,6 +54,8 @@ pub async fn setup_physics(
                             bodies: phys.bodies.clone(),
                             colliders: phys.colliders.clone(),
                             impulse_joints: phys.impulse_joints.clone(),
+                            num_batches: 1,
+                            batch_offsets: vec![],
                         }))
                     }
                 }
@@ -60,6 +65,8 @@ pub async fn setup_physics(
             bodies: phys.bodies.clone(),
             colliders: phys.colliders.clone(),
             impulse_joints: phys.impulse_joints.clone(),
+            num_batches: 1,
+            batch_offsets: vec![],
         })),
     };
 

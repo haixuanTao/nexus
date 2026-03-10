@@ -22,9 +22,18 @@ impl GpuMpropsUpdate {
         mprops: &mut Tensor<WorldMassProperties>,
         local_mprops: &Tensor<LocalMassProperties>,
         poses: &Tensor<Pose>,
+        colliders_batch_capacity: &Tensor<u32>,
         num_bodies: u32,
+        num_batches: u32,
     ) -> Result<(), GpuBackendError> {
-        self.update_mprops_kernel
-            .call(pass, num_bodies, mprops, local_mprops, poses)
+        self.update_mprops_kernel.call(
+            pass,
+            [num_bodies, num_batches, 1],
+            mprops,
+            local_mprops,
+            poses,
+            colliders_batch_capacity,
+            colliders_batch_capacity,
+        )
     }
 }

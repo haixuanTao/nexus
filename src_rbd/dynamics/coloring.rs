@@ -89,6 +89,10 @@ pub struct ColoringArgs<'a> {
     pub contacts_len: &'a Tensor<u32>,
     /// Buffer tracking which constraints are colored.
     pub colored: &'a mut Tensor<u32>,
+    /// Maximum contacts per batch (stride between batches in contact buffers).
+    pub contacts_batch_capacity: &'a Tensor<u32>,
+    /// Maximum colliders per batch (stride between batches in body buffers).
+    pub colliders_batch_capacity: &'a Tensor<u32>,
 }
 
 impl GpuColoring {
@@ -104,6 +108,7 @@ impl GpuColoring {
             args.constraints_colors,
             args.constraints_rands,
             args.contacts_len,
+            args.contacts_batch_capacity,
         )
     }
 
@@ -124,6 +129,8 @@ impl GpuColoring {
             args.uncolored,
             args.curr_color,
             args.contacts_len,
+            args.contacts_batch_capacity,
+            args.colliders_batch_capacity,
         )
     }
 
@@ -139,6 +146,7 @@ impl GpuColoring {
             args.constraints_colors,
             args.colored,
             args.contacts_len,
+            args.contacts_batch_capacity,
         )
     }
 
@@ -158,6 +166,8 @@ impl GpuColoring {
             args.colored,
             args.uncolored,
             args.contacts_len,
+            args.contacts_batch_capacity,
+            args.colliders_batch_capacity,
         )
     }
 
@@ -177,6 +187,8 @@ impl GpuColoring {
             args.colored,
             args.uncolored,
             args.contacts_len,
+            args.contacts_batch_capacity,
+            args.colliders_batch_capacity,
         )
     }
 

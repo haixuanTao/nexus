@@ -16,6 +16,7 @@ use super::joint::{
 };
 use super::joint_constraint::{JointConstraint, JointConstraintElement, JointSolverBody};
 use super::sim_params::{inv_dt, joint_cfm_coeff, joint_erp_inv_dt, SimParams, TWO_PI};
+use crate::utils::{Slice, SliceMut};
 
 #[cfg(feature = "dim2")]
 use glamx::{Mat2, Vec2};
@@ -336,7 +337,7 @@ pub fn lock_angular(
 }
 
 /// Solves a joint constraint.
-pub fn solve_joint_constraint(constraint: &mut JointConstraint, solver_vels: &mut [Velocity]) {
+pub fn solve_joint_constraint(constraint: &mut JointConstraint, solver_vels: &mut SliceMut<Velocity>) {
     let mut solver_vel1 = solver_vels.read(constraint.solver_vel_a as usize);
     let mut solver_vel2 = solver_vels.read(constraint.solver_vel_b as usize);
 
@@ -693,8 +694,8 @@ pub fn motor_angular(
 pub fn update_constraint(
     builder: &JointConstraintBuilder,
     constraint: &mut JointConstraint,
-    poses: &[Pose],
-    mprops: &[WorldMassProperties],
+    poses: &Slice<Pose>,
+    mprops: &Slice<WorldMassProperties>,
     params: &SimParams,
 ) {
     // NOTE: right now, the "update", is basically reconstructing all the

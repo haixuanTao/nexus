@@ -25,6 +25,7 @@ use glamx::Vec2;
 use glamx::{Vec2, Vec3};
 
 use crate::queries::IndexedManifold;
+use crate::utils::Slice;
 
 /// Helper function for safe inverse.
 fn inv(x: f32) -> f32 {
@@ -133,9 +134,9 @@ fn gcross_(a: Vector, b: Vector) -> Vector {
 #[inline(always)]
 pub fn contact_to_constraint(
     indexed_contact: &IndexedManifold,
-    mprops: &[WorldMassProperties],
-    poses: &[Pose],
-    vels: &[Velocity],
+    mprops: &Slice<WorldMassProperties>,
+    poses: &Slice<Pose>,
+    vels: &Slice<Velocity>,
     params: &SimParams,
     constraint: &mut TwoBodyConstraint,
     builder: &mut TwoBodyConstraintBuilder,
@@ -306,7 +307,7 @@ pub fn contact_to_constraint(
 pub fn update_constraint(
     constraint: &mut TwoBodyConstraint,
     builder: &TwoBodyConstraintBuilder,
-    poses: &[Pose],
+    poses: &Slice<Pose>,
     params: &SimParams,
 ) {
     let body1 = constraint.solver_body_a as usize;
@@ -401,9 +402,9 @@ pub fn update_constraint(
 #[inline(always)]
 pub fn warmstart_body(
     body_id: u32,
-    body_constraint_counts: &[u32],
-    body_constraint_ids: &[u32],
-    constraints: &[TwoBodyConstraint],
+    body_constraint_counts: &Slice<u32>,
+    body_constraint_ids: &Slice<u32>,
+    constraints: &Slice<TwoBodyConstraint>,
     solver_vel: &mut Velocity,
 ) {
     let first_constraint_id = if body_id != 0 {

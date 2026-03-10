@@ -151,12 +151,13 @@ impl Lbvh {
         vertex_buffers: &Tensor<PaddedVector>,
         shapes: &Tensor<Shape>,
         num_shapes: &Tensor<u32>,
+        colliders_batch_capacity: &Tensor<u32>,
     ) -> Result<(), GpuBackendError> {
         state.resize_buffers(backend, colliders_len);
 
         self.shaders
             .compute_domain
-            .call(pass, 1u32, poses, &mut state.domain_aabb, num_shapes)?;
+            .call(pass, 1u32, poses, &mut state.domain_aabb, num_shapes, colliders_batch_capacity)?;
 
         self.shaders.compute_morton.call(
             pass,
@@ -165,6 +166,7 @@ impl Lbvh {
             &state.domain_aabb,
             &mut state.unsorted_morton_keys,
             num_shapes,
+            colliders_batch_capacity,
         )?;
 
         self.sort.dispatch(
@@ -185,6 +187,7 @@ impl Lbvh {
             &state.sorted_morton_keys,
             &mut state.tree,
             num_shapes,
+            colliders_batch_capacity,
         )?;
 
         self.shaders.refit_leaves.call(
@@ -195,12 +198,13 @@ impl Lbvh {
             &state.sorted_colliders,
             &mut state.tree,
             num_shapes,
+            colliders_batch_capacity,
             vertex_buffers,
         )?;
 
         self.shaders
             .refit_internal
-            .call(pass, 1u32, &mut state.tree, num_shapes)?;
+            .call(pass, 1u32, &mut state.tree, num_shapes, colliders_batch_capacity)?;
 
         Ok(())
     }
@@ -215,7 +219,8 @@ impl Lbvh {
         state: &mut LbvhState,
         colliders_len: u32,
         num_shapes: &Tensor<u32>,
-        max_collision_pairs: &Tensor<u32>,
+        colliders_batch_capacity: &Tensor<u32>,
+        collision_pairs_batch_capacity: &Tensor<u32>,
         collision_pairs: &mut Tensor<[u32; 2]>,
         collision_pairs_len: &mut Tensor<u32>,
         collision_pairs_indirect: &mut Tensor<[u32; 3]>,
@@ -229,8 +234,9 @@ impl Lbvh {
             &state.tree,
             collision_pairs,
             collision_pairs_len,
+            colliders_batch_capacity,
             num_shapes,
-            max_collision_pairs,
+            collision_pairs_batch_capacity,
         )?;
         self.shaders.lbvh_init_indirect_args.call(
             pass,

@@ -143,7 +143,7 @@ impl WgGrid {
             &grid.active_blocks,
             &mut grid.scan_values,
         )?;
-        prefix_sum_module.launch(backend, pass, prefix_sum, &mut grid.scan_values)?;
+        prefix_sum_module.launch(backend, pass, prefix_sum, &mut grid.scan_values, 1)?;
 
         sort_module.copy_scan_values_to_first_particles.call(
             pass,

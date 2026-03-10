@@ -32,12 +32,17 @@ impl GpuPrefixSum {
 
     /// Dispatches the prefix sum algorithm on GPU data.
     ///
+    /// Supports batched operation: if `num_batches > 1`, the data buffer is treated as
+    /// `num_batches` contiguous sub-arrays of equal size, and each sub-array is
+    /// independently prefix-summed.
+    ///
     /// # Parameters
     ///
     /// - `backend`: The GPU backend
     /// - `pass`: The compute pass to record commands into
     /// - `workspace`: Workspace containing auxiliary buffers (resized automatically if needed)
     /// - `data`: Input/output buffer (modified in-place)
+    /// - `num_batches`: Number of independent prefix sums to perform in parallel
     ///
     /// # Panics
     ///
@@ -48,6 +53,7 @@ impl GpuPrefixSum {
         pass: &mut GpuPass,
         workspace: &mut PrefixSumWorkspace,
         data: &mut Tensor<u32>,
+        num_batches: u32,
     ) -> Result<(), GpuBackendError> {
         // If this assert fails, the kernel launches below must be changed because we are using
         // a fixed size for the shared memory currently.
@@ -57,43 +63,51 @@ impl GpuPrefixSum {
             "Internal error: prefix sum assumes a thread count equal to 256"
         );
 
-        workspace.reserve(backend, data.len() as u32);
+        let batch_stride = data.len() as u32 / num_batches;
+        workspace.reserve(backend, batch_stride, num_batches);
 
-        let ngroups0 = workspace.stages[0].buffer.len() as u32;
+        let ngroups0 = workspace.per_batch_ngroups[0];
 
         self.prefix_sum_kernel.call(
             pass,
-            [ngroups0 * Self::THREADS, 1, 1],
+            [ngroups0 * Self::THREADS, num_batches, 1],
             data,
             &mut workspace.stages[0].buffer,
+            &workspace.batch_stride_tensors[0],
         )?;
 
         for i in 0..workspace.num_stages - 1 {
+            let ngroups = workspace.per_batch_ngroups[i + 1];
+            let batch_stride_tensor = &workspace.batch_stride_tensors[i + 1];
+
             let (left, right) = workspace.stages.split_at_mut(i + 1);
             let data_stage = &mut left[i];
             let aux_stage = &mut right[0];
-            let ngroups = aux_stage.buffer.len() as u32;
 
             self.prefix_sum_kernel.call(
                 pass,
-                [ngroups * Self::THREADS, 1, 1],
+                [ngroups * Self::THREADS, num_batches, 1],
                 &mut data_stage.buffer,
                 &mut aux_stage.buffer,
+                batch_stride_tensor,
             )?;
         }
 
         if workspace.num_stages > 2 {
             for i in (0..workspace.num_stages - 2).rev() {
+                let ngroups = workspace.per_batch_ngroups[i + 1];
+                let batch_stride_tensor = &workspace.batch_stride_tensors[i + 1];
+
                 let (left, right) = workspace.stages.split_at_mut(i + 1);
                 let data_stage = &mut left[i];
                 let aux_stage = &right[0];
-                let ngroups = aux_stage.buffer.len() as u32;
 
                 self.add_data_grp_kernel.call(
                     pass,
-                    [ngroups * Self::THREADS, 1, 1],
+                    [ngroups * Self::THREADS, num_batches, 1],
                     &mut data_stage.buffer,
                     &aux_stage.buffer,
+                    batch_stride_tensor,
                 )?;
             }
         }
@@ -101,9 +115,10 @@ impl GpuPrefixSum {
         if workspace.num_stages > 1 {
             self.add_data_grp_kernel.call(
                 pass,
-                [ngroups0 * Self::THREADS, 1, 1],
+                [ngroups0 * Self::THREADS, num_batches, 1],
                 data,
                 &workspace.stages[0].buffer,
+                &workspace.batch_stride_tensors[0],
             )?;
         }
 
@@ -149,15 +164,19 @@ struct PrefixSumStage {
 pub struct PrefixSumWorkspace {
     stages: Vec<PrefixSumStage>,
     num_stages: usize,
+    /// Batch stride tensors for each level (data level + one per stage).
+    batch_stride_tensors: Vec<Tensor<u32>>,
+    /// Per-batch number of workgroups at each stage level.
+    per_batch_ngroups: Vec<u32>,
+    /// Cached batch parameters for resize detection.
+    cached_batch_stride: u32,
+    cached_num_batches: u32,
 }
 
 impl PrefixSumWorkspace {
     /// Creates a new empty workspace.
     pub fn new() -> Self {
-        Self {
-            stages: vec![],
-            num_stages: 0,
-        }
+        Self::default()
     }
 
     /// Creates a workspace pre-allocated for a specific buffer size.
@@ -167,60 +186,84 @@ impl PrefixSumWorkspace {
     /// - `backend`: The GPU backend for allocating buffers
     /// - `buffer_len`: Size of the data buffer that will be scanned
     pub fn with_capacity(backend: &GpuBackend, buffer_len: u32) -> Self {
-        let mut result = Self {
-            stages: vec![],
-            num_stages: 0,
-        };
-        result.reserve(backend, buffer_len);
+        let mut result = Self::default();
+        result.reserve(backend, buffer_len, 1);
         result
     }
 
-    /// Ensures the workspace has sufficient capacity for a given buffer size.
+    /// Ensures the workspace has sufficient capacity for a given buffer size and batch count.
     ///
     /// Resizes auxiliary buffers if needed. This is called automatically by [`GpuPrefixSum::launch`].
     ///
     /// # Parameters
     ///
     /// - `backend`: The GPU backend for allocating buffers
-    /// - `buffer_len`: Size of the data buffer that will be scanned
-    pub fn reserve(&mut self, backend: &GpuBackend, buffer_len: u32) {
-        let mut stage_len = buffer_len.div_ceil(GpuPrefixSum::THREADS);
-
-        if self.stages.is_empty() || self.stages[0].capacity < stage_len {
-            // Reinitialize the auxiliary buffers.
-            self.stages.clear();
-
-            while stage_len != 1 {
-                let buffer = Tensor::vector(
-                    backend,
-                    vec![0u32; stage_len as usize],
-                    BufferUsages::STORAGE,
-                )
-                .unwrap();
-                self.stages.push(PrefixSumStage {
-                    capacity: stage_len,
-                    buffer,
-                });
-
-                stage_len = stage_len.div_ceil(GpuPrefixSum::THREADS);
-            }
-
-            // The last stage always has only 1 element.
-            self.stages.push(PrefixSumStage {
-                capacity: 1,
-                buffer: Tensor::vector(backend, [0u32], BufferUsages::STORAGE).unwrap(),
-            });
-            self.num_stages = self.stages.len();
-        } else if self.stages[0].buffer.len() as u32 != stage_len {
-            // The stages have big enough buffers, but we need to adjust their length.
-            self.num_stages = 0;
-            while stage_len != 1 {
-                self.num_stages += 1;
-                stage_len = stage_len.div_ceil(GpuPrefixSum::THREADS);
-            }
-
-            // The last stage always has only 1 element.
-            self.num_stages += 1;
+    /// - `batch_stride`: Per-batch element count
+    /// - `num_batches`: Number of batches
+    pub fn reserve(&mut self, backend: &GpuBackend, batch_stride: u32, num_batches: u32) {
+        if batch_stride == self.cached_batch_stride && num_batches == self.cached_num_batches {
+            return;
         }
+
+        self.cached_batch_stride = batch_stride;
+        self.cached_num_batches = num_batches;
+
+        let mut per_batch_len = batch_stride.div_ceil(GpuPrefixSum::THREADS);
+
+        // Reinitialize the auxiliary buffers.
+        self.stages.clear();
+        self.batch_stride_tensors.clear();
+        self.per_batch_ngroups.clear();
+
+        // Batch stride tensor for the data level.
+        self.batch_stride_tensors.push(
+            Tensor::scalar(
+                backend,
+                batch_stride,
+                BufferUsages::STORAGE | BufferUsages::UNIFORM,
+            )
+            .unwrap(),
+        );
+
+        while per_batch_len != 1 {
+            self.per_batch_ngroups.push(per_batch_len);
+
+            let total = per_batch_len * num_batches;
+            let buffer = Tensor::vector(
+                backend,
+                vec![0u32; total as usize],
+                BufferUsages::STORAGE,
+            )
+            .unwrap();
+            self.stages.push(PrefixSumStage {
+                capacity: total,
+                buffer,
+            });
+
+            // Batch stride tensor for this stage level.
+            self.batch_stride_tensors.push(
+                Tensor::scalar(
+                    backend,
+                    per_batch_len,
+                    BufferUsages::STORAGE | BufferUsages::UNIFORM,
+                )
+                .unwrap(),
+            );
+
+            per_batch_len = per_batch_len.div_ceil(GpuPrefixSum::THREADS);
+        }
+
+        // The last stage always has 1 element per batch.
+        self.per_batch_ngroups.push(1);
+        self.stages.push(PrefixSumStage {
+            capacity: num_batches.max(1),
+            buffer: Tensor::vector(
+                backend,
+                vec![0u32; num_batches.max(1) as usize],
+                BufferUsages::STORAGE,
+            )
+            .unwrap(),
+        });
+        self.num_stages = self.stages.len();
     }
 }
