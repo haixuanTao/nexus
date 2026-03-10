@@ -262,7 +262,7 @@ impl RadixSort {
 mod tests {
     use crate::utils::RadixSort;
     use crate::utils::radix_sort::RadixSortWorkspace;
-    use khal::BufferUsages;
+    use khal::{BufferUsages, Shader};
     use khal::backend::{Backend, Encoder, GpuBackend, WebGpu};
     use vortx::tensor::Tensor;
 
@@ -276,7 +276,7 @@ mod tests {
     #[serial_test::serial]
     async fn test_sorting() {
         let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
-        let sort = RadixSort::from_backend(&gpu);
+        let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
 
         for i in 0u32..128 {
@@ -311,7 +311,7 @@ mod tests {
                 Tensor::scalar(&gpu, keys_inp.len() as u32, BufferUsages::STORAGE).unwrap();
 
             let mut encoder = gpu.begin_encoding();
-            let mut pass = encoder.begin_pass();
+            let mut pass = encoder.begin_pass("test", None);
             sort.dispatch(
                 &gpu,
                 &mut pass,
@@ -322,7 +322,7 @@ mod tests {
                 32,
                 &mut out_keys,
                 &mut out_values,
-            );
+            ).unwrap();
             drop(pass);
             gpu.submit(encoder);
 
@@ -344,7 +344,7 @@ mod tests {
         use rand::Rng;
 
         let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
-        let sort = RadixSort::from_backend(&gpu);
+        let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
 
         // Simulate some data as one might find for a bunch of gaussians.
@@ -373,7 +373,7 @@ mod tests {
             Tensor::scalar(&gpu, keys_inp.len() as u32, BufferUsages::STORAGE).unwrap();
 
         let mut encoder = gpu.begin_encoding();
-        let mut pass = encoder.begin_pass();
+        let mut pass = encoder.begin_pass("test", None);
         sort.dispatch(
             &gpu,
             &mut pass,

@@ -268,13 +268,9 @@ impl GpuPhysicsState {
         let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
         let shapes = Tensor::vector(backend, &all_shapes, storage).unwrap();
 
-        // num_shapes defines batch boundaries: [0, n, 2n, ..., B*n]
-        let num_shapes_data: Vec<u32> = (0..=num_batches)
-            .map(|i| i * num_colliders_per_batch as u32)
-            .collect();
         let num_shapes = Tensor::vector(
             backend,
-            &num_shapes_data,
+            &vec![all_shapes.len() as u32; num_batches as usize],
             BufferUsages::STORAGE | BufferUsages::UNIFORM,
         )
         .unwrap();
