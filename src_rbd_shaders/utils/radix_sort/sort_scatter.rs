@@ -64,7 +64,10 @@ pub fn gpu_sort_scatter(
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
 
     let group_id = gid.x;
+    let batch_id = gid.y;
     let local_id = lid.x;
+    let key_offset = batch_id * num_keys;
+    let counts_offset = batch_id * BIN_COUNT * num_wgs;
 
     // Filter-out out of bounds workgroups but don’t
     // just early-exit to keep uniform control flow
@@ -75,7 +78,7 @@ pub fn gpu_sort_scatter(
     if local_id < BIN_COUNT && active {
         bin_offset_cache.write(
             local_id as usize,
-            counts.read((local_id * num_wgs + group_id) as usize),
+            counts.read((counts_offset + local_id * num_wgs + group_id) as usize),
         );
     }
     workgroup_memory_barrier_with_group_sync();
@@ -93,8 +96,8 @@ pub fn gpu_sort_scatter(
         let mut local_value = 0u32;
 
         if active && data_index < num_keys {
-            local_key = src.read(data_index as usize);
-            local_value = values.read(data_index as usize);
+            local_key = src.read((key_offset + data_index) as usize);
+            local_value = values.read((key_offset + data_index) as usize);
         }
 
         // Hierarchical sorting: 2 passes of 2-bit sorts
@@ -184,8 +187,8 @@ pub fn gpu_sort_scatter(
             let total_offset = global_offset + local_offset;
 
             if total_offset < num_keys {
-                out.write(total_offset as usize, local_key);
-                out_values.write(total_offset as usize, local_value);
+                out.write((key_offset + total_offset) as usize, local_key);
+                out_values.write((key_offset + total_offset) as usize, local_value);
             }
 
             // Update offsets for next iteration

@@ -3,6 +3,7 @@
 //! This module provides GPU-accelerated joint constraint solving, allowing bodies
 //! to be connected with various joint types (revolute, prismatic, fixed, etc.).
 
+use bytemuck::Zeroable;
 use crate::math::Pose;
 use crate::shaders::dynamics::{
     GpuIncJointColor, GpuInitJointConstraints, GpuRemoveJointBias, GpuResetJointColor,
@@ -85,6 +86,7 @@ pub struct GpuImpulseJointSet {
     max_color_group_len: u32,
     num_joints: Tensor<u32>,
     joints_batch_capacity: Tensor<u32>,
+    color_groups_batch_capacity: Tensor<u32>,
     curr_color: Tensor<u32>,
     color_groups: Tensor<u32>,
     joints: Tensor<ImpulseJoint>,
@@ -93,86 +95,149 @@ pub struct GpuImpulseJointSet {
 }
 
 impl GpuImpulseJointSet {
-    /// Converts a set of Rapier joints to a set of GPU joints.
+    /// Converts per-environment Rapier joints to GPU joints.
+    ///
+    /// Each environment can have different joints. The joints are padded to the max
+    /// joint count across all environments, and graph coloring is done independently
+    /// per environment.
     #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
-        joints: &ImpulseJointSet,
-        body_ids: &HashMap<RigidBodyHandle, u32>,
-        num_batches: u32,
+        environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
     ) -> Self {
         let usage = BufferUsages::STORAGE;
-        let len = joints.len() as u32;
-        let max_body_id = body_ids.values().copied().max().unwrap_or_default();
-
-        // Convert joints.
-        let mut unsorted_gpu_joints = vec![];
-        for (_, joint) in joints.iter() {
-            unsorted_gpu_joints.push(convert_impulse_joint(joint, body_ids));
-        }
-
-        /*
-         * Run a simple static greedy graph coloring, and group the joints.
-         */
-        let mut colors = vec![];
-        let mut body_masks = vec![0u128; max_body_id as usize + 1];
-
-        // Find colors.
-        for joint in &unsorted_gpu_joints {
-            let a = joint.body_a as usize;
-            let b = joint.body_b as usize;
-            let mask = body_masks[a] | body_masks[b];
-            let color = mask.trailing_ones();
-            colors.push(color);
-            body_masks[a] |= 1 << color;
-            body_masks[b] |= 1 << color;
-        }
-
-        let num_colors = colors
+        let num_batches = environments.len() as u32;
+        let max_joints = environments
             .iter()
-            .copied()
+            .map(|(joints, _)| joints.len())
             .max()
-            .map(|n| n + 1)
-            .unwrap_or_default();
-        let mut color_groups = vec![0u32; num_colors as usize];
+            .unwrap_or(0) as u32;
 
-        // Count size of color groups.
-        for color in &colors {
-            color_groups[*color as usize] += 1;
+        let mut global_num_colors = 0u32;
+        let mut global_max_color_group_len = 0u32;
+        let mut all_num_joints = Vec::with_capacity(num_batches as usize);
+
+        // Per-environment sorted joints and color groups.
+        let mut per_env_sorted_joints: Vec<Vec<ImpulseJoint>> = Vec::new();
+        let mut per_env_color_groups: Vec<Vec<u32>> = Vec::new();
+
+        for (joints, body_ids) in environments {
+            let len = joints.len() as u32;
+            all_num_joints.push(len);
+
+            // Convert joints.
+            let mut unsorted_gpu_joints = vec![];
+            for (_, joint) in joints.iter() {
+                unsorted_gpu_joints.push(convert_impulse_joint(joint, body_ids));
+            }
+
+            // Run graph coloring independently for this environment.
+            let max_body_id = body_ids.values().copied().max().unwrap_or_default();
+            let mut colors = vec![];
+            let mut body_masks = vec![0u128; max_body_id as usize + 1];
+
+            for joint in &unsorted_gpu_joints {
+                let a = joint.body_a as usize;
+                let b = joint.body_b as usize;
+                let mask = body_masks[a] | body_masks[b];
+                let color = mask.trailing_ones();
+                colors.push(color);
+                body_masks[a] |= 1 << color;
+                body_masks[b] |= 1 << color;
+            }
+
+            let env_num_colors = colors
+                .iter()
+                .copied()
+                .max()
+                .map(|n| n + 1)
+                .unwrap_or_default();
+            let mut color_groups = vec![0u32; env_num_colors as usize];
+
+            for color in &colors {
+                color_groups[*color as usize] += 1;
+            }
+
+            let env_max_color_group_len =
+                color_groups.iter().copied().max().unwrap_or_default();
+
+            // Prefix sum.
+            for i in 0..color_groups.len().saturating_sub(1) {
+                color_groups[i + 1] += color_groups[i];
+            }
+
+            // Bucket sort.
+            let mut target = color_groups.clone();
+            target.insert(0, 0);
+            let mut sorted_gpu_joints = unsorted_gpu_joints.clone();
+
+            for (joint, color) in unsorted_gpu_joints.iter().zip(colors.iter()) {
+                sorted_gpu_joints[target[*color as usize] as usize] = *joint;
+                target[*color as usize] += 1;
+            }
+
+            global_num_colors = global_num_colors.max(env_num_colors);
+            global_max_color_group_len =
+                global_max_color_group_len.max(env_max_color_group_len);
+
+            per_env_sorted_joints.push(sorted_gpu_joints);
+            per_env_color_groups.push(color_groups);
         }
 
-        let max_color_group_len = color_groups.iter().copied().max().unwrap_or_default();
-
-        // Prefix sum.
-        for i in 0..color_groups.len().saturating_sub(1) {
-            color_groups[i + 1] += color_groups[i];
+        // Build flat joint buffer [num_batches * max_joints], padded with zeroed joints.
+        let dummy_joint = ImpulseJoint::zeroed();
+        let mut all_joints = Vec::with_capacity(num_batches as usize * max_joints as usize);
+        for sorted_joints in &per_env_sorted_joints {
+            all_joints.extend_from_slice(sorted_joints);
+            // Pad to max_joints.
+            for _ in sorted_joints.len()..max_joints as usize {
+                all_joints.push(dummy_joint);
+            }
         }
 
-        // Bucket sort.
-        let mut target = color_groups.clone();
-        target.insert(0, 0);
-        let mut sorted_gpu_joints = unsorted_gpu_joints.clone();
-
-        for (joint, color) in unsorted_gpu_joints.iter().zip(colors.iter()) {
-            sorted_gpu_joints[target[*color as usize] as usize] = *joint;
-            target[*color as usize] += 1;
+        // Build flat color_groups buffer [num_batches * global_num_colors].
+        // Environments with fewer colors get extra entries where end == prev_end (no-op).
+        let mut all_color_groups =
+            Vec::with_capacity(num_batches as usize * global_num_colors as usize);
+        for env_cg in &per_env_color_groups {
+            let last = env_cg.last().copied().unwrap_or(0);
+            all_color_groups.extend_from_slice(env_cg);
+            // Pad remaining colors with the last value (so start == end, no-op iterations).
+            for _ in env_cg.len()..global_num_colors as usize {
+                all_color_groups.push(last);
+            }
         }
 
         Self {
-            len,
-            num_colors,
-            max_color_group_len,
-            num_joints: Tensor::vector(backend, &vec![len; num_batches as usize], usage | BufferUsages::UNIFORM)
-                .unwrap(),
-            joints_batch_capacity: Tensor::scalar(backend, len, usage | BufferUsages::UNIFORM)
-                .unwrap(),
+            len: max_joints,
+            num_colors: global_num_colors,
+            max_color_group_len: global_max_color_group_len,
+            num_joints: Tensor::vector(
+                backend,
+                &all_num_joints,
+                usage | BufferUsages::UNIFORM,
+            )
+            .unwrap(),
+            joints_batch_capacity: Tensor::scalar(
+                backend,
+                max_joints,
+                usage | BufferUsages::UNIFORM,
+            )
+            .unwrap(),
+            color_groups_batch_capacity: Tensor::scalar(
+                backend,
+                global_num_colors,
+                usage | BufferUsages::UNIFORM,
+            )
+            .unwrap(),
             curr_color: Tensor::scalar(backend, 0u32, usage | BufferUsages::UNIFORM)
                 .unwrap(),
-            // TODO: these two should be matrices? (one row per batch)
-            color_groups: Tensor::vector(backend, &color_groups, usage).unwrap(),
-            joints: Tensor::vector(backend, &sorted_gpu_joints, usage).unwrap(),
-            builders: Tensor::matrix_uninit(backend, num_batches, len, usage).unwrap(),
-            constraints: Tensor::matrix_uninit(backend, num_batches, len, usage).unwrap(),
+            color_groups: Tensor::vector(backend, &all_color_groups, usage).unwrap(),
+            joints: Tensor::vector(backend, &all_joints, usage).unwrap(),
+            builders: Tensor::matrix_uninit(backend, num_batches, max_joints, usage)
+                .unwrap(),
+            constraints: Tensor::matrix_uninit(backend, num_batches, max_joints, usage)
+                .unwrap(),
         }
     }
 
@@ -303,6 +368,7 @@ impl GpuJointSolver {
                 &args.joints.curr_color,
                 &args.joints.joints_batch_capacity,
                 args.colliders_batch_capacity,
+                &args.joints.color_groups_batch_capacity,
             )?;
             self.inc_joint_color
                 .call(pass, 1u32, &mut args.joints.curr_color)?

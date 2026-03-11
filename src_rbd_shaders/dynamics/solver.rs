@@ -72,7 +72,7 @@ pub fn gpu_solver_init_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] mprops: &[WorldMassProperties],
-    #[spirv(uniform, descriptor_set = 1, binding = 3)] params: &SimParams,
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] all_params: &[SimParams],
     #[spirv(uniform, descriptor_set = 1, binding = 4)] contacts_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 5)] colliders_batch_capacity: &u32,
 ) {
@@ -80,6 +80,7 @@ pub fn gpu_solver_init_constraints(
     let batch_id = invocation_id.y as usize;
     let contacts_start = batch_id * *contacts_batch_capacity as usize;
     let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let params = all_params.at(batch_id);
 
     let contacts = Slice(contacts, contacts_start);
     let mut constraints = SliceMut(constraints, contacts_start);
@@ -127,7 +128,7 @@ pub fn gpu_solver_update_constraints(
     constraint_builders: &[TwoBodyConstraintBuilder],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] poses: &[Pose],
-    #[spirv(uniform, descriptor_set = 1, binding = 1)] params: &SimParams,
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] all_params: &[SimParams],
     #[spirv(uniform, descriptor_set = 1, binding = 2)] contacts_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 3)] colliders_batch_capacity: &u32,
 ) {
@@ -135,6 +136,7 @@ pub fn gpu_solver_update_constraints(
     let batch_id = invocation_id.y as usize;
     let contacts_start = batch_id * *contacts_batch_capacity as usize;
     let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let params = all_params.at(batch_id);
 
     let mut constraints = SliceMut(constraints, contacts_start);
     let constraint_builders = Slice(constraint_builders, contacts_start);
@@ -240,11 +242,12 @@ pub fn gpu_init_solver_vels_inc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] solver_vels_inc: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] params: &SimParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_params: &[SimParams],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] colliders_batch_capacity: &u32,
 ) {
     let batch_id = invocation_id.y as usize;
     let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let params = all_params.at(batch_id);
     let i = invocation_id.x;
 
     let num_colliders = num_colliders.read(batch_id);
@@ -429,11 +432,12 @@ pub fn gpu_integrate(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] params: &SimParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] all_params: &[SimParams],
     #[spirv(uniform, descriptor_set = 0, binding = 5)] colliders_batch_capacity: &u32,
 ) {
     let batch_id = invocation_id.y as usize;
     let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let params = all_params.at(batch_id);
     let i = invocation_id.x;
 
     let num_colliders = num_colliders.read(batch_id);

@@ -133,6 +133,7 @@ impl RadixSort {
         input_values: &Tensor<u32>,
         n_sort: &Tensor<u32>,
         sorting_bits: u32,
+        num_batches: u32,
         output_keys: &mut Tensor<u32>,
         output_values: &mut Tensor<u32>,
     ) -> Result<(), GpuBackendError> {
@@ -144,12 +145,21 @@ impl RadixSort {
         assert!(sorting_bits <= 32, "Can only sort up to 32 bits");
 
         let max_n = input_keys.len() as u32;
+        let per_batch_max = max_n / num_batches;
 
-        // compute buffer and dispatch sizes
-        let max_needed_wgs = max_n.div_ceil(BLOCK_SIZE);
-        if workspace.count_buf.len() < max_needed_wgs as u64 * 16 {
+        // compute buffer and dispatch sizes (per-batch workgroups, scaled by num_batches)
+        let max_needed_wgs = per_batch_max.div_ceil(BLOCK_SIZE);
+        let needed_count = (num_batches as u64) * (max_needed_wgs as u64) * (BIN_COUNT as u64);
+        if workspace.count_buf.len() < needed_count {
             workspace.count_buf =
-                Tensor::vector_uninit(backend, max_needed_wgs * 16, BufferUsages::STORAGE)?;
+                Tensor::vector_uninit(backend, needed_count as u32, BufferUsages::STORAGE)?;
+        }
+
+        let needed_reduced = (num_batches as u64) * (BLOCK_SIZE as u64);
+        if workspace.reduced_buf.len() < needed_reduced {
+            let zeros = vec![0u32; needed_reduced as usize];
+            workspace.reduced_buf =
+                Tensor::vector(backend, &zeros, BufferUsages::STORAGE)?;
         }
 
         self.init.call(
@@ -216,7 +226,7 @@ impl RadixSort {
                 )?;
 
                 self.scan
-                    .call(pass, 1u32, n_sort, &mut workspace.reduced_buf)?;
+                    .call(pass, [1u32, num_batches, 1], n_sort, &mut workspace.reduced_buf)?;
 
                 self.scan_add.call(
                     pass,
@@ -320,6 +330,7 @@ mod tests {
                 &mut values,
                 &num_points,
                 32,
+                1,
                 &mut out_keys,
                 &mut out_values,
             ).unwrap();
@@ -382,6 +393,7 @@ mod tests {
             &mut values,
             &num_points,
             32,
+            1,
             &mut out_keys,
             &mut out_values,
         );

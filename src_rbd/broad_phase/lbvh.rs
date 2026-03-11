@@ -101,13 +101,24 @@ impl LbvhState {
         &self.sorted_colliders
     }
 
-    fn resize_buffers(&mut self, backend: &GpuBackend, colliders_len: u32) {
+    fn resize_buffers(&mut self, backend: &GpuBackend, colliders_len: u32, num_batches: u32) {
+        if (self.domain_aabb.len() as u32) < num_batches {
+            self.domain_aabb =
+                Tensor::vector_uninit(backend, num_batches, self.buffer_usages).unwrap();
+        }
+
         if (self.tree.len() as u32) < 2 * colliders_len {
             self.unsorted_morton_keys =
                 Tensor::vector_uninit(backend, colliders_len, self.buffer_usages).unwrap();
             self.sorted_morton_keys =
                 Tensor::vector_uninit(backend, colliders_len, self.buffer_usages).unwrap();
-            let unsorted_colliders: Vec<_> = (0..colliders_len).collect();
+            // Use per-batch LOCAL indices so that after sorting, each batch's
+            // sorted_colliders slice contains local indices usable with per-batch
+            // Slice offsets in the shaders.
+            let colliders_per_batch = colliders_len / num_batches;
+            let unsorted_colliders: Vec<_> = (0..num_batches)
+                .flat_map(|_| 0..colliders_per_batch)
+                .collect();
             self.unsorted_colliders =
                 Tensor::vector(backend, &unsorted_colliders, self.buffer_usages).unwrap();
             self.sorted_colliders =
@@ -117,7 +128,10 @@ impl LbvhState {
 
             // FIXME: we should instead write the len into the existing buffer at each frame
             //        to handle dynamic body/collider insertion/removal.
-            self.n_sort = Tensor::scalar(backend, colliders_len, self.buffer_usages).unwrap();
+            // n_sort is a per-batch vector: each element is the per-batch key count.
+            // The radix sort init kernel infers num_batches from n_sort.len().
+            let n_sort_data = vec![colliders_per_batch; num_batches as usize];
+            self.n_sort = Tensor::vector(backend, &n_sort_data, self.buffer_usages).unwrap();
         }
     }
 }
@@ -147,21 +161,29 @@ impl Lbvh {
         pass: &mut GpuPass,
         state: &mut LbvhState,
         colliders_len: u32,
+        num_batches: u32,
         poses: &Tensor<Pose>,
         vertex_buffers: &Tensor<PaddedVector>,
         shapes: &Tensor<Shape>,
         num_shapes: &Tensor<u32>,
         colliders_batch_capacity: &Tensor<u32>,
     ) -> Result<(), GpuBackendError> {
-        state.resize_buffers(backend, colliders_len);
+        state.resize_buffers(backend, colliders_len, num_batches);
 
-        self.shaders
-            .compute_domain
-            .call(pass, 1u32, poses, &mut state.domain_aabb, num_shapes, colliders_batch_capacity)?;
+        let colliders_per_batch = colliders_len / num_batches;
+
+        self.shaders.compute_domain.call(
+            pass,
+            [1u32, num_batches, 1],
+            poses,
+            &mut state.domain_aabb,
+            num_shapes,
+            colliders_batch_capacity,
+        )?;
 
         self.shaders.compute_morton.call(
             pass,
-            colliders_len,
+            [colliders_per_batch, num_batches, 1],
             poses,
             &state.domain_aabb,
             &mut state.unsorted_morton_keys,
@@ -177,13 +199,14 @@ impl Lbvh {
             &state.unsorted_colliders,
             &state.n_sort,
             32,
+            num_batches,
             &mut state.sorted_morton_keys,
             &mut state.sorted_colliders,
         )?;
 
         self.shaders.build.call(
             pass,
-            colliders_len.saturating_sub(1),
+            [colliders_per_batch.saturating_sub(1), num_batches, 1],
             &state.sorted_morton_keys,
             &mut state.tree,
             num_shapes,
@@ -192,7 +215,7 @@ impl Lbvh {
 
         self.shaders.refit_leaves.call(
             pass,
-            colliders_len,
+            [colliders_per_batch, num_batches, 1],
             poses,
             shapes,
             &state.sorted_colliders,
@@ -202,9 +225,13 @@ impl Lbvh {
             vertex_buffers,
         )?;
 
-        self.shaders
-            .refit_internal
-            .call(pass, 1u32, &mut state.tree, num_shapes, colliders_batch_capacity)?;
+        self.shaders.refit_internal.call(
+            pass,
+            [1u32, num_batches, 1],
+            &mut state.tree,
+            num_shapes,
+            colliders_batch_capacity,
+        )?;
 
         Ok(())
     }
@@ -218,6 +245,7 @@ impl Lbvh {
         pass: &mut GpuPass,
         state: &mut LbvhState,
         colliders_len: u32,
+        num_batches: u32,
         num_shapes: &Tensor<u32>,
         colliders_batch_capacity: &Tensor<u32>,
         collision_pairs_batch_capacity: &Tensor<u32>,
@@ -225,17 +253,21 @@ impl Lbvh {
         collision_pairs_len: &mut Tensor<u32>,
         collision_pairs_indirect: &mut Tensor<[u32; 3]>,
     ) -> Result<(), GpuBackendError> {
-        self.shaders
-            .reset_collision_pairs
-            .call(pass, 1u32, collision_pairs_len)?;
+        let colliders_per_batch = colliders_len / num_batches;
+
+        self.shaders.reset_collision_pairs.call(
+            pass,
+            [1u32, num_batches, 1],
+            collision_pairs_len,
+        )?;
         self.shaders.find_collision_pairs.call(
             pass,
-            colliders_len,
+            [colliders_per_batch, num_batches, 1],
             &state.tree,
             collision_pairs,
             collision_pairs_len,
-            colliders_batch_capacity,
             num_shapes,
+            colliders_batch_capacity,
             collision_pairs_batch_capacity,
         )?;
         self.shaders.lbvh_init_indirect_args.call(

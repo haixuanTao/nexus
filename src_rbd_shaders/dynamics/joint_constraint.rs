@@ -222,6 +222,7 @@ pub fn gpu_init_joint_constraints(
     let joints_start = batch_id * *joints_batch_capacity as usize;
     let colliders_start = batch_id * *colliders_batch_capacity as usize;
 
+    let joints = Slice(joints, joints_start);
     let mut builders = SliceMut(builders, joints_start);
     let mut constraints = SliceMut(constraints, joints_start);
     let local_mprops = Slice(local_mprops, colliders_start);
@@ -230,7 +231,6 @@ pub fn gpu_init_joint_constraints(
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let idx = i as usize;
-        // Joints are shared across batches, no offset needed.
         let joint = joints.at(idx);
 
         builders.write(
@@ -263,7 +263,7 @@ pub fn gpu_update_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] joints_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] params: &SimParams,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] all_params: &[SimParams],
     #[spirv(uniform, descriptor_set = 0, binding = 6)] joints_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 7)] colliders_batch_capacity: &u32,
 ) {
@@ -271,6 +271,7 @@ pub fn gpu_update_joint_constraints(
     let batch_id = invocation_id.y as usize;
     let joints_start = batch_id * *joints_batch_capacity as usize;
     let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let params = all_params.at(batch_id);
 
     let builders = Slice(builders, joints_start);
     let mut constraints = SliceMut(constraints, joints_start);
@@ -325,10 +326,11 @@ pub fn gpu_solve_joint_constraints(
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] constraints: &mut [JointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &mut [Velocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] color_groups: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] all_color_groups: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] curr_color: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 4)] joints_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 5)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] color_groups_batch_capacity: &u32,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y as usize;
@@ -339,14 +341,14 @@ pub fn gpu_solve_joint_constraints(
     let mut solver_vels = SliceMut(solver_vels, colliders_start);
 
     let color = *curr_color as usize;
+    let color_groups = Slice(all_color_groups, batch_id * *color_groups_batch_capacity as usize);
 
-    // color_groups is shared across batches (same graph structure)
     let start = if color > 0 {
-        color_groups.read(color - 1)
+        *color_groups.at(color - 1)
     } else {
         0
     };
-    let end = color_groups.read(color);
+    let end = *color_groups.at(color);
 
     for i in StepRng::new(start + invocation_id.x..end, num_threads) {
         solve_joint_constraint(constraints.at_mut(i as usize), &mut solver_vels);

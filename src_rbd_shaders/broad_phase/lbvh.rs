@@ -107,7 +107,7 @@ pub fn gpu_lbvh_init_dispatch(
     }
 
     *indirect_args.at_mut(0) = highest_pairs_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = 1;
+    *indirect_args.at_mut(1) = collision_pairs_len.len() as u32;
     *indirect_args.at_mut(2) = 1;
 }
 
@@ -347,6 +347,7 @@ pub fn gpu_lbvh_refit_leaves(
 #[spirv(compute(threads(256)))]
 pub fn gpu_lbvh_refit_internal(
     #[spirv(local_invocation_id)] local_id: UVec3,
+    #[spirv(workgroup_id)] workgroup_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] tree: &mut [LbvhNode],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] colliders_len: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 2)] colliders_batch_capacity: &u32,
@@ -355,7 +356,7 @@ pub fn gpu_lbvh_refit_internal(
     //            workgroup.
     // Bottom-up refit. Leaf index starts at `num_colliders`.
     let num_threads = 256u32;
-    let batch_id = local_id.y;
+    let batch_id = workgroup_id.y;
     let colliders_start = *colliders_batch_capacity * batch_id;
     let num_bodies = colliders_len.read(batch_id as usize);
     let first_leaf_id = num_bodies - 1;

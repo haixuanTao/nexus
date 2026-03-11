@@ -42,6 +42,9 @@ pub fn gpu_sort_count(
     let num_keys = num_keys_arr.read(0);
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
     let group_id = gid.x;
+    let batch_id = gid.y;
+    let key_offset = batch_id * num_keys;
+    let counts_offset = batch_id * BIN_COUNT * num_wgs;
 
     // Filter-out out of bounds workgroups but don’t
     // just early-exit to keep uniform control flow
@@ -61,7 +64,7 @@ pub fn gpu_sort_count(
 
         for _ in 0..ELEMENTS_PER_THREAD {
             if data_index < num_keys {
-                let local_key = (src.read(data_index as usize) >> shift_bit) & 0xf;
+                let local_key = (src.read((key_offset + data_index) as usize) >> shift_bit) & 0xf;
                 atomic_add_u32_workgroup(histogram.at_mut(local_key as usize), 1);
             }
             data_index += WG;
@@ -72,7 +75,7 @@ pub fn gpu_sort_count(
 
     if active && local_id.x < BIN_COUNT {
         counts.write(
-            (local_id.x * num_wgs + group_id) as usize,
+            (counts_offset + local_id.x * num_wgs + group_id) as usize,
             histogram.read(local_id.x as usize),
         );
     }

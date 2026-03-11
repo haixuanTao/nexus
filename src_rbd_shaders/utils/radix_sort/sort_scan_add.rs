@@ -41,6 +41,9 @@ pub fn gpu_sort_scan_add(
     let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
 
     let group_id = gid.x;
+    let batch_id = gid.y;
+    let counts_offset = batch_id * BIN_COUNT * num_wgs;
+    let reduced_offset = batch_id * BLOCK_SIZE;
 
     let active = group_id < num_reduce_wgs;
     let num_reduce_wg_per_bin = num_reduce_wgs / BIN_COUNT;
@@ -58,7 +61,7 @@ pub fn gpu_sort_scan_add(
             let data_index = base_index + i * WG + local_id.x;
             let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
             let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
-            let global_index = bin_offset + data_index;
+            let global_index = counts_offset + bin_offset + data_index;
             // Read 0 if we are out of bounds. We don't just rely on robustness since
             // rustgpu automatically inserts early-exiting bound checks that would break it.
             let value = if global_index < counts_len {
@@ -101,7 +104,7 @@ pub fn gpu_sort_scan_add(
 
     if active {
         // Add global offset from reduced array
-        sum = reduced.read(group_id as usize);
+        sum = reduced.read((reduced_offset + group_id) as usize);
         if local_id.x > 0 {
             sum += sums.read((local_id.x - 1) as usize);
         }
@@ -128,7 +131,7 @@ pub fn gpu_sort_scan_add(
             let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
             if data_index < num_wgs {
                 counts.write(
-                    (bin_offset + data_index) as usize,
+                    (counts_offset + bin_offset + data_index) as usize,
                     lds.at(row as usize).read(col as usize),
                 );
             }

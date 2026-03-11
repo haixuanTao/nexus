@@ -38,6 +38,9 @@ pub fn gpu_sort_reduce(
     let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
 
     let group_id = gid.x;
+    let batch_id = gid.y;
+    let counts_offset = batch_id * BIN_COUNT * num_wgs;
+    let reduced_offset = batch_id * BLOCK_SIZE;
 
     // Filter-out out of bounds workgroups but don’t
     // just early-exit to keep uniform control flow
@@ -55,7 +58,7 @@ pub fn gpu_sort_reduce(
         for i in 0..ELEMENTS_PER_THREAD {
             let data_index = base_index + i * WG + local_id.x;
             if data_index < num_wgs {
-                sum += counts.read((bin_offset + data_index) as usize);
+                sum += counts.read((counts_offset + bin_offset + data_index) as usize);
             }
         }
     }
@@ -72,6 +75,6 @@ pub fn gpu_sort_reduce(
     }
 
     if local_id.x == 0 && active {
-        reduced.write(group_id as usize, sum);
+        reduced.write((reduced_offset + group_id) as usize, sum);
     }
 }

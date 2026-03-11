@@ -28,7 +28,7 @@ use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
 #[spirv(compute(threads(256)))]
 pub fn gpu_sort_scan(
     #[spirv(local_invocation_id)] local_id: UVec3,
-    #[spirv(workgroup_id)] _group_id: UVec3,
+    #[spirv(workgroup_id)] workgroup_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] num_keys_arr: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] reduced: &mut [u32],
     #[spirv(workgroup)] sums: &mut [u32; 256],
@@ -37,6 +37,8 @@ pub fn gpu_sort_scan(
     let num_keys = num_keys_arr.read(0);
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
     let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
+    let batch_id = workgroup_id.y;
+    let reduced_offset = batch_id * BLOCK_SIZE;
 
     // Load with transposition
     for i in 0..ELEMENTS_PER_THREAD {
@@ -44,7 +46,7 @@ pub fn gpu_sort_scan(
         let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
         let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
         lds.at_mut(row as usize)
-            .write(col as usize, reduced.read(data_index as usize));
+            .write(col as usize, reduced.read((reduced_offset + data_index) as usize));
     }
 
     workgroup_memory_barrier_with_group_sync();
@@ -89,7 +91,7 @@ pub fn gpu_sort_scan(
         let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
         let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
         if data_index < num_reduce_wgs {
-            reduced.write(data_index as usize, lds.at(row as usize).read(col as usize));
+            reduced.write((reduced_offset + data_index) as usize, lds.at(row as usize).read(col as usize));
         }
     }
 }

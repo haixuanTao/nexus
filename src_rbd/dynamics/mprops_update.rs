@@ -22,6 +22,7 @@ impl GpuMpropsUpdate {
         mprops: &mut Tensor<WorldMassProperties>,
         local_mprops: &Tensor<LocalMassProperties>,
         poses: &Tensor<Pose>,
+        num_shapes: &Tensor<u32>,
         colliders_batch_capacity: &Tensor<u32>,
         num_bodies: u32,
         num_batches: u32,
@@ -32,7 +33,7 @@ impl GpuMpropsUpdate {
             mprops,
             local_mprops,
             poses,
-            colliders_batch_capacity,
+            num_shapes,
             colliders_batch_capacity,
         )
     }

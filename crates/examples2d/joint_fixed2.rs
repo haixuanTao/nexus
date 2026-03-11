@@ -73,12 +73,6 @@ fn build() -> SimulationState {
     /*
      * Set up the testbed.
      */
-    SimulationState {
-        bodies,
-        colliders,
-        impulse_joints,
-        num_batches: 1,
-        batch_offsets: vec![],
-    }
+    SimulationState::single(bodies, colliders, impulse_joints)
     // testbed.look_at(point![50.0, 50.0], 5.0);
 }

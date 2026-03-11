@@ -115,6 +115,8 @@ pub struct SolverArgs<'a> {
     pub contacts_batch_capacity: &'a Tensor<u32>,
     /// Maximum colliders per batch (stride between batches in body buffers).
     pub colliders_batch_capacity: &'a Tensor<u32>,
+    /// Number of solver iterations (max across all environments).
+    pub num_solver_iterations: u32,
 }
 
 impl GpuSolver {
@@ -217,7 +219,7 @@ impl GpuSolver {
         args: SolverArgs<'a>,
         mut joint_args: JointSolverArgs<'a>,
     ) -> Result<(), GpuBackendError> {
-        let num_substeps = 4; // TODO: make this configurable.
+        let num_substeps = args.num_solver_iterations;
 
         /*
          * Init solver vel increments.

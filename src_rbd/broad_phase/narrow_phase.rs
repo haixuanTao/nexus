@@ -81,8 +81,9 @@ impl GpuNarrowPhase {
         contacts_batch_capacity: &Tensor<u32>,
         colliders_batch_capacity: &Tensor<u32>,
     ) -> Result<(), GpuBackendError> {
+        let num_batches = contacts_len.len() as u32;
         self.reset_narrow_phase
-            .call(pass, 1, contacts_len, pfm_pairs_len)?;
+            .call(pass, [1u32, num_batches, 1], contacts_len, pfm_pairs_len)?;
 
         self.narrow_phase.call(
             pass,

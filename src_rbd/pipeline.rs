@@ -88,6 +88,7 @@ impl RunStats {
 pub struct GpuPhysicsState {
     num_batches: u32,
     num_colliders_per_batch: u32,
+    num_solver_iterations: u32,
     sim_params: Tensor<GpuSimParams>,
     poses: Tensor<Pose>,
     local_mprops: Tensor<GpuLocalMassProperties>,
@@ -135,89 +136,132 @@ pub struct GpuPhysicsState {
 
 #[cfg(feature = "from_rapier")]
 impl GpuPhysicsState {
-    /// Creates a new GPU physics state from CPU-side Rapier data structures.
+    /// Creates a new GPU physics state from per-environment Rapier data structures.
     ///
-    /// This method extracts rigid body and collider data from Rapier's CPU representations
-    /// and uploads them to GPU buffers. Each collider is treated as a separate rigid body
-    /// in the GPU simulation.
+    /// Each environment can have different rigid bodies, colliders, joints, and sim params.
+    /// Environments with fewer colliders/joints are padded with dummy fixed bodies.
     ///
     /// # Parameters
     ///
     /// - `backend`: The GPU backend used to allocate GPU buffers.
-    /// - `bodies`: The set of rigid bodies from Rapier.
-    /// - `colliders`: The set of colliders from Rapier.
+    /// - `environments`: Per-environment data: (bodies, colliders, joints, sim_params).
     ///
     /// # Panics
     ///
     /// Panics if any rigid body has more than one collider attached, as this is not currently supported.
     pub fn from_rapier(
         backend: &GpuBackend,
-        bodies: &RigidBodySet,
-        colliders: &ColliderSet,
-        impulse_joints: &ImpulseJointSet,
-        num_batches: u32,
-        batch_offsets: &[Vector],
+        environments: &[(&RigidBodySet, &ColliderSet, &ImpulseJointSet, &GpuSimParams)],
     ) -> Self {
-        let mut rb_poses = Vec::new();
-        let mut rb_local_mprops = Vec::new();
-        let mut rb_mprops = Vec::new();
-        let mut shapes = Vec::new();
+        let num_batches = environments.len() as u32;
+        let max_colliders = environments
+            .iter()
+            .map(|(_, c, _, _)| c.len())
+            .max()
+            .unwrap_or(0);
+
+        let mut all_poses = Vec::new();
+        let mut all_local_mprops = Vec::new();
+        let mut all_mprops = Vec::new();
+        let mut all_shapes = Vec::new();
+        let mut all_num_shapes = Vec::new();
         let mut shape_buffers = ShapeBuffers::default();
-        let mut body_ids = HashMap::new();
+        let mut joint_envs: Vec<(&ImpulseJointSet, HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>)> = Vec::new();
 
-        for (_, co) in colliders.iter() {
-            let parent = co.parent().map(|h| &bodies[h]);
+        // Collect per-batch sim params, adjusting dt for substeps.
+        let num_solver_iterations = environments
+            .iter()
+            .map(|(_, _, _, sp)| sp.num_solver_iterations)
+            .max()
+            .unwrap_or(4);
+        let all_sim_params: Vec<GpuSimParams> = environments
+            .iter()
+            .map(|(_, _, _, sp)| {
+                let mut sp = **sp;
+                sp.dt /= sp.num_solver_iterations as f32;
+                sp
+            })
+            .collect();
 
-            if let Some(parent) = parent {
-                assert_eq!(
-                    parent.colliders().len(),
-                    1,
-                    "Only bodies with exactly one collider are supported."
+        // Dummy data for padding shorter environments.
+        let dummy_pose = Pose::default();
+        let dummy_local_mprops = GpuLocalMassProperties::default();
+        let dummy_mprops = GpuWorldMassProperties::default();
+
+        for (bodies, colliders, impulse_joints, _sim_params) in environments {
+            let env_collider_count = colliders.len();
+            all_num_shapes.push(env_collider_count as u32);
+            let mut body_ids = HashMap::new();
+            let mut env_collider_idx = 0u32;
+
+            for (_, co) in colliders.iter() {
+                let parent = co.parent().map(|h| &bodies[h]);
+
+                if let Some(parent) = parent {
+                    assert_eq!(
+                        parent.colliders().len(),
+                        1,
+                        "Only bodies with exactly one collider are supported."
+                    );
+                }
+
+                let mut local_mprops = GpuLocalMassProperties::default();
+                let mut mprops = GpuWorldMassProperties {
+                    com: parent
+                        .map(|body| body.translation())
+                        .unwrap_or(Vector::ZERO),
+                    ..Default::default()
+                };
+                if parent.map(|b| !b.is_dynamic()).unwrap_or(true) {
+                    local_mprops.inv_mass = Vector::ZERO;
+                    #[cfg(feature = "dim3")]
+                    {
+                        local_mprops.inv_principal_inertia = glamx::Vec3::ZERO;
+                    }
+                    #[cfg(feature = "dim2")]
+                    {
+                        local_mprops.inv_inertia = 0.0;
+                    }
+                    mprops.inv_mass = Vector::ZERO;
+                    #[cfg(feature = "dim3")]
+                    {
+                        mprops.inv_inertia = glamx::Mat4::ZERO;
+                    }
+                    #[cfg(feature = "dim2")]
+                    {
+                        mprops.inv_inertia = 0.0;
+                    }
+                }
+
+                if let Some(h) = co.parent() {
+                    body_ids.insert(h, env_collider_idx);
+                }
+
+                env_collider_idx += 1;
+                all_local_mprops.push(local_mprops);
+                all_mprops.push(mprops);
+                all_shapes.push(
+                    shape_from_parry(co.shape(), &mut shape_buffers)
+                        .expect("Unsupported shape"),
                 );
+                all_poses.push(*co.position());
             }
 
-            let mut local_mprops = GpuLocalMassProperties::default();
-            let mut mprops = GpuWorldMassProperties {
-                com: parent
-                    .map(|body| body.translation())
-                    .unwrap_or(Vector::ZERO),
-                ..Default::default()
-            };
-            if parent.map(|b| !b.is_dynamic()).unwrap_or(true) {
-                local_mprops.inv_mass = Vector::ZERO;
-                #[cfg(feature = "dim3")]
-                {
-                    local_mprops.inv_principal_inertia = glamx::Vec3::ZERO;
-                }
-                #[cfg(feature = "dim2")]
-                {
-                    local_mprops.inv_inertia = 0.0;
-                }
-                mprops.inv_mass = Vector::ZERO;
-                #[cfg(feature = "dim3")]
-                {
-                    mprops.inv_inertia = glamx::Mat4::ZERO;
-                }
-                #[cfg(feature = "dim2")]
-                {
-                    mprops.inv_inertia = 0.0;
-                }
+            // Pad to max_colliders with dummy fixed bodies.
+            let dummy_shape = all_shapes.last().copied().unwrap_or_default();
+            for _ in env_collider_count..max_colliders {
+                all_poses.push(dummy_pose);
+                all_local_mprops.push(dummy_local_mprops);
+                all_mprops.push(dummy_mprops);
+                all_shapes.push(dummy_shape);
             }
 
-            if let Some(h) = co.parent() {
-                let id = rb_poses.len();
-                body_ids.insert(h, id as u32);
-            }
-
-            rb_local_mprops.push(local_mprops);
-            rb_mprops.push(mprops);
-            shapes
-                .push(shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape"));
-
-            rb_poses.push(*co.position());
+            joint_envs.push((impulse_joints, body_ids));
         }
 
-        // NOTE: GPU doesn't like empty storage buffer bindings.
+        // NOTE: GPU doesn't like empty storage buffer bindings so add dummy data
+        //       instead of leaving them empty (which is fine considering they are
+        //       not referenced by any collider).
         if shape_buffers.vertices.is_empty() {
             shape_buffers.vertices.push(Point::ZERO.into());
         }
@@ -230,39 +274,14 @@ impl GpuPhysicsState {
         let index_buffers =
             Tensor::vector(backend, &shape_buffers.indices, BufferUsages::STORAGE).unwrap();
 
-        let joints =
-            GpuImpulseJointSet::from_rapier(backend, impulse_joints, &body_ids, num_batches);
+        let joint_env_refs: Vec<(&ImpulseJointSet, &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>)> = joint_envs
+            .iter()
+            .map(|(joints, body_ids)| (*joints, body_ids))
+            .collect();
+        let joints = GpuImpulseJointSet::from_rapier(backend, &joint_env_refs);
 
-        let num_colliders_per_batch = rb_poses.len();
+        let num_colliders_per_batch = max_colliders;
         let num_bodies_total = num_colliders_per_batch * num_batches as usize;
-
-        // Replicate body data across batches with position offsets.
-        let mut all_poses = Vec::with_capacity(num_bodies_total);
-        let mut all_local_mprops = Vec::with_capacity(num_bodies_total);
-        let mut all_mprops = Vec::with_capacity(num_bodies_total);
-        let mut all_shapes = Vec::with_capacity(num_bodies_total);
-
-        for batch in 0..num_batches as usize {
-            let offset = if batch < batch_offsets.len() {
-                batch_offsets[batch]
-            } else {
-                Vector::ZERO
-            };
-
-            for i in 0..num_colliders_per_batch {
-                let mut pose = rb_poses[i];
-                pose.translation += offset;
-                all_poses.push(pose);
-
-                all_local_mprops.push(rb_local_mprops[i]);
-
-                let mut mp = rb_mprops[i];
-                mp.com += offset;
-                all_mprops.push(mp);
-
-                all_shapes.push(shapes[i]);
-            }
-        }
 
         let all_vels = vec![GpuVelocity::default(); num_bodies_total];
         let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
@@ -270,7 +289,7 @@ impl GpuPhysicsState {
 
         let num_shapes = Tensor::vector(
             backend,
-            &vec![all_shapes.len() as u32; num_batches as usize],
+            &all_num_shapes,
             BufferUsages::STORAGE | BufferUsages::UNIFORM,
         )
         .unwrap();
@@ -408,9 +427,6 @@ impl GpuPhysicsState {
         )
         .unwrap();
 
-        let mut sim_params = GpuSimParams::tgs_soft();
-        sim_params.dt /= sim_params.num_solver_iterations as f32;
-
         let lbvh_usages = if crate::VALIDATE_LBVH_TOPOLOGY {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC
         } else {
@@ -420,10 +436,11 @@ impl GpuPhysicsState {
         Self {
             num_batches,
             num_colliders_per_batch: num_colliders_per_batch as u32,
-            sim_params: Tensor::scalar(
+            num_solver_iterations,
+            sim_params: Tensor::vector(
                 backend,
-                sim_params,
-                BufferUsages::STORAGE | BufferUsages::UNIFORM,
+                &all_sim_params,
+                BufferUsages::STORAGE,
             )
             .unwrap(),
             vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
@@ -524,6 +541,11 @@ impl GpuPhysicsState {
     pub fn num_batches(&self) -> u32 {
         self.num_batches
     }
+
+    /// The number of solver iterations (max across all environments).
+    pub fn num_solver_iterations(&self) -> u32 {
+        self.num_solver_iterations
+    }
 }
 
 /// The main GPU physics pipeline coordinating all simulation stages.
@@ -597,6 +619,7 @@ impl GpuPhysicsPipeline {
                     &mut state.mprops,
                     &state.local_mprops,
                     &state.poses,
+                    &state.num_shapes,
                     &state.colliders_batch_capacity,
                     state.num_colliders_per_batch,
                     state.num_batches,
@@ -610,6 +633,7 @@ impl GpuPhysicsPipeline {
                     &mut pass,
                     &mut state.lbvh,
                     state.poses.len() as u32,
+                    state.num_batches,
                     &state.poses,
                     &state.vertex_buffers,
                     &state.shapes,
@@ -643,6 +667,7 @@ impl GpuPhysicsPipeline {
                     &mut pass,
                     &mut state.lbvh,
                     state.poses.len() as u32,
+                    state.num_batches,
                     &state.num_shapes,
                     &state.colliders_batch_capacity,
                     &state.collision_pairs_batch_capacity,
@@ -723,6 +748,7 @@ impl GpuPhysicsPipeline {
                     &mut pass,
                     &mut state.lbvh,
                     state.poses.len() as u32,
+                    state.num_batches,
                     &state.num_shapes,
                     &state.colliders_batch_capacity,
                     &state.collision_pairs_batch_capacity,
@@ -789,6 +815,7 @@ impl GpuPhysicsPipeline {
                 colliders_batch_capacity: &state.colliders_batch_capacity,
                 num_batches: state.num_batches,
                 num_colliders: state.num_colliders_per_batch,
+                num_solver_iterations: state.num_solver_iterations,
             };
             self.solver
                 .prepare(
@@ -894,6 +921,7 @@ impl GpuPhysicsPipeline {
             colliders_batch_capacity: &state.colliders_batch_capacity,
             num_batches: state.num_batches,
             num_colliders: state.num_colliders_per_batch,
+            num_solver_iterations: state.num_solver_iterations,
         };
 
         // Phase 3: Solve constraints

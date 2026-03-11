@@ -5,17 +5,37 @@ pub use backend::{BackendType, CpuBackend, GpuBackend, PhysicsBackend};
 pub use graphics::{RenderContext, setup_graphics, update_instances};
 
 use khal::backend::GpuBackend as KhalGpuBackend;
-use nexus::rbd::math::Vector;
+use nexus::rbd::dynamics::GpuSimParams;
 use nexus::rbd::pipeline::GpuPhysicsPipeline;
 use rapier::geometry::ColliderSet;
 use rapier::prelude::{ImpulseJointSet, RigidBodySet};
 
-pub struct SimulationState {
+pub struct BatchEnvironment {
     pub bodies: RigidBodySet,
     pub colliders: ColliderSet,
     pub impulse_joints: ImpulseJointSet,
-    pub num_batches: u32,
-    pub batch_offsets: Vec<Vector>,
+    pub sim_params: GpuSimParams,
+}
+
+pub struct SimulationState {
+    pub environments: Vec<BatchEnvironment>,
+}
+
+impl SimulationState {
+    pub fn single(
+        bodies: RigidBodySet,
+        colliders: ColliderSet,
+        impulse_joints: ImpulseJointSet,
+    ) -> Self {
+        Self {
+            environments: vec![BatchEnvironment {
+                bodies,
+                colliders,
+                impulse_joints,
+                sim_params: GpuSimParams::default(),
+            }],
+        }
+    }
 }
 
 pub struct PhysicsContext {
@@ -50,24 +70,12 @@ pub async fn setup_physics(
                             "GPU backend initialization failed: {}. Using CPU backend.",
                             e
                         ));
-                        PhysicsBackend::Cpu(CpuBackend::new(SimulationState {
-                            bodies: phys.bodies.clone(),
-                            colliders: phys.colliders.clone(),
-                            impulse_joints: phys.impulse_joints.clone(),
-                            num_batches: 1,
-                            batch_offsets: vec![],
-                        }))
+                        PhysicsBackend::Cpu(CpuBackend::new(phys))
                     }
                 }
             }
         }
-        BackendType::Cpu => PhysicsBackend::Cpu(CpuBackend::new(SimulationState {
-            bodies: phys.bodies.clone(),
-            colliders: phys.colliders.clone(),
-            impulse_joints: phys.impulse_joints.clone(),
-            num_batches: 1,
-            batch_offsets: vec![],
-        })),
+        BackendType::Cpu => PhysicsBackend::Cpu(CpuBackend::new(phys)),
     };
 
     PhysicsContext::new(backend)

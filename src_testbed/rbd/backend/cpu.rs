@@ -23,12 +23,13 @@ pub struct CpuBackend {
 }
 
 impl CpuBackend {
-    pub fn new(phys: SimulationState) -> Self {
+    pub fn new(phys: &SimulationState) -> Self {
+        let env = &phys.environments[0];
         let mut poses_cache = Vec::new();
         let mut shapes_cache = Vec::new();
 
-        // Build initial poses and shapes from the simulation state
-        for (_, co) in phys.colliders.iter() {
+        // Build initial poses and shapes from the first environment.
+        for (_, co) in env.colliders.iter() {
             poses_cache.push(*co.position());
             shapes_cache.push(co.shared_shape().clone());
         }
@@ -41,9 +42,9 @@ impl CpuBackend {
             islands: IslandManager::new(),
             broad_phase: BroadPhaseBvh::new(),
             narrow_phase: NarrowPhase::new(),
-            bodies: phys.bodies,
-            colliders: phys.colliders,
-            impulse_joints: phys.impulse_joints,
+            bodies: env.bodies.clone(),
+            colliders: env.colliders.clone(),
+            impulse_joints: env.impulse_joints.clone(),
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             poses_cache,
