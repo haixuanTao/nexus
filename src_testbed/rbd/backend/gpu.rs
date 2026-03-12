@@ -1,6 +1,6 @@
 use super::SimulationBackend;
 use crate::rbd::SimulationState;
-use khal::backend::{Backend, GpuBackend as KhalGpuBackend};
+use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps};
 use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};
 
@@ -9,6 +9,7 @@ pub struct GpuBackend {
     pipeline: GpuPhysicsPipeline,
     state: GpuPhysicsState,
     poses_cache: Vec<Pose>,
+    timestamps: GpuTimestamps,
 }
 
 impl GpuBackend {
@@ -49,11 +50,13 @@ impl GpuBackend {
             .collect();
         let state = GpuPhysicsState::from_rapier(gpu, &envs);
         let poses_cache = Self::read_poses(gpu, &state).await?;
+        let timestamps = GpuTimestamps::new(gpu, 2048);
 
         Ok(Self {
             pipeline,
             state,
             poses_cache,
+            timestamps,
         })
     }
 
@@ -73,11 +76,13 @@ impl GpuBackend {
             .collect();
         let state = GpuPhysicsState::from_rapier(gpu, &envs);
         let poses_cache = Self::read_poses(gpu, &state).await.unwrap_or_default();
+        let timestamps = GpuTimestamps::new(gpu, 2048);
 
         Self {
             pipeline,
             state,
             poses_cache,
+            timestamps,
         }
     }
 
@@ -102,20 +107,44 @@ impl SimulationBackend for GpuBackend {
         &self.poses_cache
     }
     fn num_bodies(&self) -> usize {
-        self.poses_cache.len()
+        self.state.num_colliders_per_batch() as usize
     }
     fn num_joints(&self) -> usize {
         self.state.joints().len()
+    }
+    fn num_batches(&self) -> usize {
+        self.state.num_batches() as usize
     }
 
     async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RunStats {
         let gpu = gpu.unwrap();
 
-        let t0 = web_time::Instant::now();
-        let mut run_stats = self.pipeline.step(gpu, &mut self.state).await;
+        self.timestamps.reset();
 
-        // Read back poses from GPU
+        let t0 = web_time::Instant::now();
+        let mut run_stats = self
+            .pipeline
+            .step(gpu, &mut self.state, Some(&mut self.timestamps))
+            .await;
+
+        // Read back poses from GPU (this synchronizes the GPU).
         Self::read_poses_into(gpu, &self.state, &mut self.poses_cache).await;
+
+        // Read timestamp results (GPU is synced after pose readback).
+        if let Ok(results) = self.timestamps.read(gpu).await {
+            let mut aggregated: Vec<(String, f64)> = Vec::new();
+            for r in &results {
+                if let Some(existing) =
+                    aggregated.iter_mut().find(|(label, _)| label == &r.label)
+                {
+                    existing.1 += r.duration_ms;
+                } else {
+                    aggregated.push((r.label.clone(), r.duration_ms));
+                }
+            }
+            run_stats.gpu_total_time = aggregated.iter().map(|e| e.1).sum();
+            run_stats.gpu_pass_times = aggregated;
+        }
 
         run_stats.total_simulation_time_with_readback = t0.elapsed();
 

@@ -63,6 +63,10 @@ impl SimulationBackend for CpuBackend {
         self.impulse_joints.len()
     }
 
+    fn num_batches(&self) -> usize {
+        1
+    }
+
     async fn step(&mut self, _gpu: Option<&KhalGpuBackend>) -> RunStats {
         let t0 = web_time::Instant::now();
 

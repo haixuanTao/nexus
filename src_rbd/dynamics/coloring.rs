@@ -42,7 +42,7 @@ use crate::shaders::dynamics::{
     GpuStepGraphColoringLuby, GpuStepGraphColoringTopoGc,
 };
 use khal::Shader;
-use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
 use vortx::tensor::Tensor;
 
 /// GPU shaders for constraint graph coloring.
@@ -223,7 +223,7 @@ impl GpuColoring {
         // Initialize coloring state
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("coloring-reset", None);
+            let mut pass = encoder.begin_pass("luby-coloring-reset", None);
             self.dispatch_reset_luby(&mut pass, &mut args).unwrap();
             drop(pass);
             backend.submit(encoder).unwrap();
@@ -240,7 +240,7 @@ impl GpuColoring {
 
             {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass("coloring-step", None);
+                let mut pass = encoder.begin_pass("luby-coloring-step", None);
                 self.dispatch_step_luby(&mut pass, &mut args).unwrap();
                 drop(pass);
                 backend.submit(encoder).unwrap();
@@ -289,13 +289,14 @@ impl GpuColoring {
         backend: &GpuBackend,
         mut args: ColoringArgs<'a>,
         stats: &mut RunStats,
+        mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Option<u32> {
         let t0 = web_time::Instant::now();
 
         // Initialize TOPO-GC state
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("coloring-reset", None);
+            let mut pass = encoder.begin_pass("topo-gc-coloring-reset", timestamps.as_deref_mut());
             self.dispatch_reset_topo_gc(&mut pass, &mut args).unwrap();
             drop(pass);
             backend.submit(encoder).unwrap();
@@ -312,7 +313,7 @@ impl GpuColoring {
             // Batch multiple iterations to reduce CPU-GPU sync overhead
             {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass("coloring-step", None);
+                let mut pass = encoder.begin_pass("topo-gc-coloring-step", timestamps.as_deref_mut());
                 for _ in 0..10 {
                     // Reset completion flag
                     self.reset_completion_flag_topo_gc

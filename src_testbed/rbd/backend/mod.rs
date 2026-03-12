@@ -20,6 +20,7 @@ pub trait SimulationBackend {
     fn poses(&self) -> &[Pose];
     fn num_bodies(&self) -> usize;
     fn num_joints(&self) -> usize;
+    fn num_batches(&self) -> usize;
 
     /// Step the simulation
     async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RunStats;
@@ -57,6 +58,13 @@ impl PhysicsBackend {
         match self {
             PhysicsBackend::Cpu(backend) => backend.num_joints(),
             PhysicsBackend::Gpu(backend) => backend.num_joints(),
+        }
+    }
+
+    pub fn num_batches(&self) -> usize {
+        match self {
+            PhysicsBackend::Cpu(backend) => backend.num_batches(),
+            PhysicsBackend::Gpu(backend) => backend.num_batches(),
         }
     }
 }

@@ -24,7 +24,7 @@ use crate::shaders::shapes::Shape;
 use khal::Shader;
 
 use khal::BufferUsages;
-use khal::backend::{Backend, Encoder, GpuBackend};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuTimestamps};
 use std::time::Duration;
 use vortx::tensor::Tensor;
 
@@ -42,7 +42,7 @@ use {
 ///
 /// This structure tracks timing and iteration counts for various stages of the physics pipeline,
 /// useful for profiling and optimization.
-#[derive(Default, Copy, Clone, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct RunStats {
     /// Number of colors used in the graph coloring algorithm for parallel constraint solving.
     pub num_colors: u32,
@@ -56,16 +56,10 @@ pub struct RunStats {
     pub coloring_fallback_time: Duration,
     /// Total simulation time including GPU-to-CPU readbacks.
     pub total_simulation_time_with_readback: Duration,
-    /// GPU timestamp for updating the mass properties.
-    pub timestamp_update_mass_props: f64,
-    /// GPU timestamp for the broad-phase collision detection.
-    pub timestamp_broad_phase: f64,
-    /// GPU timestamp for the narrow-phase contact generation.
-    pub timestamp_narrow_phase: f64,
-    /// GPU timestamp for constraint solver preparation.
-    pub timestamp_solver_prep: f64,
-    /// GPU timestamp for the constraint solver.
-    pub timestamp_solver_solve: f64,
+    /// Per-pass GPU timestamp durations (label, milliseconds).
+    pub gpu_pass_times: Vec<(String, f64)>,
+    /// Total GPU time across all measured passes, in milliseconds.
+    pub gpu_total_time: f64,
 }
 
 impl RunStats {
@@ -603,14 +597,19 @@ impl GpuPhysicsPipeline {
     ///
     /// If the number of collision pairs exceeds buffer capacity, this method automatically
     /// allocates larger buffers (next power of two) and re-runs the broad-phase.
-    pub async fn step(&self, backend: &GpuBackend, state: &mut GpuPhysicsState) -> RunStats {
+    pub async fn step(
+        &self,
+        backend: &GpuBackend,
+        state: &mut GpuPhysicsState,
+        mut timestamps: Option<&mut GpuTimestamps>,
+    ) -> RunStats {
         let mut stats = RunStats::default();
         let t_phase1 = web_time::Instant::now();
 
         // Phase 1: Update mass properties, build LBVH, and find collision pairs
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("update-mprops", None);
+            let mut pass = encoder.begin_pass("update-mprops", timestamps.as_deref_mut());
 
             // Update mass properties
             self.mprops_update
@@ -625,6 +624,9 @@ impl GpuPhysicsPipeline {
                     state.num_batches,
                 )
                 .unwrap();
+
+            drop(pass);
+            let mut pass = encoder.begin_pass("broad-phase", timestamps.as_deref_mut());
 
             // Build LBVH and find collision pairs
             self.lbvh
@@ -659,7 +661,7 @@ impl GpuPhysicsPipeline {
                 validate_lbvh_topology(&tree, &sorted_colliders, num_colliders);
 
                 encoder = backend.begin_encoding();
-                pass = encoder.begin_pass("lbvh-find-pairs", None);
+                pass = encoder.begin_pass("broad-phase-find-pairs", timestamps.as_deref_mut());
             }
 
             self.lbvh
@@ -742,7 +744,7 @@ impl GpuPhysicsPipeline {
 
             // Re-run find_pairs with resized buffers
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("lbvh-find-pairs", None);
+            let mut pass = encoder.begin_pass("broad-phase-find-pairs (after resize)", timestamps.as_deref_mut());
             self.lbvh
                 .find_pairs(
                     &mut pass,
@@ -764,7 +766,7 @@ impl GpuPhysicsPipeline {
         // Phase 2: Narrow phase and solver preparation
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("narrow-phase", None);
+            let mut pass = encoder.begin_pass("narrow-phase", timestamps.as_deref_mut());
 
             // Narrow phase
             self.narrow_phase
@@ -788,6 +790,9 @@ impl GpuPhysicsPipeline {
                     &state.colliders_batch_capacity,
                 )
                 .unwrap();
+
+            drop(pass);
+            let mut pass = encoder.begin_pass("solver-prep", timestamps.as_deref_mut());
 
             // Solver preparation - create args here to avoid borrow conflicts
             let prepare_args = SolverArgs {
@@ -867,7 +872,7 @@ impl GpuPhysicsPipeline {
 
         let num_colors = if let Some(colors) = self
             .coloring
-            .dispatch_topo_gc(backend, coloring_args, &mut stats)
+            .dispatch_topo_gc(backend, coloring_args, &mut stats, timestamps.as_deref_mut())
             .await
         {
             colors
@@ -936,7 +941,7 @@ impl GpuPhysicsPipeline {
 
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("solve-tgs", None);
+            let mut pass = encoder.begin_pass("solver", timestamps.as_deref_mut());
             self.solver
                 .solve_tgs(
                     &mut pass,
@@ -946,6 +951,12 @@ impl GpuPhysicsPipeline {
                 )
                 .unwrap();
             drop(pass);
+
+            // Resolve all accumulated timestamps before the final submit.
+            if let Some(ts) = &timestamps {
+                ts.resolve(&mut encoder);
+            }
+
             backend.submit(encoder).unwrap();
         }
 

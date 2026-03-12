@@ -530,6 +530,10 @@ fn rbd_performance(
             ui.label("Joints:");
             ui.label(format!("{}", physics.backend.num_joints()));
             ui.end_row();
+
+            ui.label("Batches:");
+            ui.label(format!("{}", physics.backend.num_batches()));
+            ui.end_row();
         });
 
     ui.add_space(8.0);
@@ -571,35 +575,26 @@ fn rbd_performance(
                 ));
             });
 
-        CollapsingHeader::new("Timestamp queries")
-            .id_salt("rbd_timestamps")
+        if !run_stats.gpu_pass_times.is_empty() {
+            CollapsingHeader::new(format!(
+                "GPU passes: {:.2}ms",
+                run_stats.gpu_total_time
+            ))
+            .id_salt("rbd_gpu_passes")
             .default_open(false)
             .show(ui, |ui| {
-                egui::Grid::new("timestamp_grid")
+                egui::Grid::new("rbd_timestamp_grid")
                     .num_columns(2)
                     .spacing([20.0, 2.0])
                     .show(ui, |ui| {
-                        ui.label("Mass properties:");
-                        ui.label(format!("{:.2}ms", run_stats.timestamp_update_mass_props));
-                        ui.end_row();
-
-                        ui.label("Broad-phase:");
-                        ui.label(format!("{:.2}ms", run_stats.timestamp_broad_phase));
-                        ui.end_row();
-
-                        ui.label("Narrow-phase:");
-                        ui.label(format!("{:.2}ms", run_stats.timestamp_narrow_phase));
-                        ui.end_row();
-
-                        ui.label("Solver prep:");
-                        ui.label(format!("{:.2}ms", run_stats.timestamp_solver_prep));
-                        ui.end_row();
-
-                        ui.label("Solver solve:");
-                        ui.label(format!("{:.2}ms", run_stats.timestamp_solver_solve));
-                        ui.end_row();
+                        for (label, ms) in &run_stats.gpu_pass_times {
+                            ui.label(format!("{}:", label));
+                            ui.label(format!("{:.2}ms", ms));
+                            ui.end_row();
+                        }
                     });
             });
+        }
 
         // Slow performance warning.
         if run_stats

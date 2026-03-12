@@ -15,6 +15,7 @@ mod joint_revolute3;
 mod joint_revolute_batch3;
 mod keva3;
 mod many_pyramids3;
+mod many_pyramids_batch3;
 mod primitives3;
 mod pyramid3;
 mod trimesh3;
@@ -57,6 +58,7 @@ pub fn demo_builders() -> Vec<DemoBuilder> {
         primitives3::builder(),
         pyramid3::builder(),
         many_pyramids3::builder(),
+        many_pyramids_batch3::builder(),
         keva3::builder(),
         joint_ball3::builder(),
         joint_fixed3::builder(),
