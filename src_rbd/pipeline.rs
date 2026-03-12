@@ -301,7 +301,7 @@ impl GpuPhysicsState {
         )
         .unwrap();
 
-        const DEFAULT_CONTACT_COUNTS: u32 = 1024;
+        const DEFAULT_CONTACT_COUNTS: u32 = 32; // 1024;
         let collision_pairs = Tensor::vector_uninit(
             backend,
             DEFAULT_CONTACT_COUNTS * num_batches,
