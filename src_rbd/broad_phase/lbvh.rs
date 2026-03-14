@@ -13,7 +13,7 @@ use crate::shaders::broad_phase::{
 };
 use crate::shaders::shapes::Shape;
 use crate::utils::{RadixSort, RadixSortWorkspace};
-use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
+use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuPass, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use vortx::tensor::Tensor;
 
@@ -107,6 +107,7 @@ impl LbvhState {
                 Tensor::vector_uninit(backend, num_batches, self.buffer_usages).unwrap();
         }
 
+        // NOTE: colliders_len is the total colliders count, already taking all batches into account.
         if (self.tree.len() as u32) < 2 * colliders_len {
             self.unsorted_morton_keys =
                 Tensor::vector_uninit(backend, colliders_len, self.buffer_usages).unwrap();
@@ -128,6 +129,7 @@ impl LbvhState {
 
             // FIXME: we should instead write the len into the existing buffer at each frame
             //        to handle dynamic body/collider insertion/removal.
+            // FIXME: this doesn’t account for batches having mismatched numbers of colliders.
             // n_sort is a per-batch vector: each element is the per-batch key count.
             // The radix sort init kernel infers num_batches from n_sort.len().
             let n_sort_data = vec![colliders_per_batch; num_batches as usize];
@@ -158,7 +160,7 @@ impl Lbvh {
     pub fn update_tree(
         &self,
         backend: &GpuBackend,
-        pass: &mut GpuPass,
+        encoder: &mut GpuEncoder,
         state: &mut LbvhState,
         colliders_len: u32,
         num_batches: u32,
@@ -167,22 +169,26 @@ impl Lbvh {
         shapes: &Tensor<Shape>,
         num_shapes: &Tensor<u32>,
         colliders_batch_capacity: &Tensor<u32>,
+        mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Result<(), GpuBackendError> {
         state.resize_buffers(backend, colliders_len, num_batches);
 
         let colliders_per_batch = colliders_len / num_batches;
 
+        let mut pass = encoder.begin_pass("lbvh-compute-domain", timestamps.as_deref_mut());
         self.shaders.compute_domain.call(
-            pass,
+            &mut pass,
             [1u32, num_batches, 1],
             poses,
             &mut state.domain_aabb,
             num_shapes,
             colliders_batch_capacity,
         )?;
+        drop(pass);
 
+        let mut pass = encoder.begin_pass("lbvh-compute-morton", timestamps.as_deref_mut());
         self.shaders.compute_morton.call(
-            pass,
+            &mut pass,
             [colliders_per_batch, num_batches, 1],
             poses,
             &state.domain_aabb,
@@ -190,10 +196,12 @@ impl Lbvh {
             num_shapes,
             colliders_batch_capacity,
         )?;
+        drop(pass);
 
+        let mut pass = encoder.begin_pass("lbvh-sort-dispatch", timestamps.as_deref_mut());
         self.sort.dispatch(
             backend,
-            pass,
+            &mut pass,
             &mut state.sort_workspace,
             &state.unsorted_morton_keys,
             &state.unsorted_colliders,
@@ -203,18 +211,22 @@ impl Lbvh {
             &mut state.sorted_morton_keys,
             &mut state.sorted_colliders,
         )?;
+        drop(pass);
 
+        let mut pass = encoder.begin_pass("lbvh-build", timestamps.as_deref_mut());
         self.shaders.build.call(
-            pass,
+            &mut pass,
             [colliders_per_batch.saturating_sub(1), num_batches, 1],
             &state.sorted_morton_keys,
             &mut state.tree,
             num_shapes,
             colliders_batch_capacity,
         )?;
+        drop(pass);
 
+        let mut pass = encoder.begin_pass("lbvh-refit_leaves", timestamps.as_deref_mut());
         self.shaders.refit_leaves.call(
-            pass,
+            &mut pass,
             [colliders_per_batch, num_batches, 1],
             poses,
             shapes,
@@ -224,14 +236,17 @@ impl Lbvh {
             colliders_batch_capacity,
             vertex_buffers,
         )?;
+        drop(pass);
 
+        let mut pass = encoder.begin_pass("lbvh-refit-internal", timestamps.as_deref_mut());
         self.shaders.refit_internal.call(
-            pass,
+            &mut pass,
             [1u32, num_batches, 1],
             &mut state.tree,
             num_shapes,
             colliders_batch_capacity,
         )?;
+        drop(pass);
 
         Ok(())
     }

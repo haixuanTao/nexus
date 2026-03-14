@@ -34,10 +34,10 @@ pub fn gpu_sort_scan(
     #[spirv(workgroup)] sums: &mut [u32; 256],
     #[spirv(workgroup)] lds: &mut [[u32; 256]; 4],
 ) {
-    let num_keys = num_keys_arr.read(0);
+    let batch_id = workgroup_id.y;
+    let num_keys = num_keys_arr.read(batch_id as usize);
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
     let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
-    let batch_id = workgroup_id.y;
     let reduced_offset = batch_id * BLOCK_SIZE;
 
     // Load with transposition

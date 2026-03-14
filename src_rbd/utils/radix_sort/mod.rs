@@ -1,8 +1,8 @@
 //! Radix sort implementation, ported from `brush-sort`: <https://github.com/ArthurBrussee/brush/tree/main/crates/brush-sort>
 
 use crate::shaders::utils::radix_sort::{
-    GpuInitSortDispatch, GpuSortCount, GpuSortReduce, GpuSortScan, GpuSortScanAdd, GpuSortScatter,
-    SortUniforms,
+    GpuInitSortBatched, GpuInitSortDispatch, GpuSortCount, GpuSortReduce, GpuSortScan,
+    GpuSortScanAdd, GpuSortScatter, SortUniforms,
 };
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
@@ -14,7 +14,6 @@ const ELEMENTS_PER_THREAD: u32 = 4;
 const BLOCK_SIZE: u32 = WG * ELEMENTS_PER_THREAD;
 #[allow(dead_code)]
 const BITS_PER_PASS: u32 = 4;
-#[allow(dead_code)]
 const BIN_COUNT: u32 = 1 << BITS_PER_PASS;
 
 /// GPU-accelerated radix sort for sorting large arrays of u32 keys with associated values.
@@ -25,23 +24,14 @@ const BIN_COUNT: u32 = 1 << BITS_PER_PASS;
 /// - Prefix sum (scan) operations for determining output positions
 /// - Scatter phase that writes sorted elements to output buffers
 ///
-/// # Algorithm Overview
-///
-/// For each 4-bit pass (up to 8 passes for 32-bit keys):
-/// 1. **Count**: Histogram computation per workgroup
-/// 2. **Reduce**: Aggregate histograms across workgroups
-/// 3. **Scan**: Prefix sum on aggregated histograms
-/// 4. **Scan Add**: Distribute prefix sums back to workgroup histograms
-/// 5. **Scatter**: Write elements to sorted positions based on histograms
-///
-/// # Performance
-///
-/// - Processes ~10-100M elements/second on modern GPUs
-/// - Near-linear scaling with input size
-/// - Memory bandwidth bound (optimal for GPU)
+/// When `num_batches > 1`, the sort flattens all batches into a single buffer and adds
+/// extra stable radix passes for batch_id bits, keeping elements grouped by batch without
+/// encoding batch_id in the key. This avoids the performance pitfall of dispatching many
+/// underutilized workgroups for small batches.
 #[derive(Shader)]
 pub struct RadixSort {
     init: GpuInitSortDispatch,
+    init_batched: GpuInitSortBatched,
     count: GpuSortCount,
     reduce: GpuSortReduce,
     scan: GpuSortScan,
@@ -66,6 +56,10 @@ pub struct RadixSortWorkspace {
     num_reduce_wgs: Tensor<[u32; 3]>,
     output_keys_pong: Tensor<u32>,   // dual-buffering for output keys.
     output_values_pong: Tensor<u32>, // dual-buffering for output values.
+    // Buffers for flattened batched sort (batch_ids tracking).
+    batch_ids: Tensor<u32>,
+    batch_ids_pong: Tensor<u32>,
+    n_sort_flat: Tensor<u32>,
 }
 
 impl RadixSortWorkspace {
@@ -96,6 +90,9 @@ impl RadixSortWorkspace {
             .unwrap(),
             output_keys_pong: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
             output_values_pong: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            batch_ids: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            batch_ids_pong: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            n_sort_flat: Tensor::scalar(backend, 0u32, BufferUsages::STORAGE).unwrap(),
         }
     }
 }
@@ -107,23 +104,11 @@ impl RadixSort {
     /// Both keys and values are sorted together, making this useful for indirect sorting
     /// (where values are indices into another array).
     ///
-    /// # Parameters
-    ///
-    /// - `backend`: The GPU backend
-    /// - `pass`: The compute pass to record commands into
-    /// - `workspace`: Workspace buffers (automatically resized if needed)
-    /// - `input_keys`: The u32 keys to sort
-    /// - `input_values`: Associated values to sort alongside keys
-    /// - `n_sort`: Number of elements to sort (must be <= input buffer size)
-    /// - `sorting_bits`: Number of bits to sort (1-32). Use 32 for full sorting,
-    ///   or fewer bits if your keys have a limited range (e.g., 24 for Morton codes)
-    /// - `output_keys`: Buffer to write sorted keys to
-    /// - `output_values`: Buffer to write sorted values to
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `input_keys` and `input_values` have different lengths
-    /// - Panics if `sorting_bits > 32`
+    /// When `num_batches > 1`, all batches are flattened into a single sort with extra
+    /// passes for batch_id bits. All batches must have the same allocated size
+    /// (`input_keys.len() / num_batches`), though active counts per batch may differ
+    /// (given by `n_sort`). Inactive elements get sentinel keys and sort to the end
+    /// of their batch.
     pub fn dispatch(
         &self,
         backend: &GpuBackend,
@@ -144,22 +129,63 @@ impl RadixSort {
         );
         assert!(sorting_bits <= 32, "Can only sort up to 32 bits");
 
-        let max_n = input_keys.len() as u32;
-        let per_batch_max = max_n / num_batches;
+        if num_batches <= 1 {
+            self.dispatch_single_batch(
+                backend,
+                pass,
+                workspace,
+                input_keys,
+                input_values,
+                n_sort,
+                sorting_bits,
+                output_keys,
+                output_values,
+            )
+        } else {
+            self.dispatch_flattened(
+                backend,
+                pass,
+                workspace,
+                input_keys,
+                input_values,
+                n_sort,
+                sorting_bits,
+                num_batches,
+                output_keys,
+                output_values,
+            )
+        }
+    }
 
-        // compute buffer and dispatch sizes (per-batch workgroups, scaled by num_batches)
+    /// Single-batch dispatch (num_batches <= 1). Uses the original per-batch approach
+    /// with has_aux=0 (no auxiliary buffer rearrangement).
+    fn dispatch_single_batch(
+        &self,
+        backend: &GpuBackend,
+        pass: &mut GpuPass,
+        workspace: &mut RadixSortWorkspace,
+        input_keys: &Tensor<u32>,
+        input_values: &Tensor<u32>,
+        n_sort: &Tensor<u32>,
+        sorting_bits: u32,
+        output_keys: &mut Tensor<u32>,
+        output_values: &mut Tensor<u32>,
+    ) -> Result<(), GpuBackendError> {
+        let max_n = input_keys.len() as u32;
+        let per_batch_max = max_n;
+
+        // Resize workspace buffers
         let max_needed_wgs = per_batch_max.div_ceil(BLOCK_SIZE);
-        let needed_count = (num_batches as u64) * (max_needed_wgs as u64) * (BIN_COUNT as u64);
+        let needed_count = max_needed_wgs as u64 * BIN_COUNT as u64;
         if workspace.count_buf.len() < needed_count {
             workspace.count_buf =
                 Tensor::vector_uninit(backend, needed_count as u32, BufferUsages::STORAGE)?;
         }
 
-        let needed_reduced = (num_batches as u64) * (BLOCK_SIZE as u64);
+        let needed_reduced = BLOCK_SIZE as u64;
         if workspace.reduced_buf.len() < needed_reduced {
             let zeros = vec![0u32; needed_reduced as usize];
-            workspace.reduced_buf =
-                Tensor::vector(backend, &zeros, BufferUsages::STORAGE)?;
+            workspace.reduced_buf = Tensor::vector(backend, &zeros, BufferUsages::STORAGE)?;
         }
 
         self.init.call(
@@ -171,16 +197,36 @@ impl RadixSort {
         )?;
 
         if workspace.output_keys_pong.len() < input_keys.len() {
-            // TODO: is this OK even in the case where we call the radix sort multiple times
-            //       successively but with increasing input buffer sizes? Wondering if that could
-            //       free the previous buffer and then crash the previous invocation.
             workspace.output_keys_pong =
                 Tensor::vector_uninit(backend, input_keys.len() as u32, BufferUsages::STORAGE)?;
             workspace.output_values_pong =
                 Tensor::vector_uninit(backend, input_values.len() as u32, BufferUsages::STORAGE)?;
         }
 
+        // Ensure batch_ids buffers exist for scatter aux binding (not accessed with has_aux=0).
+        if workspace.batch_ids.len() < input_keys.len() {
+            workspace.batch_ids =
+                Tensor::vector_uninit(backend, input_keys.len() as u32, BufferUsages::STORAGE)?;
+            workspace.batch_ids_pong =
+                Tensor::vector_uninit(backend, input_keys.len() as u32, BufferUsages::STORAGE)?;
+        }
+
         let num_passes = sorting_bits.div_ceil(4);
+
+        // Create uniforms (has_aux=0 for single batch).
+        workspace.pass_uniforms.clear();
+        for pass_id in 0..num_passes {
+            workspace.pass_uniforms.push(Tensor::scalar(
+                backend,
+                SortUniforms {
+                    shift: pass_id * 4,
+                    max_keys_per_batch: per_batch_max,
+                    has_aux: 0,
+                },
+                BufferUsages::STORAGE | BufferUsages::UNIFORM,
+            )?);
+        }
+
         let mut output_keys = output_keys;
         let mut output_values = output_values;
         let mut output_keys_pong = &mut workspace.output_keys_pong;
@@ -188,24 +234,14 @@ impl RadixSort {
 
         if num_passes.is_multiple_of(2) {
             // Make sure the last pass has the user provided `output_keys`
-            // set as the output buffer so that the final results doesn’t end
-            // up stored in the workspace’s pong buffers instead.
+            // set as the output buffer so that the final results doesn't end
+            // up stored in the workspace's pong buffers instead.
             std::mem::swap(&mut output_keys, &mut output_keys_pong);
             std::mem::swap(&mut output_values, &mut output_values_pong);
         }
 
         macro_rules! run_pass {
-            ($pass_id: expr, $src: ident, $values: ident) => {
-                if $pass_id as usize >= workspace.pass_uniforms.len() {
-                    workspace.pass_uniforms.push(Tensor::scalar(
-                        backend,
-                        SortUniforms {
-                            shift: $pass_id * 4,
-                        },
-                        BufferUsages::STORAGE | BufferUsages::UNIFORM,
-                    )?);
-                }
-
+            ($pass_id: expr, $src: expr, $values: expr) => {
                 let uniforms_buffer = &workspace.pass_uniforms[$pass_id as usize];
 
                 self.count.call(
@@ -220,17 +256,19 @@ impl RadixSort {
                 self.reduce.call(
                     pass,
                     &workspace.num_reduce_wgs,
+                    uniforms_buffer,
                     n_sort,
                     &workspace.count_buf,
                     &mut workspace.reduced_buf,
                 )?;
 
                 self.scan
-                    .call(pass, [1u32, num_batches, 1], n_sort, &mut workspace.reduced_buf)?;
+                    .call(pass, [1u32, 1, 1], n_sort, &mut workspace.reduced_buf)?;
 
                 self.scan_add.call(
                     pass,
                     &workspace.num_reduce_wgs,
+                    uniforms_buffer,
                     n_sort,
                     &workspace.reduced_buf,
                     &mut workspace.count_buf,
@@ -246,6 +284,8 @@ impl RadixSort {
                     &workspace.count_buf,
                     output_keys,
                     output_values,
+                    &workspace.batch_ids,
+                    &mut workspace.batch_ids_pong,
                 )?;
             };
         }
@@ -266,14 +306,249 @@ impl RadixSort {
         }
         Ok(())
     }
+
+    /// Flattened batched dispatch (num_batches > 1). All batches are treated as one big
+    /// buffer. Extra stable radix passes for batch_id bits keep elements grouped by batch.
+    fn dispatch_flattened(
+        &self,
+        backend: &GpuBackend,
+        pass: &mut GpuPass,
+        workspace: &mut RadixSortWorkspace,
+        input_keys: &Tensor<u32>,
+        input_values: &Tensor<u32>,
+        n_sort: &Tensor<u32>,
+        sorting_bits: u32,
+        num_batches: u32,
+        output_keys: &mut Tensor<u32>,
+        output_values: &mut Tensor<u32>,
+    ) -> Result<(), GpuBackendError> {
+        let total_n = input_keys.len() as u32;
+        let per_batch = total_n / num_batches;
+        let key_passes = sorting_bits.div_ceil(4);
+        let batch_id_bits = 32 - (num_batches - 1).leading_zeros();
+        let batch_id_passes = batch_id_bits.div_ceil(4);
+        // Ensure even total_passes so the init buffer and final buffer align without
+        // pre-swapping references. Extra batch_id passes are no-ops (sorting by
+        // upper bits that are zero for small batch counts).
+        let total_passes = {
+            let raw = key_passes + batch_id_passes;
+            raw + (raw % 2)
+        };
+        // Resize workspace for flattened single-batch view.
+        let max_needed_wgs = total_n.div_ceil(BLOCK_SIZE);
+        let needed_count = max_needed_wgs as u64 * BIN_COUNT as u64;
+        if workspace.count_buf.len() < needed_count {
+            workspace.count_buf =
+                Tensor::vector_uninit(backend, needed_count as u32, BufferUsages::STORAGE)?;
+        }
+
+        let needed_reduced = BLOCK_SIZE as u64;
+        if workspace.reduced_buf.len() < needed_reduced {
+            let zeros = vec![0u32; needed_reduced as usize];
+            workspace.reduced_buf = Tensor::vector(backend, &zeros, BufferUsages::STORAGE)?;
+        }
+
+        // Resize ping-pong buffers.
+        if workspace.output_keys_pong.len() < total_n as u64 {
+            workspace.output_keys_pong =
+                Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
+            workspace.output_values_pong =
+                Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
+        }
+        if workspace.batch_ids.len() < total_n as u64 {
+            workspace.batch_ids =
+                Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
+            workspace.batch_ids_pong =
+                Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
+        }
+
+        // n_sort_flat = [total_n] for the flattened single-batch view.
+        workspace.n_sort_flat =
+            Tensor::scalar(backend, total_n, BufferUsages::STORAGE)?;
+
+        // Create uniforms for all passes.
+        workspace.pass_uniforms.clear();
+        for pass_id in 0..total_passes {
+            let shift = if pass_id < key_passes {
+                pass_id * 4
+            } else {
+                (pass_id - key_passes) * 4
+            };
+            workspace.pass_uniforms.push(Tensor::scalar(
+                backend,
+                SortUniforms {
+                    shift,
+                    max_keys_per_batch: total_n,
+                    has_aux: 1,
+                },
+                BufferUsages::STORAGE | BufferUsages::UNIFORM,
+            )?);
+        }
+
+        // Extra uniform for init_batched (max_keys_per_batch = per_batch, not total_n).
+        // shift is repurposed to carry num_batches for this kernel.
+        let init_uniform_idx = total_passes as usize;
+        workspace.pass_uniforms.push(Tensor::scalar(
+            backend,
+            SortUniforms {
+                shift: num_batches,
+                max_keys_per_batch: per_batch,
+                has_aux: 0,
+            },
+            BufferUsages::STORAGE | BufferUsages::UNIFORM,
+        )?);
+
+        // Init writes to output buffers. After even total_passes, data stays in output.
+        // NOTE: call() takes a thread count, not workgroup count (khal resolves internally).
+        self.init_batched.call(
+            pass,
+            total_n,
+            &workspace.pass_uniforms[init_uniform_idx],
+            n_sort,
+            input_keys,
+            input_values,
+            output_keys,
+            output_values,
+            &mut workspace.batch_ids,
+        )?;
+        let mut cur_keys = output_keys;
+        let mut next_keys = &mut workspace.output_keys_pong;
+        let mut cur_vals = output_values;
+        let mut next_vals = &mut workspace.output_values_pong;
+
+        // Init indirect dispatch for flattened single-batch.
+        self.init.call(
+            pass,
+            1u32,
+            &workspace.n_sort_flat,
+            &mut workspace.num_wgs,
+            &mut workspace.num_reduce_wgs,
+        )?;
+
+        // Run all sort passes with 3-stream ping-pong.
+        // Stream mapping changes between key passes and batch_id passes:
+        //   Key passes:      scatter(src=keys, values=vals, aux=bids)
+        //   Batch_id passes: scatter(src=bids, values=keys, aux=vals)
+        let n_sort_flat = &workspace.n_sort_flat;
+        let mut cur_aux = &mut workspace.batch_ids;
+        let mut next_aux = &mut workspace.batch_ids_pong;
+
+        for pass_id in 0..total_passes {
+            let is_batch_pass = pass_id >= key_passes;
+            let uniforms = &workspace.pass_uniforms[pass_id as usize];
+
+            if !is_batch_pass {
+                // Key pass: digit extraction from keys.
+                self.count.call(
+                    pass,
+                    &workspace.num_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    cur_keys,
+                    &mut workspace.count_buf,
+                )?;
+                self.reduce.call(
+                    pass,
+                    &workspace.num_reduce_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    &workspace.count_buf,
+                    &mut workspace.reduced_buf,
+                )?;
+                self.scan.call(
+                    pass,
+                    [1u32, 1, 1],
+                    n_sort_flat,
+                    &mut workspace.reduced_buf,
+                )?;
+                self.scan_add.call(
+                    pass,
+                    &workspace.num_reduce_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    &workspace.reduced_buf,
+                    &mut workspace.count_buf,
+                )?;
+                self.scatter.call(
+                    pass,
+                    &workspace.num_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    cur_keys,
+                    cur_vals,
+                    &workspace.count_buf,
+                    next_keys,
+                    next_vals,
+                    cur_aux,
+                    next_aux,
+                )?;
+            } else {
+                // Batch_id pass: digit extraction from batch_ids.
+                // Remap: src=batch_ids, values=keys, aux=vals.
+                self.count.call(
+                    pass,
+                    &workspace.num_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    cur_aux,
+                    &mut workspace.count_buf,
+                )?;
+                self.reduce.call(
+                    pass,
+                    &workspace.num_reduce_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    &workspace.count_buf,
+                    &mut workspace.reduced_buf,
+                )?;
+                self.scan.call(
+                    pass,
+                    [1u32, 1, 1],
+                    n_sort_flat,
+                    &mut workspace.reduced_buf,
+                )?;
+                self.scan_add.call(
+                    pass,
+                    &workspace.num_reduce_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    &workspace.reduced_buf,
+                    &mut workspace.count_buf,
+                )?;
+                // scatter(src=bids, values=keys, aux=vals,
+                //         out=next_bids, out_values=next_keys, out_aux=next_vals)
+                self.scatter.call(
+                    pass,
+                    &workspace.num_wgs,
+                    uniforms,
+                    n_sort_flat,
+                    cur_aux,
+                    cur_keys,
+                    &workspace.count_buf,
+                    next_aux,
+                    next_keys,
+                    cur_vals,
+                    next_vals,
+                )?;
+            }
+
+            std::mem::swap(&mut cur_keys, &mut next_keys);
+            std::mem::swap(&mut cur_vals, &mut next_vals);
+            std::mem::swap(&mut cur_aux, &mut next_aux);
+        }
+
+        // After all passes, cur_keys and cur_vals hold the final sorted data.
+        // Thanks to the pre-swap, they point to the user's output buffers.
+        Ok(())
+    }
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use crate::utils::RadixSort;
     use crate::utils::radix_sort::RadixSortWorkspace;
-    use khal::{BufferUsages, Shader};
     use khal::backend::{Backend, Encoder, GpuBackend, WebGpu};
+    use khal::{BufferUsages, Shader};
     use vortx::tensor::Tensor;
 
     pub fn cpu_argsort<T: Ord>(data: &[T]) -> Vec<usize> {
@@ -333,7 +608,8 @@ mod tests {
                 1,
                 &mut out_keys,
                 &mut out_values,
-            ).unwrap();
+            )
+            .unwrap();
             drop(pass);
             gpu.submit(encoder);
 
@@ -396,7 +672,8 @@ mod tests {
             1,
             &mut out_keys,
             &mut out_values,
-        );
+        )
+        .unwrap();
         drop(pass);
         gpu.submit(encoder);
 
@@ -409,5 +686,259 @@ mod tests {
 
         assert_eq!(ref_keys, result_keys);
         assert_eq!(ref_values, result_values);
+    }
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting_batched() {
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        let sort = RadixSort::from_backend(&gpu).unwrap();
+        let mut workspace = RadixSortWorkspace::new(&gpu);
+
+        let num_batches = 4u32;
+        let per_batch = 256u32;
+
+        // Create per-batch keys: each batch has keys in a different range.
+        let mut keys_inp = Vec::new();
+        let mut values_inp = Vec::new();
+        for batch_id in 0..num_batches {
+            for j in 0..per_batch {
+                // Keys are descending within each batch so sorting actually changes order.
+                keys_inp.push((per_batch - 1 - j) + batch_id * 1000);
+                values_inp.push(batch_id * per_batch + j);
+            }
+        }
+
+        let input_usages = BufferUsages::STORAGE;
+        let output_usages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+
+        let mut keys = Tensor::vector(&gpu, &keys_inp, input_usages).unwrap();
+        let mut values = Tensor::vector(&gpu, &values_inp, input_usages).unwrap();
+        let mut out_keys = Tensor::vector(&gpu, &keys_inp, output_usages).unwrap();
+        let mut out_values = Tensor::vector(&gpu, &values_inp, output_usages).unwrap();
+        let n_sort_data = vec![per_batch; num_batches as usize];
+        let n_sort = Tensor::vector(&gpu, &n_sort_data, BufferUsages::STORAGE).unwrap();
+
+        let mut encoder = gpu.begin_encoding();
+        let mut pass = encoder.begin_pass("test", None);
+        sort.dispatch(
+            &gpu,
+            &mut pass,
+            &mut workspace,
+            &mut keys,
+            &mut values,
+            &n_sort,
+            32,
+            num_batches,
+            &mut out_keys,
+            &mut out_values,
+        )
+        .unwrap();
+        drop(pass);
+        gpu.submit(encoder);
+
+        let result_keys: Vec<u32> = gpu.slow_read_vec(out_keys.buffer()).await.unwrap();
+        let result_values: Vec<u32> = gpu.slow_read_vec(out_values.buffer()).await.unwrap();
+
+        // Verify each batch is independently sorted.
+        for batch_id in 0..num_batches {
+            let start = (batch_id * per_batch) as usize;
+            let end = start + per_batch as usize;
+            let batch_keys = &result_keys[start..end];
+            let batch_values = &result_values[start..end];
+
+            // Keys should be sorted ascending within the batch.
+            for i in 1..batch_keys.len() {
+                assert!(
+                    batch_keys[i - 1] <= batch_keys[i],
+                    "batch {batch_id}: keys not sorted at index {i}: {} > {}",
+                    batch_keys[i - 1],
+                    batch_keys[i]
+                );
+            }
+
+            // All keys should be in the expected range for this batch.
+            for &k in batch_keys {
+                assert!(
+                    k >= batch_id * 1000 && k < batch_id * 1000 + per_batch,
+                    "batch {batch_id}: unexpected key {k}"
+                );
+            }
+
+            // Values should correspond to the original key-value pairs.
+            for (i, (&k, &v)) in batch_keys.iter().zip(batch_values.iter()).enumerate() {
+                let orig_j = k - batch_id * 1000;
+                let expected_v = batch_id * per_batch + (per_batch - 1 - orig_j);
+                assert_eq!(
+                    v, expected_v,
+                    "batch {batch_id} index {i}: key={k}, value={v}, expected value={expected_v}"
+                );
+            }
+        }
+    }
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting_batched_multi_wg() {
+        use rand::Rng;
+
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        let sort = RadixSort::from_backend(&gpu).unwrap();
+        let mut workspace = RadixSortWorkspace::new(&gpu);
+
+        // 4 batches of 128 elements — total 512 > WG(256), exercises multi-workgroup dispatch.
+        let num_batches = 4u32;
+        let per_batch = 128u32;
+        let total = num_batches * per_batch;
+        let mut rng = rand::rng();
+
+        let mut keys_inp = Vec::new();
+        let mut values_inp = Vec::new();
+        for _batch in 0..num_batches {
+            for j in 0..per_batch {
+                keys_inp.push(rng.random_range(0..10000u32));
+                values_inp.push(j);
+            }
+        }
+
+        let input_usages = BufferUsages::STORAGE;
+        let output_usages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+
+        let mut keys = Tensor::vector(&gpu, &keys_inp, input_usages).unwrap();
+        let mut values = Tensor::vector(&gpu, &values_inp, input_usages).unwrap();
+        let mut out_keys = Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
+        let mut out_values = Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
+        let n_sort = Tensor::vector(
+            &gpu,
+            &vec![per_batch; num_batches as usize],
+            BufferUsages::STORAGE,
+        )
+        .unwrap();
+
+        let mut encoder = gpu.begin_encoding();
+        let mut pass = encoder.begin_pass("test", None);
+        sort.dispatch(
+            &gpu,
+            &mut pass,
+            &mut workspace,
+            &mut keys,
+            &mut values,
+            &n_sort,
+            32,
+            num_batches,
+            &mut out_keys,
+            &mut out_values,
+        )
+        .unwrap();
+        drop(pass);
+        gpu.submit(encoder);
+
+        let result_keys: Vec<u32> = gpu.slow_read_vec(out_keys.buffer()).await.unwrap();
+
+        // Verify each batch is independently sorted.
+        for batch in 0..num_batches {
+            let start = (batch * per_batch) as usize;
+            let end = start + per_batch as usize;
+            let batch_keys = &result_keys[start..end];
+
+            for i in 1..batch_keys.len() {
+                assert!(
+                    batch_keys[i - 1] <= batch_keys[i],
+                    "batch {batch}: keys not sorted at index {i}: {} > {}",
+                    batch_keys[i - 1],
+                    batch_keys[i]
+                );
+            }
+
+            let mut orig_keys = keys_inp[start..end].to_vec();
+            orig_keys.sort();
+            assert_eq!(
+                batch_keys, &orig_keys[..],
+                "batch {batch}: sorted keys don't match expected"
+            );
+        }
+    }
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting_many_small_batches() {
+        use rand::Rng;
+
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        let sort = RadixSort::from_backend(&gpu).unwrap();
+        let mut workspace = RadixSortWorkspace::new(&gpu);
+
+        let num_batches = 1000u32;
+        let per_batch = 8u32;
+        let total = num_batches * per_batch;
+        let mut rng = rand::rng();
+
+        let mut keys_inp = Vec::new();
+        let mut values_inp = Vec::new();
+        for _batch in 0..num_batches {
+            for j in 0..per_batch {
+                keys_inp.push(rng.random_range(0..10000u32));
+                values_inp.push(j); // local index within batch
+            }
+        }
+
+        let input_usages = BufferUsages::STORAGE;
+        let output_usages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+
+        let mut keys = Tensor::vector(&gpu, &keys_inp, input_usages).unwrap();
+        let mut values = Tensor::vector(&gpu, &values_inp, input_usages).unwrap();
+        let mut out_keys =
+            Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
+        let mut out_values =
+            Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
+        let n_sort_data = vec![per_batch; num_batches as usize];
+        let n_sort = Tensor::vector(&gpu, &n_sort_data, BufferUsages::STORAGE).unwrap();
+
+        let mut encoder = gpu.begin_encoding();
+        let mut pass = encoder.begin_pass("test", None);
+        sort.dispatch(
+            &gpu,
+            &mut pass,
+            &mut workspace,
+            &mut keys,
+            &mut values,
+            &n_sort,
+            32,
+            num_batches,
+            &mut out_keys,
+            &mut out_values,
+        )
+        .unwrap();
+        drop(pass);
+        gpu.submit(encoder);
+
+        let result_keys: Vec<u32> = gpu.slow_read_vec(out_keys.buffer()).await.unwrap();
+
+        // Verify each batch is independently sorted.
+        for batch in 0..num_batches {
+            let start = (batch * per_batch) as usize;
+            let end = start + per_batch as usize;
+            let batch_keys = &result_keys[start..end];
+
+            // Keys should be sorted ascending.
+            for i in 1..batch_keys.len() {
+                assert!(
+                    batch_keys[i - 1] <= batch_keys[i],
+                    "batch {batch}: keys not sorted at index {i}: {} > {}",
+                    batch_keys[i - 1],
+                    batch_keys[i]
+                );
+            }
+
+            // The sorted keys should be the same set as the original batch keys.
+            let orig_start = start;
+            let orig_end = end;
+            let mut orig_keys = keys_inp[orig_start..orig_end].to_vec();
+            orig_keys.sort();
+            assert_eq!(
+                batch_keys, &orig_keys[..],
+                "batch {batch}: sorted keys don't match expected"
+            );
+        }
     }
 }

@@ -50,7 +50,7 @@ static_assertions = "1"
 
 # Shaders deps
 khal-derive = { path = "../khal/crates/khal-derive" }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "7ad4c4dd3ec2a4a87c47b036469e2c6f4081242a" }
 vortx-shaders = { path = "../vortx/vortx-shaders", default-features = false }
 unroll = "0.1"
 crunchy = "0.2.4"

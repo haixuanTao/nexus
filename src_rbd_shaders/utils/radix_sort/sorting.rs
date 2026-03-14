@@ -52,6 +52,10 @@ pub const NUM_PASSES: u32 = 32 / BITS_PER_PASS;
 pub struct SortUniforms {
     /// Bit shift amount for this sort pass (0, 4, 8, 12, ..., 28).
     pub shift: u32,
+    pub max_keys_per_batch: u32,
+    /// When non-zero, the scatter kernel also rearranges an auxiliary buffer
+    /// alongside keys and values (used for batch_ids in flattened batched sort).
+    pub has_aux: u32,
 }
 
 /// Integer division with ceiling (rounds up).

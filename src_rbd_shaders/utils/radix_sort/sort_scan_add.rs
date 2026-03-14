@@ -19,7 +19,7 @@ use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
 use crate::{udiv, umod, MaybeIndexUnchecked};
-
+use crate::utils::radix_sort::SortUniforms;
 use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
 
 /// Radix sort scan add kernel.
@@ -30,19 +30,21 @@ use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
 pub fn gpu_sort_scan_add(
     #[spirv(local_invocation_id)] local_id: UVec3,
     #[spirv(workgroup_id)] gid: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] num_keys_arr: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] reduced: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] counts: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] config: &SortUniforms,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] num_keys_arr: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] reduced: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] counts: &mut [u32],
     #[spirv(workgroup)] sums: &mut [u32; 256],
     #[spirv(workgroup)] lds: &mut [[u32; 256]; 4],
 ) {
-    let num_keys = num_keys_arr.read(0);
-    let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
-    let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
-
     let group_id = gid.x;
     let batch_id = gid.y;
-    let counts_offset = batch_id * BIN_COUNT * num_wgs;
+    let num_keys = num_keys_arr.read(batch_id as usize);
+    let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
+    let max_wgs_per_batch = div_ceil(config.max_keys_per_batch, BLOCK_SIZE);
+    let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
+
+    let counts_offset = batch_id * BIN_COUNT * max_wgs_per_batch;
     let reduced_offset = batch_id * BLOCK_SIZE;
 
     let active = group_id < num_reduce_wgs;

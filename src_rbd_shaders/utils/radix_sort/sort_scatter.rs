@@ -36,6 +36,8 @@ use super::sorting::{
 /// Radix sort scatter kernel.
 ///
 /// Scatters keys and values to their sorted positions using computed prefix sums.
+/// When `config.has_aux != 0`, also scatters an auxiliary buffer (used for batch_ids
+/// in flattened batched sort).
 #[spirv_bindgen]
 #[spirv(compute(threads(256)))]
 pub fn gpu_sort_scatter(
@@ -48,10 +50,17 @@ pub fn gpu_sort_scatter(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] counts: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] out: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] out_values: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] aux: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] out_aux: &mut [u32],
     #[spirv(workgroup)] lds_scratch: &mut [u32; 256],
     #[spirv(workgroup)] bin_offset_cache: &mut [u32; 256],
     #[spirv(workgroup)] local_histogram: &mut [u32; 16],
 ) {
+    let group_id = gid.x;
+    let batch_id = gid.y;
+    let local_id = lid.x;
+    let has_aux = config.has_aux;
+
     // SAFETY: all indices are bounded by the algorithm's structure:
     // - local_id < 256 (workgroup size)
     // - key_index < 16 (masked to 4 bits)
@@ -60,16 +69,14 @@ pub fn gpu_sort_scatter(
     // - storage buffer sizes match the algorithm's requirements
     // Keeping the bounds checks apparently makes the shader too complex and results in
     // a DeviceLost error on some NVidia graphics cards.
-    let num_keys = num_keys_arr.read(0);
+    let num_keys = num_keys_arr.read(batch_id as usize);
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
+    let max_wgs_per_batch = div_ceil(config.max_keys_per_batch, BLOCK_SIZE);
 
-    let group_id = gid.x;
-    let batch_id = gid.y;
-    let local_id = lid.x;
-    let key_offset = batch_id * num_keys;
-    let counts_offset = batch_id * BIN_COUNT * num_wgs;
+    let key_offset = batch_id * config.max_keys_per_batch;
+    let counts_offset = batch_id * BIN_COUNT * max_wgs_per_batch;
 
-    // Filter-out out of bounds workgroups but don’t
+    // Filter-out out of bounds workgroups but don't
     // just early-exit to keep uniform control flow
     // wrt. the barriers (for web compatibility).
     let active = group_id < num_wgs;
@@ -94,10 +101,14 @@ pub fn gpu_sort_scatter(
 
         let mut local_key = !0u32;
         let mut local_value = 0u32;
+        let mut local_aux = 0u32;
 
         if active && data_index < num_keys {
             local_key = src.read((key_offset + data_index) as usize);
             local_value = values.read((key_offset + data_index) as usize);
+            if has_aux != 0 {
+                local_aux = aux.read((key_offset + data_index) as usize);
+            }
         }
 
         // Hierarchical sorting: 2 passes of 2-bit sorts
@@ -142,6 +153,13 @@ pub fn gpu_sort_scatter(
             workgroup_memory_barrier_with_group_sync();
             local_value = lds_scratch.read(local_id as usize);
             workgroup_memory_barrier_with_group_sync();
+            // Rearrange aux (conditional — uniform branch, all threads take same path)
+            if has_aux != 0 {
+                lds_scratch.write(key_offset as usize, local_aux);
+                workgroup_memory_barrier_with_group_sync();
+                local_aux = lds_scratch.read(local_id as usize);
+                workgroup_memory_barrier_with_group_sync();
+            }
         }
 
         // Update local histogram
@@ -189,6 +207,9 @@ pub fn gpu_sort_scatter(
             if total_offset < num_keys {
                 out.write((key_offset + total_offset) as usize, local_key);
                 out_values.write((key_offset + total_offset) as usize, local_value);
+                if has_aux != 0 {
+                    out_aux.write((key_offset + total_offset) as usize, local_aux);
+                }
             }
 
             // Update offsets for next iteration

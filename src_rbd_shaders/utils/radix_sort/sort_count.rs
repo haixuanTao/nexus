@@ -39,12 +39,13 @@ pub fn gpu_sort_count(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] counts: &mut [u32],
     #[spirv(workgroup)] histogram: &mut [u32; 16],
 ) {
-    let num_keys = num_keys_arr.read(0);
-    let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
     let group_id = gid.x;
     let batch_id = gid.y;
-    let key_offset = batch_id * num_keys;
-    let counts_offset = batch_id * BIN_COUNT * num_wgs;
+    let num_keys = num_keys_arr.read(batch_id as usize);
+    let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
+    let max_wgs_per_batch = div_ceil(config.max_keys_per_batch, BLOCK_SIZE);
+    let key_offset = batch_id * config.max_keys_per_batch;
+    let counts_offset = batch_id * BIN_COUNT * max_wgs_per_batch;
 
     // Filter-out out of bounds workgroups but don’t
     // just early-exit to keep uniform control flow

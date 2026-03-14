@@ -626,13 +626,12 @@ impl GpuPhysicsPipeline {
                 .unwrap();
 
             drop(pass);
-            let mut pass = encoder.begin_pass("broad-phase", timestamps.as_deref_mut());
 
             // Build LBVH and find collision pairs
             self.lbvh
                 .update_tree(
                     backend,
-                    &mut pass,
+                    &mut encoder,
                     &mut state.lbvh,
                     state.poses.len() as u32,
                     state.num_batches,
@@ -641,12 +640,12 @@ impl GpuPhysicsPipeline {
                     &state.shapes,
                     &state.num_shapes,
                     &state.colliders_batch_capacity,
+                    timestamps.as_deref_mut(),
                 )
                 .unwrap();
 
             // Debug: validate LBVH topology after tree construction
             if crate::VALIDATE_LBVH_TOPOLOGY {
-                drop(pass);
                 backend.submit(encoder).unwrap();
 
                 let num_colliders = state.poses.len() as u32;
@@ -664,6 +663,7 @@ impl GpuPhysicsPipeline {
                 pass = encoder.begin_pass("broad-phase-find-pairs", timestamps.as_deref_mut());
             }
 
+            let mut pass = encoder.begin_pass("lbvh-find-pairs", timestamps.as_deref_mut());
             self.lbvh
                 .find_pairs(
                     &mut pass,
