@@ -32,8 +32,12 @@ The example binaries launch a testbed window with all available demos. Use the `
 as debug builds of GPU physics code will be very slow.
 
 ```sh
-cargo run --release --package nexus_examples_3d --bin all_examples3
-cargo run --release --package nexus_examples_2d --bin all_examples2
+# Run natively
+cargo run --release --bin all_examples3
+cargo run --release --bin all_examples2
+# Run on the browser
+cargo run --release --bin all_examples3 --target wasm32-unknown-unknown
+cargo run --release --bin all_examples2 --target wasm32-unknown-unknown
 ```
 ## License
 
