@@ -34,7 +34,6 @@ dim3 = []
 f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
-vulkan = ["khal/vulkan"]
 cpu = []  # Enables CPU shader execution
 from_rapier = []  # Enables conversion from rapier types
 
@@ -61,10 +60,17 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [patch.crates-io]
+glamx = { git = "https://github.com/dimforge/glamx", branch = "bytemuck"}
+parry2d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
+parry3d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
+#khal = { git = "https://github.com/dimforge/khal", branch = "main"}
+#khal-derive = { git = "https://github.com/dimforge/khal", branch = "main"}
+#vortx = { git = "https://github.com/dimforge/vortx", branch = "main"}
+
+#glamx = { path = "../glamx" }
+#kiss3d = { path = "../kiss3d" }
+#parry2d = { path = "../parry/crates/parry2d" }
+#parry3d = { path = "../parry/crates/parry3d" }
 khal = { path = "../khal/crates/khal" }
 khal-derive = { path = "../khal/crates/khal-derive" }
-glamx = { path = "../glamx" }
 vortx = { path = "../vortx" }
-kiss3d = { path = "../kiss3d" }
-parry2d = { path = "../parry/crates/parry2d" }
-parry3d = { path = "../parry/crates/parry3d" }

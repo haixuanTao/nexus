@@ -23,7 +23,6 @@ dim3 = []
 f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
-vulkan = ["khal/vulkan"]
 
 [dependencies]
 nexus_fem_shaders3d = { path = "../nexus_fem_shaders3d" }

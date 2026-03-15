@@ -23,7 +23,6 @@ dim3 = []
 f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
-vulkan = ["khal/vulkan"]
 from_rapier = ["rapier3d", "parry3d", "nexus_rbd3d/from_rapier"]
 
 [dependencies]

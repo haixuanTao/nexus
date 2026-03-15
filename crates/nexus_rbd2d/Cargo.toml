@@ -23,7 +23,6 @@ dim2 = []
 f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
-vulkan = ["khal/vulkan"]
 from_rapier = ["rapier2d", "parry2d"]
 
 [dependencies]
