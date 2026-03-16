@@ -13,7 +13,7 @@
 //! Shared memory: 256 entries for sums + 4x256 entries for local data
 
 use khal_derive::spirv_bindgen;
-use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
@@ -56,7 +56,7 @@ pub fn gpu_sort_scan(
     for i in 0..ELEMENTS_PER_THREAD {
         let tmp = lds.at(i as usize).read(local_id.x as usize);
         lds.at_mut(i as usize).write(local_id.x as usize, sum);
-        sum += tmp;
+        sum = sum.wrapping_add(tmp);
     }
 
     // Workgroup prefix sum
@@ -64,7 +64,7 @@ pub fn gpu_sort_scan(
     for i in 0..8u32 {
         workgroup_memory_barrier_with_group_sync();
         if local_id.x >= (1 << i) {
-            sum += sums.read((local_id.x - (1 << i)) as usize);
+            sum = sum.wrapping_add(sums.read((local_id.x - (1 << i)) as usize));
         }
         workgroup_memory_barrier_with_group_sync();
         sums.write(local_id.x as usize, sum);
@@ -79,7 +79,7 @@ pub fn gpu_sort_scan(
 
     for i in 0..ELEMENTS_PER_THREAD {
         let elt = lds.at_mut(i as usize).read(local_id.x as usize);
-        lds.at_mut(i as usize).write(local_id.x as usize, elt + sum);
+        lds.at_mut(i as usize).write(local_id.x as usize, elt.wrapping_add(sum));
     }
 
     // lds now contains exclusive prefix sum

@@ -24,6 +24,7 @@ unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
 push_constants = []
 # Enables some changes in the shaders for compatibility with web platforms.
 web-compat = []
+cpu = []
 
 [dependencies]
 nexus_rbd_shaders2d = { path = "../nexus_rbd_shaders2d", default-features = false, features = ["dim2"] }

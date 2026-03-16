@@ -129,6 +129,18 @@ impl RadixSort {
         );
         assert!(sorting_bits <= 32, "Can only sort up to 32 bits");
 
+        #[cfg(feature = "cpu")]
+        if pass.is_cpu() {
+            return Self::dispatch_cpu(
+                input_keys,
+                input_values,
+                n_sort,
+                num_batches,
+                output_keys,
+                output_values,
+            );
+        }
+
         if num_batches <= 1 {
             self.dispatch_single_batch(
                 backend,
@@ -155,6 +167,53 @@ impl RadixSort {
                 output_values,
             )
         }
+    }
+
+    /// CPU fast path: sort keys and values using the standard library sort.
+    #[cfg(feature = "cpu")]
+    fn dispatch_cpu(
+        input_keys: &Tensor<u32>,
+        input_values: &Tensor<u32>,
+        n_sort: &Tensor<u32>,
+        num_batches: u32,
+        output_keys: &mut Tensor<u32>,
+        output_values: &mut Tensor<u32>,
+    ) -> Result<(), GpuBackendError> {
+        let in_keys = input_keys.buffer().unwrap_slice();
+        let in_values = input_values.buffer().unwrap_slice();
+        let n_sort_slice = n_sort.buffer().unwrap_slice();
+        let out_keys = output_keys.buffer_mut().unwrap_slice_mut();
+        let out_values = output_values.buffer_mut().unwrap_slice_mut();
+
+        let num_batches = num_batches.max(1) as usize;
+        let per_batch = in_keys.len() / num_batches;
+
+        // Reusable index buffer to avoid allocating per batch.
+        let mut indices: Vec<u32> = Vec::new();
+
+        for batch in 0..num_batches {
+            let n = n_sort_slice[batch] as usize;
+            let offset = batch * per_batch;
+            let keys = &in_keys[offset..offset + n];
+
+            // Sort by permutation: sort indices by their corresponding key.
+            indices.clear();
+            indices.extend(0..n as u32);
+            indices.sort_unstable_by_key(|&i| keys[i as usize]);
+
+            // Scatter using the sorted permutation.
+            for (dst, &src) in indices.iter().enumerate() {
+                out_keys[offset + dst] = in_keys[offset + src as usize];
+                out_values[offset + dst] = in_values[offset + src as usize];
+            }
+            // Fill remaining slots with sentinel keys.
+            for i in n..per_batch {
+                out_keys[offset + i] = u32::MAX;
+                out_values[offset + i] = 0;
+            }
+        }
+
+        Ok(())
     }
 
     /// Single-batch dispatch (num_batches <= 1). Uses the original per-batch approach
@@ -557,14 +616,11 @@ mod tests {
         indices
     }
 
-    #[futures_test::test]
-    #[serial_test::serial]
-    async fn test_sorting() {
-        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+    async fn test_sorting_generic(gpu: &GpuBackend, num_iterations: u32) {
         let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
 
-        for i in 0u32..128 {
+        for i in 0u32..num_iterations {
             let keys_inp = [
                 5 + i * 4,
                 i,
@@ -625,19 +681,15 @@ mod tests {
         }
     }
 
-    #[futures_test::test]
-    #[serial_test::serial]
-    async fn test_sorting_big() {
+    async fn test_sorting_big_generic(gpu: &GpuBackend, num_ranges: u32) {
         use rand::Rng;
-
-        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
         let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
 
         // Simulate some data as one might find for a bunch of gaussians.
         let mut rng = rand::rng();
         let mut keys_inp = Vec::new();
-        for i in 0..10000 {
+        for i in 0..num_ranges {
             let start = rng.random_range(i..i + 150);
             let end = rng.random_range(start..start + 250);
 
@@ -688,15 +740,9 @@ mod tests {
         assert_eq!(ref_values, result_values);
     }
 
-    #[futures_test::test]
-    #[serial_test::serial]
-    async fn test_sorting_batched() {
-        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+    async fn test_sorting_batched_generic(gpu: &GpuBackend, num_batches: u32, per_batch: u32) {
         let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
-
-        let num_batches = 4u32;
-        let per_batch = 256u32;
 
         // Create per-batch keys: each batch has keys in a different range.
         let mut keys_inp = Vec::new();
@@ -777,18 +823,11 @@ mod tests {
         }
     }
 
-    #[futures_test::test]
-    #[serial_test::serial]
-    async fn test_sorting_batched_multi_wg() {
+    async fn test_sorting_batched_multi_wg_generic(gpu: &GpuBackend, num_batches: u32, per_batch: u32) {
         use rand::Rng;
-
-        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
         let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
 
-        // 4 batches of 128 elements — total 512 > WG(256), exercises multi-workgroup dispatch.
-        let num_batches = 4u32;
-        let per_batch = 128u32;
         let total = num_batches * per_batch;
         let mut rng = rand::rng();
 
@@ -859,17 +898,11 @@ mod tests {
         }
     }
 
-    #[futures_test::test]
-    #[serial_test::serial]
-    async fn test_sorting_many_small_batches() {
+    async fn test_sorting_many_small_batches_generic(gpu: &GpuBackend, num_batches: u32, per_batch: u32) {
         use rand::Rng;
-
-        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
         let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
 
-        let num_batches = 1000u32;
-        let per_batch = 8u32;
         let total = num_batches * per_batch;
         let mut rng = rand::rng();
 
@@ -940,5 +973,79 @@ mod tests {
                 "batch {batch}: sorted keys don't match expected"
             );
         }
+    }
+
+    // --- WebGpu test wrappers ---
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting() {
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        test_sorting_generic(&gpu, 128).await;
+    }
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting_big() {
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        test_sorting_big_generic(&gpu, 10000).await;
+    }
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting_batched() {
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        test_sorting_batched_generic(&gpu, 4, 256).await;
+    }
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting_batched_multi_wg() {
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        test_sorting_batched_multi_wg_generic(&gpu, 4, 128).await;
+    }
+
+    #[futures_test::test]
+    #[serial_test::serial]
+    async fn test_sorting_many_small_batches() {
+        let gpu = GpuBackend::WebGpu(WebGpu::default().await.unwrap());
+        test_sorting_many_small_batches_generic(&gpu, 1000, 8).await;
+    }
+
+    // --- CPU test wrappers (reduced sizes to keep tests fast) ---
+
+    #[cfg(feature = "cpu")]
+    #[futures_test::test]
+    async fn test_sorting_cpu() {
+        let gpu = GpuBackend::Cpu;
+        test_sorting_generic(&gpu, 3).await;
+    }
+
+    #[cfg(feature = "cpu")]
+    #[futures_test::test]
+    async fn test_sorting_big_cpu() {
+        let gpu = GpuBackend::Cpu;
+        test_sorting_big_generic(&gpu, 2).await;
+    }
+
+    #[cfg(feature = "cpu")]
+    #[futures_test::test]
+    async fn test_sorting_batched_cpu() {
+        let gpu = GpuBackend::Cpu;
+        test_sorting_batched_generic(&gpu, 2, 64).await;
+    }
+
+    #[cfg(feature = "cpu")]
+    #[futures_test::test]
+    async fn test_sorting_batched_multi_wg_cpu() {
+        let gpu = GpuBackend::Cpu;
+        test_sorting_batched_multi_wg_generic(&gpu, 2, 64).await;
+    }
+
+    #[cfg(feature = "cpu")]
+    #[futures_test::test]
+    async fn test_sorting_many_small_batches_cpu() {
+        let gpu = GpuBackend::Cpu;
+        test_sorting_many_small_batches_generic(&gpu, 10, 8).await;
     }
 }

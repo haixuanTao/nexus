@@ -20,7 +20,7 @@ use crate::{
 };
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
 use unroll::unroll_for_loops;
 use vortx_shaders::utils::{atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup};

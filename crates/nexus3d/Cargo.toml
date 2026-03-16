@@ -23,6 +23,8 @@ f32 = []
 f64 = []
 webgpu = ["nexus_rbd3d?/webgpu", "nexus_mpm3d?/webgpu", "nexus_fem3d?/webgpu"]
 from_rapier = ["nexus_rbd3d?/from_rapier", "nexus_mpm3d?/from_rapier"]
+cpu = ["nexus_rbd3d?/cpu", "nexus_mpm3d?/cpu", "nexus_fem3d?/cpu"]
+cpu-parallel = ["cpu", "nexus_rbd3d?/cpu-parallel", "nexus_mpm3d?/cpu-parallel", "nexus_fem3d?/cpu-parallel"]
 
 rbd = ["dep:nexus_rbd3d"]
 mpm = ["dep:nexus_mpm3d"]

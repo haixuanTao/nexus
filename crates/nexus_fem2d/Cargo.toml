@@ -23,6 +23,8 @@ dim2 = []
 f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
+cpu = ["nexus_fem_shaders2d/cpu", "vortx/cpu"]
+cpu-parallel = ["cpu", "vortx/cpu-parallel"]
 
 [dependencies]
 nexus_fem_shaders2d = { path = "../nexus_fem_shaders2d" }

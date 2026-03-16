@@ -118,6 +118,7 @@ pub fn render_ui(
     selected_demo: &mut usize,
     ui_sections: &mut UiSections,
     backend_type: &mut BackendType,
+    use_cpu: &mut bool,
     run_state: &mut RunState,
     run_stats: &RunStats,
     active_demo: &mut ActiveDemo,
@@ -159,6 +160,7 @@ pub fn render_ui(
                                 builders,
                                 active_demo,
                                 backend_type,
+                                use_cpu,
                                 selected_demo,
                                 gpu,
                                 &mut result,
@@ -359,6 +361,8 @@ fn settings_section(
     builders: &[DemoBuilder],
     active_demo: &mut ActiveDemo,
     backend_type: &mut BackendType,
+    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))]
+    use_cpu: &mut bool,
     selected_demo: &mut usize,
     gpu: Option<&KhalGpuBackend>,
     result: &mut UiInteractions,
@@ -372,9 +376,19 @@ fn settings_section(
             colliders_gfx,
             ..
         } => {
+            #[cfg(feature = "cpu")]
+            {
+                execution_backend_toggle(ui, use_cpu, selected_demo, result);
+                ui.add_space(4.0);
+            }
             mpm_settings(ui, builders, stage, colliders_gfx, result);
         }
         ActiveDemo::Fem { stage, .. } => {
+            #[cfg(feature = "cpu")]
+            {
+                execution_backend_toggle(ui, use_cpu, selected_demo, result);
+                ui.add_space(4.0);
+            }
             fem_settings(ui, builders, stage, result);
         }
     }
@@ -392,33 +406,64 @@ fn rbd_settings(
 
     let mut backend_changed = false;
 
-    ui.horizontal(|ui| {
-        if gpu.is_some()
-            && ui
-                .radio(
-                    matches!(*backend_type, BackendType::Gpu { .. }),
-                    "GPU (nexus)",
-                )
-                .on_hover_text("GPU-accelerated physics with nexus")
-                .clicked()
-            && !matches!(*backend_type, BackendType::Gpu { .. })
-        {
-            *backend_type = BackendType::Gpu;
-            backend_changed = true;
-        }
-
-        if ui
-            .radio(*backend_type == BackendType::Cpu, "CPU (rapier)")
-            .on_hover_text("CPU physics with rapier")
+    if gpu.is_some()
+        && ui
+            .radio(
+                matches!(*backend_type, BackendType::Gpu { .. }),
+                "GPU (nexus)",
+            )
+            .on_hover_text("GPU-accelerated physics with nexus")
             .clicked()
-            && *backend_type != BackendType::Cpu
-        {
-            *backend_type = BackendType::Cpu;
-            backend_changed = true;
-        }
-    });
+        && !matches!(*backend_type, BackendType::Gpu { .. })
+    {
+        *backend_type = BackendType::Gpu;
+        backend_changed = true;
+    }
+
+    #[cfg(feature = "cpu")]
+    if ui
+        .radio(*backend_type == BackendType::Cpu, "CPU (nexus)")
+        .on_hover_text("CPU physics using the nexus GPU pipeline executed on CPU")
+        .clicked()
+        && *backend_type != BackendType::Cpu
+    {
+        *backend_type = BackendType::Cpu;
+        backend_changed = true;
+    }
+
+    if ui
+        .radio(*backend_type == BackendType::Rapier, "CPU (rapier)")
+        .on_hover_text("CPU physics with rapier")
+        .clicked()
+        && *backend_type != BackendType::Rapier
+    {
+        *backend_type = BackendType::Rapier;
+        backend_changed = true;
+    }
 
     if backend_changed {
+        result.new_selected_demo = Some(*selected_demo);
+    }
+}
+
+#[cfg(feature = "cpu")]
+fn execution_backend_toggle(
+    ui: &mut egui::Ui,
+    use_cpu: &mut bool,
+    selected_demo: &mut usize,
+    result: &mut UiInteractions,
+) {
+    ui.label(RichText::new("Execution Backend").strong());
+    ui.add_space(2.0);
+
+    let prev = *use_cpu;
+
+    ui.horizontal(|ui| {
+        ui.radio_value(use_cpu, false, "GPU");
+        ui.radio_value(use_cpu, true, "CPU");
+    });
+
+    if *use_cpu != prev {
         result.new_selected_demo = Some(*selected_demo);
     }
 }
@@ -551,7 +596,7 @@ fn rbd_performance(
     ui.label(RichText::new(format!("Total: {:.2}ms - {:.0} FPS", total_ms, fps)).strong());
     ui.add_space(4.0);
 
-    if matches!(backend_type, BackendType::Gpu { .. }) {
+    if matches!(backend_type, BackendType::Gpu | BackendType::Cpu) {
         CollapsingHeader::new("Simulation details")
             .id_salt("rbd_sim_details")
             .default_open(false)

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
-use nexus_testbed2d::Testbed;
+use inflector::Inflector;
+use nexus_testbed2d::{DemoBuilder, Testbed};
 use std::cmp::Ordering;
 
 mod balls2;
@@ -19,31 +20,38 @@ mod elastic_cut2;
 mod elasticity2;
 mod sand2;
 
-fn demo_name_from_command_line() -> Option<String> {
+struct CliOptions {
+    example: Option<String>,
+    list: bool,
+    cpu: bool,
+    run: bool,
+}
+
+fn parse_command_line() -> CliOptions {
     let mut args = std::env::args();
+    let mut opts = CliOptions {
+        example: None,
+        list: false,
+        cpu: false,
+        run: false,
+    };
 
     while let Some(arg) = args.next() {
-        if &arg[..] == "--example" {
-            return args.next();
+        match arg.as_str() {
+            "--example" => opts.example = args.next(),
+            "--list" => opts.list = true,
+            "--cpu" => opts.cpu = true,
+            "--run" => opts.run = true,
+            _ => {}
         }
     }
 
-    None
+    opts
 }
 
-#[cfg(target_arch = "wasm32")]
-fn demo_name_from_url() -> Option<String> {
-    None
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn demo_name_from_url() -> Option<String> {
-    None
-}
-
-#[kiss3d::main]
-pub async fn main() {
-    let mut builders = vec![
+#[allow(clippy::type_complexity)]
+pub fn demo_builders() -> Vec<DemoBuilder> {
+    let mut builders: Vec<DemoBuilder> = vec![
         balls2::builder(),
         boxes2::builder(),
         boxes_and_balls2::builder(),
@@ -66,8 +74,40 @@ pub async fn main() {
         (true, false) => Ordering::Greater,
         (false, true) => Ordering::Less,
     });
+    builders
+}
 
-    let testbed = Testbed::from_builders(builders);
+#[kiss3d::main]
+pub async fn main() {
+    let opts = parse_command_line();
+    let mut builders = demo_builders();
 
+    if opts.list {
+        for builder in &builders {
+            println!("{}", builder.name().to_camel_case());
+        }
+        return;
+    }
+
+    if let Some(ref demo) = opts.example {
+        if let Some(i) = builders
+            .iter()
+            .position(|b| b.name().to_camel_case().as_str() == demo.as_str())
+        {
+            let single = vec![builders.into_iter().nth(i).unwrap()];
+            builders = single;
+        } else {
+            eprintln!("Invalid example to run provided: '{demo}'");
+            return;
+        }
+    }
+
+    let mut testbed = Testbed::from_builders(builders);
+    if opts.cpu {
+        testbed = testbed.with_cpu();
+    }
+    if opts.run {
+        testbed = testbed.with_running();
+    }
     testbed.run().await
 }

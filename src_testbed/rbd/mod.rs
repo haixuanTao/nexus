@@ -75,7 +75,20 @@ pub async fn setup_physics(
                 }
             }
         }
-        BackendType::Cpu => PhysicsBackend::Cpu(CpuBackend::new(phys)),
+        BackendType::Cpu => {
+            let cpu_backend = KhalGpuBackend::Cpu;
+            match GpuBackend::try_new(&cpu_backend, phys).await {
+                Ok(gpu_backend) => PhysicsBackend::Gpu(gpu_backend),
+                Err(e) => {
+                    *gpu_error = Some(format!(
+                        "Nexus CPU backend initialization failed: {}. Using rapier CPU backend.",
+                        e
+                    ));
+                    PhysicsBackend::Cpu(CpuBackend::new(phys))
+                }
+            }
+        }
+        BackendType::Rapier => PhysicsBackend::Cpu(CpuBackend::new(phys)),
     };
 
     PhysicsContext::new(backend)

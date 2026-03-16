@@ -21,7 +21,7 @@
 //! Shared memory: Scratch arrays + histogram cache + local histogram
 
 use khal_derive::spirv_bindgen;
-use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
@@ -123,7 +123,7 @@ pub fn gpu_sort_scatter(
             for i in 0..8u32 {
                 workgroup_memory_barrier_with_group_sync();
                 if local_id >= (1 << i) {
-                    sum += lds_scratch.read((local_id - (1 << i)) as usize);
+                    sum = sum.wrapping_add(lds_scratch.read((local_id - (1 << i)) as usize));
                 }
                 workgroup_memory_barrier_with_group_sync();
                 lds_scratch.write(local_id as usize, sum);
@@ -131,11 +131,12 @@ pub fn gpu_sort_scatter(
             workgroup_memory_barrier_with_group_sync();
 
             packed_histogram = lds_scratch.read((WG - 1) as usize);
-            packed_histogram =
-                (packed_histogram << 8) + (packed_histogram << 16) + (packed_histogram << 24);
+            packed_histogram = (packed_histogram << 8)
+                .wrapping_add(packed_histogram << 16)
+                .wrapping_add(packed_histogram << 24);
             let mut local_sum = packed_histogram;
             if local_id > 0 {
-                local_sum += lds_scratch.read((local_id - 1) as usize);
+                local_sum = local_sum.wrapping_add(lds_scratch.read((local_id - 1) as usize));
             }
             let key_offset = (local_sum >> (bit_key * 8)) & 0xff;
 
@@ -181,7 +182,7 @@ pub fn gpu_sort_scatter(
         for i in 0..4u32 {
             workgroup_memory_barrier_with_group_sync();
             if local_id >= (1 << i) && local_id < BIN_COUNT {
-                histogram_prefix_sum += lds_scratch.read((local_id - (1 << i)) as usize);
+                histogram_prefix_sum = histogram_prefix_sum.wrapping_add(lds_scratch.read((local_id - (1 << i)) as usize));
             }
             workgroup_memory_barrier_with_group_sync();
             if local_id < BIN_COUNT {
@@ -200,7 +201,7 @@ pub fn gpu_sort_scatter(
         if active {
             let mut local_offset = local_id;
             if key_index > 0 {
-                local_offset -= lds_scratch.read((key_index - 1) as usize);
+                local_offset = local_offset.wrapping_sub(lds_scratch.read((key_index - 1) as usize));
             }
             let total_offset = global_offset + local_offset;
 
@@ -216,7 +217,7 @@ pub fn gpu_sort_scatter(
             if local_id < BIN_COUNT {
                 let curr = bin_offset_cache.read(local_id as usize);
                 let hist = local_histogram.read(local_id as usize);
-                bin_offset_cache.write(local_id as usize, curr + hist);
+                bin_offset_cache.write(local_id as usize, curr.wrapping_add(hist));
             }
         }
         workgroup_memory_barrier_with_group_sync();

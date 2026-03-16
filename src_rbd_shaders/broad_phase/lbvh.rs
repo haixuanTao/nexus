@@ -22,7 +22,7 @@ use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
 use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
 use khal_derive::spirv_bindgen;
-use spirv_std::arch::{control_barrier, workgroup_memory_barrier_with_group_sync};
+use vortx_shaders::arch::{control_barrier, workgroup_memory_barrier_with_group_sync};
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 use vortx_shaders::utils::{StepRng, atomic_add_u32};
@@ -585,10 +585,10 @@ pub fn gpu_lbvh_find_collision_pairs(
 /// Expands a 10-bit integer into 30 bits by inserting 2 zeros after each bit (3D).
 #[cfg(feature = "dim3")]
 pub fn expand_bits_3d(v: u32) -> u32 {
-    let mut vv = (v * 0x00010001) & 0xFF0000FF;
-    vv = (vv * 0x00000101) & 0x0F00F00F;
-    vv = (vv * 0x00000011) & 0xC30C30C3;
-    vv = (vv * 0x00000005) & 0x49249249;
+    let mut vv = v.wrapping_mul(0x00010001) & 0xFF0000FF;
+    vv = vv.wrapping_mul(0x00000101) & 0x0F00F00F;
+    vv = vv.wrapping_mul(0x00000011) & 0xC30C30C3;
+    vv = vv.wrapping_mul(0x00000005) & 0x49249249;
     vv
 }
 

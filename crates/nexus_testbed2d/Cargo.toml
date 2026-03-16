@@ -13,13 +13,15 @@ required-features = ["dim2"]
 
 [lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("dim3"))',
+    'cfg(feature, values("dim3", "cpu"))',
 ] }
 
 [features]
 default = ["dim2", "webgpu"]
 dim2 = []
 webgpu = ["khal/webgpu"]
+cpu = ["nexus2d/cpu", "vortx/cpu"]
+cpu-parallel = ["cpu", "nexus2d/cpu-parallel", "vortx/cpu-parallel"]
 
 [dependencies]
 nexus2d = { path = "../nexus2d", features = ["rbd", "mpm", "fem", "from_rapier"]}

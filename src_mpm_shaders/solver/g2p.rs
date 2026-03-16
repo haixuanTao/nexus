@@ -19,7 +19,7 @@ use crate::PaddingExt;
 use crate::{Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::spirv;
 use unroll::unroll_for_loops;
 /*

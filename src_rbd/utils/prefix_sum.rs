@@ -55,6 +55,11 @@ impl GpuPrefixSum {
         data: &mut Tensor<u32>,
         num_batches: u32,
     ) -> Result<(), GpuBackendError> {
+        #[cfg(feature = "cpu")]
+        if pass.is_cpu() {
+            return Self::dispatch_cpu(data, num_batches);
+        }
+
         // If this assert fails, the kernel launches below must be changed because we are using
         // a fixed size for the shared memory currently.
         assert_eq!(
@@ -120,6 +125,30 @@ impl GpuPrefixSum {
                 &workspace.stages[0].buffer,
                 &workspace.batch_stride_tensors[0],
             )?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "cpu")]
+    fn dispatch_cpu(data: &mut Tensor<u32>, num_batches: u32) -> Result<(), GpuBackendError> {
+        let slice = data.buffer_mut().unwrap_slice_mut();
+        let batch_stride = slice.len() / num_batches.max(1) as usize;
+
+        for batch in 0..num_batches.max(1) as usize {
+            let start = batch * batch_stride;
+            let batch_data = &mut slice[start..start + batch_stride];
+
+            // Inclusive prefix sum.
+            for i in 0..batch_data.len() - 1 {
+                batch_data[i + 1] += batch_data[i];
+            }
+
+            // Shift right to get exclusive prefix sum with leading 0.
+            for i in (1..batch_data.len()).rev() {
+                batch_data[i] = batch_data[i - 1];
+            }
+            batch_data[0] = 0;
         }
 
         Ok(())

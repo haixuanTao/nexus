@@ -42,7 +42,7 @@ use crate::{
 };
 use khal_derive::spirv_bindgen;
 use spirv_std::spirv;
-use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
 use vortx_shaders::utils::atomic_add_f32;
 
 // ── Workgroup-level parallel reduction for scalars ──

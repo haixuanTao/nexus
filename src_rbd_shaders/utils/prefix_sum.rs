@@ -13,7 +13,7 @@
 //! - Body i's constraints are at indices [output[i-1], output[i])
 
 use khal_derive::spirv_bindgen;
-use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 

@@ -128,22 +128,14 @@ pub fn gpu_mark_rigid_particles_needing_block(
         // needs its own block to ensure proper grid transfers.
         if i > 0 && i < NUM_ASSOC_BLOCKS as u32 {
             // Set the bit atomically.
-            unsafe {
-                spirv_std::arch::atomic_or::<
-                    u32,
-                    { spirv_std::memory::Scope::QueueFamily as u32 },
-                    { spirv_std::memory::Semantics::NONE.bits() },
-                >(&mut rigid_particle_needs_block.at_mut(entry_id), entry_bit);
-            }
+            vortx_shaders::arch::atomic_or_u32(
+                &mut rigid_particle_needs_block.at_mut(entry_id), entry_bit,
+            );
         } else {
             // Clear the bit atomically.
-            unsafe {
-                spirv_std::arch::atomic_and::<
-                    u32,
-                    { spirv_std::memory::Scope::QueueFamily as u32 },
-                    { spirv_std::memory::Semantics::NONE.bits() },
-                >(&mut rigid_particle_needs_block.at_mut(entry_id), !entry_bit);
-            }
+            vortx_shaders::arch::atomic_and_u32(
+                &mut rigid_particle_needs_block.at_mut(entry_id), !entry_bit,
+            );
         }
     }
 }
@@ -254,16 +246,10 @@ pub fn gpu_finalize_particles_sort(
         let node_global_id = active_block_id.physical_id().node_id(
             node_local_id,
         );
-        let prev_head = unsafe {
-            spirv_std::arch::atomic_exchange::<
-                u32,
-                { spirv_std::memory::Scope::QueueFamily as u32 },
-                { spirv_std::memory::Semantics::NONE.bits() },
-            >(
-                &mut nodes_linked_lists.at_mut(node_global_id.id as usize).head,
-                id,
-            )
-        };
+        let prev_head = vortx_shaders::arch::atomic_exchange_u32(
+            &mut nodes_linked_lists.at_mut(node_global_id.id as usize).head,
+            id,
+        );
         atomic_add_u32(
             &mut nodes_linked_lists.at_mut(node_global_id.id as usize).len,
             1,
@@ -305,18 +291,12 @@ pub fn gpu_sort_rigid_particles(
             let node_global_id = active_block_id.physical_id().node_id(
                 node_local_id,
             );
-            let prev_head = unsafe {
-                spirv_std::arch::atomic_exchange::<
-                    u32,
-                    { spirv_std::memory::Scope::QueueFamily as u32 },
-                    { spirv_std::memory::Semantics::NONE.bits() },
-                >(
-                    &mut rigid_nodes_linked_lists
-                        .at_mut(node_global_id.id as usize)
-                        .head,
-                    id,
-                )
-            };
+            let prev_head = vortx_shaders::arch::atomic_exchange_u32(
+                &mut rigid_nodes_linked_lists
+                    .at_mut(node_global_id.id as usize)
+                    .head,
+                id,
+            );
             atomic_add_u32(
                 &mut rigid_nodes_linked_lists
                     .at_mut(node_global_id.id as usize)

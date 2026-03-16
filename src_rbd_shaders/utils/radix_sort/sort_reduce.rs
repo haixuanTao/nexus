@@ -12,7 +12,7 @@
 //! Shared memory: 256 entries for parallel reduction
 
 use khal_derive::spirv_bindgen;
-use spirv_std::arch::workgroup_memory_barrier_with_group_sync;
+use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
 use spirv_std::glam::UVec3;
 use spirv_std::spirv;
 
@@ -60,7 +60,7 @@ pub fn gpu_sort_reduce(
         for i in 0..ELEMENTS_PER_THREAD {
             let data_index = base_index + i * WG + local_id.x;
             if data_index < num_wgs {
-                sum += counts.read((counts_offset + bin_offset + data_index) as usize);
+                sum = sum.wrapping_add(counts.read((counts_offset + bin_offset + data_index) as usize));
             }
         }
     }
@@ -71,7 +71,7 @@ pub fn gpu_sort_reduce(
     for i in 0..8u32 {
         workgroup_memory_barrier_with_group_sync();
         if local_id.x < ((WG / 2) >> i) {
-            sum += sums.read((local_id.x + ((WG / 2) >> i)) as usize);
+            sum = sum.wrapping_add(sums.read((local_id.x + ((WG / 2) >> i)) as usize));
             sums.write(local_id.x as usize, sum);
         }
     }

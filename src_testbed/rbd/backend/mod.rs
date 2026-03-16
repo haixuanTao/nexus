@@ -10,8 +10,12 @@ use nexus::rbd::pipeline::RunStats;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BackendType {
-    Cpu,
+    /// CPU physics using rapier.
+    Rapier,
+    /// GPU-accelerated physics using nexus + WebGPU.
     Gpu,
+    /// CPU physics using nexus (same pipeline as GPU, executed on CPU).
+    Cpu,
 }
 
 /// Trait for physics simulation backends (CPU or GPU)

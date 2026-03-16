@@ -134,6 +134,9 @@ pub struct Testbed {
     selected_demo: usize,
     ui_sections: UiSections,
     backend_type: BackendType,
+    prev_backend_type: BackendType,
+    /// When true, MPM/FEM demos use CPU execution instead of GPU.
+    use_cpu: bool,
     run_state: RunState,
     run_stats: RunStats,
     gpu_init_error: Option<String>,
@@ -151,6 +154,8 @@ impl Testbed {
                 show_performance: true,
             },
             backend_type: BackendType::Gpu,
+            prev_backend_type: BackendType::Gpu,
+            use_cpu: false,
             run_state: RunState::Paused,
             run_stats: RunStats::default(),
             gpu_init_error: None,
@@ -160,6 +165,17 @@ impl Testbed {
 
     pub fn with_backend(mut self, backend_type: BackendType) -> Self {
         self.backend_type = backend_type;
+        self
+    }
+
+    pub fn with_cpu(mut self) -> Self {
+        self.backend_type = BackendType::Cpu;
+        self.use_cpu = true;
+        self
+    }
+
+    pub fn with_running(mut self) -> Self {
+        self.run_state = RunState::Running;
         self
     }
 
@@ -188,31 +204,35 @@ impl Testbed {
         scene3d.add_directional_light(glamx::Vec3::new(-1.0, -1.0, -1.0));
         scene3d.add_directional_light(glamx::Vec3::new(1.0, 1.0, 1.0));
 
-        // Initialize GPU (shared between RBD and MPM).
-        let limits = Limits {
-            max_buffer_size: 1_000_000_000,
-            max_storage_buffer_binding_size: 1_000_000_000,
-            #[cfg(target_arch = "wasm32")]
-            max_storage_buffers_per_shader_stage: 10,
-            #[cfg(not(target_arch = "wasm32"))]
-            max_storage_buffers_per_shader_stage: 12,
-            max_compute_workgroup_storage_size: 19904,
-            ..Default::default()
-        };
-        let gpu = match WebGpu::new(Default::default(), limits)
-            .await
-            .map(|mut wgpu| {
-                wgpu.force_buffer_copy_src = true;
-                KhalGpuBackend::WebGpu(wgpu)
-            }) {
-            Ok(gpu) => Some(gpu),
-            Err(e) => {
-                self.gpu_init_error = Some(format!(
-                    "GPU backend not available, initialization failed:\n\"{}\"\n",
-                    e
-                ));
-                self.backend_type = BackendType::Cpu;
-                None
+        // Initialize GPU (shared between RBD and MPM). Skip if running in CPU mode.
+        let gpu = if self.use_cpu {
+            None
+        } else {
+            let limits = Limits {
+                max_buffer_size: 1_000_000_000,
+                max_storage_buffer_binding_size: 1_000_000_000,
+                #[cfg(target_arch = "wasm32")]
+                max_storage_buffers_per_shader_stage: 10,
+                #[cfg(not(target_arch = "wasm32"))]
+                max_storage_buffers_per_shader_stage: 12,
+                max_compute_workgroup_storage_size: 19904,
+                ..Default::default()
+            };
+            match WebGpu::new(Default::default(), limits)
+                .await
+                .map(|mut wgpu| {
+                    wgpu.force_buffer_copy_src = true;
+                    KhalGpuBackend::WebGpu(wgpu)
+                }) {
+                Ok(gpu) => Some(gpu),
+                Err(e) => {
+                    self.gpu_init_error = Some(format!(
+                        "GPU backend not available, initialization failed:\n\"{}\"\n",
+                        e
+                    ));
+                    self.backend_type = BackendType::Rapier;
+                    None
+                }
             }
         };
 
@@ -270,6 +290,7 @@ impl Testbed {
                 &mut self.selected_demo,
                 &mut self.ui_sections,
                 &mut self.backend_type,
+                &mut self.use_cpu,
                 &mut self.run_state,
                 &self.run_stats,
                 &mut active_demo,
@@ -280,12 +301,18 @@ impl Testbed {
             if let Some(new_demo) = ui_res.new_selected_demo {
                 self.selected_demo = new_demo;
 
+                // Invalidate cached pipeline if backend type changed.
+                let backend_changed = self.backend_type != self.prev_backend_type;
+                self.prev_backend_type = self.backend_type;
+
                 // Clean up old active demo and extract GPU pipeline for caching.
                 match active_demo {
                     ActiveDemo::Rbd { physics, mut render_ctx } => {
                         render_ctx.clear();
-                        if let PhysicsBackend::Gpu(gpu_backend) = physics.backend {
-                            self.cached_gpu_pipeline = Some(gpu_backend.into_pipeline());
+                        if !backend_changed {
+                            if let PhysicsBackend::Gpu(gpu_backend) = physics.backend {
+                                self.cached_gpu_pipeline = Some(gpu_backend.into_pipeline());
+                            }
                         }
                     }
                     ActiveDemo::Mpm {
@@ -351,7 +378,24 @@ impl Testbed {
             }
             DemoBuilder::Mpm(_, _builder, _) => {
                 let _builder = *_builder;
-                let gpu = gpu.expect("GPU required for MPM demos");
+
+                #[cfg(feature = "cpu")]
+                let use_cpu = self.use_cpu;
+                #[cfg(not(feature = "cpu"))]
+                let use_cpu = false;
+
+                let khal_backend = if use_cpu {
+                    KhalGpuBackend::Cpu
+                } else {
+                    let gpu = gpu.expect("GPU required for MPM demos");
+                    KhalGpuBackend::WebGpu(
+                        match gpu {
+                            KhalGpuBackend::WebGpu(w) => w.clone(),
+                            #[allow(unreachable_patterns)]
+                            _ => panic!("Expected WebGpu backend"),
+                        },
+                    )
+                };
 
                 // Create a new MpmStage with just the single selected builder.
                 // We pass all MPM builders so set_demo works.
@@ -375,13 +419,7 @@ impl Testbed {
                 // then swap in the full list.
                 let init_builders = vec![mpm_builders[mpm_demo_idx].clone()];
                 let mut stage = MpmStage::new(
-                    KhalGpuBackend::WebGpu(
-                        match gpu {
-                            KhalGpuBackend::WebGpu(w) => w.clone(),
-                            #[allow(unreachable_patterns)]
-                            _ => panic!("Expected WebGpu backend"),
-                        },
-                    ),
+                    khal_backend,
                     |_| Box::new(()),
                     init_builders,
                 )
@@ -422,7 +460,24 @@ impl Testbed {
             }
             DemoBuilder::Fem(_, _builder, _) => {
                 let _builder = *_builder;
-                let gpu = gpu.expect("GPU required for FEM demos");
+
+                #[cfg(feature = "cpu")]
+                let use_cpu = self.use_cpu;
+                #[cfg(not(feature = "cpu"))]
+                let use_cpu = false;
+
+                let khal_backend = if use_cpu {
+                    KhalGpuBackend::Cpu
+                } else {
+                    let gpu = gpu.expect("GPU required for FEM demos");
+                    KhalGpuBackend::WebGpu(
+                        match gpu {
+                            KhalGpuBackend::WebGpu(w) => w.clone(),
+                            #[allow(unreachable_patterns)]
+                            _ => panic!("Expected WebGpu backend"),
+                        },
+                    )
+                };
 
                 let fem_builders: Vec<_> = self
                     .builders
@@ -441,13 +496,7 @@ impl Testbed {
 
                 let init_builders = vec![fem_builders[fem_demo_idx].clone()];
                 let mut stage = FemStage::new(
-                    KhalGpuBackend::WebGpu(
-                        match gpu {
-                            KhalGpuBackend::WebGpu(w) => w.clone(),
-                            #[allow(unreachable_patterns)]
-                            _ => panic!("Expected WebGpu backend"),
-                        },
-                    ),
+                    khal_backend,
                     init_builders,
                 )
                 .await;

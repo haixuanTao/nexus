@@ -452,18 +452,11 @@ impl Grid {
         // It is up to the user to detect the high occupancy, resize the hashmap, and re-run
         // the failed insertion.
         for _ in 0..self.hmap_capacity {
-            let old_value = unsafe {
-                spirv_std::arch::atomic_compare_exchange::<
-                    u32,
-                    { spirv_std::memory::Scope::QueueFamily as u32 },
-                    { spirv_std::memory::Semantics::NONE.bits() },
-                    { spirv_std::memory::Semantics::NONE.bits() },
-                >(
-                    &mut hmap_entries.at_mut(slot as usize).state,
-                    packed_key,
-                    NONE,
-                )
-            };
+            let old_value = vortx_shaders::arch::atomic_compare_exchange_u32(
+                &mut hmap_entries.at_mut(slot as usize).state,
+                packed_key,
+                NONE,
+            );
 
             if old_value == packed_key {
                 // The entry already exists.
@@ -478,26 +471,18 @@ impl Grid {
 
             // CAS returned NONE. Either we wrote successfully, or it was a spurious
             // failure (weak CAS on WGSL/Metal). Verify with atomic_load (which is always strong).
-            let current = unsafe {
-                spirv_std::arch::atomic_load::<
-                    u32,
-                    { spirv_std::memory::Scope::QueueFamily as u32 },
-                    { spirv_std::memory::Semantics::NONE.bits() },
-                >(&hmap_entries.at(slot as usize).state)
-            };
+            let current = vortx_shaders::arch::atomic_load_u32_shared(
+                &hmap_entries.at(slot as usize).state,
+            );
 
             if current == packed_key {
                 // Slot contains our key (we wrote it, or a same-key thread did).
                 // Use atomic_exchange on ownership to determine the unique owner.
                 // atomic_exchange is always strong (no weak variant in WGSL).
                 hmap_entries.at_mut(slot as usize).key = *key;
-                let prev = unsafe {
-                    spirv_std::arch::atomic_exchange::<
-                        u32,
-                        { spirv_std::memory::Scope::QueueFamily as u32 },
-                        { spirv_std::memory::Semantics::NONE.bits() },
-                    >(&mut hmap_entries.at_mut(slot as usize).ownership, 1)
-                };
+                let prev = vortx_shaders::arch::atomic_exchange_u32(
+                    &mut hmap_entries.at_mut(slot as usize).ownership, 1,
+                );
                 if prev == 0 {
                     return slot; // We are the owner (new insertion).
                 }

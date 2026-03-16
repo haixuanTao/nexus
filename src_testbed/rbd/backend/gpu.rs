@@ -6,6 +6,7 @@ use nexus::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};
 
 /// GPU-based physics backend using nexus
 pub struct GpuBackend {
+    gpu: KhalGpuBackend,
     pipeline: GpuPhysicsPipeline,
     state: GpuPhysicsState,
     poses_cache: Vec<Pose>,
@@ -53,6 +54,7 @@ impl GpuBackend {
         let timestamps = GpuTimestamps::new(gpu, 2048);
 
         Ok(Self {
+            gpu: gpu.clone(),
             pipeline,
             state,
             poses_cache,
@@ -79,6 +81,7 @@ impl GpuBackend {
         let timestamps = GpuTimestamps::new(gpu, 2048);
 
         Self {
+            gpu: gpu.clone(),
             pipeline,
             state,
             poses_cache,
@@ -116,8 +119,8 @@ impl SimulationBackend for GpuBackend {
         self.state.num_batches() as usize
     }
 
-    async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RunStats {
-        let gpu = gpu.unwrap();
+    async fn step(&mut self, _gpu: Option<&KhalGpuBackend>) -> RunStats {
+        let gpu = &self.gpu;
 
         self.timestamps.reset();
 
@@ -127,10 +130,10 @@ impl SimulationBackend for GpuBackend {
             .step(gpu, &mut self.state, Some(&mut self.timestamps))
             .await;
 
-        // Read back poses from GPU (this synchronizes the GPU).
+        // Read back poses (synchronizes with the GPU when using WebGPU backend).
         Self::read_poses_into(gpu, &self.state, &mut self.poses_cache).await;
 
-        // Read timestamp results (GPU is synced after pose readback).
+        // Read timestamp results.
         if let Ok(results) = self.timestamps.read(gpu).await {
             let mut aggregated: Vec<(String, f64)> = Vec::new();
             for r in &results {

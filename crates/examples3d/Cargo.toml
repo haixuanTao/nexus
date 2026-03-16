@@ -4,6 +4,11 @@ version = "0.4.0"
 authors = ["Sébastien Crozet <developer@crozet.re>"]
 edition = "2024"
 
+[features]
+default = []
+cpu = ["nexus_testbed3d/cpu"]
+cpu-parallel = ["cpu", "nexus_testbed3d/cpu-parallel"]
+
 [dependencies]
 glamx = { version = "0.1", default-features = false }
 nexus_testbed3d = { path = "../nexus_testbed3d" }

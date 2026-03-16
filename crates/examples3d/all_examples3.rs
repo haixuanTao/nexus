@@ -29,24 +29,35 @@ mod sand3;
 // FEM examples.
 mod fem_cube3;
 
+struct CliOptions {
+    command: Command,
+    cpu: bool,
+    run: bool,
+}
+
 enum Command {
     Run(String),
     List,
     RunAll,
 }
 
-fn parse_command_line() -> Command {
+fn parse_command_line() -> CliOptions {
     let mut args = std::env::args();
+    let mut command = Command::RunAll;
+    let mut cpu = false;
+    let mut run = false;
 
     while let Some(arg) = args.next() {
-        if &arg[..] == "--example" {
-            return Command::Run(args.next().unwrap_or_default());
-        } else if &arg[..] == "--list" {
-            return Command::List;
+        match arg.as_str() {
+            "--example" => command = Command::Run(args.next().unwrap_or_default()),
+            "--list" => command = Command::List,
+            "--cpu" => cpu = true,
+            "--run" => run = true,
+            _ => {}
         }
     }
 
-    Command::RunAll
+    CliOptions { command, cpu, run }
 }
 
 #[allow(clippy::type_complexity)]
@@ -86,23 +97,33 @@ pub fn demo_builders() -> Vec<DemoBuilder> {
 
 #[kiss3d::main]
 pub async fn main() {
-    let command = parse_command_line();
+    let opts = parse_command_line();
     let builders = demo_builders();
 
-    match command {
+    let apply_opts = |testbed: Testbed| {
+        let mut t = testbed;
+        if opts.cpu {
+            t = t.with_cpu();
+        }
+        if opts.run {
+            t = t.with_running();
+        }
+        t
+    };
+
+    match opts.command {
         Command::Run(demo) => {
             if let Some(i) = builders
                 .iter()
                 .position(|builder| builder.name().to_camel_case().as_str() == demo.as_str())
             {
-                // Extract the single builder for the specific demo.
                 let single = vec![builders.into_iter().nth(i).unwrap()];
-                Testbed::from_builders(single).run().await
+                apply_opts(Testbed::from_builders(single)).run().await
             } else {
                 eprintln!("Invalid example to run provided: '{demo}'");
             }
         }
-        Command::RunAll => Testbed::from_builders(builders).run().await,
+        Command::RunAll => apply_opts(Testbed::from_builders(builders)).run().await,
         Command::List => {
             for builder in &builders {
                 println!("{}", builder.name().to_camel_case())

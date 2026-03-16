@@ -24,6 +24,8 @@ f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
 from_rapier = ["rapier3d", "parry3d"]
+cpu = ["nexus_rbd_shaders3d/cpu", "vortx/cpu"]
+cpu-parallel = ["cpu", "vortx/cpu-parallel"]
 
 [dependencies]
 nexus_rbd_shaders3d = { path = "../nexus_rbd_shaders3d" }

@@ -20,6 +20,7 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 default = ["dim3"]
 dim3 = []
 unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
+cpu = []
 
 [dependencies]
 vortx-shaders = { workspace = true }
