@@ -14,14 +14,14 @@ use crate::solver::params::SimulationParams;
 use crate::{ang_length, AngVector, IVector, MaybeIndexUnchecked, Pose, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 
 /// Integer-quantized impulse for atomic accumulation during P2G.
 ///
 /// Uses integer representation to enable atomic add operations on the GPU.
 /// The `com` field stores the center of mass to reduce binding count in P2G.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct IntegerImpulse {
     /// Center of mass (stored here to reduce P2G binding count).
@@ -98,7 +98,7 @@ pub fn int_impulse_to_float(imp: &IntegerImpulse) -> Impulse {
 #[spirv_bindgen]
 #[spirv(compute(threads(16)))]
 pub fn gpu_rigid_impulses_update(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
     #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
@@ -192,7 +192,7 @@ pub fn gpu_rigid_impulses_update(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_update_world_mass_properties(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     local_mprops: &[LocalMassProperties],

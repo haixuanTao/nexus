@@ -27,7 +27,7 @@ use glamx::{Rot2, Vec2};
 /// and remain constant unless the body's shape changes.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(bytemuck::Pod, bytemuck::Zeroable, Debug)
 )]
 #[repr(C)]
@@ -85,7 +85,7 @@ impl Default for LocalMassProperties {
 /// current pose. They are updated each frame.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -141,7 +141,7 @@ impl Default for WorldMassProperties {
 
 /// An impulse (instantaneous change in momentum).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Impulse {
     /// Linear impulse component (change in linear momentum).
@@ -159,7 +159,7 @@ impl Impulse {
 
 /// A force and torque applied to a rigid body.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Force {
     /// Linear force component.
@@ -177,7 +177,7 @@ impl Force {
 
 /// Linear and angular velocity of a rigid body.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Velocity {
     /// Linear (translational) velocity.

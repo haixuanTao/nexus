@@ -11,7 +11,7 @@ use core::ops::BitOrAssign;
 use crate::{IVector, MaybeIndexUnchecked, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 use nexus_rbd_shaders::MAX_FLT;
 use crate::nexus_rbd_shaders::utils::udiv_ceil;
 use vortx_shaders::utils::atomic_add_u32;
@@ -51,7 +51,7 @@ const OFF_BY_ONE: i32 = 1;
 /// This is an integer vector (IVec2 in 2D, IVec3 in 3D) identifying a block's
 /// position in the infinite virtual grid.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct BlockVirtualId {
     pub id: IVector,
@@ -201,7 +201,7 @@ impl BlockVirtualId {
 /// After insertion into the hashmap, each active block is assigned a header ID
 /// that serves as its index in the `active_blocks` array.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct BlockHeaderId {
     pub id: u32,
@@ -224,7 +224,7 @@ impl BlockHeaderId {
 /// Computed as `header_id * NUM_CELL_PER_BLOCK`. Used to index into the flat
 /// node arrays.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct BlockPhysicalId {
     pub id: u32,
@@ -257,7 +257,7 @@ impl BlockPhysicalId {
 ///
 /// Computed as `block_physical_id + local_offset_in_block`.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct NodePhysicalId {
     pub id: u32,
@@ -273,7 +273,7 @@ pub struct NodePhysicalId {
 /// The `head` field points to the first particle, and the `len` field
 /// counts the number of particles in the list.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct NodeLinkedList {
     pub head: u32,
@@ -290,7 +290,7 @@ pub struct NodeLinkedList {
 ///            modify the corresponding host-side struct to ensure it has the
 ///            right size. Otherwise the hashmap will break.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct GridHashMapEntry {
     /// The virtual block ID key.
@@ -311,7 +311,7 @@ pub struct GridHashMapEntry {
 /// Stores the virtual ID (for computing world-space positions) and
 /// particle sorting information.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct ActiveBlockHeader {
     /// The virtual block coordinate needed to compute world-space node positions.
@@ -328,7 +328,7 @@ pub struct ActiveBlockHeader {
 ///
 /// Contains the current number of active blocks and configuration parameters.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Grid {
     /// Current number of active blocks (modified atomically during insertion).
@@ -346,7 +346,7 @@ pub struct Grid {
 /// Used by the CPIC (Compatible Particle-In-Cell) method to handle
 /// rigid body coupling through affinity-based compatibility checks.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct NodeCdf {
     /// Signed distance to the closest collider surface.
@@ -380,7 +380,7 @@ impl NodeCdf {
 ///
 /// Stores momentum/velocity packed with mass, plus CDF data for rigid body coupling.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Node {
     /// Contains either momentum or velocity (depending on context).
@@ -567,7 +567,7 @@ impl Grid {
 /// Two bits per collider.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -642,7 +642,7 @@ impl BitOrAssign for AffinityBits {
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_reset_hmap(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &mut Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     hmap_entries: &mut [GridHashMapEntry],
@@ -676,7 +676,7 @@ pub fn gpu_reset_hmap(
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_init_indirect_workgroups(
-    #[spirv(global_invocation_id)] _invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] _invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] n_block_groups: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] n_g2p_p2g_groups: &mut [u32],
@@ -697,7 +697,7 @@ pub fn gpu_init_indirect_workgroups(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_reset(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] nodes: &mut [Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]

@@ -15,8 +15,8 @@
 
 use khal_derive::spirv_bindgen;
 use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
-use spirv_std::glam::UVec3;
-use spirv_std::spirv;
+use vortx_shaders::glam::UVec3;
+use spirv_std_macros::spirv;
 
 use crate::{udiv, umod, MaybeIndexUnchecked};
 use crate::utils::radix_sort::SortUniforms;

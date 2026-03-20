@@ -16,6 +16,9 @@ pub enum BackendType {
     Gpu,
     /// CPU physics using nexus (same pipeline as GPU, executed on CPU).
     Cpu,
+    /// GPU-accelerated physics using nexus + CUDA.
+    #[cfg(feature = "cuda")]
+    Cuda,
 }
 
 /// Trait for physics simulation backends (CPU or GPU)

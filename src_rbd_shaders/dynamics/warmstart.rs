@@ -21,8 +21,8 @@
 //! - This handles small movements and minor geometry changes.
 
 use khal_derive::spirv_bindgen;
-use spirv_std::glam::UVec3;
-use spirv_std::spirv;
+use vortx_shaders::glam::UVec3;
+use spirv_std_macros::spirv;
 
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
 use crate::MaybeIndexUnchecked;

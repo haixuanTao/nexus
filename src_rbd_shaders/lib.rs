@@ -3,8 +3,8 @@
 //! This crate contains Rust GPU shaders for the nexus physics engine,
 //! providing GPU-accelerated collision detection and physics simulation.
 
-// Only no_std when targeting GPU (spirv). On CPU, we need std for generated ShaderArgs.
-#![cfg_attr(target_arch = "spirv", no_std)]
+// Only no_std when targeting GPU (spirv or nvptx64). On CPU, we need std for generated ShaderArgs.
+#![cfg_attr(any(target_arch = "spirv", target_arch = "nvptx64"), no_std)]
 #![cfg_attr(target_arch = "spirv", feature(asm_experimental_arch))]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::manual_range_contains)]
@@ -287,7 +287,7 @@ pub struct Pad<T, P>(pub T, pub P);
 // Pod/Zeroable impls for specific Pad instantiations that have no internal padding.
 // We can't use a generic impl because Pad<T, P> may have padding between T and P
 // if align_of::<P>() > size_of::<T>() % align_of::<P>() (e.g., Pad<u8, u32>).
-#[cfg(not(target_arch = "spirv"))]
+#[cfg(not(any(target_arch = "spirv", target_arch = "nvptx64")))]
 mod pad_bytemuck_impls {
     use super::Pad;
     use glamx::{Vec2, Vec3};

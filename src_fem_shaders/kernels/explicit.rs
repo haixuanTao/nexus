@@ -17,7 +17,7 @@ use crate::{
     VERTS_PER_ELEM,
 };
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 use vortx_shaders::utils::atomic_add_f32;
 
 // ── Float-atomic vector scatter via CAS loop ──
@@ -27,7 +27,7 @@ use vortx_shaders::utils::atomic_add_f32;
 /// Always 16 bytes (4 x u32) regardless of dimension for GPU alignment.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -77,7 +77,7 @@ pub fn read_force(buf: &[AtomicForce], vertex_idx: u32) -> Vector {
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_compute_elastic_forces(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &FemSimParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] elem_info: &[ElementInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] vertex_state: &[VertexState],
@@ -143,7 +143,7 @@ pub fn gpu_compute_elastic_forces(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_apply_forces_gravity_damping(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &FemSimParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] vertex_state: &mut [VertexState],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] force_atomic: &mut [AtomicForce],
@@ -183,7 +183,7 @@ pub fn gpu_apply_forces_gravity_damping(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_apply_soft_constraints(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &FemSimParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] vertex_info: &[VertexInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] vertex_state: &mut [VertexState],
@@ -228,7 +228,7 @@ pub fn gpu_apply_soft_constraints(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_integrate_positions(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &FemSimParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] vertex_state: &mut [VertexState],
 ) {
@@ -249,7 +249,7 @@ pub fn gpu_integrate_positions(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_apply_hard_constraints(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &FemSimParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] vertex_state: &mut [VertexState],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] constraints: &[VertexConstraint],
@@ -276,7 +276,7 @@ pub fn gpu_apply_hard_constraints(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_boundary_conditions(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &FemSimParams,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] vertex_state: &mut [VertexState],
 ) {

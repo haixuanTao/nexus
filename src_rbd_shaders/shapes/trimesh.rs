@@ -17,7 +17,7 @@ use crate::{MaybeIndexUnchecked, Vector, PaddedVector};
 
 /// A triangle mesh with BVH acceleration structure.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct TriMesh {
     /// Index of the root AABB in the vertex buffer.
@@ -225,7 +225,7 @@ use crate::queries::{
     FEATURE_VERTEX,
 };
 use glamx::{UVec3, Vec2, Vec3};
-use spirv_std::image::sample_with::NoneTy;
+
 /*
  * Triangle point projection with location information.
  * TODO: everything below can probably be shared with parry

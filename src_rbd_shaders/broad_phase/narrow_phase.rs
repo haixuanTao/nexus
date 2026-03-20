@@ -17,8 +17,8 @@
 //! - Polyline-Convex: BVH traversal + per-segment GJK/EPA
 
 use khal_derive::spirv_bindgen;
-use spirv_std::glam::UVec3;
-use spirv_std::spirv;
+use vortx_shaders::glam::UVec3;
+use spirv_std_macros::spirv;
 use vortx_shaders::utils::{StepRng, atomic_add_u32};
 use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
 use crate::queries::{
@@ -421,7 +421,7 @@ fn polyline_convex(
 }
 
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct NarrowPhasePfmPair {
     shape1: Shape,

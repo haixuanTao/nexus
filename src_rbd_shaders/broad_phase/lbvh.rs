@@ -23,8 +23,8 @@ use crate::shapes::Shape;
 use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
 use khal_derive::spirv_bindgen;
 use vortx_shaders::arch::{control_barrier, workgroup_memory_barrier_with_group_sync};
-use spirv_std::glam::UVec3;
-use spirv_std::spirv;
+use vortx_shaders::glam::UVec3;
+use spirv_std_macros::spirv;
 use vortx_shaders::utils::{StepRng, atomic_add_u32};
 use crate::utils::{div_ceil, Slice, SliceMut};
 
@@ -55,7 +55,7 @@ const REDUCTION_WORKGROUP_SIZE: u32 = 128;
 /// - parent points to parent internal node
 /// - refit_count is unused
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct LbvhNode {
     /// Axis-aligned bounding box for this node's subtree.
@@ -415,11 +415,11 @@ pub fn gpu_lbvh_refit_internal(
             // before the next iteration's atomics. Uses QueueFamily scope (device-equivalent
             // under the Vulkan memory model) with UNIFORM_MEMORY to cover storage buffers.
             control_barrier::<
-                { spirv_std::memory::Scope::Workgroup as u32 },
-                { spirv_std::memory::Scope::QueueFamily as u32 },
+                { vortx_shaders::arch::memory::Scope::Workgroup as u32 },
+                { vortx_shaders::arch::memory::Scope::QueueFamily as u32 },
                 {
-                    spirv_std::memory::Semantics::UNIFORM_MEMORY.bits()
-                        | spirv_std::memory::Semantics::ACQUIRE_RELEASE.bits()
+                    vortx_shaders::arch::memory::Semantics::UNIFORM_MEMORY.bits()
+                        | vortx_shaders::arch::memory::Semantics::ACQUIRE_RELEASE.bits()
                 },
             >();
         }

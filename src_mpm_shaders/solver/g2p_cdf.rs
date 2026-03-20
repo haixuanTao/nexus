@@ -19,7 +19,7 @@ use crunchy::unroll;
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 use unroll::unroll_for_loops;
 /*
  * Constants.
@@ -87,7 +87,7 @@ fn global_shared_memory_transfers(
     grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes: &[Node],
-    tid: spirv_std::glam::UVec3,
+    tid: vortx_shaders::glam::UVec3,
     active_block_vid: BlockVirtualId,
     shared_nodes: &mut [NodeCdf; NUM_SHARED_CELLS],
 ) {
@@ -362,8 +362,8 @@ fn particle_g2p(
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_g2p_cdf(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
     #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,

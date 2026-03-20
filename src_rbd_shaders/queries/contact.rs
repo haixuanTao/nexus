@@ -36,7 +36,7 @@ use crate::Vector;
 /// This structure extends ContactManifold with the collider indices,
 /// allowing the physics solver to identify which bodies are in contact.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct IndexedManifold {
     /// The contact information.

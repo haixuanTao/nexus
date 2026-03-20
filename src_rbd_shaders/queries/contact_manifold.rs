@@ -22,7 +22,7 @@ pub const MAX_MANIFOLD_POINTS: usize = 4;
 
 /// A single contact point within a manifold.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct ContactPoint {
     // NOTE: field order is important here to make this struct as compact as possible.
@@ -52,7 +52,7 @@ impl ContactPoint {
 /// Represents the contact region between two colliders. Multiple points
 /// provide stability for physics simulation.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct ContactManifold {
     // NOTE: fields order is important here to make this struct as compact as possible.

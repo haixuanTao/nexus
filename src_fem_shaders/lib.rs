@@ -3,7 +3,7 @@
 //! This crate contains Rust GPU shaders for the nexus_fem solver,
 //! providing GPU-accelerated FEM simulation with explicit and implicit solvers.
 
-#![cfg_attr(target_arch = "spirv", no_std)]
+#![cfg_attr(any(target_arch = "spirv", target_arch = "nvptx64"), no_std)]
 #![cfg_attr(target_arch = "spirv", feature(asm_experimental_arch))]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::manual_range_contains)]

@@ -11,7 +11,7 @@ use crate::{Pose, Vector};
 /// The AABB is defined by its minimum and maximum corners.
 /// All points P inside the AABB satisfy: mins <= P <= maxs (component-wise).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Aabb {
     /// The corner with the smallest coordinates (lower-left in 2D).

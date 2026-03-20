@@ -20,7 +20,7 @@ use crate::{Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
 use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 use unroll::unroll_for_loops;
 /*
  * Constants.
@@ -43,7 +43,7 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
     grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes: &[Node],
-    tid: spirv_std::glam::UVec3,
+    tid: vortx_shaders::glam::UVec3,
     active_block_vid: BlockVirtualId,
     shared_nodes_vel: &mut [Vector; NUM_SHARED_CELLS],
     shared_nodes_vel_incompatible: &mut [Vector; NUM_SHARED_CELLS],
@@ -271,8 +271,8 @@ fn particle_g2p<const USE_CPIC: bool>(
 /// Dispatched with one workgroup per active block.
 #[unroll_for_loops]
 pub fn gpu_g2p_generic<const USE_CPIC: bool>(
-    block_id: spirv_std::glam::UVec3,
-    tid: spirv_std::glam::UVec3,
+    block_id: vortx_shaders::glam::UVec3,
+    tid: vortx_shaders::glam::UVec3,
     tid_flat: u32,
     params: &SimulationParams,
     grid: &Grid,
@@ -380,8 +380,8 @@ fn outer_product(a: Vec3, b: Vec3) -> Mat3 {
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 #[unroll_for_loops]
 pub fn gpu_g2p(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
     #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
@@ -426,8 +426,8 @@ pub fn gpu_g2p(
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 #[unroll_for_loops]
 pub fn gpu_g2p_cpic(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
     #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,

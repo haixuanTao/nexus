@@ -19,7 +19,7 @@ use crate::grid::grid::*;
 use crate::solver::particle::{associated_cell_index_in_block_off_by_one, Position};
 use crate::{MaybeIndexUnchecked};
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 use vortx_shaders::utils::atomic_add_u32;
 
 /// Marks all blocks associated with each particle as active.
@@ -33,7 +33,7 @@ use vortx_shaders::utils::atomic_add_u32;
 #[spirv_bindgen(spirv_passthrough)]
 #[spirv(compute(threads(64)))]
 pub fn gpu_touch_particle_blocks(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &mut Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     hmap_entries: &mut [GridHashMapEntry],
@@ -64,7 +64,7 @@ pub fn gpu_touch_particle_blocks(
 #[spirv_bindgen(spirv_passthrough)]
 #[spirv(compute(threads(64)))]
 pub fn gpu_touch_rigid_particle_blocks(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &mut Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     hmap_entries: &mut [GridHashMapEntry],
@@ -99,7 +99,7 @@ pub fn gpu_touch_rigid_particle_blocks(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_mark_rigid_particles_needing_block(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] rigid_particles_pos: &[Position],
@@ -147,7 +147,7 @@ pub fn gpu_mark_rigid_particles_needing_block(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_update_block_particle_count(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_pos: &[Position],
@@ -177,7 +177,7 @@ pub fn gpu_update_block_particle_count(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_copy_particles_len_to_scan_value(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] scan_values: &mut [u32],
@@ -195,7 +195,7 @@ pub fn gpu_copy_particles_len_to_scan_value(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_copy_scan_values_to_first_particles(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] scan_values: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
@@ -218,7 +218,7 @@ pub fn gpu_copy_scan_values_to_first_particles(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_finalize_particles_sort(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_pos: &[Position],
@@ -266,7 +266,7 @@ pub fn gpu_finalize_particles_sort(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_sort_rigid_particles(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] rigid_particles_pos: &[Position],

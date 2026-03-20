@@ -376,19 +376,13 @@ fn settings_section(
             colliders_gfx,
             ..
         } => {
-            #[cfg(feature = "cpu")]
-            {
-                execution_backend_toggle(ui, use_cpu, selected_demo, result);
-                ui.add_space(4.0);
-            }
+            gpu_backend_selector(ui, backend_type, use_cpu, selected_demo, gpu, result);
+            ui.add_space(4.0);
             mpm_settings(ui, builders, stage, colliders_gfx, result);
         }
         ActiveDemo::Fem { stage, .. } => {
-            #[cfg(feature = "cpu")]
-            {
-                execution_backend_toggle(ui, use_cpu, selected_demo, result);
-                ui.add_space(4.0);
-            }
+            gpu_backend_selector(ui, backend_type, use_cpu, selected_demo, gpu, result);
+            ui.add_space(4.0);
             fem_settings(ui, builders, stage, result);
         }
     }
@@ -420,6 +414,17 @@ fn rbd_settings(
         backend_changed = true;
     }
 
+    #[cfg(feature = "cuda")]
+    if ui
+        .radio(*backend_type == BackendType::Cuda, "CUDA (nexus)")
+        .on_hover_text("GPU-accelerated physics with nexus via CUDA")
+        .clicked()
+        && *backend_type != BackendType::Cuda
+    {
+        *backend_type = BackendType::Cuda;
+        backend_changed = true;
+    }
+
     #[cfg(feature = "cpu")]
     if ui
         .radio(*backend_type == BackendType::Cpu, "CPU (nexus)")
@@ -446,24 +451,53 @@ fn rbd_settings(
     }
 }
 
-#[cfg(feature = "cpu")]
-fn execution_backend_toggle(
+/// Backend selector for MPM/FEM demos: GPU, CUDA, and optionally CPU.
+fn gpu_backend_selector(
     ui: &mut egui::Ui,
+    backend_type: &mut BackendType,
+    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))]
     use_cpu: &mut bool,
     selected_demo: &mut usize,
+    gpu: Option<&KhalGpuBackend>,
     result: &mut UiInteractions,
 ) {
     ui.label(RichText::new("Execution Backend").strong());
     ui.add_space(2.0);
 
-    let prev = *use_cpu;
+    let mut backend_changed = false;
 
-    ui.horizontal(|ui| {
-        ui.radio_value(use_cpu, false, "GPU");
-        ui.radio_value(use_cpu, true, "CPU");
-    });
+    if gpu.is_some()
+        && ui
+            .radio(
+                matches!(*backend_type, BackendType::Gpu { .. }) && !*use_cpu,
+                "GPU",
+            )
+            .clicked()
+        && !matches!(*backend_type, BackendType::Gpu { .. })
+    {
+        *backend_type = BackendType::Gpu;
+        *use_cpu = false;
+        backend_changed = true;
+    }
 
-    if *use_cpu != prev {
+    #[cfg(feature = "cuda")]
+    if ui
+        .radio(*backend_type == BackendType::Cuda, "CUDA")
+        .clicked()
+        && *backend_type != BackendType::Cuda
+    {
+        *backend_type = BackendType::Cuda;
+        *use_cpu = false;
+        backend_changed = true;
+    }
+
+    #[cfg(feature = "cpu")]
+    if ui.radio(*use_cpu, "CPU").clicked() && !*use_cpu {
+        *use_cpu = true;
+        backend_changed = true;
+    }
+
+    if backend_changed {
         result.new_selected_demo = Some(*selected_demo);
     }
 }
@@ -596,7 +630,7 @@ fn rbd_performance(
     ui.label(RichText::new(format!("Total: {:.2}ms - {:.0} FPS", total_ms, fps)).strong());
     ui.add_space(4.0);
 
-    if matches!(backend_type, BackendType::Gpu | BackendType::Cpu) {
+    if !matches!(backend_type, BackendType::Rapier) {
         CollapsingHeader::new("Simulation details")
             .id_salt("rbd_sim_details")
             .default_open(false)

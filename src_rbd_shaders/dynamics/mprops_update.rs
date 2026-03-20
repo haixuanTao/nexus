@@ -3,8 +3,8 @@
 //! This module contains the actual GPU compute shader entry points for mass properties update.
 
 use khal_derive::spirv_bindgen;
-use spirv_std::glam::UVec3;
-use spirv_std::spirv;
+use vortx_shaders::glam::UVec3;
+use spirv_std_macros::spirv;
 
 use vortx_shaders::utils::step::StepRng;
 

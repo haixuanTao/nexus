@@ -11,3 +11,5 @@ publish/
 manifest.json
 __pycache__
 target
+.claude
+*.ptx

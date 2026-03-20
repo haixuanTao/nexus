@@ -3,7 +3,7 @@
 //! Sets up the indirect dispatch arguments based on the number of keys to sort.
 
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 
 use crate::MaybeIndexUnchecked;
 

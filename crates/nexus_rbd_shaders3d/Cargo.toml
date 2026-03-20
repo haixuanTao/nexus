@@ -13,7 +13,7 @@ path = "../../src_rbd_shaders/lib.rs"
 [lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(feature, values("dim2"))',
-    'cfg(target_arch, values("spirv"))',
+    'cfg(target_arch, values("spirv", "nvptx64"))',
 ] }
 
 [features]

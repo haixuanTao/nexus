@@ -23,11 +23,11 @@ use crate::PaddingExt;
 use crate::{diag, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 
 /// Phase data for multi-material mixing (currently unused placeholder).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Phase {
     pub phase: f32,
@@ -60,7 +60,7 @@ fn vector_has_nan(v: Vector) -> bool {
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_particle_update(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
     #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]

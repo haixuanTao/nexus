@@ -25,6 +25,7 @@ f64 = []
 webgpu = ["khal/webgpu"]
 cpu = ["nexus_fem_shaders3d/cpu", "vortx/cpu"]
 cpu-parallel = ["cpu", "vortx/cpu-parallel"]
+cuda = ["khal/cuda"]
 
 [dependencies]
 nexus_fem_shaders3d = { path = "../nexus_fem_shaders3d" }

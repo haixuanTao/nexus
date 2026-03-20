@@ -7,7 +7,7 @@ use spirv_std::num_traits::Float;
 /// Persistent plastic state for a Drucker-Prager particle.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -40,7 +40,7 @@ pub struct DruckerPragerProjectionResult {
 /// how the friction angle evolves with accumulated plastic strain.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

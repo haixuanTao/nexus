@@ -12,7 +12,7 @@ use crate::{
 };
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 
 const TAU: f32 = 6.283185307179586;
 
@@ -26,7 +26,7 @@ const RENDER_MODE_CDF_SIGNS: u32 = 6;
 
 /// Render configuration for the readback shader.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct RenderConfig {
     pub mode: u32,
@@ -40,7 +40,7 @@ pub struct RenderConfig {
 #[cfg(feature = "dim2")]
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -62,7 +62,7 @@ pub struct ReadbackData {
 #[cfg(feature = "dim3")]
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -309,7 +309,7 @@ fn compute_color(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_prep_readback(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] instances: &mut [ReadbackData],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
@@ -370,7 +370,7 @@ pub fn gpu_prep_readback(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_prep_readback_rigid(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] instances: &mut [ReadbackData],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] base_colors: &[Vec4],

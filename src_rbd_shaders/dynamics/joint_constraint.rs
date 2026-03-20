@@ -12,8 +12,8 @@ use glamx::Vec2;
 use glamx::{Mat4, Vec2};
 
 use khal_derive::spirv_bindgen;
-use spirv_std::glam::UVec3;
-use spirv_std::spirv;
+use vortx_shaders::glam::UVec3;
+use spirv_std_macros::spirv;
 
 use vortx_shaders::utils::step::StepRng;
 
@@ -76,7 +76,7 @@ impl JointSolverBody {
 
 /// A joint constraint between two rigid bodies.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim2")] // Same as 3D but with different field ordering to avoid padding.
 pub struct JointConstraint {
@@ -98,7 +98,7 @@ pub struct JointConstraint {
 
 /// A joint constraint between two rigid bodies.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim3")] // Same as 2D but with different field ordering to avoid padding.
 pub struct JointConstraint {
@@ -135,7 +135,7 @@ impl Default for JointConstraint {
 /// A single element (DOF) of a joint constraint.
 // NOTE: field order has been selected meticulously to reduce padding in both 2D and 3D versions.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct JointConstraintElement {
     /// Linear Jacobian direction.

@@ -32,6 +32,7 @@ mod fem_cube3;
 struct CliOptions {
     command: Command,
     cpu: bool,
+    cuda: bool,
     run: bool,
 }
 
@@ -45,6 +46,7 @@ fn parse_command_line() -> CliOptions {
     let mut args = std::env::args();
     let mut command = Command::RunAll;
     let mut cpu = false;
+    let mut cuda = false;
     let mut run = false;
 
     while let Some(arg) = args.next() {
@@ -52,12 +54,18 @@ fn parse_command_line() -> CliOptions {
             "--example" => command = Command::Run(args.next().unwrap_or_default()),
             "--list" => command = Command::List,
             "--cpu" => cpu = true,
+            "--cuda" => cuda = true,
             "--run" => run = true,
             _ => {}
         }
     }
 
-    CliOptions { command, cpu, run }
+    CliOptions {
+        command,
+        cpu,
+        cuda,
+        run,
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -104,6 +112,10 @@ pub async fn main() {
         let mut t = testbed;
         if opts.cpu {
             t = t.with_cpu();
+        }
+        #[cfg(feature = "cuda")]
+        if opts.cuda {
+            t = t.with_backend(nexus_testbed3d::BackendType::Cuda);
         }
         if opts.run {
             t = t.with_running();

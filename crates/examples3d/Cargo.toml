@@ -8,6 +8,7 @@ edition = "2024"
 default = []
 cpu = ["nexus_testbed3d/cpu"]
 cpu-parallel = ["cpu", "nexus_testbed3d/cpu-parallel"]
+cuda = ["nexus_testbed3d/cuda"]
 
 [dependencies]
 glamx = { version = "0.1", default-features = false }

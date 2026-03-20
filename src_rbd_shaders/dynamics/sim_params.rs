@@ -12,7 +12,7 @@ pub const TWO_PI: f32 = core::f32::consts::TAU;
 /// Parameters for a time-step of the physics engine.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

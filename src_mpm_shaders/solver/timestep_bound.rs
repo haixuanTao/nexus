@@ -9,7 +9,7 @@ use crate::solver::particle::{Kinematics, ParticleProperties};
 use crate::PaddingExt;
 use crate::{sqrt, Matrix, MaybeIndexUnchecked, PaddedMatrix, DIM};
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 use vortx_shaders::utils::atomic_min_u32;
 
 /// GPU-side timestep bound result.
@@ -18,7 +18,7 @@ use vortx_shaders::utils::atomic_min_u32;
 /// The float timestep is converted to an integer via a fixed-point scaling factor
 /// so that atomic min operations can be used.
 #[derive(Clone, Copy, Default, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct GpuTimestepBounds {
     pub computed_max_dt_as_uint: u32,
@@ -41,7 +41,7 @@ impl GpuTimestepBounds {
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_reset_timestep_bound(
-    #[spirv(global_invocation_id)] _invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] _invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] result: &mut [GpuTimestepBounds],
 ) {
     result.at_mut(0).computed_max_dt_as_uint = 0xFFFFFFFF;
@@ -57,7 +57,7 @@ pub fn gpu_reset_timestep_bound(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_estimate_timestep_bound(
-    #[spirv(global_invocation_id)] invocation_id: spirv_std::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     particles_model: &[GpuParticleModel],

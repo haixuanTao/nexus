@@ -9,7 +9,7 @@ use crate::nexus_rbd_shaders::shapes::Shape;
 use crate::{MaybeIndexUnchecked, Pose, Vector};
 use glamx::*;
 use khal_derive::spirv_bindgen;
-use spirv_std::spirv;
+use spirv_std_macros::spirv;
 
 /// Performs collision detection for a single grid node against all collision shapes.
 ///
@@ -71,8 +71,8 @@ fn collide(
 #[spirv_bindgen]
 #[spirv(compute(threads(8, 8)))]
 pub fn gpu_grid_update_cdf(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_shapes: &[Shape],
@@ -104,8 +104,8 @@ pub fn gpu_grid_update_cdf(
 #[spirv_bindgen]
 #[spirv(compute(threads(4, 4, 4)))]
 pub fn gpu_grid_update_cdf(
-    #[spirv(workgroup_id)] block_id: spirv_std::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: spirv_std::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
+    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_shapes: &[Shape],

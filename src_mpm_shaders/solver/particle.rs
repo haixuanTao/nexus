@@ -3,7 +3,7 @@ use crate::grid::grid::AffinityBits;
 
 /// A particle position in the MPM grid.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Position {
     /// The particle's world-space position.
@@ -28,7 +28,7 @@ impl Position {
 /// nearest rigid collider surface.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(target_arch = "spirv"),
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
     derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -76,7 +76,7 @@ impl Cdf {
 /// In 2D, this references a segment (edge) by its two vertex indices.
 /// In 3D, this references a triangle by its three vertex indices.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct RigidParticleIndices {
     /// The vertex indices of the closest segment (2D) or triangle (3D).
@@ -103,7 +103,7 @@ pub struct RigidParticleIndices {
 /// - In 3D, Vec3 has align(16), so f32 fields are placed after Vec3 to pack into the gap.
 /// - In 2D, Vec2 has align(8), so f32 fields are grouped at the end.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Kinematics {
     /// During `particle_update`, this contains the velocity gradient.
@@ -148,7 +148,7 @@ pub struct Kinematics {
 /// read-write) allows the GPU to cache this buffer more aggressively and avoids
 /// unnecessary write-back bandwidth.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct ParticleProperties {
     /// The particle's initial volume (reference configuration).
