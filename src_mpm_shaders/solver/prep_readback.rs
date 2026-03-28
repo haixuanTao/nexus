@@ -8,11 +8,11 @@ use crate::grid::grid::Grid;
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{Cdf, Kinematics, ParticleProperties, Position};
 use crate::{
-    abs, acos, cos, diag, sqrt, Matrix, MaybeIndexUnchecked, PaddedMatrix, PaddingExt, Vector,
+    abs, acos, cos, diag, sqrt, Matrix, PaddedMatrix, PaddingExt, Vector,
 };
+use khal_std::index::MaybeIndexUnchecked;
 use glamx::*;
-use khal_derive::spirv_bindgen;
-use spirv_std_macros::spirv;
+use khal_std::macros::{spirv, spirv_bindgen};
 
 const TAU: f32 = 6.283185307179586;
 
@@ -309,7 +309,7 @@ fn compute_color(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_prep_readback(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] instances: &mut [ReadbackData],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_kin: &[Kinematics],
@@ -370,7 +370,7 @@ pub fn gpu_prep_readback(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_prep_readback_rigid(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] instances: &mut [ReadbackData],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] particles_pos: &[Position],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] base_colors: &[Vec4],

@@ -26,6 +26,7 @@ webgpu = ["khal/webgpu"]
 from_rapier = ["rapier3d", "parry3d"]
 cpu = ["nexus_rbd_shaders3d/cpu", "vortx/cpu"]
 cpu-parallel = ["cpu", "vortx/cpu-parallel"]
+cuda = ["khal/cuda"]
 
 [dependencies]
 nexus_rbd_shaders3d = { path = "../nexus_rbd_shaders3d" }
@@ -48,4 +49,4 @@ approx = "0.5"
 rand = "0.9"
 
 [build-dependencies]
-walkdir = "2"
+khal-builder = {workspace = true}

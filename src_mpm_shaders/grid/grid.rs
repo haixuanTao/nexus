@@ -8,13 +8,12 @@
 //! and atomic compare-exchange for lock-free insertion.
 
 use core::ops::BitOrAssign;
-use crate::{IVector, MaybeIndexUnchecked, Vector};
+use crate::{IVector, Vector};
 use glamx::*;
-use khal_derive::spirv_bindgen;
-use spirv_std_macros::spirv;
 use nexus_rbd_shaders::MAX_FLT;
 use crate::nexus_rbd_shaders::utils::udiv_ceil;
-use vortx_shaders::utils::atomic_add_u32;
+use khal_std::{arch::atomic_add_u32, macros::{spirv_bindgen, spirv}};
+use khal_std::index::MaybeIndexUnchecked;
 
 /*
  * Constants.
@@ -452,7 +451,7 @@ impl Grid {
         // It is up to the user to detect the high occupancy, resize the hashmap, and re-run
         // the failed insertion.
         for _ in 0..self.hmap_capacity {
-            let old_value = vortx_shaders::arch::atomic_compare_exchange_u32(
+            let old_value = khal_std::arch::atomic_compare_exchange_u32(
                 &mut hmap_entries.at_mut(slot as usize).state,
                 packed_key,
                 NONE,
@@ -471,7 +470,7 @@ impl Grid {
 
             // CAS returned NONE. Either we wrote successfully, or it was a spurious
             // failure (weak CAS on WGSL/Metal). Verify with atomic_load (which is always strong).
-            let current = vortx_shaders::arch::atomic_load_u32_shared(
+            let current = khal_std::arch::atomic_load_u32_shared(
                 &hmap_entries.at(slot as usize).state,
             );
 
@@ -480,7 +479,7 @@ impl Grid {
                 // Use atomic_exchange on ownership to determine the unique owner.
                 // atomic_exchange is always strong (no weak variant in WGSL).
                 hmap_entries.at_mut(slot as usize).key = *key;
-                let prev = vortx_shaders::arch::atomic_exchange_u32(
+                let prev = khal_std::arch::atomic_exchange_u32(
                     &mut hmap_entries.at_mut(slot as usize).ownership, 1,
                 );
                 if prev == 0 {
@@ -642,7 +641,7 @@ impl BitOrAssign for AffinityBits {
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_reset_hmap(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid_data: &mut Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     hmap_entries: &mut [GridHashMapEntry],
@@ -676,7 +675,7 @@ pub fn gpu_reset_hmap(
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_init_indirect_workgroups(
-    #[spirv(global_invocation_id)] _invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] _invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] n_block_groups: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] n_g2p_p2g_groups: &mut [u32],
@@ -697,7 +696,7 @@ pub fn gpu_init_indirect_workgroups(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_reset(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] nodes: &mut [Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]

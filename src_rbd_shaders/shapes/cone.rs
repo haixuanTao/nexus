@@ -11,8 +11,9 @@
 
 use crate::queries::{PolygonalFeature, ProjectionResult};
 use crate::shapes::Segment;
-use crate::{MaybeIndexUnchecked, Pose, Vector};
+use crate::{Pose, Vector};
 use glamx::{Vec2, Vec3};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// A cone shape with circular base (3D only).
 ///

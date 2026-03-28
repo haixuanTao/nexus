@@ -19,7 +19,8 @@ use std::collections::HashMap;
 
 use fem::FemStage;
 use mpm::MpmStage;
-use rbd::{BackendType, PhysicsBackend, RenderContext, setup_graphics, setup_physics, update_instances};
+pub use rbd::BackendType;
+use rbd::{PhysicsBackend, RenderContext, setup_graphics, setup_physics, update_instances};
 use khal::backend::{GpuBackend as KhalGpuBackend, WebGpu};
 use khal::re_exports::wgpu::Limits;
 use nexus::mpm::solver::GpuParticleModel;
@@ -174,6 +175,48 @@ impl Testbed {
         self
     }
 
+    async fn init_webgpu(&mut self) -> Option<KhalGpuBackend> {
+        let limits = Limits {
+            max_buffer_size: 1_000_000_000,
+            max_storage_buffer_binding_size: 1_000_000_000,
+            #[cfg(target_arch = "wasm32")]
+            max_storage_buffers_per_shader_stage: 10,
+            #[cfg(not(target_arch = "wasm32"))]
+            max_storage_buffers_per_shader_stage: 12,
+            max_compute_workgroup_storage_size: 19904,
+            ..Default::default()
+        };
+        match WebGpu::new(Default::default(), limits)
+            .await
+            .map(|mut wgpu| {
+                wgpu.force_buffer_copy_src = true;
+                KhalGpuBackend::WebGpu(wgpu)
+            }) {
+            Ok(gpu) => Some(gpu),
+            Err(e) => {
+                self.gpu_init_error = Some(format!(
+                    "GPU backend not available, initialization failed:\n\"{}\"\n",
+                    e
+                ));
+                None
+            }
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn init_cuda(&mut self) -> Option<KhalGpuBackend> {
+        match khal::backend::cuda::Cuda::new(0) {
+            Ok(cuda) => Some(KhalGpuBackend::Cuda(cuda)),
+            Err(e) => {
+                self.gpu_init_error = Some(format!(
+                    "CUDA backend not available, initialization failed:\n\"{:?}\"\n",
+                    e
+                ));
+                None
+            }
+        }
+    }
+
     pub fn with_running(mut self) -> Self {
         self.run_state = RunState::Running;
         self
@@ -204,42 +247,41 @@ impl Testbed {
         scene3d.add_directional_light(glamx::Vec3::new(-1.0, -1.0, -1.0));
         scene3d.add_directional_light(glamx::Vec3::new(1.0, 1.0, 1.0));
 
-        // Initialize GPU (shared between RBD and MPM). Skip if running in CPU mode.
-        let gpu = if self.use_cpu {
+        // Initialize GPU backends. Each is initialized lazily on first use
+        // and kept alive so switching backends in the UI is instant.
+        let mut webgpu: Option<KhalGpuBackend> = if self.use_cpu {
+            None
+        } else if !matches!(self.backend_type, BackendType::Gpu) {
             None
         } else {
-            let limits = Limits {
-                max_buffer_size: 1_000_000_000,
-                max_storage_buffer_binding_size: 1_000_000_000,
-                #[cfg(target_arch = "wasm32")]
-                max_storage_buffers_per_shader_stage: 10,
-                #[cfg(not(target_arch = "wasm32"))]
-                max_storage_buffers_per_shader_stage: 12,
-                max_compute_workgroup_storage_size: 19904,
-                ..Default::default()
-            };
-            match WebGpu::new(Default::default(), limits)
-                .await
-                .map(|mut wgpu| {
-                    wgpu.force_buffer_copy_src = true;
-                    KhalGpuBackend::WebGpu(wgpu)
-                }) {
-                Ok(gpu) => Some(gpu),
-                Err(e) => {
-                    self.gpu_init_error = Some(format!(
-                        "GPU backend not available, initialization failed:\n\"{}\"\n",
-                        e
-                    ));
-                    self.backend_type = BackendType::Rapier;
-                    None
-                }
-            }
+            self.init_webgpu().await
         };
+
+        #[cfg(feature = "cuda")]
+        let mut cuda: Option<KhalGpuBackend> = if matches!(self.backend_type, BackendType::Cuda) {
+            self.init_cuda()
+        } else {
+            None
+        };
+
+        /// Returns the active GPU backend based on the given backend type.
+        fn pick_gpu<'a>(
+            backend_type: BackendType,
+            webgpu: &'a Option<KhalGpuBackend>,
+            #[cfg(feature = "cuda")] cuda: &'a Option<KhalGpuBackend>,
+        ) -> Option<&'a KhalGpuBackend> {
+            match backend_type {
+                BackendType::Gpu => webgpu.as_ref(),
+                #[cfg(feature = "cuda")]
+                BackendType::Cuda => cuda.as_ref(),
+                _ => None,
+            }
+        }
 
         // Show compiling message for RBD GPU demos if needed.
         let is_rbd = matches!(self.builders[0], DemoBuilder::Rbd(..));
         let needs_shader_compilation = is_rbd
-            && matches!(self.backend_type, BackendType::Gpu { .. })
+            && matches!(self.backend_type, BackendType::Gpu)
             && self.cached_gpu_pipeline.is_none();
 
         if needs_shader_compilation {
@@ -261,7 +303,10 @@ impl Testbed {
         // Create initial active demo.
         let mut active_demo = self
             .create_active_demo(
-                gpu.as_ref(),
+                {
+                    let bt = self.backend_type;
+                    pick_gpu(bt, &webgpu, #[cfg(feature = "cuda")] &cuda)
+                },
                 &mut scene2d,
                 &mut scene3d,
             )
@@ -284,6 +329,7 @@ impl Testbed {
             )
             .await
         {
+            let current_gpu = pick_gpu(self.backend_type, &webgpu, #[cfg(feature = "cuda")] &cuda);
             let ui_res = render_ui(
                 &mut window,
                 &self.builders,
@@ -294,7 +340,7 @@ impl Testbed {
                 &mut self.run_state,
                 &self.run_stats,
                 &mut active_demo,
-                gpu.as_ref(),
+                current_gpu,
                 &self.gpu_init_error,
             );
 
@@ -304,6 +350,20 @@ impl Testbed {
                 // Invalidate cached pipeline if backend type changed.
                 let backend_changed = self.backend_type != self.prev_backend_type;
                 self.prev_backend_type = self.backend_type;
+
+                // Lazily initialize the GPU backend if switching to one that hasn't been created yet.
+                if backend_changed {
+                    match self.backend_type {
+                        BackendType::Gpu if webgpu.is_none() => {
+                            webgpu = self.init_webgpu().await;
+                        }
+                        #[cfg(feature = "cuda")]
+                        BackendType::Cuda if cuda.is_none() => {
+                            cuda = self.init_cuda();
+                        }
+                        _ => {}
+                    }
+                }
 
                 // Clean up old active demo and extract GPU pipeline for caching.
                 match active_demo {
@@ -336,7 +396,10 @@ impl Testbed {
 
                 active_demo = self
                     .create_active_demo(
-                        gpu.as_ref(),
+                        {
+                    let bt = self.backend_type;
+                    pick_gpu(bt, &webgpu, #[cfg(feature = "cuda")] &cuda)
+                },
                         &mut scene2d,
                         &mut scene3d,
                     )
@@ -349,7 +412,10 @@ impl Testbed {
                 }
             }
 
-            self.step_simulation(gpu.as_ref(), &mut active_demo).await;
+            self.step_simulation({
+                    let bt = self.backend_type;
+                    pick_gpu(bt, &webgpu, #[cfg(feature = "cuda")] &cuda)
+                }, &mut active_demo).await;
         }
     }
 
@@ -379,22 +445,14 @@ impl Testbed {
             DemoBuilder::Mpm(_, _builder, _) => {
                 let _builder = *_builder;
 
-                #[cfg(feature = "cpu")]
-                let use_cpu = self.use_cpu;
-                #[cfg(not(feature = "cpu"))]
-                let use_cpu = false;
-
-                let khal_backend = if use_cpu {
-                    KhalGpuBackend::Cpu
+                let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
+                    #[cfg(feature = "cpu")]
+                    { KhalGpuBackend::Cpu }
+                    #[cfg(not(feature = "cpu"))]
+                    unreachable!()
                 } else {
                     let gpu = gpu.expect("GPU required for MPM demos");
-                    KhalGpuBackend::WebGpu(
-                        match gpu {
-                            KhalGpuBackend::WebGpu(w) => w.clone(),
-                            #[allow(unreachable_patterns)]
-                            _ => panic!("Expected WebGpu backend"),
-                        },
-                    )
+                    gpu.clone()
                 };
 
                 // Create a new MpmStage with just the single selected builder.
@@ -461,22 +519,14 @@ impl Testbed {
             DemoBuilder::Fem(_, _builder, _) => {
                 let _builder = *_builder;
 
-                #[cfg(feature = "cpu")]
-                let use_cpu = self.use_cpu;
-                #[cfg(not(feature = "cpu"))]
-                let use_cpu = false;
-
-                let khal_backend = if use_cpu {
-                    KhalGpuBackend::Cpu
+                let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
+                    #[cfg(feature = "cpu")]
+                    { KhalGpuBackend::Cpu }
+                    #[cfg(not(feature = "cpu"))]
+                    unreachable!()
                 } else {
                     let gpu = gpu.expect("GPU required for FEM demos");
-                    KhalGpuBackend::WebGpu(
-                        match gpu {
-                            KhalGpuBackend::WebGpu(w) => w.clone(),
-                            #[allow(unreachable_patterns)]
-                            _ => panic!("Expected WebGpu backend"),
-                        },
-                    )
+                    gpu.clone()
                 };
 
                 let fem_builders: Vec<_> = self

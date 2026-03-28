@@ -10,7 +10,8 @@ use crate::queries::gjk::{
 };
 use crate::queries::polygonal_feature;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector, DIM};
+use crate::{Pose, Vector, PaddedVector, DIM};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// Computes contact between two support map shapes using GJK.
 #[cfg(feature = "dim2")]

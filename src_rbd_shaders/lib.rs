@@ -13,7 +13,6 @@
 
 use core::ops::{Deref, DerefMut};
 use glamx::*;
-pub use vortx_shaders::MaybeIndexUnchecked;
 
 // Re-export glamx types for convenience
 pub use glamx;
@@ -349,7 +348,7 @@ impl<T, P> DerefMut for Pad<T, P> {
 // We use the num_traits::Float trait to provide these operations.
 //
 
-use spirv_std::num_traits::Float;
+use khal_std::num_traits::Float;
 
 /// Computes the square root of a value.
 #[inline]

@@ -20,13 +20,13 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
-use khal_derive::spirv_bindgen;
-use vortx_shaders::arch::{control_barrier, workgroup_memory_barrier_with_group_sync};
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
-use vortx_shaders::utils::{StepRng, atomic_add_u32};
+use crate::{Pose, Vector, PaddedVector};
+use khal_std::arch::{atomic_add_u32, control_barrier, workgroup_memory_barrier_with_group_sync};
+use khal_std::glamx::UVec3;
+use khal_std::{iter::StepRng};
+use khal_std::index::MaybeIndexUnchecked;
 use crate::utils::{div_ceil, Slice, SliceMut};
+use khal_std::macros::{spirv, spirv_bindgen};
 
 const WORKGROUP_SIZE: u32 = 64;
 const REDUCTION_WORKGROUP_SIZE: u32 = 128;
@@ -411,15 +411,16 @@ pub fn gpu_lbvh_refit_internal(
                 }
             }
 
+            // workgroup_memory_barrier_with_group_sync();
             // Barrier ensures all AABB writes (to device/storage buffer memory) are complete
             // before the next iteration's atomics. Uses QueueFamily scope (device-equivalent
             // under the Vulkan memory model) with UNIFORM_MEMORY to cover storage buffers.
             control_barrier::<
-                { vortx_shaders::arch::memory::Scope::Workgroup as u32 },
-                { vortx_shaders::arch::memory::Scope::QueueFamily as u32 },
+                { khal_std::memory::Scope::Workgroup as u32 },
+                { khal_std::memory::Scope::QueueFamily as u32 },
                 {
-                    vortx_shaders::arch::memory::Semantics::UNIFORM_MEMORY.bits()
-                        | vortx_shaders::arch::memory::Semantics::ACQUIRE_RELEASE.bits()
+                    khal_std::memory::Semantics::UNIFORM_MEMORY.bits()
+                        | khal_std::memory::Semantics::ACQUIRE_RELEASE.bits()
                 },
             >();
         }

@@ -28,7 +28,6 @@ pub use glamx;
 use glamx::*;
 
 // Re-export key types and utilities from nexus_rbd_shaders.
-pub use nexus_rbd_shaders::MaybeIndexUnchecked;
 pub use nexus_rbd_shaders::{abs, acos, asin, atan2, cos, safe_div, sin, sqrt};
 pub use nexus_rbd_shaders::{
     udiv, umod,

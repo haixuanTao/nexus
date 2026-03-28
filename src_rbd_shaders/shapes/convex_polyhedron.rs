@@ -5,7 +5,8 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::queries::PolygonalFeature;
-use crate::{MaybeIndexUnchecked, Vector, PaddedVector};
+use crate::{Vector, PaddedVector};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// A convex polyhedron defined by vertex and face indices.
 #[derive(Clone, Copy, Default)]

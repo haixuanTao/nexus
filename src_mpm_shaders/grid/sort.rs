@@ -17,10 +17,9 @@
 
 use crate::grid::grid::*;
 use crate::solver::particle::{associated_cell_index_in_block_off_by_one, Position};
-use crate::{MaybeIndexUnchecked};
-use khal_derive::spirv_bindgen;
-use spirv_std_macros::spirv;
-use vortx_shaders::utils::atomic_add_u32;
+use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv_bindgen, spirv};
+use khal_std::arch::atomic_add_u32;
 
 /// Marks all blocks associated with each particle as active.
 ///
@@ -33,7 +32,7 @@ use vortx_shaders::utils::atomic_add_u32;
 #[spirv_bindgen(spirv_passthrough)]
 #[spirv(compute(threads(64)))]
 pub fn gpu_touch_particle_blocks(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &mut Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     hmap_entries: &mut [GridHashMapEntry],
@@ -64,7 +63,7 @@ pub fn gpu_touch_particle_blocks(
 #[spirv_bindgen(spirv_passthrough)]
 #[spirv(compute(threads(64)))]
 pub fn gpu_touch_rigid_particle_blocks(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &mut Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     hmap_entries: &mut [GridHashMapEntry],
@@ -99,7 +98,7 @@ pub fn gpu_touch_rigid_particle_blocks(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_mark_rigid_particles_needing_block(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] rigid_particles_pos: &[Position],
@@ -128,12 +127,12 @@ pub fn gpu_mark_rigid_particles_needing_block(
         // needs its own block to ensure proper grid transfers.
         if i > 0 && i < NUM_ASSOC_BLOCKS as u32 {
             // Set the bit atomically.
-            vortx_shaders::arch::atomic_or_u32(
+            khal_std::arch::atomic_or_u32(
                 &mut rigid_particle_needs_block.at_mut(entry_id), entry_bit,
             );
         } else {
             // Clear the bit atomically.
-            vortx_shaders::arch::atomic_and_u32(
+            khal_std::arch::atomic_and_u32(
                 &mut rigid_particle_needs_block.at_mut(entry_id), !entry_bit,
             );
         }
@@ -147,7 +146,7 @@ pub fn gpu_mark_rigid_particles_needing_block(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_update_block_particle_count(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_pos: &[Position],
@@ -177,7 +176,7 @@ pub fn gpu_update_block_particle_count(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_copy_particles_len_to_scan_value(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] active_blocks: &[ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] scan_values: &mut [u32],
@@ -195,7 +194,7 @@ pub fn gpu_copy_particles_len_to_scan_value(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_copy_scan_values_to_first_particles(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] scan_values: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
@@ -218,7 +217,7 @@ pub fn gpu_copy_scan_values_to_first_particles(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_finalize_particles_sort(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_pos: &[Position],
@@ -246,7 +245,7 @@ pub fn gpu_finalize_particles_sort(
         let node_global_id = active_block_id.physical_id().node_id(
             node_local_id,
         );
-        let prev_head = vortx_shaders::arch::atomic_exchange_u32(
+        let prev_head = khal_std::arch::atomic_exchange_u32(
             &mut nodes_linked_lists.at_mut(node_global_id.id as usize).head,
             id,
         );
@@ -266,7 +265,7 @@ pub fn gpu_finalize_particles_sort(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_sort_rigid_particles(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] rigid_particles_pos: &[Position],
@@ -291,7 +290,7 @@ pub fn gpu_sort_rigid_particles(
             let node_global_id = active_block_id.physical_id().node_id(
                 node_local_id,
             );
-            let prev_head = vortx_shaders::arch::atomic_exchange_u32(
+            let prev_head = khal_std::arch::atomic_exchange_u32(
                 &mut rigid_nodes_linked_lists
                     .at_mut(node_global_id.id as usize)
                     .head,

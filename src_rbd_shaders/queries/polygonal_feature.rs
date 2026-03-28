@@ -9,12 +9,12 @@
 //! - Clipping: polygon-polygon clipping projected onto the 2D contact plane
 //! - Manifold Reduction: Reduces potentially many contact candidates to the most important 4 (or 2 in 2D)
 
-#[cfg(feature = "dim2")]
 use crate::queries::contact_manifold::{ContactManifold, ContactPoint};
 #[cfg(feature = "dim3")]
-use crate::queries::contact_manifold::{ContactManifold, ContactPoint, MAX_MANIFOLD_POINTS};
-use crate::{MaybeIndexUnchecked, Pose, Vector};
+use crate::queries::contact_manifold::{MAX_MANIFOLD_POINTS};
+use crate::{Pose, Vector};
 use glamx::Vec2;
+use khal_std::index::MaybeIndexUnchecked;
 
 #[cfg(feature = "dim3")]
 use crate::utils::orthonormal_basis3;

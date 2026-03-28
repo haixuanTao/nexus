@@ -20,10 +20,10 @@ use crate::solver::boundary_condition::{BoundaryCondition, BOUNDARY_CONDITION_SL
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{Kinematics, ParticleProperties, Position};
 use crate::PaddingExt;
-use crate::{diag, Matrix, MaybeIndexUnchecked, PaddedMatrix, Vector};
+use crate::{diag, Matrix, PaddedMatrix, Vector};
 use glamx::*;
-use khal_derive::spirv_bindgen;
-use spirv_std_macros::spirv;
+use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
 
 /// Phase data for multi-material mixing (currently unused placeholder).
 #[derive(Clone, Copy, Default)]
@@ -60,7 +60,7 @@ fn vector_has_nan(v: Vector) -> bool {
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_particle_update(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] params: &SimulationParams,
     #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]

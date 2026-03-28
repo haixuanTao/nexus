@@ -8,8 +8,9 @@ use crate::queries::gjk::gjk::cso_point_from_shapes;
 use crate::queries::gjk::VoronoiSimplex;
 use crate::queries::projection;
 use crate::shapes::{Shape, Triangle};
-use crate::{MaybeIndexUnchecked, Pad, Pose};
+use crate::{Pad, Pose};
 use glamx::Vec3;
+use khal_std::index::MaybeIndexUnchecked;
 
 const PADDING: u32 = 0;
 

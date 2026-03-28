@@ -6,10 +6,9 @@
 #[cfg(feature = "dim2")]
 use crate::rotation_angle;
 #[cfg(feature = "dim2")]
-use crate::{gdot, rotation_to_matrix, AngVector, MaybeIndexUnchecked, Pose, Rotation, Vector};
-#[cfg(feature = "dim3")]
-use crate::{gdot, rotation_to_matrix, AngVector, MaybeIndexUnchecked, Pose, Vector};
-
+use crate::{Rotation};
+use crate::{gdot, rotation_to_matrix, AngVector, Pose, Vector};
+use khal_std::index::MaybeIndexUnchecked;
 use super::body::{Velocity, WorldMassProperties};
 use super::joint::{
     motor_params, GenericJoint, MotorParameters, ANG_AXES_MASK, LIN_AXES_MASK, SPATIAL_DIM,

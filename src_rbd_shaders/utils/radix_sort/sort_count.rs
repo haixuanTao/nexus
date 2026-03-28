@@ -15,13 +15,12 @@
 //! Workgroup size: 256 threads
 //! Shared memory: 16 atomic counters (one per bin)
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
+use khal_std::arch::workgroup_memory_barrier_with_group_sync;
+use khal_std::glamx::UVec3;
+use khal_std::macros::{spirv, spirv_bindgen};
 
-use vortx_shaders::utils::atomic_add_u32_workgroup;
-use crate::MaybeIndexUnchecked;
+use khal_std::arch::atomic_add_u32_workgroup;
+use khal_std::index::MaybeIndexUnchecked;
 
 use super::sorting::{div_ceil, SortUniforms, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
 

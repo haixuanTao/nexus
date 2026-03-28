@@ -5,7 +5,7 @@ use super::utils::{
 };
 use crate::glamx::MatExt;
 use crate::{Matrix, Vector};
-use spirv_std::num_traits::Float;
+use khal_std::num_traits::Float;
 
 /// Neo-Hookean hyperelastic constitutive model.
 ///

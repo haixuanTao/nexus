@@ -16,11 +16,10 @@
 //! - TriMesh-Convex: BVH traversal + per-triangle GJK/EPA
 //! - Polyline-Convex: BVH traversal + per-segment GJK/EPA
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
-use vortx_shaders::utils::{StepRng, atomic_add_u32};
-use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
+use khal_std::glamx::UVec3;
+use khal_std::{iter::StepRng, arch::atomic_add_u32};
+use crate::{Pose, Vector, PaddedVector};
+use khal_std::index::MaybeIndexUnchecked;
 use crate::queries::{
     ball_ball, ball_convex, convex_ball, cuboid_cuboid, pfm_pfm, ContactManifold, IndexedManifold,
 };
@@ -28,6 +27,7 @@ use crate::shapes::{
     Capsule, Polyline, Shape, TriMesh, SHAPE_TYPE_BALL, SHAPE_TYPE_CAPSULE, SHAPE_TYPE_CONE,
     SHAPE_TYPE_CUBOID, SHAPE_TYPE_CYLINDER, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH,
 };
+use khal_std::macros::{spirv, spirv_bindgen};
 
 use glamx::UVec2;
 use crate::utils::{Slice, SliceMut};

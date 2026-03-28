@@ -2,16 +2,14 @@
 //!
 //! This module contains the actual GPU compute shader entry points for mass properties update.
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
-
-use vortx_shaders::utils::step::StepRng;
+use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::glamx::UVec3;
+use khal_std::iter::StepRng;
+use khal_std::index::MaybeIndexUnchecked;
 
 use crate::Pose;
 
 use super::body::{update_mprops, LocalMassProperties, WorldMassProperties};
-use crate::MaybeIndexUnchecked;
 use crate::utils::{Slice, SliceMut};
 
 const WORKGROUP_SIZE: u32 = 64;

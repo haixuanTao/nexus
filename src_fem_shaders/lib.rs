@@ -12,7 +12,6 @@
 #![allow(non_snake_case)]
 
 pub use glamx;
-pub use vortx_shaders::MaybeIndexUnchecked;
 use glamx::*;
 
 // ── Dimension-conditional type aliases ──
@@ -184,13 +183,13 @@ pub fn abs_f32(x: f32) -> f32 {
 
 #[inline]
 pub fn exp_f32(x: f32) -> f32 {
-    use spirv_std::num_traits::Float;
+    use khal_std::num_traits::Float;
     x.exp()
 }
 
 #[inline]
 pub fn sqrt_f32(x: f32) -> f32 {
-    use spirv_std::num_traits::Float;
+    use khal_std::num_traits::Float;
     x.sqrt()
 }
 

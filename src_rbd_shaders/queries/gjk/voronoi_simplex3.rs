@@ -5,7 +5,7 @@
 use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL};
 use crate::queries::projection::{FEATURE_EDGE, FEATURE_FACE, FEATURE_VERTEX};
 use crate::shapes::{Segment, Tetrahedron, Triangle};
-use crate::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
 use glamx::Vec3;
 
 /// A simplex of dimension up to 3 that uses Voronoï regions for computing point projections.

@@ -23,9 +23,10 @@ use crate::queries::polygonal_feature;
 use crate::queries::sat::{self, SeparatingAxis};
 use crate::shapes::{Ball, Cuboid, Shape};
 #[cfg(feature = "dim3")]
-use crate::{MaybeIndexUnchecked, Pad, Pose};
+use crate::{Pad, Pose};
 #[cfg(feature = "dim2")]
-use crate::{MaybeIndexUnchecked, Pose, PaddedVector};
+use crate::{Pose, PaddedVector};
+use khal_std::index::MaybeIndexUnchecked;
 use glamx::UVec2;
 
 use super::contact_pfm_pfm;

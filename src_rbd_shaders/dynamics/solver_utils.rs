@@ -7,8 +7,8 @@
 //!   is solved with a single PGS iteration (with bias) followed by position update, followed by another PGS iteration
 //!   (without bias).
 
-use crate::{gcross, gdot, MaybeIndexUnchecked, Pad, Pose, Vector};
-
+use crate::{gcross, gdot, Pad, Pose, Vector};
+use khal_std::index::MaybeIndexUnchecked;
 use super::body::{integrate_velocity, LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{
     TwoBodyConstraint, TwoBodyConstraintBuilder, TwoBodyConstraintNormalPart,

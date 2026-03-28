@@ -33,13 +33,11 @@
 //! - Topo-GC: Up to 63 colors (using 2x u32 bitmasks with 1 reserved bit for bookkeeping)
 //! - Luby: Unlimited colors
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
+use khal_std::glamx::UVec3;
+use khal_std::{iter::StepRng, arch::{atomic_add_u32, atomic_max_u32}};
+use khal_std::macros::{spirv, spirv_bindgen};
 
-use vortx_shaders::utils::{StepRng, atomic_add_u32, atomic_max_u32};
-
-use crate::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
 use crate::utils::{Slice, SliceMut};
 
 use super::constraint::TwoBodyConstraint;

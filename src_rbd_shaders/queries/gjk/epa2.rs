@@ -7,8 +7,9 @@ use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::queries::gjk::gjk::cso_point_from_shapes;
 use crate::queries::gjk::voronoi_simplex2::VoronoiSimplex;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, PaddedVector};
+use crate::{Pose, PaddedVector};
 use glamx::Vec2;
+use khal_std::index::MaybeIndexUnchecked;
 
 // TODO: find the ideal values.
 const MAX_VERTICES_LEN: usize = 32;

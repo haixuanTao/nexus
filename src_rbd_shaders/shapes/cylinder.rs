@@ -9,8 +9,9 @@
 //! - Circular cross-section in the XZ plane.
 
 use crate::queries::{PolygonalFeature, ProjectionResult};
-use crate::{MaybeIndexUnchecked, Pose, Vector};
+use crate::{Pose, Vector};
 use glamx::{Vec2, Vec3};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// A cylinder shape with circular cross-section (3D only).
 ///

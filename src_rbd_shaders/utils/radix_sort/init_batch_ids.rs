@@ -6,11 +6,10 @@
 //! 3. Writing sentinel keys (0xFFFFFFFF) for inactive elements so they sort
 //!    to the end of their batch
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
+use khal_std::glamx::UVec3;
+use khal_std::macros::{spirv, spirv_bindgen};
 
-use crate::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
 
 use super::sorting::SortUniforms;
 

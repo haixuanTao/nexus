@@ -2,10 +2,8 @@
 //!
 //! Sets up the indirect dispatch arguments based on the number of keys to sort.
 
-use khal_derive::spirv_bindgen;
-use spirv_std_macros::spirv;
-
-use crate::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
 
 use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE};
 

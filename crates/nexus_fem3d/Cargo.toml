@@ -37,4 +37,4 @@ bytemuck = { workspace = true }
 web-time = { workspace = true }
 
 [build-dependencies]
-walkdir = "2"
+khal-builder = {workspace = true}

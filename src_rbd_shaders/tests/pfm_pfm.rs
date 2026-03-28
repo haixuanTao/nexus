@@ -2,7 +2,8 @@
 
 use crate::queries::contact::pfm_pfm;
 use crate::shapes::shape::Shape;
-use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector};
+use crate::{Pose, Vector, PaddedVector};
+use khal_std::index::MaybeIndexUnchecked;
 
 #[test]
 fn test_separated_cuboids() {

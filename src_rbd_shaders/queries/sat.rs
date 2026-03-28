@@ -17,7 +17,7 @@ use crate::{Pose, Vector};
 use parry::shape::SupportMap;
 
 #[cfg(feature = "dim3")]
-use crate::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
 #[cfg(feature = "dim3")]
 use glamx::Vec3;
 

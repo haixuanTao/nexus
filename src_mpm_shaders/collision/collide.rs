@@ -5,7 +5,8 @@
 
 use crate::grid::grid::{AffinityBits, NodeCdf, NONE};
 use crate::nexus_rbd_shaders::shapes::{Shape, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
-use crate::{MaybeIndexUnchecked, Pose, Vector};
+use crate::{Pose, Vector};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// Tests a point against all collision shapes and returns the nearest
 /// contact distance field (CDF) data.

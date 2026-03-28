@@ -6,10 +6,10 @@
 
 use crate::grid::grid::*;
 use crate::solver::params::SimulationParams;
-use crate::{MaybeIndexUnchecked, Vector};
+use crate::{Vector};
+use khal_std::index::MaybeIndexUnchecked;
 use glamx::*;
-use khal_derive::spirv_bindgen;
-use spirv_std_macros::spirv;
+use khal_std::macros::{spirv, spirv_bindgen};
 
 /// GPU kernel: grid update.
 ///
@@ -19,8 +19,8 @@ use spirv_std_macros::spirv;
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_grid_update(
-    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: khal_std::glamx::UVec3,
+    #[spirv(local_invocation_id)] tid: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] sim_params: &SimulationParams,
     #[spirv(uniform, descriptor_set = 0, binding = 1)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &[ActiveBlockHeader],

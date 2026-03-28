@@ -1,4 +1,4 @@
-use vortx_shaders::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
 
 // Actual rust slices &array[a..b] don’t compile with rust-gpu, so we
 // simulated them manually with indices.

@@ -11,7 +11,8 @@
 //! Contact points are stored with their location (in the first object's local frame)
 //! and penetration distance. The manifold also includes a shared contact normal.
 
-use crate::{MaybeIndexUnchecked, Pose, Vector};
+use crate::{Pose, Vector};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// Maximum number of contact points in a 2D contact manifold.
 #[cfg(feature = "dim2")]

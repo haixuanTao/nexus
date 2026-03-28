@@ -2,7 +2,7 @@
 
 use crate::glamx::MatExt;
 use crate::{diag, sin, sqrt, Matrix, Vector};
-use spirv_std::num_traits::Float;
+use khal_std::num_traits::Float;
 
 /// Persistent plastic state for a Drucker-Prager particle.
 #[derive(Clone, Copy)]

@@ -20,12 +20,11 @@
 //! - Distance threshold: currently set to 10cm.
 //! - This handles small movements and minor geometry changes.
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
+use khal_std::glamx::UVec3;
+use khal_std::macros::{spirv, spirv_bindgen};
 
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
-use crate::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
 use crate::utils::{Slice, SliceMut};
 
 const WORKGROUP_SIZE: u32 = 64;

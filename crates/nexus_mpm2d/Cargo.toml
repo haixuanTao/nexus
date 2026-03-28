@@ -51,4 +51,4 @@ approx = "0.5"
 rand = "0.9"
 
 [build-dependencies]
-walkdir = "2"
+khal-builder = {workspace = true}

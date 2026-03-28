@@ -56,7 +56,9 @@ impl Cuboid {
         let out_proj = self.project_local_point(pt);
 
         // Projection if the point is inside the box.
-        let pt_sgn_with_zero = Vector::splat(1.0).copysign(pt);
+        // Note: Vector::copysign uses llvm.copysign which isn't supported by NVVM.
+        // Use a manual implementation that works on all targets.
+        let pt_sgn_with_zero = Vector::select(pt.cmpge(Vector::ZERO), Vector::ONE, -Vector::ONE);
         // This is the sign of pt, or -1 for components that were zero.
         // This bias is arbitrary (we could have picked +1), but we picked it so
         // it matches the bias that's in parry.

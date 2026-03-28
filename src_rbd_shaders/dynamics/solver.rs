@@ -2,13 +2,11 @@
 //!
 //! This module contains the actual GPU compute shader entry points for the physics solver.
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
+use khal_std::glamx::UVec3;
+use khal_std::macros::{spirv, spirv_bindgen};
 
-use vortx_shaders::utils::{StepRng, atomic_add_u32};
-
-use crate::{AngVector, MaybeIndexUnchecked, Pose, Vector};
+use khal_std::{iter::StepRng, arch::atomic_add_u32, index::MaybeIndexUnchecked};
+use crate::{AngVector, Pose, Vector};
 
 use super::body::{integrate_velocity, LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};

@@ -35,43 +35,43 @@ f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
 cpu = []  # Enables CPU shader execution
-cpu-parallel = ["cpu"]  # Enables parallel workgroup dispatch on CPU (via rayon)
+cpu-parallel = ["cpu"]  # Enables CPU shader execution with rayon parallelism
+cuda = ["khal/cuda"]  # Enables CUDA backend
 from_rapier = []  # Enables conversion from rapier types
 
 [workspace.dependencies]
 glamx = { version = "0.1", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
 khal = { version = "0.2", features = ["derive"] }
+khal-std = "0.1"
 vortx = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
-encase = "0.12"
 web-time = "1"
 static_assertions = "1"
 
 # Shaders deps
-khal-derive = { path = "../khal/crates/khal-derive" }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "7ad4c4dd3ec2a4a87c47b036469e2c6f4081242a" }
+khal-builder = { path = "../khal/crates/khal-builder" }
 vortx-shaders = { path = "../vortx/vortx-shaders", default-features = false }
 unroll = "0.1"
 crunchy = "0.2.4"
 
 [workspace.lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("dim2", "dim3", "from_rapier", "cpu"))',
+    'cfg(feature, values("dim2", "dim3", "from_rapier", "cpu", "cuda"))',
 ] }
 
 [patch.crates-io]
 glamx = { git = "https://github.com/dimforge/glamx", branch = "bytemuck"}
-parry2d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
-parry3d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
-#khal = { git = "https://github.com/dimforge/khal", branch = "main"}
-#khal-derive = { git = "https://github.com/dimforge/khal", branch = "main"}
-#vortx = { git = "https://github.com/dimforge/vortx", branch = "main"}
+#parry2d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
+#parry3d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
+khal = { path = "../khal/crates/khal" }
+khal-derive = { path = "../khal/crates/khal-derive" }
+khal-std = { path = "../khal/crates/khal-std" }
+vortx = { path = "../vortx" }
+vortx-shaders = { path = "../vortx/vortx-shaders" }
 
 #glamx = { path = "../glamx" }
 #kiss3d = { path = "../kiss3d" }
-#parry2d = { path = "../parry/crates/parry2d" }
-#parry3d = { path = "../parry/crates/parry3d" }
-khal = { path = "../khal/crates/khal" }
-khal-derive = { path = "../khal/crates/khal-derive" }
-vortx = { path = "../vortx" }
+parry2d = { path = "../parry/crates/parry2d" }
+parry3d = { path = "../parry/crates/parry3d" }
+#vortx = { path = "../vortx" }

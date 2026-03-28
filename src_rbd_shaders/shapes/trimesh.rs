@@ -13,7 +13,8 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::triangle::Triangle;
-use crate::{MaybeIndexUnchecked, Vector, PaddedVector};
+use crate::{Vector, PaddedVector};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// A triangle mesh with BVH acceleration structure.
 #[derive(Clone, Copy, Default)]

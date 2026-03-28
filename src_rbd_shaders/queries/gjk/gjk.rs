@@ -6,7 +6,8 @@
 use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::queries::gjk::VoronoiSimplex;
 use crate::shapes::Shape;
-use crate::{MaybeIndexUnchecked, Pose, Vector, PaddedVector, DIM};
+use crate::{Pose, Vector, PaddedVector, DIM};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// GJK result status codes.
 pub const INTERSECTION: u32 = 0;

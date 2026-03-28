@@ -13,12 +13,12 @@
 //! Workgroup size: 256 threads
 //! Shared memory: 256 entries for sums + 4x256 entries for local data
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
+use khal_std::arch::workgroup_memory_barrier_with_group_sync;
+use khal_std::glamx::UVec3;
+use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::index::MaybeIndexUnchecked;
 
-use crate::{udiv, umod, MaybeIndexUnchecked};
+use crate::{udiv, umod};
 use crate::utils::radix_sort::SortUniforms;
 use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
 

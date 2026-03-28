@@ -12,12 +12,11 @@
 //! - Output: [0, 3, 5, 10] (end index of constraints for each body)
 //! - Body i's constraints are at indices [output[i-1], output[i])
 
-use khal_derive::spirv_bindgen;
-use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
-use vortx_shaders::glam::UVec3;
-use spirv_std_macros::spirv;
+use khal_std::arch::workgroup_memory_barrier_with_group_sync;
+use khal_std::glamx::UVec3;
+use khal_std::macros::{spirv, spirv_bindgen};
 
-use crate::MaybeIndexUnchecked;
+use khal_std::index::MaybeIndexUnchecked;
 
 /// Workgroup size: number of elements processed per workgroup.
 pub const WORKGROUP_SIZE: usize = 256;
@@ -47,7 +46,6 @@ pub fn gpu_prefix_sum_sweep(
     let data_offset = batch_id * data_len;
     let aux_stride = (data_len + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
     let aux_offset = batch_id * aux_stride;
-
     // Global index for this thread's element within the batch
     let elt_id = tid + bid * WORKGROUP_SIZE;
 

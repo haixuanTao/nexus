@@ -1,10 +1,10 @@
 //! Rigid particle update kernels: transforms sample/shape points from local to world space.
 
 use crate::solver::particle::RigidParticleIndices;
-use crate::{MaybeIndexUnchecked, Pose, Vector};
-use khal_derive::spirv_bindgen;
+use crate::{Pose, Vector};
 use nexus_rbd_shaders::PaddedVector;
-use spirv_std_macros::spirv;
+use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// Transforms rigid body sample points from local space to world space.
 ///
@@ -13,7 +13,7 @@ use spirv_std_macros::spirv;
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_transform_sample_points(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
     rigid_particle_indices: &[RigidParticleIndices],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] poses: &[Pose],
@@ -37,7 +37,7 @@ pub fn gpu_transform_sample_points(
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_transform_shape_points(
-    #[spirv(global_invocation_id)] invocation_id: vortx_shaders::glam::UVec3,
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] vertex_collider_ids: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] local_pts: &[PaddedVector],

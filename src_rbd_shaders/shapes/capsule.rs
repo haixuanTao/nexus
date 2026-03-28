@@ -5,7 +5,8 @@
 
 use crate::queries::{PolygonalFeature, ProjectionResult};
 use crate::shapes::segment::Segment;
-use crate::{MaybeIndexUnchecked, Pose, Vector};
+use crate::{Pose, Vector};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// A capsule shape, defined by a central segment and a radius.
 ///

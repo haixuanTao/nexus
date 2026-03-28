@@ -16,14 +16,13 @@ use crate::nexus_rbd_shaders::dynamics::{velocity_at_point, Velocity as BodyVelo
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::particle::{dir_to_associated_grid_node, Kinematics, Position};
 use crate::{
-    AngVector, Matrix, MaybeIndexUnchecked, PaddingExt, Vector, TWO_WAYS_COUPLING_ENABLED,
+    AngVector, Matrix, PaddingExt, Vector, TWO_WAYS_COUPLING_ENABLED,
 };
+use khal_std::index::MaybeIndexUnchecked;
 use glamx::*;
-use khal_derive::spirv_bindgen;
-use vortx_shaders::arch::workgroup_memory_barrier_with_group_sync;
-use spirv_std_macros::spirv;
+use khal_std::{arch::workgroup_memory_barrier_with_group_sync, macros::{spirv_bindgen, spirv}};
 use unroll::unroll_for_loops;
-use vortx_shaders::utils::{atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup};
+use khal_std::arch::{atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup};
 /*
  * Shared memory layout constants.
  */
@@ -242,7 +241,7 @@ fn fetch_max_linked_lists_length(
     grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes_linked_lists: &[NodeLinkedList],
-    tid: vortx_shaders::glam::UVec3,
+    tid: khal_std::glamx::UVec3,
     active_block_vid: BlockVirtualId,
     _bid: u32,
     max_linked_list_length: &mut u32,
@@ -311,7 +310,7 @@ fn fetch_nodes(
     grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
     nodes_linked_lists: &[NodeLinkedList],
-    tid: vortx_shaders::glam::UVec3,
+    tid: khal_std::glamx::UVec3,
     active_block_vid: BlockVirtualId,
     _bid: u32,
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
@@ -397,7 +396,7 @@ fn fetch_next_particle<const USE_CPIC: bool>(
     particles_pos: &[Position],
     particles_kin: &[Kinematics],
     particle_node_linked_lists: &[u32],
-    tid: vortx_shaders::glam::UVec3,
+    tid: khal_std::glamx::UVec3,
     shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     shared_pos: &mut [Position; NUM_SHARED_CELLS],
     shared_vel_mass: &mut [(Vector, f32); NUM_SHARED_CELLS],
@@ -481,8 +480,8 @@ fn fetch_next_particle<const USE_CPIC: bool>(
 ///
 /// Dispatched with one workgroup per active block.
 pub fn gpu_p2g_generic<const USE_CPIC: bool>(
-    block_id: vortx_shaders::glam::UVec3,
-    tid: vortx_shaders::glam::UVec3,
+    block_id: khal_std::glamx::UVec3,
+    tid: khal_std::glamx::UVec3,
     tid_flat: u32,
     grid: &Grid,
     hmap_entries: &[GridHashMapEntry],
@@ -717,8 +716,8 @@ fn flatten_shared_shift(x: u32, y: u32, z: u32) -> u32 {
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_p2g(
-    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: khal_std::glamx::UVec3,
+    #[spirv(local_invocation_id)] tid: khal_std::glamx::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
@@ -777,8 +776,8 @@ pub fn gpu_p2g(
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]
 pub fn gpu_p2g_cpic(
-    #[spirv(workgroup_id)] block_id: vortx_shaders::glam::UVec3,
-    #[spirv(local_invocation_id)] tid: vortx_shaders::glam::UVec3,
+    #[spirv(workgroup_id)] block_id: khal_std::glamx::UVec3,
+    #[spirv(local_invocation_id)] tid: khal_std::glamx::UVec3,
     #[spirv(local_invocation_index)] tid_flat: u32,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],

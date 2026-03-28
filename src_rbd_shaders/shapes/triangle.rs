@@ -5,8 +5,9 @@
 use crate::bounding_volumes::Aabb;
 use crate::queries::PolygonalFeature;
 use crate::queries::ProjectionWithLocation;
-use crate::{MaybeIndexUnchecked, Vector};
+use crate::{Vector};
 use glamx::{Vec2, Vec3};
+use khal_std::index::MaybeIndexUnchecked;
 
 /// A triangle defined by three vertices.
 #[derive(Clone, Copy, Default)]

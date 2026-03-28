@@ -13,7 +13,7 @@ path = "../../src_rbd_shaders/lib.rs"
 [lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(feature, values("dim3"))',
-    'cfg(target_arch, values("spirv"))',
+    'cfg(target_arch, values("spirv", "nvptx64"))',
 ] }
 
 [features]
@@ -25,13 +25,13 @@ cpu = []
 
 [dependencies]
 vortx-shaders = { workspace = true }
-khal-derive = { workspace = true }
-spirv-std = { workspace = true }
+khal-std = { workspace = true }
 unroll = { workspace = true }
 crunchy = { workspace = true }
 glamx = { workspace = true }
 parry2d = { version = "0.26", default-features = false, features = ["dim2","f32"] }
 
-[target.'cfg(not(target_arch = "spirv"))'.dependencies]
+# Host-only dependencies (excluded on GPU targets: spirv and nvptx64).
+[target.'cfg(not(any(target_arch = "spirv", target_arch = "nvptx64")))'.dependencies]
 bytemuck = { workspace = true }
 khal = { workspace = true }

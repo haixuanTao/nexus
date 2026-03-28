@@ -76,15 +76,43 @@ pub async fn setup_physics(
             }
         }
         BackendType::Cpu => {
-            let cpu_backend = KhalGpuBackend::Cpu;
-            match GpuBackend::try_new(&cpu_backend, phys).await {
-                Ok(gpu_backend) => PhysicsBackend::Gpu(gpu_backend),
-                Err(e) => {
-                    *gpu_error = Some(format!(
-                        "Nexus CPU backend initialization failed: {}. Using rapier CPU backend.",
-                        e
-                    ));
-                    PhysicsBackend::Cpu(CpuBackend::new(phys))
+            #[cfg(feature = "cpu")]
+            {
+                let cpu_backend = KhalGpuBackend::Cpu;
+                match GpuBackend::try_new(&cpu_backend, phys).await {
+                    Ok(gpu_backend) => PhysicsBackend::Gpu(gpu_backend),
+                    Err(e) => {
+                        *gpu_error = Some(format!(
+                            "Nexus CPU backend initialization failed: {}. Using rapier CPU backend.",
+                            e
+                        ));
+                        PhysicsBackend::Cpu(CpuBackend::new(phys))
+                    }
+                }
+            }
+            #[cfg(not(feature = "cpu"))]
+            {
+                *gpu_error = Some("CPU backend not available (compiled without 'cpu' feature).".to_string());
+                PhysicsBackend::Cpu(CpuBackend::new(phys))
+            }
+        }
+        #[cfg(feature = "cuda")]
+        BackendType::Cuda => {
+            let gpu = gpu.expect("Cuda device initialization failed");
+
+            if let Some(pipeline) = cached_pipeline.take() {
+                let gpu_backend = GpuBackend::with_pipeline(gpu, pipeline, phys).await;
+                PhysicsBackend::Gpu(gpu_backend)
+            } else {
+                match GpuBackend::try_new(gpu, phys).await {
+                    Ok(gpu_backend) => PhysicsBackend::Gpu(gpu_backend),
+                    Err(e) => {
+                        *gpu_error = Some(format!(
+                            "CUDA backend initialization failed: {}. Using CPU backend.",
+                            e
+                        ));
+                        PhysicsBackend::Cpu(CpuBackend::new(phys))
+                    }
                 }
             }
         }
