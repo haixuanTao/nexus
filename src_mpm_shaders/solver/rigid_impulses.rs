@@ -7,11 +7,11 @@
 
 use crate::grid::grid::Grid;
 use crate::nexus_rbd_shaders::dynamics::{
-    apply_impulse, integrate_velocity, update_mprops, Impulse, LocalMassProperties, Velocity,
-    WorldMassProperties,
+    Impulse, LocalMassProperties, Velocity, WorldMassProperties, apply_impulse, integrate_velocity,
+    update_mprops,
 };
 use crate::solver::params::SimulationParams;
-use crate::{ang_length, AngVector, IVector, Pose, Vector};
+use crate::{AngVector, IVector, Pose, Vector, ang_length};
 use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
@@ -21,7 +21,10 @@ use khal_std::macros::{spirv, spirv_bindgen};
 /// Uses integer representation to enable atomic add operations on the GPU.
 /// The `com` field stores the center of mass to reduce binding count in P2G.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct IntegerImpulse {
     /// Center of mass (stored here to reduce P2G binding count).

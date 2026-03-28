@@ -20,12 +20,12 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
-use crate::{Pose, Vector, PaddedVector};
+use crate::utils::{Slice, SliceMut, div_ceil};
+use crate::{PaddedVector, Pose, Vector};
 use khal_std::arch::{atomic_add_u32, control_barrier, workgroup_memory_barrier_with_group_sync};
 use khal_std::glamx::UVec3;
-use khal_std::{iter::StepRng};
 use khal_std::index::MaybeIndexUnchecked;
-use crate::utils::{div_ceil, Slice, SliceMut};
+use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -55,7 +55,10 @@ const REDUCTION_WORKGROUP_SIZE: u32 = 128;
 /// - parent points to parent internal node
 /// - refit_count is unused
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct LbvhNode {
     /// Axis-aligned bounding box for this node's subtree.
@@ -131,7 +134,10 @@ pub fn gpu_lbvh_compute_domain(
     let colliders_start = *colliders_batch_capacity * batch_id;
     let colliders_end = colliders_start + colliders_len.read(batch_id as usize);
 
-    for i in StepRng::new(colliders_start + thread_id..colliders_end, REDUCTION_WORKGROUP_SIZE) {
+    for i in StepRng::new(
+        colliders_start + thread_id..colliders_end,
+        REDUCTION_WORKGROUP_SIZE,
+    ) {
         let val_i = poses.at(i as usize).translation;
         *workspace_mins.at_mut(thread_id as usize) =
             workspace_mins.at(thread_id as usize).min(val_i);
@@ -188,7 +194,10 @@ pub fn gpu_lbvh_compute_morton(
     let colliders_start = *colliders_batch_capacity * batch_id;
     let colliders_end = colliders_start + colliders_len.read(batch_id as usize);
 
-    for i in StepRng::new(colliders_start + invocation_id.x..colliders_end, num_threads) {
+    for i in StepRng::new(
+        colliders_start + invocation_id.x..colliders_end,
+        num_threads,
+    ) {
         let center = poses.at(i as usize).translation;
         let normalized = (center - domain_aabb.mins) / (domain_aabb.maxs - domain_aabb.mins);
         let morton_key = morton(normalized);
@@ -521,7 +530,10 @@ pub fn gpu_lbvh_find_collision_pairs(
     let num_bodies = colliders_len.read(batch_id as usize);
     let first_leaf_id = num_bodies - 1;
 
-    let mut collision_pairs = SliceMut(collision_pairs, (batch_id * *collision_pairs_batch_capacity) as usize);
+    let mut collision_pairs = SliceMut(
+        collision_pairs,
+        (batch_id * *collision_pairs_batch_capacity) as usize,
+    );
     let tree = Slice(tree, root_id(colliders_start) as usize);
 
     for leaf_i in StepRng::new(invocation_id.x..num_bodies, num_threads) {
@@ -548,7 +560,8 @@ pub fn gpu_lbvh_find_collision_pairs(
 
                 // NOTE: we don't have to compare i < j to avoid duplicates since that comparison already happened
                 //       alongside the AABB check.
-                let target_pair_index = atomic_add_u32(collision_pairs_len.at_mut(batch_id as usize), 1);
+                let target_pair_index =
+                    atomic_add_u32(collision_pairs_len.at_mut(batch_id as usize), 1);
 
                 // NOTE: if the index is out-of-bounds (meaning the `collision_pairs` isn't
                 //       big enough), don't write. But keep traversing so we get the exact count we need

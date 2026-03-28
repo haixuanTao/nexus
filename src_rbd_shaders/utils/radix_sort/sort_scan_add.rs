@@ -15,12 +15,12 @@
 
 use khal_std::arch::workgroup_memory_barrier_with_group_sync;
 use khal_std::glamx::UVec3;
-use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
 
-use crate::{udiv, umod};
+use super::sorting::{BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG, div_ceil};
 use crate::utils::radix_sort::SortUniforms;
-use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
+use crate::{udiv, umod};
 
 /// Radix sort scan add kernel.
 ///
@@ -113,7 +113,8 @@ pub fn gpu_sort_scan_add(
 
         for i in 0..ELEMENTS_PER_THREAD {
             let x = lds.at_mut(i as usize).read(local_id.x as usize);
-            lds.at_mut(i as usize).write(local_id.x as usize, x.wrapping_add(sum));
+            lds.at_mut(i as usize)
+                .write(local_id.x as usize, x.wrapping_add(sum));
         }
     }
 

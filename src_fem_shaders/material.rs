@@ -9,8 +9,8 @@
 
 use crate::types::ElementPrecomputed;
 use crate::{
-    cofactor, diag, frobenius_norm_sq, outer, pad_mat, trace, unpad_mat, DIM, Matrix, PaddedMatrix,
-    Vector, MODEL_LINEAR, MODEL_LINEAR_COROTATED, MODEL_STABLE_NEOHOOKEAN,
+    DIM, MODEL_LINEAR, MODEL_LINEAR_COROTATED, MODEL_STABLE_NEOHOOKEAN, Matrix, PaddedMatrix,
+    Vector, cofactor, diag, frobenius_norm_sq, outer, pad_mat, trace, unpad_mat,
 };
 use glamx::*;
 
@@ -42,7 +42,9 @@ pub fn precompute(F: Matrix, model: u32) -> ElementPrecomputed {
                 u = Matrix::from_cols(u.col(0), u.col(1), -u.col(2));
             }
         }
-        ElementPrecomputed { R: pad_mat(u * svd.vt) }
+        ElementPrecomputed {
+            R: pad_mat(u * svd.vt),
+        }
     } else {
         ElementPrecomputed::default()
     }
@@ -81,7 +83,12 @@ pub fn compute_energy(F: Matrix, mu: f32, lam: f32, model: u32, R: Matrix) -> f3
 /// hessian_blocks[a*DIM+b] = d²Ψ/(dF_col_a dF_col_b).
 /// For StableNeoHookean, returns zero blocks (Hessian not implemented).
 #[inline]
-pub fn compute_hessian_blocks(mu: f32, lam: f32, model: u32, R: Matrix) -> [PaddedMatrix; DIM * DIM] {
+pub fn compute_hessian_blocks(
+    mu: f32,
+    lam: f32,
+    model: u32,
+    R: Matrix,
+) -> [PaddedMatrix; DIM * DIM] {
     if model == MODEL_LINEAR {
         compute_linear_hessian_blocks(mu, lam)
     } else if model == MODEL_LINEAR_COROTATED {
@@ -100,27 +107,32 @@ fn compute_linear_hessian_blocks(mu: f32, lam: f32) -> [PaddedMatrix; DIM * DIM]
     #[cfg(feature = "dim2")]
     {
         let e = [Vec2::X, Vec2::Y];
-        blocks[0] = pad_mat(diag(Vector::splat(mu)) + outer(e[0], e[0]) * mu + outer(e[0], e[0]) * lam);
+        blocks[0] =
+            pad_mat(diag(Vector::splat(mu)) + outer(e[0], e[0]) * mu + outer(e[0], e[0]) * lam);
         blocks[1] = pad_mat(outer(e[0], e[1]) * mu + outer(e[1], e[0]) * lam);
         blocks[2] = pad_mat(outer(e[1], e[0]) * mu + outer(e[0], e[1]) * lam);
-        blocks[3] = pad_mat(diag(Vector::splat(mu)) + outer(e[1], e[1]) * mu + outer(e[1], e[1]) * lam);
+        blocks[3] =
+            pad_mat(diag(Vector::splat(mu)) + outer(e[1], e[1]) * mu + outer(e[1], e[1]) * lam);
     }
 
     #[cfg(feature = "dim3")]
     {
         let e = [Vec3::X, Vec3::Y, Vec3::Z];
         // a=0
-        blocks[0] = pad_mat(diag(Vector::splat(mu)) + outer(e[0], e[0]) * mu + outer(e[0], e[0]) * lam);
+        blocks[0] =
+            pad_mat(diag(Vector::splat(mu)) + outer(e[0], e[0]) * mu + outer(e[0], e[0]) * lam);
         blocks[1] = pad_mat(outer(e[0], e[1]) * mu + outer(e[1], e[0]) * lam);
         blocks[2] = pad_mat(outer(e[0], e[2]) * mu + outer(e[2], e[0]) * lam);
         // a=1
         blocks[3] = pad_mat(outer(e[1], e[0]) * mu + outer(e[0], e[1]) * lam);
-        blocks[4] = pad_mat(diag(Vector::splat(mu)) + outer(e[1], e[1]) * mu + outer(e[1], e[1]) * lam);
+        blocks[4] =
+            pad_mat(diag(Vector::splat(mu)) + outer(e[1], e[1]) * mu + outer(e[1], e[1]) * lam);
         blocks[5] = pad_mat(outer(e[1], e[2]) * mu + outer(e[2], e[1]) * lam);
         // a=2
         blocks[6] = pad_mat(outer(e[2], e[0]) * mu + outer(e[0], e[2]) * lam);
         blocks[7] = pad_mat(outer(e[2], e[1]) * mu + outer(e[1], e[2]) * lam);
-        blocks[8] = pad_mat(diag(Vector::splat(mu)) + outer(e[2], e[2]) * mu + outer(e[2], e[2]) * lam);
+        blocks[8] =
+            pad_mat(diag(Vector::splat(mu)) + outer(e[2], e[2]) * mu + outer(e[2], e[2]) * lam);
     }
 
     blocks
@@ -169,7 +181,8 @@ fn compute_corotated_hessian_blocks(mu: f32, lam: f32, R: Matrix) -> [PaddedMatr
 pub fn compute_stress(F: Matrix, mu: f32, lam: f32, model: u32, R: Matrix) -> Matrix {
     if model == MODEL_LINEAR {
         let I = Matrix::IDENTITY;
-        (F + F.transpose() - I * 2.0) * mu + diag(Vector::splat(lam * trace((F + F.transpose()) * 0.5 - I)))
+        (F + F.transpose() - I * 2.0) * mu
+            + diag(Vector::splat(lam * trace((F + F.transpose()) * 0.5 - I)))
     } else if model == MODEL_LINEAR_COROTATED {
         let F_hat = R.transpose() * F;
         let eps = (F_hat + F_hat.transpose()) * 0.5 - Matrix::IDENTITY;

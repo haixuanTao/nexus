@@ -9,13 +9,8 @@
 //! 6. `gpu_boundary_conditions` (per-vertex): floor collision
 
 use crate::material::{compute_stress, precompute};
-use crate::types::{
-    ElementInfo, FemSimParams, VertexConstraint, VertexInfo, VertexState,
-};
-use crate::{
-    exp_f32, pad_vec, sqrt_f32, unpad_mat, unpad_vec, Matrix, Vector,
-    VERTS_PER_ELEM,
-};
+use crate::types::{ElementInfo, FemSimParams, VertexConstraint, VertexInfo, VertexState};
+use crate::{Matrix, VERTS_PER_ELEM, Vector, exp_f32, pad_vec, sqrt_f32, unpad_mat, unpad_vec};
 use khal_std::arch::atomic_add_f32;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
@@ -58,7 +53,11 @@ pub fn read_force(buf: &[AtomicForce], vertex_idx: u32) -> Vector {
     }
     #[cfg(feature = "dim3")]
     {
-        Vector::new(f32::from_bits(f.x), f32::from_bits(f.y), f32::from_bits(f.z))
+        Vector::new(
+            f32::from_bits(f.x),
+            f32::from_bits(f.y),
+            f32::from_bits(f.z),
+        )
     }
 }
 

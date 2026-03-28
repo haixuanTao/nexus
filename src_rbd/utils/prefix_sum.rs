@@ -258,12 +258,8 @@ impl PrefixSumWorkspace {
             self.per_batch_ngroups.push(per_batch_len);
 
             let total = per_batch_len * num_batches;
-            let buffer = Tensor::vector(
-                backend,
-                vec![0u32; total as usize],
-                BufferUsages::STORAGE,
-            )
-            .unwrap();
+            let buffer =
+                Tensor::vector(backend, vec![0u32; total as usize], BufferUsages::STORAGE).unwrap();
             self.stages.push(PrefixSumStage {
                 capacity: total,
                 buffer,

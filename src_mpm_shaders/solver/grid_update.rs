@@ -4,11 +4,11 @@
 //! velocity (dividing by mass), applies gravity, and clamps velocities so no node
 //! moves more than one cell width per timestep.
 
+use crate::Vector;
 use crate::grid::grid::*;
 use crate::solver::params::SimulationParams;
-use crate::{Vector};
-use khal_std::index::MaybeIndexUnchecked;
 use glamx::*;
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 /// GPU kernel: grid update.

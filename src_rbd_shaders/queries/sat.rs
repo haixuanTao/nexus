@@ -17,9 +17,9 @@ use crate::{Pose, Vector};
 use parry::shape::SupportMap;
 
 #[cfg(feature = "dim3")]
-use khal_std::index::MaybeIndexUnchecked;
-#[cfg(feature = "dim3")]
 use glamx::Vec3;
+#[cfg(feature = "dim3")]
+use khal_std::index::MaybeIndexUnchecked;
 
 /// Result of a separating axis test.
 #[derive(Clone, Copy, Default)]

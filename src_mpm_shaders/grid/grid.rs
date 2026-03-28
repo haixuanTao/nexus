@@ -7,13 +7,16 @@
 //! to physical storage indices. The hashmap uses open addressing with linear probing
 //! and atomic compare-exchange for lock-free insertion.
 
-use core::ops::BitOrAssign;
-use crate::{IVector, Vector};
-use glamx::*;
-use nexus_rbd_shaders::MAX_FLT;
 use crate::nexus_rbd_shaders::utils::udiv_ceil;
-use khal_std::{arch::atomic_add_u32, macros::{spirv_bindgen, spirv}};
+use crate::{IVector, Vector};
+use core::ops::BitOrAssign;
+use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
+use khal_std::{
+    arch::atomic_add_u32,
+    macros::{spirv, spirv_bindgen},
+};
+use nexus_rbd_shaders::MAX_FLT;
 
 /*
  * Constants.
@@ -50,7 +53,10 @@ const OFF_BY_ONE: i32 = 1;
 /// This is an integer vector (IVec2 in 2D, IVec3 in 3D) identifying a block's
 /// position in the infinite virtual grid.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct BlockVirtualId {
     pub id: IVector,
@@ -137,7 +143,9 @@ impl BlockVirtualId {
     /// neighborhood starting at B.
     #[cfg(feature = "dim2")]
     #[inline]
-    pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
+    pub fn blocks_associated_to_block(
+        block: &BlockVirtualId,
+    ) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
         [
             BlockVirtualId {
                 id: block.id + IVec2::new(0, 0),
@@ -157,7 +165,9 @@ impl BlockVirtualId {
     /// Returns all blocks neighboring a given block (including itself).
     #[cfg(feature = "dim3")]
     #[inline]
-    pub fn blocks_associated_to_block(block: &BlockVirtualId) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
+    pub fn blocks_associated_to_block(
+        block: &BlockVirtualId,
+    ) -> [BlockVirtualId; NUM_ASSOC_BLOCKS] {
         [
             BlockVirtualId {
                 id: block.id + IVec3::new(0, 0, 0),
@@ -200,7 +210,10 @@ impl BlockVirtualId {
 /// After insertion into the hashmap, each active block is assigned a header ID
 /// that serves as its index in the `active_blocks` array.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct BlockHeaderId {
     pub id: u32,
@@ -223,7 +236,10 @@ impl BlockHeaderId {
 /// Computed as `header_id * NUM_CELL_PER_BLOCK`. Used to index into the flat
 /// node arrays.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct BlockPhysicalId {
     pub id: u32,
@@ -256,7 +272,10 @@ impl BlockPhysicalId {
 ///
 /// Computed as `block_physical_id + local_offset_in_block`.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct NodePhysicalId {
     pub id: u32,
@@ -272,7 +291,10 @@ pub struct NodePhysicalId {
 /// The `head` field points to the first particle, and the `len` field
 /// counts the number of particles in the list.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct NodeLinkedList {
     pub head: u32,
@@ -289,7 +311,10 @@ pub struct NodeLinkedList {
 ///            modify the corresponding host-side struct to ensure it has the
 ///            right size. Otherwise the hashmap will break.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct GridHashMapEntry {
     /// The virtual block ID key.
@@ -310,7 +335,10 @@ pub struct GridHashMapEntry {
 /// Stores the virtual ID (for computing world-space positions) and
 /// particle sorting information.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct ActiveBlockHeader {
     /// The virtual block coordinate needed to compute world-space node positions.
@@ -327,7 +355,10 @@ pub struct ActiveBlockHeader {
 ///
 /// Contains the current number of active blocks and configuration parameters.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Grid {
     /// Current number of active blocks (modified atomically during insertion).
@@ -345,7 +376,10 @@ pub struct Grid {
 /// Used by the CPIC (Compatible Particle-In-Cell) method to handle
 /// rigid body coupling through affinity-based compatibility checks.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct NodeCdf {
     /// Signed distance to the closest collider surface.
@@ -361,7 +395,7 @@ impl NodeCdf {
     pub const NONE: NodeCdf = NodeCdf {
         distance: MAX_FLT,
         affinities: AffinityBits(0),
-        closest_id: NONE
+        closest_id: NONE,
     };
 
     /// Creates a new `NodeCdf` with the given values.
@@ -379,7 +413,10 @@ impl NodeCdf {
 ///
 /// Stores momentum/velocity packed with mass, plus CDF data for rigid body coupling.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Node {
     /// Contains either momentum or velocity (depending on context).
@@ -470,9 +507,8 @@ impl Grid {
 
             // CAS returned NONE. Either we wrote successfully, or it was a spurious
             // failure (weak CAS on WGSL/Metal). Verify with atomic_load (which is always strong).
-            let current = khal_std::arch::atomic_load_u32_shared(
-                &hmap_entries.at(slot as usize).state,
-            );
+            let current =
+                khal_std::arch::atomic_load_u32_shared(&hmap_entries.at(slot as usize).state);
 
             if current == packed_key {
                 // Slot contains our key (we wrote it, or a same-key thread did).
@@ -480,7 +516,8 @@ impl Grid {
                 // atomic_exchange is always strong (no weak variant in WGSL).
                 hmap_entries.at_mut(slot as usize).key = *key;
                 let prev = khal_std::arch::atomic_exchange_u32(
-                    &mut hmap_entries.at_mut(slot as usize).ownership, 1,
+                    &mut hmap_entries.at_mut(slot as usize).ownership,
+                    1,
                 );
                 if prev == 0 {
                     return slot; // We are the owner (new insertion).
@@ -591,7 +628,7 @@ impl AffinityBits {
         ((self.0 >> Self::SIGN_BITS_SHIFT) & (1 << i_collider)) != 0
     }
 
-    pub fn set_unsigned_bits(&mut  self, other: Self) {
+    pub fn set_unsigned_bits(&mut self, other: Self) {
         self.0 |= (other.0 & Self::AFFINITY_BITS_MASK);
     }
 

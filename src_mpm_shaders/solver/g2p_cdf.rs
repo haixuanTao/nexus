@@ -11,14 +11,17 @@ use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{
-    associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Cdf, Kinematics,
-    Position,
+    Cdf, Kinematics, Position, associated_cell_index_in_block_off_by_one,
+    dir_to_associated_grid_node,
 };
-use crate::{abs, Vector};
-use khal_std::index::MaybeIndexUnchecked;
+use crate::{Vector, abs};
 use crunchy::unroll;
 use glamx::*;
-use khal_std::{arch::workgroup_memory_barrier_with_group_sync, macros::{spirv, spirv_bindgen}};
+use khal_std::index::MaybeIndexUnchecked;
+use khal_std::{
+    arch::workgroup_memory_barrier_with_group_sync,
+    macros::{spirv, spirv_bindgen},
+};
 use unroll::unroll_for_loops;
 /*
  * Constants.
@@ -146,7 +149,8 @@ fn global_shared_memory_transfers(
                         if octant_hid.id != NONE {
                             let global_chunk_id = octant_hid.physical_id();
                             let global_node_id = global_chunk_id.node_id(tid_xyz);
-                            shared_nodes.write(shared_node_id, nodes.at(global_node_id.id as usize).cdf);
+                            shared_nodes
+                                .write(shared_node_id, nodes.at(global_node_id.id as usize).cdf);
                         } else {
                             shared_nodes.write(shared_node_id, NodeCdf::NONE);
                         }
@@ -274,7 +278,8 @@ fn particle_g2p(
                 * vec3_extract(w[1], shift.y)
                 * vec3_extract(w[2], shift.z);
 
-            let combined_affinity = cell_data.affinities.0 & particle_affinity.0 & AffinityBits::AFFINITY_BITS_MASK;
+            let combined_affinity =
+                cell_data.affinities.0 & particle_affinity.0 & AffinityBits::AFFINITY_BITS_MASK;
             let sign_differences = ((cell_data.affinities.0 >> AffinityBits::SIGN_BITS_SHIFT)
                 ^ (particle_affinity.0 >> AffinityBits::SIGN_BITS_SHIFT))
                 & combined_affinity;

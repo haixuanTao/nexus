@@ -7,8 +7,8 @@ use crate::mpm_shaders::grid::grid::{
 use crate::solver::{GpuParticleModelData, GpuParticles, GpuRigidParticles};
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
-use vortx::tensor::Tensor;
 use nexus_rbd::utils::{GpuPrefixSum, PrefixSumWorkspace};
+use vortx::tensor::Tensor;
 
 /// GPU kernels for grid initialization and management.
 ///

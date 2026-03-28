@@ -9,9 +9,9 @@
 //! - Clipping: polygon-polygon clipping projected onto the 2D contact plane
 //! - Manifold Reduction: Reduces potentially many contact candidates to the most important 4 (or 2 in 2D)
 
-use crate::queries::contact_manifold::{ContactManifold, ContactPoint};
 #[cfg(feature = "dim3")]
-use crate::queries::contact_manifold::{MAX_MANIFOLD_POINTS};
+use crate::queries::contact_manifold::MAX_MANIFOLD_POINTS;
+use crate::queries::contact_manifold::{ContactManifold, ContactPoint};
 use crate::{Pose, Vector};
 use glamx::Vec2;
 use khal_std::index::MaybeIndexUnchecked;
@@ -104,11 +104,7 @@ fn perp(a: Vec2, b: Vec2) -> f32 {
 /// Pseudo-inverse of a scalar (returns 0 if x is 0).
 #[inline]
 fn pseudo_inv(x: f32) -> f32 {
-    if x == 0.0 {
-        0.0
-    } else {
-        1.0 / x
-    }
+    if x == 0.0 { 0.0 } else { 1.0 / x }
 }
 
 /// Approximate equality check for scalars.

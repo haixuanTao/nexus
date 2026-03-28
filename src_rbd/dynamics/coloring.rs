@@ -313,7 +313,8 @@ impl GpuColoring {
             // Batch multiple iterations to reduce CPU-GPU sync overhead
             {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass("topo-gc-coloring-step", timestamps.as_deref_mut());
+                let mut pass =
+                    encoder.begin_pass("topo-gc-coloring-step", timestamps.as_deref_mut());
                 for _ in 0..10 {
                     // Reset completion flag
                     self.reset_completion_flag_topo_gc

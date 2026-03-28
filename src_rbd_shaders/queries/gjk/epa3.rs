@@ -3,9 +3,9 @@
 //! This module provides the EPA algorithm for computing penetration depth
 //! and contact normal for intersecting convex shapes in 3D.
 
+use crate::queries::gjk::VoronoiSimplex;
 use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::queries::gjk::gjk::cso_point_from_shapes;
-use crate::queries::gjk::VoronoiSimplex;
 use crate::queries::projection;
 use crate::shapes::{Shape, Triangle};
 use crate::{Pad, Pose};

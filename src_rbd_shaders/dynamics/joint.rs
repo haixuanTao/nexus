@@ -30,7 +30,10 @@ pub const ANG_AXES_MASK: u32 = (1 << 3) + (1 << 4) + (1 << 5);
 
 /// An impulse-based joint connecting two rigid bodies.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct ImpulseJoint {
     /// Index of the first body.
@@ -46,7 +49,10 @@ pub struct ImpulseJoint {
 
 /// A generic (6 DOFs in 3D or 3 DOFs in 2D) joint.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct GenericJoint {
     /// The joint's frame, expressed in the first rigid-body's local-space.
@@ -89,7 +95,10 @@ pub struct GenericJoint {
 ///
 /// When a joint hits its limit, forces are applied to prevent further movement in that direction.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct JointLimits {
     /// Minimum allowed value (angle for revolute, distance for prismatic).
@@ -110,7 +119,10 @@ pub struct JointLimits {
 /// 1. **Velocity control**: Set `target_vel` to make the motor spin/slide at constant speed
 /// 2. **Position control**: Set `target_pos` with `stiffness`/`damping` to reach a target angle/position
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct JointMotor {
     /// Target velocity (units/sec for prismatic, rad/sec for revolute).
@@ -147,11 +159,7 @@ pub struct MotorParameters {
 
 /// Helper function for pseudo inverse.
 fn pseudo_inv(x: f32) -> f32 {
-    if x == 0.0 {
-        0.0
-    } else {
-        1.0 / x
-    }
+    if x == 0.0 { 0.0 } else { 1.0 / x }
 }
 
 /// Computes motor parameters from motor configuration.

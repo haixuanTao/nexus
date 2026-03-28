@@ -2,9 +2,9 @@
 
 use crate::solver::particle::RigidParticleIndices;
 use crate::{Pose, Vector};
-use nexus_rbd_shaders::PaddedVector;
-use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
+use nexus_rbd_shaders::PaddedVector;
 
 /// Transforms rigid body sample points from local space to world space.
 ///

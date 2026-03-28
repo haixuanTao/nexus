@@ -12,7 +12,7 @@ pub use nexus_fem_shaders3d as fem_shaders;
 
 pub use fem_shaders::glamx;
 pub use fem_shaders::types;
-pub use fem_shaders::{Matrix, PaddedMatrix, PaddedVector, Vector, DIM, VERTS_PER_ELEM};
+pub use fem_shaders::{DIM, Matrix, PaddedMatrix, PaddedVector, VERTS_PER_ELEM, Vector};
 
 use khal::re_exports::include_dir::{Dir, include_dir};
 pub static SPIRV_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/shaders-spirv");

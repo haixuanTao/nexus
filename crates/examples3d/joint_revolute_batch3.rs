@@ -1,4 +1,4 @@
-use nexus_testbed3d::{DemoBuilder, SimulationState, BatchEnvironment};
+use nexus_testbed3d::{BatchEnvironment, DemoBuilder, SimulationState};
 use rapier3d::prelude::*;
 
 pub fn builder() -> DemoBuilder {
@@ -69,9 +69,12 @@ fn build() -> SimulationState {
 
                     curr_parent = handles[3];
                 }
-                
+
                 environments.push(BatchEnvironment {
-                    bodies, colliders, impulse_joints, sim_params: Default::default()
+                    bodies,
+                    colliders,
+                    impulse_joints,
+                    sim_params: Default::default(),
                 });
             }
         }

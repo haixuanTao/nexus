@@ -4,13 +4,13 @@ pub mod step;
 pub use data::*;
 
 use crate::RunState;
-use step::{GpuReadbackData, SimulationStepResult, WgPrepReadback};
 use khal::Shader;
 use khal::backend::{GpuBackend as KhalGpuBackend, GpuTimestamps};
 use kiss3d::prelude::*;
 use nexus::mpm::pipeline::{MpmPipeline, MpmPipelineHooks};
 use nexus::mpm::solver::GpuParticleModelData;
 use rapier::geometry::{ColliderHandle, Shape, ShapeType};
+use step::{GpuReadbackData, SimulationStepResult, WgPrepReadback};
 
 use std::cell::RefCell;
 use std::collections::HashMap;

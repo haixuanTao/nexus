@@ -4,7 +4,7 @@
 //! The quadratic kernel uses a 3-node stencil per dimension, giving 9 neighbors in 2D
 //! and 27 neighbors in 3D.
 
-use crate::{abs, Vector, DIM_USIZE};
+use crate::{DIM_USIZE, Vector, abs};
 use glamx::*;
 
 /*

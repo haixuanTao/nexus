@@ -5,12 +5,12 @@
 
 use crate::queries::contact_manifold::{ContactManifold, ContactPoint, MAX_MANIFOLD_POINTS};
 use crate::queries::gjk::{
-    self, cso_point_from_shapes, Epa, GjkResult, VoronoiSimplex, CLOSEST_POINTS, FLT_EPS,
-    INTERSECTION,
+    self, CLOSEST_POINTS, Epa, FLT_EPS, GjkResult, INTERSECTION, VoronoiSimplex,
+    cso_point_from_shapes,
 };
 use crate::queries::polygonal_feature;
 use crate::shapes::Shape;
-use crate::{Pose, Vector, PaddedVector, DIM};
+use crate::{DIM, PaddedVector, Pose, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 
 /// Computes contact between two support map shapes using GJK.

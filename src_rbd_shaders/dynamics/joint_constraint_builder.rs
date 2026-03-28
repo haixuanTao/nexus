@@ -3,19 +3,19 @@
 //! This module contains functions to build and update joint constraints from
 //! joint definitions and body states.
 
-#[cfg(feature = "dim2")]
-use crate::rotation_angle;
-#[cfg(feature = "dim2")]
-use crate::{Rotation};
-use crate::{gdot, rotation_to_matrix, AngVector, Pose, Vector};
-use khal_std::index::MaybeIndexUnchecked;
 use super::body::{Velocity, WorldMassProperties};
 use super::joint::{
-    motor_params, GenericJoint, MotorParameters, ANG_AXES_MASK, LIN_AXES_MASK, SPATIAL_DIM,
+    ANG_AXES_MASK, GenericJoint, LIN_AXES_MASK, MotorParameters, SPATIAL_DIM, motor_params,
 };
 use super::joint_constraint::{JointConstraint, JointConstraintElement, JointSolverBody};
-use super::sim_params::{inv_dt, joint_cfm_coeff, joint_erp_inv_dt, SimParams, TWO_PI};
+use super::sim_params::{SimParams, TWO_PI, inv_dt, joint_cfm_coeff, joint_erp_inv_dt};
+#[cfg(feature = "dim2")]
+use crate::Rotation;
+#[cfg(feature = "dim2")]
+use crate::rotation_angle;
 use crate::utils::{Slice, SliceMut};
+use crate::{AngVector, Pose, Vector, gdot, rotation_to_matrix};
+use khal_std::index::MaybeIndexUnchecked;
 
 #[cfg(feature = "dim2")]
 use glamx::{Mat2, Vec2};
@@ -32,7 +32,10 @@ const DIM: usize = 3;
 
 /// Builder data for constructing joint constraints.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct JointConstraintBuilder {
     pub body1: u32,
@@ -74,11 +77,7 @@ pub struct JointConstraintHelper {
 
 /// Helper function for pseudo inverse.
 fn pseudo_inv(x: f32) -> f32 {
-    if x == 0.0 {
-        0.0
-    } else {
-        1.0 / x
-    }
+    if x == 0.0 { 0.0 } else { 1.0 / x }
 }
 
 #[cfg(feature = "dim2")]
@@ -336,7 +335,10 @@ pub fn lock_angular(
 }
 
 /// Solves a joint constraint.
-pub fn solve_joint_constraint(constraint: &mut JointConstraint, solver_vels: &mut SliceMut<Velocity>) {
+pub fn solve_joint_constraint(
+    constraint: &mut JointConstraint,
+    solver_vels: &mut SliceMut<Velocity>,
+) {
     let mut solver_vel1 = solver_vels.read(constraint.solver_vel_a as usize);
     let mut solver_vel2 = solver_vels.read(constraint.solver_vel_b as usize);
 

@@ -7,7 +7,7 @@ use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::queries::gjk::gjk::cso_point_from_shapes;
 use crate::queries::gjk::voronoi_simplex2::VoronoiSimplex;
 use crate::shapes::Shape;
-use crate::{Pose, PaddedVector};
+use crate::{PaddedVector, Pose};
 use glamx::Vec2;
 use khal_std::index::MaybeIndexUnchecked;
 

@@ -201,6 +201,6 @@ pub const MODEL_STABLE_NEOHOOKEAN: u32 = 2;
 
 // ── Modules ──
 
-pub mod types;
-pub mod material;
 pub mod kernels;
+pub mod material;
+pub mod types;

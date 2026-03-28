@@ -25,9 +25,9 @@ use crate::shapes::{Ball, Cuboid, Shape};
 #[cfg(feature = "dim3")]
 use crate::{Pad, Pose};
 #[cfg(feature = "dim2")]
-use crate::{Pose, PaddedVector};
-use khal_std::index::MaybeIndexUnchecked;
+use crate::{PaddedVector, Pose};
 use glamx::UVec2;
+use khal_std::index::MaybeIndexUnchecked;
 
 use super::contact_pfm_pfm;
 use crate::Vector;
@@ -37,7 +37,10 @@ use crate::Vector;
 /// This structure extends ContactManifold with the collider indices,
 /// allowing the physics solver to identify which bodies are in contact.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct IndexedManifold {
     /// The contact information.

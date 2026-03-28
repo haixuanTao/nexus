@@ -92,7 +92,8 @@ pub async fn setup_physics(
             }
             #[cfg(not(feature = "cpu"))]
             {
-                *gpu_error = Some("CPU backend not available (compiled without 'cpu' feature).".to_string());
+                *gpu_error =
+                    Some("CPU backend not available (compiled without 'cpu' feature).".to_string());
                 PhysicsBackend::Cpu(CpuBackend::new(phys))
             }
         }

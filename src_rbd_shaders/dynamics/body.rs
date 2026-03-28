@@ -12,9 +12,9 @@
 //! - 2D: Rotation represented as scalar angle, inertia as scalar
 //! - 3D: Rotation represented as quaternion, inertia as 3x3 matrix
 
+use crate::{AngVector, Pose, Vector};
 #[cfg(feature = "dim3")]
 use crate::{rotation_from_scaled_axis, rotation_renormalize_fast, rotation_to_matrix};
-use crate::{AngVector, Pose, Vector};
 
 #[cfg(feature = "dim3")]
 use glamx::{Mat3, Mat4, Quat, Vec3};
@@ -141,7 +141,10 @@ impl Default for WorldMassProperties {
 
 /// An impulse (instantaneous change in momentum).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Impulse {
     /// Linear impulse component (change in linear momentum).
@@ -159,7 +162,10 @@ impl Impulse {
 
 /// A force and torque applied to a rigid body.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Force {
     /// Linear force component.
@@ -177,7 +183,10 @@ impl Force {
 
 /// Linear and angular velocity of a rigid body.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Velocity {
     /// Linear (translational) velocity.

@@ -12,22 +12,25 @@
 //! 7. APIC affine matrix computation for the next P2G transfer.
 //! 8. NaN/divergence detection with automatic particle disabling.
 
+use crate::PaddingExt;
 use crate::grid::grid::Grid;
 use crate::grid::kernel::QuadraticKernel;
 use crate::models::default::{DefaultParticleModel, GpuParticleModel};
-use crate::models::interfaces::{ParticleUpdateData, MODEL_FLAGS_FLUID};
-use crate::solver::boundary_condition::{BoundaryCondition, BOUNDARY_CONDITION_SLIP};
+use crate::models::interfaces::{MODEL_FLAGS_FLUID, ParticleUpdateData};
+use crate::solver::boundary_condition::{BOUNDARY_CONDITION_SLIP, BoundaryCondition};
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{Kinematics, ParticleProperties, Position};
-use crate::PaddingExt;
-use crate::{diag, Matrix, PaddedMatrix, Vector};
+use crate::{Matrix, PaddedMatrix, Vector, diag};
 use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 /// Phase data for multi-material mixing (currently unused placeholder).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Phase {
     pub phase: f32,

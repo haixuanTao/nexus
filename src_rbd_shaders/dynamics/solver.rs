@@ -5,10 +5,10 @@
 use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use khal_std::{iter::StepRng, arch::atomic_add_u32, index::MaybeIndexUnchecked};
 use crate::{AngVector, Pose, Vector};
+use khal_std::{arch::atomic_add_u32, index::MaybeIndexUnchecked, iter::StepRng};
 
-use super::body::{integrate_velocity, LocalMassProperties, Velocity, WorldMassProperties};
+use super::body::{LocalMassProperties, Velocity, WorldMassProperties, integrate_velocity};
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
 use super::sim_params::SimParams;
 use super::solver_utils::{

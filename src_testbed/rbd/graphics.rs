@@ -132,22 +132,20 @@ pub async fn setup_graphics(
 
             match shape.shape_type() {
                 ShapeType::Ball => {
-                    let instanced_node =
-                        instances.entry(ShapeType::Ball).or_insert_with(|| {
-                            #[cfg(feature = "dim2")]
-                            let node = scene.add_circle(0.5);
-                            #[cfg(feature = "dim3")]
-                            let node = {
-                                let lowres_sphere =
-                                    kiss3d::procedural::sphere(1.0, 10, 10, true);
-                                scene.add_render_mesh(lowres_sphere, Vec3::ONE)
-                            };
-                            InstancedNode {
-                                node,
-                                entries: vec![],
-                                data: vec![],
-                            }
-                        });
+                    let instanced_node = instances.entry(ShapeType::Ball).or_insert_with(|| {
+                        #[cfg(feature = "dim2")]
+                        let node = scene.add_circle(0.5);
+                        #[cfg(feature = "dim3")]
+                        let node = {
+                            let lowres_sphere = kiss3d::procedural::sphere(1.0, 10, 10, true);
+                            scene.add_render_mesh(lowres_sphere, Vec3::ONE)
+                        };
+                        InstancedNode {
+                            node,
+                            entries: vec![],
+                            data: vec![],
+                        }
+                    });
                     let ball = shape.as_ball().unwrap();
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
@@ -156,18 +154,17 @@ pub async fn setup_graphics(
                     });
                 }
                 ShapeType::Cuboid => {
-                    let instanced_node =
-                        instances.entry(ShapeType::Cuboid).or_insert_with(|| {
-                            #[cfg(feature = "dim2")]
-                            let node = scene.add_rectangle(1.0, 1.0);
-                            #[cfg(feature = "dim3")]
-                            let node = scene.add_cube(1.0, 1.0, 1.0);
-                            InstancedNode {
-                                node,
-                                entries: vec![],
-                                data: vec![],
-                            }
-                        });
+                    let instanced_node = instances.entry(ShapeType::Cuboid).or_insert_with(|| {
+                        #[cfg(feature = "dim2")]
+                        let node = scene.add_rectangle(1.0, 1.0);
+                        #[cfg(feature = "dim3")]
+                        let node = scene.add_cube(1.0, 1.0, 1.0);
+                        InstancedNode {
+                            node,
+                            entries: vec![],
+                            data: vec![],
+                        }
+                    });
                     let cuboid = shape.as_cuboid().unwrap();
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
@@ -195,15 +192,14 @@ pub async fn setup_graphics(
                 }
                 #[cfg(feature = "dim3")]
                 ShapeType::Cone => {
-                    let instanced_node =
-                        instances.entry(ShapeType::Cone).or_insert_with(|| {
-                            let node = scene.add_cone(1.0, 1.0);
-                            InstancedNode {
-                                node,
-                                entries: vec![],
-                                data: vec![],
-                            }
-                        });
+                    let instanced_node = instances.entry(ShapeType::Cone).or_insert_with(|| {
+                        let node = scene.add_cone(1.0, 1.0);
+                        InstancedNode {
+                            node,
+                            entries: vec![],
+                            data: vec![],
+                        }
+                    });
                     let c = shape.as_cone().unwrap();
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
@@ -212,18 +208,17 @@ pub async fn setup_graphics(
                     });
                 }
                 ShapeType::Capsule => {
-                    let instanced_node =
-                        instances.entry(ShapeType::Capsule).or_insert_with(|| {
-                            #[cfg(feature = "dim2")]
-                            let node = scene.add_capsule(0.5, 1.0);
-                            #[cfg(feature = "dim3")]
-                            let node = scene.add_capsule(0.5, 1.0);
-                            InstancedNode {
-                                node,
-                                entries: vec![],
-                                data: vec![],
-                            }
-                        });
+                    let instanced_node = instances.entry(ShapeType::Capsule).or_insert_with(|| {
+                        #[cfg(feature = "dim2")]
+                        let node = scene.add_capsule(0.5, 1.0);
+                        #[cfg(feature = "dim3")]
+                        let node = scene.add_capsule(0.5, 1.0);
+                        InstancedNode {
+                            node,
+                            entries: vec![],
+                            data: vec![],
+                        }
+                    });
                     let c = shape.as_capsule().unwrap();
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
@@ -265,8 +260,7 @@ pub async fn setup_graphics(
                     let instanced_node =
                         polyhedron_instances.entry(vertex_key).or_insert_with(|| {
                             let (vtx, idx) = poly.to_trimesh();
-                            let trimesh =
-                                rapier::parry::shape::TriMesh::new(vtx, idx).unwrap();
+                            let trimesh = rapier::parry::shape::TriMesh::new(vtx, idx).unwrap();
                             let mut render = RenderMesh::from(trimesh);
                             render.replicate_vertices();
                             render.recompute_normals();
@@ -313,12 +307,10 @@ pub async fn setup_graphics(
                         let center = (segment.a + segment.b) * 0.5;
                         let length = (segment.b - segment.a).length();
                         let scaled_dir = segment.scaled_direction();
-                        let angle =
-                            scaled_dir.y.atan2(scaled_dir.x) - std::f32::consts::FRAC_PI_2;
+                        let angle = scaled_dir.y.atan2(scaled_dir.x) - std::f32::consts::FRAC_PI_2;
                         let cos = angle.cos();
                         let sin = angle.sin();
-                        let rot =
-                            glamx::Mat2::from_cols(Vec2::new(cos, sin), Vec2::new(-sin, cos));
+                        let rot = glamx::Mat2::from_cols(Vec2::new(cos, sin), Vec2::new(-sin, cos));
                         let half_w = thickness;
                         let half_h = length / 2.0;
                         let local_vtx = [

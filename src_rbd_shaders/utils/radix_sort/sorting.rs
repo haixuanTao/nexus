@@ -47,7 +47,10 @@ pub const NUM_PASSES: u32 = 32 / BITS_PER_PASS;
 
 /// Radix sort configuration uniforms.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct SortUniforms {
     /// Bit shift amount for this sort pass (0, 4, 8, 12, ..., 28).

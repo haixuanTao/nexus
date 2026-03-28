@@ -1,9 +1,9 @@
 //! Tests for the EPA (Expanding Polytope Algorithm).
 
-use crate::queries::gjk::gjk::{closest_points, cso_point_from_shapes, INTERSECTION};
+use crate::queries::gjk::gjk::{INTERSECTION, closest_points, cso_point_from_shapes};
 use crate::queries::gjk::voronoi_simplex;
 use crate::shapes::shape::Shape;
-use crate::{Pose, Vector, PaddedVector};
+use crate::{PaddedVector, Pose, Vector};
 
 #[cfg(feature = "dim2")]
 use crate::queries::gjk::epa2::Epa2 as Epa;

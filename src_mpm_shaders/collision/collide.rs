@@ -3,8 +3,8 @@
 //! Provides the `collide` function that tests a point against all collision
 //! shapes and returns the nearest contact distance field (CDF) data.
 
-use crate::grid::grid::{AffinityBits, NodeCdf, NONE};
-use crate::nexus_rbd_shaders::shapes::{Shape, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH};
+use crate::grid::grid::{AffinityBits, NONE, NodeCdf};
+use crate::nexus_rbd_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH, Shape};
 use crate::{Pose, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 

@@ -7,10 +7,8 @@
 use crate::broad_phase::{GpuNarrowPhase, Lbvh, LbvhState};
 use crate::dynamics::{
     ColoringArgs, GpuColoring, GpuImpulseJointSet, GpuJointSolver, GpuMpropsUpdate, GpuSolver,
-    GpuWarmstart, JointSolverArgs, SolverArgs,
-    warmstart::WarmstartArgs,
+    GpuWarmstart, JointSolverArgs, SolverArgs, warmstart::WarmstartArgs,
 };
-use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use crate::math::{Pose, Vector};
 use crate::queries::GpuIndexedContact;
 use crate::shaders::PaddedVector;
@@ -21,6 +19,7 @@ use crate::shaders::dynamics::{
     WorldMassProperties as GpuWorldMassProperties,
 };
 use crate::shaders::shapes::Shape;
+use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
 
 use khal::BufferUsages;
@@ -160,7 +159,10 @@ impl GpuPhysicsState {
         let mut all_shapes = Vec::new();
         let mut all_num_shapes = Vec::new();
         let mut shape_buffers = ShapeBuffers::default();
-        let mut joint_envs: Vec<(&ImpulseJointSet, HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>)> = Vec::new();
+        let mut joint_envs: Vec<(
+            &ImpulseJointSet,
+            HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+        )> = Vec::new();
 
         // Collect per-batch sim params, adjusting dt for substeps.
         let num_solver_iterations = environments
@@ -235,8 +237,7 @@ impl GpuPhysicsState {
                 all_local_mprops.push(local_mprops);
                 all_mprops.push(mprops);
                 all_shapes.push(
-                    shape_from_parry(co.shape(), &mut shape_buffers)
-                        .expect("Unsupported shape"),
+                    shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape"),
                 );
                 all_poses.push(*co.position());
             }
@@ -268,7 +269,10 @@ impl GpuPhysicsState {
         let index_buffers =
             Tensor::vector(backend, &shape_buffers.indices, BufferUsages::STORAGE).unwrap();
 
-        let joint_env_refs: Vec<(&ImpulseJointSet, &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>)> = joint_envs
+        let joint_env_refs: Vec<(
+            &ImpulseJointSet,
+            &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+        )> = joint_envs
             .iter()
             .map(|(joints, body_ids)| (*joints, body_ids))
             .collect();
@@ -296,12 +300,8 @@ impl GpuPhysicsState {
         .unwrap();
 
         const DEFAULT_CONTACT_COUNTS: u32 = 32; // 1024;
-        let collision_pairs = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
+        let collision_pairs =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
         let collision_pairs_len = Tensor::vector_uninit(
             backend,
             num_batches,
@@ -326,12 +326,8 @@ impl GpuPhysicsState {
         )
         .unwrap();
 
-        let contacts = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
+        let contacts =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
         let contacts_len = Tensor::vector_uninit(
             backend,
             num_batches,
@@ -342,60 +338,28 @@ impl GpuPhysicsState {
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
         let pfm_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
-        let pfm_pairs = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
+        let pfm_pairs =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
         let pfm_pairs_len = Tensor::vector_uninit(
             backend,
             num_batches,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )
         .unwrap();
-        let old_constraints = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
-        let old_constraint_builders = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
-        let new_constraints = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
-        let new_constraint_builders = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
-        let constraints_colors = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
-        let colored = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
-        let constraints_rands = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * num_batches,
-            storage,
-        )
-        .unwrap();
+        let old_constraints =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let old_constraint_builders =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let new_constraints =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let new_constraint_builders =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let constraints_colors =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let colored =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let constraints_rands =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
         let old_constraints_counts = Tensor::vector_uninit(
             backend,
             num_colliders_per_batch as u32 * num_batches,
@@ -408,18 +372,12 @@ impl GpuPhysicsState {
             storage,
         )
         .unwrap();
-        let old_body_constraint_ids = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * 2 * num_batches,
-            storage,
-        )
-        .unwrap();
-        let new_body_constraint_ids = Tensor::vector_uninit(
-            backend,
-            DEFAULT_CONTACT_COUNTS * 2 * num_batches,
-            storage,
-        )
-        .unwrap();
+        let old_body_constraint_ids =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * 2 * num_batches, storage)
+                .unwrap();
+        let new_body_constraint_ids =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * 2 * num_batches, storage)
+                .unwrap();
 
         let lbvh_usages = if crate::VALIDATE_LBVH_TOPOLOGY {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC
@@ -431,12 +389,7 @@ impl GpuPhysicsState {
             num_batches,
             num_colliders_per_batch: num_colliders_per_batch as u32,
             num_solver_iterations,
-            sim_params: Tensor::vector(
-                backend,
-                &all_sim_params,
-                BufferUsages::STORAGE,
-            )
-            .unwrap(),
+            sim_params: Tensor::vector(backend, &all_sim_params, BufferUsages::STORAGE).unwrap(),
             vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
             solver_vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
             solver_vels_out: Tensor::vector(backend, &all_vels, storage).unwrap(),
@@ -688,11 +641,7 @@ impl GpuPhysicsPipeline {
             .slow_read_vec(state.collision_pairs_len.buffer())
             .await
             .unwrap();
-        let num_collision_pairs = collision_pair_counts
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(0);
+        let num_collision_pairs = collision_pair_counts.iter().copied().max().unwrap_or(0);
         stats.start_to_pairs_count_time = t_phase1.elapsed();
 
         // Per-batch capacity for collision pairs and contacts.
@@ -719,10 +668,8 @@ impl GpuPhysicsPipeline {
             )
             .unwrap();
 
-            state.contacts =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.pfm_pairs =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+            state.contacts = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+            state.pfm_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
             state.old_constraints =
                 Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
             state.old_constraint_builders =
@@ -737,14 +684,16 @@ impl GpuPhysicsPipeline {
                 Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
             state.constraints_colors =
                 Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.colored =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+            state.colored = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
             state.constraints_rands =
                 Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
 
             // Re-run find_pairs with resized buffers
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("broad-phase-find-pairs (after resize)", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass(
+                "broad-phase-find-pairs (after resize)",
+                timestamps.as_deref_mut(),
+            );
             self.lbvh
                 .find_pairs(
                     &mut pass,
@@ -872,7 +821,12 @@ impl GpuPhysicsPipeline {
 
         let num_colors = if let Some(colors) = self
             .coloring
-            .dispatch_topo_gc(backend, coloring_args, &mut stats, timestamps.as_deref_mut())
+            .dispatch_topo_gc(
+                backend,
+                coloring_args,
+                &mut stats,
+                timestamps.as_deref_mut(),
+            )
             .await
         {
             colors

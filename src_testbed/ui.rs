@@ -1,5 +1,5 @@
-use crate::mpm::step::RenderConfig;
 use crate::mpm::RenderMode;
+use crate::mpm::step::RenderConfig;
 use crate::rbd::BackendType;
 use crate::{ActiveDemo, DemoBuilder, RunState, UiSections};
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend};
@@ -188,11 +188,7 @@ pub fn render_ui(
                         ("Play", "Start simulation (T)")
                     };
 
-                    if ui
-                        .button(play_label)
-                        .on_hover_text(play_hover)
-                        .clicked()
-                    {
+                    if ui.button(play_label).on_hover_text(play_hover).clicked() {
                         *run_state = if *run_state == RunState::Running {
                             RunState::Paused
                         } else {
@@ -200,11 +196,7 @@ pub fn render_ui(
                         };
                     }
 
-                    if ui
-                        .button("Step")
-                        .on_hover_text("Single step (S)")
-                        .clicked()
-                    {
+                    if ui.button("Step").on_hover_text("Single step (S)").clicked() {
                         *run_state = RunState::Step;
                     }
 
@@ -248,7 +240,11 @@ fn examples_section(
             result.new_selected_demo = Some(*selected_demo);
         }
 
-        ui.label(RichText::new(builders[*selected_demo].name()).strong().italics());
+        ui.label(
+            RichText::new(builders[*selected_demo].name())
+                .strong()
+                .italics(),
+        );
     });
 
     ui.add_space(4.0);
@@ -361,8 +357,7 @@ fn settings_section(
     builders: &[DemoBuilder],
     active_demo: &mut ActiveDemo,
     backend_type: &mut BackendType,
-    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))]
-    use_cpu: &mut bool,
+    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))] use_cpu: &mut bool,
     selected_demo: &mut usize,
     gpu: Option<&KhalGpuBackend>,
     result: &mut UiInteractions,
@@ -455,8 +450,7 @@ fn rbd_settings(
 fn gpu_backend_selector(
     ui: &mut egui::Ui,
     backend_type: &mut BackendType,
-    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))]
-    use_cpu: &mut bool,
+    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))] use_cpu: &mut bool,
     selected_demo: &mut usize,
     gpu: Option<&KhalGpuBackend>,
     result: &mut UiInteractions,
@@ -538,8 +532,11 @@ fn mpm_settings(
             .unwrap();
     }
 
-    ui.checkbox(&mut stage.app_state.show_rigid_particles, "Show rigid particles")
-        .on_hover_text("Display particles belonging to rigid bodies");
+    ui.checkbox(
+        &mut stage.app_state.show_rigid_particles,
+        "Show rigid particles",
+    )
+    .on_hover_text("Display particles belonging to rigid bodies");
 
     ui.add_space(8.0);
 
@@ -555,11 +552,7 @@ fn mpm_settings(
     if let Some(new_demo_idx) = result.new_selected_demo {
         if matches!(builders[new_demo_idx], DemoBuilder::Mpm(..)) {
             let new_name = builders[new_demo_idx].name();
-            if let Some(mpm_idx) = stage
-                .builders
-                .iter()
-                .position(|(name, _)| name == new_name)
-            {
+            if let Some(mpm_idx) = stage.builders.iter().position(|(name, _)| name == new_name) {
                 stage.set_demo(mpm_idx);
                 for (_, mut node) in colliders_gfx.drain() {
                     node.detach();
@@ -655,32 +648,25 @@ fn rbd_performance(
             });
 
         if !run_stats.gpu_pass_times.is_empty() {
-            CollapsingHeader::new(format!(
-                "GPU passes: {:.2}ms",
-                run_stats.gpu_total_time
-            ))
-            .id_salt("rbd_gpu_passes")
-            .default_open(false)
-            .show(ui, |ui| {
-                egui::Grid::new("rbd_timestamp_grid")
-                    .num_columns(2)
-                    .spacing([20.0, 2.0])
-                    .show(ui, |ui| {
-                        for (label, ms) in &run_stats.gpu_pass_times {
-                            ui.label(format!("{}:", label));
-                            ui.label(format!("{:.2}ms", ms));
-                            ui.end_row();
-                        }
-                    });
-            });
+            CollapsingHeader::new(format!("GPU passes: {:.2}ms", run_stats.gpu_total_time))
+                .id_salt("rbd_gpu_passes")
+                .default_open(false)
+                .show(ui, |ui| {
+                    egui::Grid::new("rbd_timestamp_grid")
+                        .num_columns(2)
+                        .spacing([20.0, 2.0])
+                        .show(ui, |ui| {
+                            for (label, ms) in &run_stats.gpu_pass_times {
+                                ui.label(format!("{}:", label));
+                                ui.label(format!("{:.2}ms", ms));
+                                ui.end_row();
+                            }
+                        });
+                });
         }
 
         // Slow performance warning.
-        if run_stats
-            .total_simulation_time_with_readback
-            .as_secs_f32()
-            > 0.1
-        {
+        if run_stats.total_simulation_time_with_readback.as_secs_f32() > 0.1 {
             ui.add_space(4.0);
             ui.colored_label(
                 Color32::from_rgb(180, 120, 60),
@@ -795,21 +781,14 @@ fn fem_settings(
     if let Some(new_demo_idx) = result.new_selected_demo {
         if matches!(builders[new_demo_idx], DemoBuilder::Fem(..)) {
             let new_name = builders[new_demo_idx].name();
-            if let Some(fem_idx) = stage
-                .builders
-                .iter()
-                .position(|(name, _)| name == new_name)
-            {
+            if let Some(fem_idx) = stage.builders.iter().position(|(name, _)| name == new_name) {
                 stage.set_demo(fem_idx);
             }
         }
     }
 }
 
-fn fem_performance(
-    ui: &mut egui::Ui,
-    stage: &crate::fem::FemStage,
-) {
+fn fem_performance(ui: &mut egui::Ui, stage: &crate::fem::FemStage) {
     ui.label(RichText::new("Scene").strong());
     ui.add_space(2.0);
 

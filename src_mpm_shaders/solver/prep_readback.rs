@@ -7,11 +7,9 @@
 use crate::grid::grid::Grid;
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{Cdf, Kinematics, ParticleProperties, Position};
-use crate::{
-    abs, acos, cos, diag, sqrt, Matrix, PaddedMatrix, PaddingExt, Vector,
-};
-use khal_std::index::MaybeIndexUnchecked;
+use crate::{Matrix, PaddedMatrix, PaddingExt, Vector, abs, acos, cos, diag, sqrt};
 use glamx::*;
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 const TAU: f32 = 6.283185307179586;
@@ -26,7 +24,10 @@ const RENDER_MODE_CDF_SIGNS: u32 = 6;
 
 /// Render configuration for the readback shader.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct RenderConfig {
     pub mode: u32,
@@ -77,11 +78,7 @@ pub struct ReadbackData {
 
 #[inline]
 fn fmax(a: f32, b: f32) -> f32 {
-    if a > b {
-        a
-    } else {
-        b
-    }
+    if a > b { a } else { b }
 }
 
 #[inline]

@@ -69,11 +69,13 @@ pub fn demo_builders() -> Vec<DemoBuilder> {
     ];
 
     // Lexicographic sort, with stress tests moved at the end of the list.
-    builders.sort_by(|a, b| match (a.name().starts_with('('), b.name().starts_with('(')) {
-        (true, true) | (false, false) => a.name().cmp(b.name()),
-        (true, false) => Ordering::Greater,
-        (false, true) => Ordering::Less,
-    });
+    builders.sort_by(
+        |a, b| match (a.name().starts_with('('), b.name().starts_with('(')) {
+            (true, true) | (false, false) => a.name().cmp(b.name()),
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+        },
+    );
     builders
 }
 

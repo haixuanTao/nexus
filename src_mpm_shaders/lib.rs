@@ -28,14 +28,10 @@ pub use glamx;
 use glamx::*;
 
 // Re-export key types and utilities from nexus_rbd_shaders.
+pub use nexus_rbd_shaders::{AngVector, DIM, Pad, PaddedVector, Pose, RotMatrix, Rotation, Vector};
 pub use nexus_rbd_shaders::{abs, acos, asin, atan2, cos, safe_div, sin, sqrt};
-pub use nexus_rbd_shaders::{
-    udiv, umod,
-};
 pub use nexus_rbd_shaders::{gcross, gcross_av, gdot, maybe_inv, rotation_to_matrix};
-pub use nexus_rbd_shaders::{
-    AngVector, Pad, Pose, RotMatrix, Rotation, Vector, PaddedVector, DIM,
-};
+pub use nexus_rbd_shaders::{udiv, umod};
 
 // NOTE: we disable two-ways coupling for now since it’s quite expensive and not very
 //       stable anyway. We’d need some deeper integration with Nexus’ solver for it

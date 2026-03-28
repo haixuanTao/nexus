@@ -1,10 +1,10 @@
 //! Linear (corotated) elasticity model.
 
 use super::utils::{
-    bulk_modulus_from_lame, shear_modulus_from_lame, ElasticitySoundSpeedTimestepBound,
+    ElasticitySoundSpeedTimestepBound, bulk_modulus_from_lame, shear_modulus_from_lame,
 };
 use crate::glamx::MatExt;
-use crate::{diag, Matrix, Vector};
+use crate::{Matrix, Vector, diag};
 
 /// Corotated linear elastic constitutive model.
 ///

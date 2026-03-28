@@ -1,5 +1,5 @@
 use crate::trace;
-use crate::{sqrt, Matrix, Vector, DIM, DIM_USIZE};
+use crate::{DIM, DIM_USIZE, Matrix, Vector, sqrt};
 
 /// Computes the Lame parameters (lambda, mu) from the Young modulus and Poisson ratio.
 /// Returns (lambda, mu).

@@ -13,7 +13,7 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::segment::Segment;
-use crate::{Vector, PaddedVector};
+use crate::{PaddedVector, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 
 /// A polyline (connected line segments) with BVH acceleration structure.

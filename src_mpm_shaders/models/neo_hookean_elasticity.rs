@@ -1,7 +1,7 @@
 //! Neo-Hookean elasticity model.
 
 use super::utils::{
-    bulk_modulus_from_lame, shear_modulus_from_lame, ElasticitySoundSpeedTimestepBound,
+    ElasticitySoundSpeedTimestepBound, bulk_modulus_from_lame, shear_modulus_from_lame,
 };
 use crate::glamx::MatExt;
 use crate::{Matrix, Vector};
@@ -12,7 +12,10 @@ use khal_std::num_traits::Float;
 /// Computes stress based on the deformation gradient using the
 /// neo-Hookean strain energy density function.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct NeoHookeanModel {
     pub lambda: f32,

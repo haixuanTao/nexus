@@ -3,14 +3,14 @@
 //! Computes a CFL-based timestep bound across all particles. Each thread computes
 //! a per-particle bound and atomically reduces it to find the global minimum.
 
+use crate::PaddingExt;
 use crate::grid::grid::Grid;
 use crate::models::default::{DefaultParticleModel, GpuParticleModel};
 use crate::solver::particle::{Kinematics, ParticleProperties};
-use crate::PaddingExt;
-use crate::{sqrt, Matrix, PaddedMatrix, DIM};
+use crate::{DIM, Matrix, PaddedMatrix, sqrt};
 use khal_std::arch::atomic_min_u32;
-use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
 
 /// GPU-side timestep bound result.
 ///
@@ -18,7 +18,10 @@ use khal_std::index::MaybeIndexUnchecked;
 /// The float timestep is converted to an integer via a fixed-point scaling factor
 /// so that atomic min operations can be used.
 #[derive(Clone, Copy, Default, Debug)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct GpuTimestepBounds {
     pub computed_max_dt_as_uint: u32,

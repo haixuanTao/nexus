@@ -1,6 +1,6 @@
 use crate::RunState;
-use crate::mpm::data::PhysicsState;
 use crate::mpm::MpmStage;
+use crate::mpm::data::PhysicsState;
 use khal::backend::Backend;
 use nexus::mpm::solver::{GpuParticleModelData, SimulationParams};
 

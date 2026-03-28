@@ -2,7 +2,7 @@
 //!
 //! Generates triangular (2D) or tetrahedral (3D) meshes from regular grids.
 
-use crate::{Matrix, Vector, VERTS_PER_ELEM};
+use crate::{Matrix, VERTS_PER_ELEM, Vector};
 
 /// A single mesh element (triangle in 2D, tetrahedron in 3D).
 #[derive(Clone)]
@@ -38,10 +38,7 @@ impl FemMesh {
         let mut positions = Vec::with_capacity(nx * ny);
         for iy in 0..ny {
             for ix in 0..nx {
-                positions.push(Vector::new(
-                    lo.x + ix as f32 * dx,
-                    lo.y + iy as f32 * dy,
-                ));
+                positions.push(Vector::new(lo.x + ix as f32 * dx, lo.y + iy as f32 * dy));
             }
         }
 

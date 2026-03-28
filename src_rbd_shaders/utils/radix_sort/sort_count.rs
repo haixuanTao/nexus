@@ -22,7 +22,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::arch::atomic_add_u32_workgroup;
 use khal_std::index::MaybeIndexUnchecked;
 
-use super::sorting::{div_ceil, SortUniforms, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
+use super::sorting::{BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, SortUniforms, WG, div_ceil};
 
 /// Radix sort count (histogram) kernel.
 ///

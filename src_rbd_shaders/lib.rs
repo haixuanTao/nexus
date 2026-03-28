@@ -241,11 +241,7 @@ pub fn umod(a: u32, b: u32) -> u32 {
 /// Safe division that returns 0 if the denominator is 0.
 #[inline]
 pub fn safe_div(num: f32, denom: f32) -> f32 {
-    if denom == 0.0 {
-        0.0
-    } else {
-        num / denom
-    }
+    if denom == 0.0 { 0.0 } else { num / denom }
 }
 
 /// Returns 1/x if x != 0, otherwise 0.
@@ -263,11 +259,7 @@ pub fn maybe_inv(x: f32) -> f32 {
 #[inline]
 pub fn cap_magnitude_vec2(v: Vec2, limit: f32) -> Vec2 {
     let n = v.length();
-    if n > limit {
-        v * (limit / n)
-    } else {
-        v
-    }
+    if n > limit { v * (limit / n) } else { v }
 }
 
 /// Machine epsilon for f32.

@@ -2,7 +2,7 @@
 
 use crate::queries::contact::pfm_pfm;
 use crate::shapes::shape::Shape;
-use crate::{Pose, Vector, PaddedVector};
+use crate::{PaddedVector, Pose, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 
 #[test]

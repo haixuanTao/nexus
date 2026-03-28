@@ -8,11 +8,11 @@ use crate::fem_shaders::kernels::explicit::{
     GpuBoundaryConditions, GpuComputeElasticForces, GpuIntegratePositions,
 };
 use crate::fem_shaders::kernels::implicit::{
-    GpuAssembleAndPcgInit, GpuComputeEg, GpuComputeEgh, GpuComputeVelocity,
-    GpuInitImplicitStep, GpuLsCheckArmijo, GpuLsEnergyElement, GpuLsEnergyVertex,
-    GpuLsFinalizeInit, GpuLsInit, GpuLsUpdatePos, GpuPcgComputeAlpha, GpuPcgComputeBeta,
-    GpuPcgFinalizeApDot, GpuPcgReduceInit, GpuPcgScatterAp, GpuPcgUpdateP, GpuPcgUpdateXRZ,
-    GpuPrecomputeMaterial, GpuScatterElasticForceDiag,
+    GpuAssembleAndPcgInit, GpuComputeEg, GpuComputeEgh, GpuComputeVelocity, GpuInitImplicitStep,
+    GpuLsCheckArmijo, GpuLsEnergyElement, GpuLsEnergyVertex, GpuLsFinalizeInit, GpuLsInit,
+    GpuLsUpdatePos, GpuPcgComputeAlpha, GpuPcgComputeBeta, GpuPcgFinalizeApDot, GpuPcgReduceInit,
+    GpuPcgScatterAp, GpuPcgUpdateP, GpuPcgUpdateXRZ, GpuPrecomputeMaterial,
+    GpuScatterElasticForceDiag,
 };
 use khal::Shader;
 

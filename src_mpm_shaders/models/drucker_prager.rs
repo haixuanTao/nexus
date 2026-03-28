@@ -1,7 +1,7 @@
 //! Drucker-Prager plasticity model.
 
 use crate::glamx::MatExt;
-use crate::{diag, sin, sqrt, Matrix, Vector};
+use crate::{Matrix, Vector, diag, sin, sqrt};
 use khal_std::num_traits::Float;
 
 /// Persistent plastic state for a Drucker-Prager particle.

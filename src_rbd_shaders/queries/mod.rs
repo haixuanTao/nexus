@@ -22,19 +22,19 @@ pub use contact_pfm_pfm::*;
 pub use polygonal_feature::*;
 // Re-export projection items explicitly; EPSILON also exists in sat
 pub use projection::{
-    ProjectionResult, ProjectionWithLocation, FEATURE_EDGE, FEATURE_FACE, FEATURE_SOLID,
-    FEATURE_VERTEX,
+    FEATURE_EDGE, FEATURE_FACE, FEATURE_SOLID, FEATURE_VERTEX, ProjectionResult,
+    ProjectionWithLocation,
 };
 pub use ray::*;
 // Re-export sat items explicitly; EPSILON comes from projection
-use crate::queries::projection::EPSILON;
 use crate::Vector;
+use crate::queries::projection::EPSILON;
+pub use sat::{SeparatingAxis, cuboid_cuboid_find_local_separating_normal_oneway};
 #[cfg(feature = "dim3")]
 pub use sat::{
     cuboid_cuboid_compute_separation_wrt_local_line,
     cuboid_cuboid_find_local_separating_edge_twoway,
 };
-pub use sat::{cuboid_cuboid_find_local_separating_normal_oneway, SeparatingAxis};
 
 // TODO: move this elsewhere
 /// Approximate equality check for vectors.

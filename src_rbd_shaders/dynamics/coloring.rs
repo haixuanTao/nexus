@@ -34,11 +34,14 @@
 //! - Luby: Unlimited colors
 
 use khal_std::glamx::UVec3;
-use khal_std::{iter::StepRng, arch::{atomic_add_u32, atomic_max_u32}};
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::{
+    arch::{atomic_add_u32, atomic_max_u32},
+    iter::StepRng,
+};
 
-use khal_std::index::MaybeIndexUnchecked;
 use crate::utils::{Slice, SliceMut};
+use khal_std::index::MaybeIndexUnchecked;
 
 use super::constraint::TwoBodyConstraint;
 

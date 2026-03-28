@@ -12,10 +12,10 @@ use crate::nexus_rbd_shaders::shapes::Shape;
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::params::SimulationParams;
 use crate::{Pose, Vector};
-use khal_std::index::MaybeIndexUnchecked;
 use glamx::*;
-use nexus_rbd_shaders::PaddedVector;
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use nexus_rbd_shaders::PaddedVector;
 
 struct Collision {
     normal: Vector,

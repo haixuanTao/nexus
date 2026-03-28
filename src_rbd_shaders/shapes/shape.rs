@@ -19,7 +19,7 @@ use crate::shapes::capsule::Capsule;
 use crate::shapes::segment::Segment;
 use crate::shapes::triangle::Triangle;
 use crate::shapes::{Ball, Cuboid};
-use crate::{Pose, Vector, PaddedVector};
+use crate::{PaddedVector, Pose, Vector};
 use glamx::Vec4;
 use parry::{query::PointQuery, shape::SupportMap};
 
@@ -50,7 +50,10 @@ pub const SHAPE_TYPE_TRIANGLE: u32 = 8;
 /// This is a tagged union encoded in two vec4 values. The shape type
 /// is stored in the 'a.w' component as a bitcast u32.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct Shape {
     /// First vec4 containing shape-specific data and type tag in 'w' component.
@@ -406,12 +409,7 @@ impl Shape {
     }
 
     /// Computes the support point of a transformed self.
-    pub fn support_point(
-        &self,
-        pose: Pose,
-        axis: Vector,
-        vertices: &[PaddedVector],
-    ) -> Vector {
+    pub fn support_point(&self, pose: Pose, axis: Vector, vertices: &[PaddedVector]) -> Vector {
         let local_axis = pose.rotation.inverse() * axis;
         let local_pt = self.local_support_point(local_axis, vertices);
         pose * local_pt

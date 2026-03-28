@@ -7,17 +7,17 @@
 //!   is solved with a single PGS iteration (with bias) followed by position update, followed by another PGS iteration
 //!   (without bias).
 
-use crate::{gcross, gdot, Pad, Pose, Vector};
-use khal_std::index::MaybeIndexUnchecked;
-use super::body::{integrate_velocity, LocalMassProperties, Velocity, WorldMassProperties};
+use super::body::{LocalMassProperties, Velocity, WorldMassProperties, integrate_velocity};
 use super::constraint::{
-    TwoBodyConstraint, TwoBodyConstraintBuilder, TwoBodyConstraintNormalPart,
-    TwoBodyConstraintTangentPart, SUB_LEN,
+    SUB_LEN, TwoBodyConstraint, TwoBodyConstraintBuilder, TwoBodyConstraintNormalPart,
+    TwoBodyConstraintTangentPart,
 };
 use super::sim_params::{
-    allowed_linear_error, contact_cfm_factor, contact_erp_inv_dt, inv_dt, max_corrective_velocity,
-    SimParams,
+    SimParams, allowed_linear_error, contact_cfm_factor, contact_erp_inv_dt, inv_dt,
+    max_corrective_velocity,
 };
+use crate::{Pad, Pose, Vector, gcross, gdot};
+use khal_std::index::MaybeIndexUnchecked;
 
 #[cfg(feature = "dim2")]
 use glamx::Vec2;
@@ -29,11 +29,7 @@ use crate::utils::Slice;
 
 /// Helper function for safe inverse.
 fn inv(x: f32) -> f32 {
-    if x == 0.0 {
-        0.0
-    } else {
-        1.0 / x
-    }
+    if x == 0.0 { 0.0 } else { 1.0 / x }
 }
 
 /// Helper function for maybe inverse with threshold.
@@ -49,11 +45,7 @@ fn maybe_inv(a: f32) -> f32 {
 /// Cap the magnitude of a 2D vector.
 fn cap_magnitude(v: Vec2, limit: f32) -> Vec2 {
     let n = v.length();
-    if n > limit {
-        v * (limit / n)
-    } else {
-        v
-    }
+    if n > limit { v * (limit / n) } else { v }
 }
 
 #[cfg(feature = "dim2")]

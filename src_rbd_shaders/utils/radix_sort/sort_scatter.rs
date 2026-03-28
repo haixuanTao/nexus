@@ -24,12 +24,12 @@ use khal_std::arch::workgroup_memory_barrier_with_group_sync;
 use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use khal_std::{iter::StepRng, arch::atomic_add_u32_workgroup};
+use khal_std::{arch::atomic_add_u32_workgroup, iter::StepRng};
 
 use khal_std::index::MaybeIndexUnchecked;
 
 use super::sorting::{
-    div_ceil, SortUniforms, BIN_COUNT, BITS_PER_PASS, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG,
+    BIN_COUNT, BITS_PER_PASS, BLOCK_SIZE, ELEMENTS_PER_THREAD, SortUniforms, WG, div_ceil,
 };
 
 /// Radix sort scatter kernel.
@@ -181,7 +181,8 @@ pub fn gpu_sort_scatter(
         for i in 0..4u32 {
             workgroup_memory_barrier_with_group_sync();
             if local_id >= (1 << i) && local_id < BIN_COUNT {
-                histogram_prefix_sum = histogram_prefix_sum.wrapping_add(lds_scratch.read((local_id - (1 << i)) as usize));
+                histogram_prefix_sum = histogram_prefix_sum
+                    .wrapping_add(lds_scratch.read((local_id - (1 << i)) as usize));
             }
             workgroup_memory_barrier_with_group_sync();
             if local_id < BIN_COUNT {
@@ -200,7 +201,8 @@ pub fn gpu_sort_scatter(
         if active {
             let mut local_offset = local_id;
             if key_index > 0 {
-                local_offset = local_offset.wrapping_sub(lds_scratch.read((key_index - 1) as usize));
+                local_offset =
+                    local_offset.wrapping_sub(lds_scratch.read((key_index - 1) as usize));
             }
             let total_offset = global_offset + local_offset;
 

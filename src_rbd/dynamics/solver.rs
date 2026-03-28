@@ -13,7 +13,6 @@
 //!   (without bias).
 
 use crate::dynamics::joint::{GpuJointSolver, JointSolverArgs};
-use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
@@ -23,6 +22,7 @@ use crate::shaders::dynamics::{
     GpuWarmstart, GpuWarmstartWithoutColors, LocalMassProperties, SimParams, TwoBodyConstraint,
     TwoBodyConstraintBuilder, Velocity, WorldMassProperties,
 };
+use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use vortx::tensor::Tensor;

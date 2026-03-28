@@ -24,8 +24,8 @@ use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
-use khal_std::index::MaybeIndexUnchecked;
 use crate::utils::{Slice, SliceMut};
+use khal_std::index::MaybeIndexUnchecked;
 
 const WORKGROUP_SIZE: u32 = 64;
 

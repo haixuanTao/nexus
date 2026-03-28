@@ -9,20 +9,23 @@
 //! to the node's `incompatible` momentum field instead, and impulses are computed for
 //! the rigid body coupling.
 
-use core::ops::Range;
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
-use crate::nexus_rbd_shaders::dynamics::{velocity_at_point, Velocity as BodyVelocity};
+use crate::nexus_rbd_shaders::dynamics::{Velocity as BodyVelocity, velocity_at_point};
 use crate::solver::boundary_condition::BoundaryCondition;
-use crate::solver::particle::{dir_to_associated_grid_node, Kinematics, Position};
-use crate::{
-    AngVector, Matrix, PaddingExt, Vector, TWO_WAYS_COUPLING_ENABLED,
+use crate::solver::particle::{Kinematics, Position, dir_to_associated_grid_node};
+use crate::{AngVector, Matrix, PaddingExt, TWO_WAYS_COUPLING_ENABLED, Vector};
+use core::ops::Range;
+use glamx::*;
+use khal_std::arch::{
+    atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup,
 };
 use khal_std::index::MaybeIndexUnchecked;
-use glamx::*;
-use khal_std::{arch::workgroup_memory_barrier_with_group_sync, macros::{spirv_bindgen, spirv}};
+use khal_std::{
+    arch::workgroup_memory_barrier_with_group_sync,
+    macros::{spirv, spirv_bindgen},
+};
 use unroll::unroll_for_loops;
-use khal_std::arch::{atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup};
 /*
  * Shared memory layout constants.
  */
@@ -74,7 +77,10 @@ impl P2GStepResult {
 /// Uses integer atomics to avoid floating-point atomic limitations on GPU.
 /// The COM (center of mass) is stored alongside to reduce binding count.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct IntegerImpulseAtomic {
     pub com: Vector,
@@ -621,8 +627,9 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     nodes.at_mut(global_id as usize).mass = total_result.new_mass;
 
     if USE_CPIC {
-        nodes.at_mut(global_id as usize).momentum_velocity_incompatible =
-            total_result.new_momentum_velocity_incompatible;
+        nodes
+            .at_mut(global_id as usize)
+            .momentum_velocity_incompatible = total_result.new_momentum_velocity_incompatible;
         nodes.at_mut(global_id as usize).mass_incompatible = total_result.new_mass_incompatible;
 
         // Apply the impulse to the closest body using integer atomics.
@@ -796,7 +803,7 @@ pub fn gpu_p2g_cpic(
     // Shared memory arrays.
     // TODO PERF: analyze shared memory access patterns to avoid bank conflicts
     // (https://feldmann.nyc/blog/smem-microbenchmarks)
-    #[spirv(workgroup)] shared_vel_mass: &mut [(Vector, f32); NUM_SHARED_CELLS],  // P2G runs 10ms slower in the 3D sand demo unless we group vel and mass.
+    #[spirv(workgroup)] shared_vel_mass: &mut [(Vector, f32); NUM_SHARED_CELLS], // P2G runs 10ms slower in the 3D sand demo unless we group vel and mass.
     #[spirv(workgroup)] shared_affine: &mut [Matrix; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_nodes: &mut [SharedNode; NUM_SHARED_CELLS],
     #[spirv(workgroup)] shared_pos: &mut [Position; NUM_SHARED_CELLS],

@@ -4,8 +4,8 @@
 //! A segment is defined by two endpoints and represents the straight line
 //! connecting them.
 
-use crate::queries::ProjectionWithLocation;
 use crate::Vector;
+use crate::queries::ProjectionWithLocation;
 
 /// A line segment defined by two endpoints.
 #[derive(Clone, Copy, Default)]

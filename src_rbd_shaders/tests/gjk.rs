@@ -1,11 +1,11 @@
 //! Tests for the GJK (Gilbert-Johnson-Keerthi) algorithm.
 
 use crate::queries::gjk::gjk::{
-    closest_points, cso_point_from_shapes, CLOSEST_POINTS, INTERSECTION,
+    CLOSEST_POINTS, INTERSECTION, closest_points, cso_point_from_shapes,
 };
 use crate::queries::gjk::voronoi_simplex;
 use crate::shapes::shape::Shape;
-use crate::{Pose, Vector, PaddedVector};
+use crate::{PaddedVector, Pose, Vector};
 
 #[test]
 fn test_separated_cuboids() {

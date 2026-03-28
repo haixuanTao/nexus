@@ -16,10 +16,10 @@
 //! 8. `sort_rigid_particles` - build per-node linked lists for rigid particles
 
 use crate::grid::grid::*;
-use crate::solver::particle::{associated_cell_index_in_block_off_by_one, Position};
-use khal_std::index::MaybeIndexUnchecked;
-use khal_std::macros::{spirv_bindgen, spirv};
+use crate::solver::particle::{Position, associated_cell_index_in_block_off_by_one};
 use khal_std::arch::atomic_add_u32;
+use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
 
 /// Marks all blocks associated with each particle as active.
 ///
@@ -114,7 +114,11 @@ pub fn gpu_mark_rigid_particles_needing_block(
         // Find the first block that already has a header in the hashmap.
         let mut i = 0u32;
         for _ in 0..NUM_ASSOC_BLOCKS {
-            if grid.find_block_header_id(hmap_entries, &blocks[i as usize]).id != NONE {
+            if grid
+                .find_block_header_id(hmap_entries, &blocks[i as usize])
+                .id
+                != NONE
+            {
                 break;
             }
             i += 1;
@@ -128,12 +132,14 @@ pub fn gpu_mark_rigid_particles_needing_block(
         if i > 0 && i < NUM_ASSOC_BLOCKS as u32 {
             // Set the bit atomically.
             khal_std::arch::atomic_or_u32(
-                &mut rigid_particle_needs_block.at_mut(entry_id), entry_bit,
+                &mut rigid_particle_needs_block.at_mut(entry_id),
+                entry_bit,
             );
         } else {
             // Clear the bit atomically.
             khal_std::arch::atomic_and_u32(
-                &mut rigid_particle_needs_block.at_mut(entry_id), !entry_bit,
+                &mut rigid_particle_needs_block.at_mut(entry_id),
+                !entry_bit,
             );
         }
     }
@@ -242,9 +248,7 @@ pub fn gpu_finalize_particles_sort(
 
         // Build per-node particle linked list.
         let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
-        let node_global_id = active_block_id.physical_id().node_id(
-            node_local_id,
-        );
+        let node_global_id = active_block_id.physical_id().node_id(node_local_id);
         let prev_head = khal_std::arch::atomic_exchange_u32(
             &mut nodes_linked_lists.at_mut(node_global_id.id as usize).head,
             id,
@@ -287,9 +291,7 @@ pub fn gpu_sort_rigid_particles(
         if active_block_id.id != NONE {
             // Build per-node rigid particle linked list.
             let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
-            let node_global_id = active_block_id.physical_id().node_id(
-                node_local_id,
-            );
+            let node_global_id = active_block_id.physical_id().node_id(node_local_id);
             let prev_head = khal_std::arch::atomic_exchange_u32(
                 &mut rigid_nodes_linked_lists
                     .at_mut(node_global_id.id as usize)

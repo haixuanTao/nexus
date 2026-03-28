@@ -1,8 +1,8 @@
 //! Utility algorithms.
 
 mod basis;
-pub mod radix_sort;
 pub mod prefix_sum;
+pub mod radix_sort;
 mod slice;
 
 pub use basis::orthonormal_basis3;

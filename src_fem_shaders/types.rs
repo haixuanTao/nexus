@@ -2,7 +2,7 @@
 //!
 //! All types use `#[repr(C)]` for GPU buffer compatibility.
 
-use crate::{PaddedMatrix, PaddedVector, DIM, VERTS_PER_ELEM};
+use crate::{DIM, PaddedMatrix, PaddedVector, VERTS_PER_ELEM};
 
 /// Per-element static data (immutable after setup).
 #[derive(Clone, Copy)]

@@ -3,10 +3,10 @@
 //! This module provides the GJK algorithm for computing the closest points
 //! between convex shapes.
 
-use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::queries::gjk::VoronoiSimplex;
+use crate::queries::gjk::cso_point::{CsoPoint, EPS_TOL, FLT_EPS};
 use crate::shapes::Shape;
-use crate::{Pose, Vector, PaddedVector, DIM};
+use crate::{DIM, PaddedVector, Pose, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 
 /// GJK result status codes.

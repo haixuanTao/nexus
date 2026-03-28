@@ -1,6 +1,6 @@
 use glamx::vec3;
 use khal::backend::GpuBackend;
-use nexus_testbed3d::{nexus, DemoBuilder};
+use nexus_testbed3d::{DemoBuilder, nexus};
 
 use nexus::fem::{
     mesh::FemMesh,
@@ -14,17 +14,12 @@ fn main() {
 }
 
 pub fn builder() -> DemoBuilder {
-    DemoBuilder::fem("FEM cube", build)
-        .with_camera(vec3(2.0, 2.0, 2.0), vec3(0.5, 0.3, 0.5))
+    DemoBuilder::fem("FEM cube", build).with_camera(vec3(2.0, 2.0, 2.0), vec3(0.5, 0.3, 0.5))
 }
 
 fn build(backend: &GpuBackend) -> FemData {
     // Match Genesis reference: 0.4m cube in [0.3, 0.7]^3
-    let mesh = FemMesh::generate_grid(
-        [8, 8, 8],
-        vec3(0.3, 0.3, 0.3),
-        vec3(0.7, 0.7, 0.7),
-    );
+    let mesh = FemMesh::generate_grid([8, 8, 8], vec3(0.3, 0.3, 0.3), vec3(0.7, 0.7, 0.7));
 
     let material = FemMaterial {
         youngs_modulus: 1e6,

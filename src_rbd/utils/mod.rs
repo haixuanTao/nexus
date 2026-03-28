@@ -3,8 +3,8 @@
 //! This module provides general-purpose GPU algorithms that support the collision
 //! detection and physics simulation pipelines.
 
-pub use radix_sort::{RadixSort, RadixSortWorkspace};
 pub use prefix_sum::{GpuPrefixSum, PrefixSumWorkspace};
+pub use radix_sort::{RadixSort, RadixSortWorkspace};
 
-mod radix_sort;
 mod prefix_sum;
+mod radix_sort;

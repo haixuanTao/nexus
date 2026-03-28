@@ -7,10 +7,9 @@ use crate::grid::grid::*;
 use crate::nexus_rbd_shaders::dynamics::Velocity as BodyVelocity;
 use crate::nexus_rbd_shaders::shapes::Shape;
 use crate::{Pose, Vector};
-use khal_std::index::MaybeIndexUnchecked;
 use glamx::*;
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
-
 
 /// Performs collision detection for a single grid node against all collision shapes.
 ///

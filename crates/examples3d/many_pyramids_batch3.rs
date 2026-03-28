@@ -1,4 +1,4 @@
-use nexus_testbed3d::{DemoBuilder, SimulationState, BatchEnvironment};
+use nexus_testbed3d::{BatchEnvironment, DemoBuilder, SimulationState};
 use rapier3d::prelude::*;
 
 pub fn builder() -> DemoBuilder {
@@ -35,35 +35,35 @@ fn build() -> SimulationState {
     let pyramid_count = 40;
 
     for pyramid_index in 0..pyramid_count {
-    /*
-     * World
-     */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let impulse_joints = ImpulseJointSet::new();
-    let _multibody_joints = MultibodyJointSet::new();
+        /*
+         * World
+         */
+        let mut bodies = RigidBodySet::new();
+        let mut colliders = ColliderSet::new();
+        let impulse_joints = ImpulseJointSet::new();
+        let _multibody_joints = MultibodyJointSet::new();
 
-    let rad = 0.5;
-    let spacing = 4.0;
+        let rad = 0.5;
+        let spacing = 4.0;
 
-    /*
-     * Ground
-     */
-    let ground_size = 100.0;
-    let ground_height = 0.1;
+        /*
+         * Ground
+         */
+        let ground_size = 100.0;
+        let ground_height = 0.1;
 
-    let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height, 0.0));
-    let ground_handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::cuboid(
-        ground_size,
-        ground_height,
-        pyramid_count as f32 * spacing / 2.0 + ground_size,
-    );
-    colliders.insert_with_parent(collider, ground_handle, &mut bodies);
+        let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height, 0.0));
+        let ground_handle = bodies.insert(rigid_body);
+        let collider = ColliderBuilder::cuboid(
+            ground_size,
+            ground_height,
+            pyramid_count as f32 * spacing / 2.0 + ground_size,
+        );
+        colliders.insert_with_parent(collider, ground_handle, &mut bodies);
 
-    /*
-     * Create the cubes
-     */
+        /*
+         * Create the cubes
+         */
         let bottomy = rad;
         create_pyramid(
             &mut bodies,
@@ -90,7 +90,10 @@ fn build() -> SimulationState {
         );
 
         environments.push(BatchEnvironment {
-            bodies, colliders, impulse_joints, sim_params: Default::default()
+            bodies,
+            colliders,
+            impulse_joints,
+            sim_params: Default::default(),
         });
     }
 

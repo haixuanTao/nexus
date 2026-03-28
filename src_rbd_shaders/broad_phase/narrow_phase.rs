@@ -16,21 +16,21 @@
 //! - TriMesh-Convex: BVH traversal + per-triangle GJK/EPA
 //! - Polyline-Convex: BVH traversal + per-segment GJK/EPA
 
-use khal_std::glamx::UVec3;
-use khal_std::{iter::StepRng, arch::atomic_add_u32};
-use crate::{Pose, Vector, PaddedVector};
-use khal_std::index::MaybeIndexUnchecked;
 use crate::queries::{
-    ball_ball, ball_convex, convex_ball, cuboid_cuboid, pfm_pfm, ContactManifold, IndexedManifold,
+    ContactManifold, IndexedManifold, ball_ball, ball_convex, convex_ball, cuboid_cuboid, pfm_pfm,
 };
 use crate::shapes::{
-    Capsule, Polyline, Shape, TriMesh, SHAPE_TYPE_BALL, SHAPE_TYPE_CAPSULE, SHAPE_TYPE_CONE,
-    SHAPE_TYPE_CUBOID, SHAPE_TYPE_CYLINDER, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH,
+    Capsule, Polyline, SHAPE_TYPE_BALL, SHAPE_TYPE_CAPSULE, SHAPE_TYPE_CONE, SHAPE_TYPE_CUBOID,
+    SHAPE_TYPE_CYLINDER, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH, Shape, TriMesh,
 };
+use crate::{PaddedVector, Pose, Vector};
+use khal_std::glamx::UVec3;
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::{arch::atomic_add_u32, iter::StepRng};
 
-use glamx::UVec2;
 use crate::utils::{Slice, SliceMut};
+use glamx::UVec2;
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -421,7 +421,10 @@ fn polyline_convex(
 }
 
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct NarrowPhasePfmPair {
     shape1: Shape,

@@ -5,7 +5,7 @@
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE};
+use super::sorting::{BIN_COUNT, BLOCK_SIZE, div_ceil};
 
 /// GPU kernel to initialize indirect dispatch arguments for radix sort.
 #[spirv_bindgen]

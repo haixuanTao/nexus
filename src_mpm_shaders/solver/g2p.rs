@@ -5,21 +5,24 @@
 //! checks, computes velocity gradients for the affine matrix, and accumulates
 //! rigid body velocities for particles near colliders.
 
+use crate::PaddingExt;
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::nexus_rbd_shaders::dynamics::{
-    velocity_at_point, Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties,
+    Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties, velocity_at_point,
 };
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::params::SimulationParams;
 use crate::solver::particle::{
-    associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node, Kinematics, Position,
+    Kinematics, Position, associated_cell_index_in_block_off_by_one, dir_to_associated_grid_node,
 };
-use crate::PaddingExt;
 use crate::{Matrix, PaddedMatrix, Vector};
-use khal_std::index::MaybeIndexUnchecked;
 use glamx::*;
-use khal_std::{arch::workgroup_memory_barrier_with_group_sync, macros::{spirv, spirv_bindgen}};
+use khal_std::index::MaybeIndexUnchecked;
+use khal_std::{
+    arch::workgroup_memory_barrier_with_group_sync,
+    macros::{spirv, spirv_bindgen},
+};
 use unroll::unroll_for_loops;
 /*
  * Constants.
@@ -120,14 +123,15 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                             let node = nodes.read(global_node_id.id as usize);
                             shared_nodes_vel.write(flat_shared_index, node.momentum_velocity);
                             if USE_CPIC {
-                                shared_nodes_vel_incompatible.write(flat_shared_index,
-                                    node.momentum_velocity_incompatible);
+                                shared_nodes_vel_incompatible
+                                    .write(flat_shared_index, node.momentum_velocity_incompatible);
                                 shared_nodes_cdf.write(flat_shared_index, node.cdf);
                             }
                         } else {
                             shared_nodes_vel.write(flat_shared_index, Vector::ZERO);
                             if USE_CPIC {
-                                shared_nodes_vel_incompatible.write(flat_shared_index, Vector::ZERO);
+                                shared_nodes_vel_incompatible
+                                    .write(flat_shared_index, Vector::ZERO);
                                 shared_nodes_cdf.write(flat_shared_index, NodeCdf::NONE);
                             }
                         }
@@ -203,8 +207,7 @@ fn particle_g2p<const USE_CPIC: bool>(
 
                 if USE_CPIC {
                     let cell_cdf = shared_nodes_cdf.read(shared_id);
-                    let is_compatible =
-                        particle_cdf.affinity.is_compatible(cell_cdf.affinities);
+                    let is_compatible = particle_cdf.affinity.is_compatible(cell_cdf.affinities);
 
                     if !is_compatible {
                         cell_vel = shared_nodes_vel_incompatible.read(shared_id);

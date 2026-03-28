@@ -3,13 +3,13 @@
 //! This module provides GPU-accelerated joint constraint solving, allowing bodies
 //! to be connected with various joint types (revolute, prismatic, fixed, etc.).
 
-use bytemuck::Zeroable;
 use crate::math::Pose;
 use crate::shaders::dynamics::{
     GpuIncJointColor, GpuInitJointConstraints, GpuRemoveJointBias, GpuResetJointColor,
     GpuSolveJointConstraints, GpuUpdateJointConstraints, ImpulseJoint, JointConstraint,
     JointConstraintBuilder, LocalMassProperties, SimParams, Velocity, WorldMassProperties,
 };
+use bytemuck::Zeroable;
 use khal::Shader;
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use vortx::tensor::Tensor;
@@ -158,8 +158,7 @@ impl GpuImpulseJointSet {
                 color_groups[*color as usize] += 1;
             }
 
-            let env_max_color_group_len =
-                color_groups.iter().copied().max().unwrap_or_default();
+            let env_max_color_group_len = color_groups.iter().copied().max().unwrap_or_default();
 
             // Prefix sum.
             for i in 0..color_groups.len().saturating_sub(1) {
@@ -177,8 +176,7 @@ impl GpuImpulseJointSet {
             }
 
             global_num_colors = global_num_colors.max(env_num_colors);
-            global_max_color_group_len =
-                global_max_color_group_len.max(env_max_color_group_len);
+            global_max_color_group_len = global_max_color_group_len.max(env_max_color_group_len);
 
             per_env_sorted_joints.push(sorted_gpu_joints);
             per_env_color_groups.push(color_groups);
@@ -212,12 +210,8 @@ impl GpuImpulseJointSet {
             len: max_joints,
             num_colors: global_num_colors,
             max_color_group_len: global_max_color_group_len,
-            num_joints: Tensor::vector(
-                backend,
-                &all_num_joints,
-                usage | BufferUsages::UNIFORM,
-            )
-            .unwrap(),
+            num_joints: Tensor::vector(backend, &all_num_joints, usage | BufferUsages::UNIFORM)
+                .unwrap(),
             joints_batch_capacity: Tensor::scalar(
                 backend,
                 max_joints,
@@ -230,14 +224,11 @@ impl GpuImpulseJointSet {
                 usage | BufferUsages::UNIFORM,
             )
             .unwrap(),
-            curr_color: Tensor::scalar(backend, 0u32, usage | BufferUsages::UNIFORM)
-                .unwrap(),
+            curr_color: Tensor::scalar(backend, 0u32, usage | BufferUsages::UNIFORM).unwrap(),
             color_groups: Tensor::vector(backend, &all_color_groups, usage).unwrap(),
             joints: Tensor::vector(backend, &all_joints, usage).unwrap(),
-            builders: Tensor::matrix_uninit(backend, num_batches, max_joints, usage)
-                .unwrap(),
-            constraints: Tensor::matrix_uninit(backend, num_batches, max_joints, usage)
-                .unwrap(),
+            builders: Tensor::matrix_uninit(backend, num_batches, max_joints, usage).unwrap(),
+            constraints: Tensor::matrix_uninit(backend, num_batches, max_joints, usage).unwrap(),
         }
     }
 

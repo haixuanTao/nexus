@@ -2,8 +2,8 @@
 //!
 //! This module provides the tetrahedron shape definition from its four vertices.
 
-use crate::queries::ProjectionWithLocation;
 use crate::Vector;
+use crate::queries::ProjectionWithLocation;
 use glamx::{Vec2, Vec3};
 
 // TODO: group all the epsilon in the same place.

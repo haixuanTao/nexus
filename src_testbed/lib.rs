@@ -18,13 +18,13 @@ mod ui;
 use std::collections::HashMap;
 
 use fem::FemStage;
-use mpm::MpmStage;
-pub use rbd::BackendType;
-use rbd::{PhysicsBackend, RenderContext, setup_graphics, setup_physics, update_instances};
 use khal::backend::{GpuBackend as KhalGpuBackend, WebGpu};
 use khal::re_exports::wgpu::Limits;
+use mpm::MpmStage;
 use nexus::mpm::solver::GpuParticleModel;
 use nexus::rbd::pipeline::{GpuPhysicsPipeline, RunStats};
+pub use rbd::BackendType;
+use rbd::{PhysicsBackend, RenderContext, setup_graphics, setup_physics, update_instances};
 use ui::{render_compiling_message, render_ui};
 
 #[cfg(feature = "dim3")]
@@ -70,7 +70,11 @@ pub struct CameraSetup {
 
 pub enum DemoBuilder {
     Rbd(&'static str, fn() -> SimulationState, Option<CameraSetup>),
-    Mpm(String, mpm::MpmSceneBuildFn<GpuParticleModel>, Option<CameraSetup>),
+    Mpm(
+        String,
+        mpm::MpmSceneBuildFn<GpuParticleModel>,
+        Option<CameraSetup>,
+    ),
     Fem(String, fem::FemSceneBuildFn, Option<CameraSetup>),
 }
 
@@ -305,7 +309,12 @@ impl Testbed {
             .create_active_demo(
                 {
                     let bt = self.backend_type;
-                    pick_gpu(bt, &webgpu, #[cfg(feature = "cuda")] &cuda)
+                    pick_gpu(
+                        bt,
+                        &webgpu,
+                        #[cfg(feature = "cuda")]
+                        &cuda,
+                    )
                 },
                 &mut scene2d,
                 &mut scene3d,
@@ -329,7 +338,12 @@ impl Testbed {
             )
             .await
         {
-            let current_gpu = pick_gpu(self.backend_type, &webgpu, #[cfg(feature = "cuda")] &cuda);
+            let current_gpu = pick_gpu(
+                self.backend_type,
+                &webgpu,
+                #[cfg(feature = "cuda")]
+                &cuda,
+            );
             let ui_res = render_ui(
                 &mut window,
                 &self.builders,
@@ -367,7 +381,10 @@ impl Testbed {
 
                 // Clean up old active demo and extract GPU pipeline for caching.
                 match active_demo {
-                    ActiveDemo::Rbd { physics, mut render_ctx } => {
+                    ActiveDemo::Rbd {
+                        physics,
+                        mut render_ctx,
+                    } => {
                         render_ctx.clear();
                         if !backend_changed {
                             if let PhysicsBackend::Gpu(gpu_backend) = physics.backend {
@@ -397,9 +414,14 @@ impl Testbed {
                 active_demo = self
                     .create_active_demo(
                         {
-                    let bt = self.backend_type;
-                    pick_gpu(bt, &webgpu, #[cfg(feature = "cuda")] &cuda)
-                },
+                            let bt = self.backend_type;
+                            pick_gpu(
+                                bt,
+                                &webgpu,
+                                #[cfg(feature = "cuda")]
+                                &cuda,
+                            )
+                        },
                         &mut scene2d,
                         &mut scene3d,
                     )
@@ -412,10 +434,19 @@ impl Testbed {
                 }
             }
 
-            self.step_simulation({
+            self.step_simulation(
+                {
                     let bt = self.backend_type;
-                    pick_gpu(bt, &webgpu, #[cfg(feature = "cuda")] &cuda)
-                }, &mut active_demo).await;
+                    pick_gpu(
+                        bt,
+                        &webgpu,
+                        #[cfg(feature = "cuda")]
+                        &cuda,
+                    )
+                },
+                &mut active_demo,
+            )
+            .await;
         }
     }
 
@@ -447,7 +478,9 @@ impl Testbed {
 
                 let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
                     #[cfg(feature = "cpu")]
-                    { KhalGpuBackend::Cpu }
+                    {
+                        KhalGpuBackend::Cpu
+                    }
                     #[cfg(not(feature = "cpu"))]
                     unreachable!()
                 } else {
@@ -476,12 +509,7 @@ impl Testbed {
                 // Create a temporary single-builder list for initialization,
                 // then swap in the full list.
                 let init_builders = vec![mpm_builders[mpm_demo_idx].clone()];
-                let mut stage = MpmStage::new(
-                    khal_backend,
-                    |_| Box::new(()),
-                    init_builders,
-                )
-                .await;
+                let mut stage = MpmStage::new(khal_backend, |_| Box::new(()), init_builders).await;
 
                 // Replace builders with full MPM list and fix selected index.
                 stage.builders = mpm_builders;
@@ -492,12 +520,7 @@ impl Testbed {
                 stage.update().await;
 
                 let mut colliders_gfx = HashMap::new();
-                mpm::render_colliders(
-                    scene2d,
-                    scene3d,
-                    &stage.physics,
-                    &mut colliders_gfx,
-                );
+                mpm::render_colliders(scene2d, scene3d, &stage.physics, &mut colliders_gfx);
 
                 #[cfg(feature = "dim2")]
                 let particle_node = scene2d.add_rectangle(1.0, 1.0);
@@ -521,7 +544,9 @@ impl Testbed {
 
                 let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
                     #[cfg(feature = "cpu")]
-                    { KhalGpuBackend::Cpu }
+                    {
+                        KhalGpuBackend::Cpu
+                    }
                     #[cfg(not(feature = "cpu"))]
                     unreachable!()
                 } else {
@@ -545,11 +570,7 @@ impl Testbed {
                     .unwrap_or(0);
 
                 let init_builders = vec![fem_builders[fem_demo_idx].clone()];
-                let mut stage = FemStage::new(
-                    khal_backend,
-                    init_builders,
-                )
-                .await;
+                let mut stage = FemStage::new(khal_backend, init_builders).await;
 
                 stage.builders = fem_builders;
                 stage.selected_demo = fem_demo_idx;
@@ -559,10 +580,7 @@ impl Testbed {
                 #[cfg(feature = "dim3")]
                 let vertex_node = scene3d.add_cube(1.0, 1.0, 1.0);
 
-                ActiveDemo::Fem {
-                    stage,
-                    vertex_node,
-                }
+                ActiveDemo::Fem { stage, vertex_node }
             }
         }
     }
@@ -596,10 +614,7 @@ impl Testbed {
                 particle_node.set_instances(&stage.instances);
                 rigid_particle_node.set_instances(&stage.rigid_instances);
             }
-            ActiveDemo::Fem {
-                stage,
-                vertex_node,
-            } => {
+            ActiveDemo::Fem { stage, vertex_node } => {
                 if self.run_state != RunState::Paused {
                     stage.update().await;
                 }

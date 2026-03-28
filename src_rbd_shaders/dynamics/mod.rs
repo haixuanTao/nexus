@@ -26,16 +26,16 @@ pub use body::*;
 pub use constraint::*;
 // Re-export joint items explicitly; MotorParameters is also in joint_constraint
 pub use joint::{
-    motor_params, GenericJoint, ImpulseJoint, JointLimits, JointMotor, MotorParameters,
-    ACCELERATION_BASED, ANG_AXES_MASK, FORCE_BASED, LIN_AXES_MASK, SPATIAL_DIM,
+    ACCELERATION_BASED, ANG_AXES_MASK, FORCE_BASED, GenericJoint, ImpulseJoint, JointLimits,
+    JointMotor, LIN_AXES_MASK, MotorParameters, SPATIAL_DIM, motor_params,
 };
 // Re-export joint_constraint items; MotorParameters comes from joint
 pub use joint_constraint::*;
 // Re-export joint_constraint_builder items; update_constraint is also in solver
 pub use joint_constraint_builder::{
-    limit_angular, limit_linear, limit_linear_coupled, lock_angular, lock_linear, motor_angular,
-    motor_linear, motor_linear_coupled, new_helper, orthogonalize_constraints,
-    solve_joint_constraint, JointConstraintBuilder, JointConstraintHelper,
+    JointConstraintBuilder, JointConstraintHelper, limit_angular, limit_linear,
+    limit_linear_coupled, lock_angular, lock_linear, motor_angular, motor_linear,
+    motor_linear_coupled, new_helper, orthogonalize_constraints, solve_joint_constraint,
 };
 pub use sim_params::*;
 // Re-export solver items; update_constraint comes from joint_constraint_builder for joints

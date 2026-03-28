@@ -18,7 +18,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 
 use khal_std::index::MaybeIndexUnchecked;
 
-use super::sorting::{div_ceil, BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
+use super::sorting::{BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG, div_ceil};
 
 /// Radix sort scan kernel.
 ///
@@ -44,8 +44,10 @@ pub fn gpu_sort_scan(
         let data_index = i * WG + local_id.x;
         let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
         let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
-        lds.at_mut(row as usize)
-            .write(col as usize, reduced.read((reduced_offset + data_index) as usize));
+        lds.at_mut(row as usize).write(
+            col as usize,
+            reduced.read((reduced_offset + data_index) as usize),
+        );
     }
 
     workgroup_memory_barrier_with_group_sync();
@@ -78,7 +80,8 @@ pub fn gpu_sort_scan(
 
     for i in 0..ELEMENTS_PER_THREAD {
         let elt = lds.at_mut(i as usize).read(local_id.x as usize);
-        lds.at_mut(i as usize).write(local_id.x as usize, elt.wrapping_add(sum));
+        lds.at_mut(i as usize)
+            .write(local_id.x as usize, elt.wrapping_add(sum));
     }
 
     // lds now contains exclusive prefix sum
@@ -90,7 +93,10 @@ pub fn gpu_sort_scan(
         let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
         let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
         if data_index < num_reduce_wgs {
-            reduced.write((reduced_offset + data_index) as usize, lds.at(row as usize).read(col as usize));
+            reduced.write(
+                (reduced_offset + data_index) as usize,
+                lds.at(row as usize).read(col as usize),
+            );
         }
     }
 }

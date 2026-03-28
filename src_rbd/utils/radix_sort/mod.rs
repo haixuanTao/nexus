@@ -415,15 +415,13 @@ impl RadixSort {
                 Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
         }
         if workspace.batch_ids.len() < total_n as u64 {
-            workspace.batch_ids =
-                Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
+            workspace.batch_ids = Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
             workspace.batch_ids_pong =
                 Tensor::vector_uninit(backend, total_n, BufferUsages::STORAGE)?;
         }
 
         // n_sort_flat = [total_n] for the flattened single-batch view.
-        workspace.n_sort_flat =
-            Tensor::scalar(backend, total_n, BufferUsages::STORAGE)?;
+        workspace.n_sort_flat = Tensor::scalar(backend, total_n, BufferUsages::STORAGE)?;
 
         // Create uniforms for all passes.
         workspace.pass_uniforms.clear();
@@ -514,12 +512,8 @@ impl RadixSort {
                     &workspace.count_buf,
                     &mut workspace.reduced_buf,
                 )?;
-                self.scan.call(
-                    pass,
-                    [1u32, 1, 1],
-                    n_sort_flat,
-                    &mut workspace.reduced_buf,
-                )?;
+                self.scan
+                    .call(pass, [1u32, 1, 1], n_sort_flat, &mut workspace.reduced_buf)?;
                 self.scan_add.call(
                     pass,
                     &workspace.num_reduce_wgs,
@@ -560,12 +554,8 @@ impl RadixSort {
                     &workspace.count_buf,
                     &mut workspace.reduced_buf,
                 )?;
-                self.scan.call(
-                    pass,
-                    [1u32, 1, 1],
-                    n_sort_flat,
-                    &mut workspace.reduced_buf,
-                )?;
+                self.scan
+                    .call(pass, [1u32, 1, 1], n_sort_flat, &mut workspace.reduced_buf)?;
                 self.scan_add.call(
                     pass,
                     &workspace.num_reduce_wgs,
@@ -823,7 +813,11 @@ mod tests {
         }
     }
 
-    async fn test_sorting_batched_multi_wg_generic(gpu: &GpuBackend, num_batches: u32, per_batch: u32) {
+    async fn test_sorting_batched_multi_wg_generic(
+        gpu: &GpuBackend,
+        num_batches: u32,
+        per_batch: u32,
+    ) {
         use rand::Rng;
         let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
@@ -892,13 +886,18 @@ mod tests {
             let mut orig_keys = keys_inp[start..end].to_vec();
             orig_keys.sort();
             assert_eq!(
-                batch_keys, &orig_keys[..],
+                batch_keys,
+                &orig_keys[..],
                 "batch {batch}: sorted keys don't match expected"
             );
         }
     }
 
-    async fn test_sorting_many_small_batches_generic(gpu: &GpuBackend, num_batches: u32, per_batch: u32) {
+    async fn test_sorting_many_small_batches_generic(
+        gpu: &GpuBackend,
+        num_batches: u32,
+        per_batch: u32,
+    ) {
         use rand::Rng;
         let sort = RadixSort::from_backend(&gpu).unwrap();
         let mut workspace = RadixSortWorkspace::new(&gpu);
@@ -920,10 +919,8 @@ mod tests {
 
         let mut keys = Tensor::vector(&gpu, &keys_inp, input_usages).unwrap();
         let mut values = Tensor::vector(&gpu, &values_inp, input_usages).unwrap();
-        let mut out_keys =
-            Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
-        let mut out_values =
-            Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
+        let mut out_keys = Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
+        let mut out_values = Tensor::vector_uninit(&gpu, total, output_usages).unwrap();
         let n_sort_data = vec![per_batch; num_batches as usize];
         let n_sort = Tensor::vector(&gpu, &n_sort_data, BufferUsages::STORAGE).unwrap();
 
@@ -969,7 +966,8 @@ mod tests {
             let mut orig_keys = keys_inp[orig_start..orig_end].to_vec();
             orig_keys.sort();
             assert_eq!(
-                batch_keys, &orig_keys[..],
+                batch_keys,
+                &orig_keys[..],
                 "batch {batch}: sorted keys don't match expected"
             );
         }

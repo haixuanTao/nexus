@@ -2,10 +2,10 @@
 //!
 //! This module provides the triangle shape definition from its three vertices.
 
+use crate::Vector;
 use crate::bounding_volumes::Aabb;
 use crate::queries::PolygonalFeature;
 use crate::queries::ProjectionWithLocation;
-use crate::{Vector};
 use glamx::{Vec2, Vec3};
 use khal_std::index::MaybeIndexUnchecked;
 
@@ -42,11 +42,7 @@ impl Triangle {
         let dc = dir.dot(self.c);
 
         if da > db {
-            if da > dc {
-                self.a
-            } else {
-                self.c
-            }
+            if da > dc { self.a } else { self.c }
         } else if db > dc {
             self.b
         } else {

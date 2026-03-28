@@ -13,12 +13,15 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::triangle::Triangle;
-use crate::{Vector, PaddedVector};
+use crate::{PaddedVector, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 
 /// A triangle mesh with BVH acceleration structure.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(not(any(target_arch = "spirv", target_arch = "nvptx64")), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
 #[repr(C)]
 pub struct TriMesh {
     /// Index of the root AABB in the vertex buffer.
@@ -222,8 +225,8 @@ impl TriMesh {
  * UVec3 import for vertex index triples.
  */
 use crate::queries::{
-    ProjectionResult, ProjectionWithLocation, FEATURE_EDGE, FEATURE_FACE, FEATURE_SOLID,
-    FEATURE_VERTEX,
+    FEATURE_EDGE, FEATURE_FACE, FEATURE_SOLID, FEATURE_VERTEX, ProjectionResult,
+    ProjectionWithLocation,
 };
 use glamx::{UVec3, Vec2, Vec3};
 

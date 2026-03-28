@@ -1,5 +1,5 @@
-use crate::mpm::step::SimulationStepResult;
 use crate::RunState;
+use crate::mpm::step::SimulationStepResult;
 use khal::backend::GpuBackend;
 use nexus::mpm::pipeline::{MpmData, MpmPipeline};
 use nexus::mpm::solver::{GpuParticleModel, GpuParticleModelData};

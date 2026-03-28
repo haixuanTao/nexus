@@ -28,19 +28,21 @@
 //! gpu_boundary_conditions (from explicit.rs)
 //! ```
 
-use super::explicit::{scatter_force, read_force, AtomicForce};
-use crate::material::{
-    compute_energy, compute_hessian_blocks, compute_stress, precompute,
-};
+use super::explicit::{AtomicForce, read_force, scatter_force};
+use crate::material::{compute_energy, compute_hessian_blocks, compute_stress, precompute};
 use crate::types::{
     ElementEnergyGrad, ElementHessian, ElementInfo, ElementPrecomputed, FemSimParams,
     LinesearchScalars, PcgScalars, PcgVertexState, VertexConstraint, VertexInfo, VertexState,
 };
 use crate::{
-    abs_f32, diag, pad_mat, pad_vec, unpad_mat, unpad_vec, DIM, Matrix,
-    PaddedVector, Vector, VERTS_PER_ELEM,
+    DIM, Matrix, PaddedVector, VERTS_PER_ELEM, Vector, abs_f32, diag, pad_mat, pad_vec, unpad_mat,
+    unpad_vec,
 };
-use khal_std::{macros::{spirv_bindgen, spirv}, arch::{workgroup_memory_barrier_with_group_sync, atomic_add_f32}, index::MaybeIndexUnchecked};
+use khal_std::{
+    arch::{atomic_add_f32, workgroup_memory_barrier_with_group_sync},
+    index::MaybeIndexUnchecked,
+    macros::{spirv, spirv_bindgen},
+};
 
 // ── Workgroup-level parallel reduction for scalars ──
 
@@ -135,9 +137,21 @@ fn read_diag(buf: &[AtomicDiag], vertex_idx: u32) -> Matrix {
     #[cfg(feature = "dim3")]
     {
         Matrix::from_cols(
-            Vector::new(f32::from_bits(d.vals[0]), f32::from_bits(d.vals[1]), f32::from_bits(d.vals[2])),
-            Vector::new(f32::from_bits(d.vals[3]), f32::from_bits(d.vals[4]), f32::from_bits(d.vals[5])),
-            Vector::new(f32::from_bits(d.vals[6]), f32::from_bits(d.vals[7]), f32::from_bits(d.vals[8])),
+            Vector::new(
+                f32::from_bits(d.vals[0]),
+                f32::from_bits(d.vals[1]),
+                f32::from_bits(d.vals[2]),
+            ),
+            Vector::new(
+                f32::from_bits(d.vals[3]),
+                f32::from_bits(d.vals[4]),
+                f32::from_bits(d.vals[5]),
+            ),
+            Vector::new(
+                f32::from_bits(d.vals[6]),
+                f32::from_bits(d.vals[7]),
+                f32::from_bits(d.vals[8]),
+            ),
         )
     }
 }
@@ -278,10 +292,8 @@ pub fn gpu_compute_egh(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] elem_info: &[ElementInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] vertex_state: &[VertexState],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] elem_precomp: &[ElementPrecomputed],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
-    elem_eg: &mut [ElementEnergyGrad],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
-    elem_hessian: &mut [ElementHessian],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] elem_eg: &mut [ElementEnergyGrad],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] elem_hessian: &mut [ElementHessian],
 ) {
     let elem_id = invocation_id.x;
     if elem_id >= params.num_elements {
@@ -320,8 +332,7 @@ pub fn gpu_compute_eg(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] elem_info: &[ElementInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] vertex_state: &[VertexState],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] elem_precomp: &[ElementPrecomputed],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
-    elem_eg: &mut [ElementEnergyGrad],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] elem_eg: &mut [ElementEnergyGrad],
 ) {
     let elem_id = invocation_id.x;
     if elem_id >= params.num_elements {
@@ -374,21 +385,37 @@ pub fn gpu_scatter_elastic_force_diag(
     // Scatter to each vertex.
     let s0 = unpad_vec(elem.S[0]);
     scatter_force(force_atomic, elem.indices[0], -(P * s0) * vol);
-    scatter_diag(diag_atomic, elem.indices[0], s_H_s_block(s0, &hessian, s0) * vol);
+    scatter_diag(
+        diag_atomic,
+        elem.indices[0],
+        s_H_s_block(s0, &hessian, s0) * vol,
+    );
 
     let s1 = unpad_vec(elem.S[1]);
     scatter_force(force_atomic, elem.indices[1], -(P * s1) * vol);
-    scatter_diag(diag_atomic, elem.indices[1], s_H_s_block(s1, &hessian, s1) * vol);
+    scatter_diag(
+        diag_atomic,
+        elem.indices[1],
+        s_H_s_block(s1, &hessian, s1) * vol,
+    );
 
     let s2 = unpad_vec(elem.S[2]);
     scatter_force(force_atomic, elem.indices[2], -(P * s2) * vol);
-    scatter_diag(diag_atomic, elem.indices[2], s_H_s_block(s2, &hessian, s2) * vol);
+    scatter_diag(
+        diag_atomic,
+        elem.indices[2],
+        s_H_s_block(s2, &hessian, s2) * vol,
+    );
 
     #[cfg(feature = "dim3")]
     {
         let s3 = unpad_vec(elem.S[3]);
         scatter_force(force_atomic, elem.indices[3], -(P * s3) * vol);
-        scatter_diag(diag_atomic, elem.indices[3], s_H_s_block(s3, &hessian, s3) * vol);
+        scatter_diag(
+            diag_atomic,
+            elem.indices[3],
+            s_H_s_block(s3, &hessian, s3) * vol,
+        );
     }
 }
 
@@ -682,7 +709,12 @@ pub fn gpu_pcg_update_x_r_z(
     }
 
     // Workgroup-level reduction for new r·z.
-    wg_reduce_add(lid, rtz_new_contrib, shared, scalar_atomic.at_mut(SLOT_RTZ_NEW));
+    wg_reduce_add(
+        lid,
+        rtz_new_contrib,
+        shared,
+        scalar_atomic.at_mut(SLOT_RTZ_NEW),
+    );
 }
 
 /// Single-thread: compute beta = rTz_new / rTz, update rTz.
@@ -815,7 +847,12 @@ pub fn gpu_ls_energy_element(
     }
 
     // Workgroup-level reduction for element energy.
-    wg_reduce_add(lid, energy_contrib, shared, scalar_atomic.at_mut(SLOT_ENERGY_E));
+    wg_reduce_add(
+        lid,
+        energy_contrib,
+        shared,
+        scalar_atomic.at_mut(SLOT_ENERGY_E),
+    );
 }
 
 /// Single-thread: finalize line search initialization.
@@ -824,7 +861,8 @@ pub fn gpu_ls_energy_element(
 #[spirv(compute(threads(1)))]
 pub fn gpu_ls_finalize_init(
     #[spirv(global_invocation_id)] _invocation_id: khal_std::glamx::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] ls_scalars: &mut [LinesearchScalars],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
+    ls_scalars: &mut [LinesearchScalars],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] scalar_atomic: &mut [u32],
 ) {
     let s = ls_scalars.at_mut(0);
@@ -937,7 +975,8 @@ pub fn gpu_ls_energy_vertex(
 #[spirv(compute(threads(1)))]
 pub fn gpu_ls_check_armijo(
     #[spirv(global_invocation_id)] _invocation_id: khal_std::glamx::UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] ls_scalars: &mut [LinesearchScalars],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
+    ls_scalars: &mut [LinesearchScalars],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] scalar_atomic: &mut [u32],
 ) {
     let s = ls_scalars.at_mut(0);

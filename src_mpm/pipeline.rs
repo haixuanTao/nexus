@@ -4,7 +4,6 @@
 //! coordinates the execution of all MPM algorithm stages on the GPU.
 
 use crate::grid::grid::{GpuGrid, WgGrid};
-use nexus_rbd::utils::{PrefixSumWorkspace, GpuPrefixSum};
 use crate::grid::sort::WgSort;
 use crate::solver::{
     BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData,
@@ -16,6 +15,7 @@ use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, G
 use khal::{BufferUsages, Shader};
 use nexus_rbd::dynamics::GpuBodySet;
 use nexus_rbd::math::{Pose, Vector};
+use nexus_rbd::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use std::any::Any;
 use std::marker::PhantomData;
 use vortx::tensor::Tensor;

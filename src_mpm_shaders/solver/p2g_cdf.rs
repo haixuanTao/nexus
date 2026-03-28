@@ -8,18 +8,20 @@
 //! Uses the same linked-list traversal and shared-memory pattern as P2G, but
 //! transfers geometry primitives instead of particle dynamics.
 
-use core::ops::Range;
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::solver::particle::{Position, RigidParticleIndices};
-use crate::{abs, Vector};
-use khal_std::index::MaybeIndexUnchecked;
+use crate::{Vector, abs};
+use core::ops::Range;
 use glamx::*;
-use nexus_rbd_shaders::PaddedVector;
 use khal_std::arch::workgroup_memory_barrier_with_group_sync;
-use unroll::unroll_for_loops;
-use khal_std::arch::{atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup};
+use khal_std::arch::{
+    atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup,
+};
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use nexus_rbd_shaders::PaddedVector;
+use unroll::unroll_for_loops;
 
 /*
  * Constants.
@@ -283,7 +285,8 @@ fn fetch_nodes(
                         grid.find_block_header_id(
                             hmap_entries,
                             &BlockVirtualId {
-                                id: base_block_pos_int + IVec2::new(octant.x as i32, octant.y as i32),
+                                id: base_block_pos_int
+                                    + IVec2::new(octant.x as i32, octant.y as i32),
                             },
                         )
                     };
@@ -304,8 +307,10 @@ fn fetch_nodes(
                         #[cfg(feature = "dim2")]
                         let global_node_id = global_chunk_id.node_id(UVec2::new(tid.x, tid.y));
                         #[cfg(feature = "dim3")]
-                        let global_node_id = global_chunk_id.node_id(UVec3::new(tid.x, tid.y, tid.z));
-                        let particle_id = rigid_nodes_linked_lists.at(global_node_id.id as usize).head;
+                        let global_node_id =
+                            global_chunk_id.node_id(UVec3::new(tid.x, tid.y, tid.z));
+                        let particle_id =
+                            rigid_nodes_linked_lists.at(global_node_id.id as usize).head;
                         shared_nodes.at_mut(shared_node_index).particle_id = particle_id;
                         shared_nodes.at_mut(shared_node_index).global_id = global_node_id.id;
                     } else {
@@ -363,18 +368,24 @@ fn fetch_next_particle(
 
                     #[cfg(feature = "dim2")]
                     {
-                        shared_primitives.write(shared_flat_index, SharedPrimitive {
-                            a: collider_vertices.read(rigid_idx.segment.x as usize).0,
-                            b: collider_vertices.read(rigid_idx.segment.y as usize).0,
-                        });
+                        shared_primitives.write(
+                            shared_flat_index,
+                            SharedPrimitive {
+                                a: collider_vertices.read(rigid_idx.segment.x as usize).0,
+                                b: collider_vertices.read(rigid_idx.segment.y as usize).0,
+                            },
+                        );
                     }
                     #[cfg(feature = "dim3")]
                     {
-                        shared_primitives.write(shared_flat_index, SharedPrimitive {
-                            a: collider_vertices.read(rigid_idx.triangle.x as usize).0,
-                            b: collider_vertices.read(rigid_idx.triangle.y as usize).0,
-                            c: collider_vertices.read(rigid_idx.triangle.z as usize).0,
-                        });
+                        shared_primitives.write(
+                            shared_flat_index,
+                            SharedPrimitive {
+                                a: collider_vertices.read(rigid_idx.triangle.x as usize).0,
+                                b: collider_vertices.read(rigid_idx.triangle.y as usize).0,
+                                c: collider_vertices.read(rigid_idx.triangle.z as usize).0,
+                            },
+                        );
                     }
 
                     let next_particle_id =
@@ -382,12 +393,15 @@ fn fetch_next_particle(
                     shared_nodes.at_mut(shared_flat_index).particle_id = next_particle_id;
                 } else {
                     shared_collider_ids.write(shared_flat_index, NONE);
-                    shared_primitives.write(shared_flat_index, SharedPrimitive {
-                        a: Vector::ZERO,
-                        b: Vector::ZERO,
-                        #[cfg(feature = "dim3")]
-                        c: Vector::ZERO,
-                    });
+                    shared_primitives.write(
+                        shared_flat_index,
+                        SharedPrimitive {
+                            a: Vector::ZERO,
+                            b: Vector::ZERO,
+                            #[cfg(feature = "dim3")]
+                            c: Vector::ZERO,
+                        },
+                    );
                 }
             }
         }
@@ -412,8 +426,7 @@ pub fn gpu_p2g_cdf(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
     rigid_nodes_linked_lists: &[NodeLinkedList],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particle_node_linked_lists: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
-    collider_vertices: &[PaddedVector],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] collider_vertices: &[PaddedVector],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     rigid_particle_indices: &[RigidParticleIndices],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] nodes: &mut [Node],
@@ -473,7 +486,9 @@ pub fn gpu_p2g_cdf(
         (vid.id.z * 4 + tid.z as i32) as f32,
     ) * grid.cell_width;
 
-    let global_id = shared_nodes.at(packed_cell_index_in_block as usize).global_id;
+    let global_id = shared_nodes
+        .at(packed_cell_index_in_block as usize)
+        .global_id;
     let mut node_cdf = nodes.at(global_id as usize).cdf;
 
     // Iterate through the linked list with uniform control flow.

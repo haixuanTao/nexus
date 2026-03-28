@@ -137,9 +137,7 @@ impl SimulationBackend for GpuBackend {
         if let Ok(results) = self.timestamps.read(gpu).await {
             let mut aggregated: Vec<(String, f64)> = Vec::new();
             for r in &results {
-                if let Some(existing) =
-                    aggregated.iter_mut().find(|(label, _)| label == &r.label)
-                {
+                if let Some(existing) = aggregated.iter_mut().find(|(label, _)| label == &r.label) {
                     existing.1 += r.duration_ms;
                 } else {
                     aggregated.push((r.label.clone(), r.duration_ms));
