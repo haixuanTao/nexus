@@ -19,7 +19,7 @@ use crunchy::unroll;
 use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::{
-    arch::workgroup_memory_barrier_with_group_sync,
+    sync::workgroup_memory_barrier_with_group_sync,
     macros::{spirv, spirv_bindgen},
 };
 use unroll::unroll_for_loops;

@@ -13,7 +13,7 @@ use core::ops::BitOrAssign;
 use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::{
-    arch::atomic_add_u32,
+    sync::atomic_add_u32,
     macros::{spirv, spirv_bindgen},
 };
 use nexus_rbd_shaders::MAX_FLT;
@@ -488,7 +488,7 @@ impl Grid {
         // It is up to the user to detect the high occupancy, resize the hashmap, and re-run
         // the failed insertion.
         for _ in 0..self.hmap_capacity {
-            let old_value = khal_std::arch::atomic_compare_exchange_u32(
+            let old_value = khal_std::sync::atomic_compare_exchange_u32(
                 &mut hmap_entries.at_mut(slot as usize).state,
                 packed_key,
                 NONE,
@@ -508,14 +508,14 @@ impl Grid {
             // CAS returned NONE. Either we wrote successfully, or it was a spurious
             // failure (weak CAS on WGSL/Metal). Verify with atomic_load (which is always strong).
             let current =
-                khal_std::arch::atomic_load_u32_shared(&hmap_entries.at(slot as usize).state);
+                khal_std::sync::atomic_load_u32_shared(&hmap_entries.at(slot as usize).state);
 
             if current == packed_key {
                 // Slot contains our key (we wrote it, or a same-key thread did).
                 // Use atomic_exchange on ownership to determine the unique owner.
                 // atomic_exchange is always strong (no weak variant in WGSL).
                 hmap_entries.at_mut(slot as usize).key = *key;
-                let prev = khal_std::arch::atomic_exchange_u32(
+                let prev = khal_std::sync::atomic_exchange_u32(
                     &mut hmap_entries.at_mut(slot as usize).ownership,
                     1,
                 );

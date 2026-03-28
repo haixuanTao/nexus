@@ -17,12 +17,12 @@ use crate::solver::particle::{Kinematics, Position, dir_to_associated_grid_node}
 use crate::{AngVector, Matrix, PaddingExt, TWO_WAYS_COUPLING_ENABLED, Vector};
 use core::ops::Range;
 use glamx::*;
-use khal_std::arch::{
+use khal_std::sync::{
     atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup,
 };
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::{
-    arch::workgroup_memory_barrier_with_group_sync,
+    sync::workgroup_memory_barrier_with_group_sync,
     macros::{spirv, spirv_bindgen},
 };
 use unroll::unroll_for_loops;

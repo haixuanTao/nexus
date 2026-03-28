@@ -15,11 +15,11 @@
 //! Workgroup size: 256 threads
 //! Shared memory: 16 atomic counters (one per bin)
 
-use khal_std::arch::workgroup_memory_barrier_with_group_sync;
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use khal_std::arch::atomic_add_u32_workgroup;
+use khal_std::sync::atomic_add_u32_workgroup;
 use khal_std::index::MaybeIndexUnchecked;
 
 use super::sorting::{BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, SortUniforms, WG, div_ceil};

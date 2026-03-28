@@ -27,7 +27,7 @@ use crate::{PaddedVector, Pose, Vector};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
-use khal_std::{arch::atomic_add_u32, iter::StepRng};
+use khal_std::{sync::atomic_add_u32, iter::StepRng};
 
 use crate::utils::{Slice, SliceMut};
 use glamx::UVec2;

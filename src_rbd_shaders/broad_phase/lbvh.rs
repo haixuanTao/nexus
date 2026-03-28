@@ -22,7 +22,7 @@ use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
 use crate::utils::{Slice, SliceMut, div_ceil};
 use crate::{PaddedVector, Pose, Vector};
-use khal_std::arch::{atomic_add_u32, control_barrier, workgroup_memory_barrier_with_group_sync};
+use khal_std::sync::{atomic_add_u32, control_barrier, workgroup_memory_barrier_with_group_sync};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::iter::StepRng;

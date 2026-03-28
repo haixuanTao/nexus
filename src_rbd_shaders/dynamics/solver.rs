@@ -6,7 +6,7 @@ use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::{AngVector, Pose, Vector};
-use khal_std::{arch::atomic_add_u32, index::MaybeIndexUnchecked, iter::StepRng};
+use khal_std::{sync::atomic_add_u32, index::MaybeIndexUnchecked, iter::StepRng};
 
 use super::body::{LocalMassProperties, Velocity, WorldMassProperties, integrate_velocity};
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};

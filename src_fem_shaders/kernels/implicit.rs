@@ -39,7 +39,7 @@ use crate::{
     unpad_vec,
 };
 use khal_std::{
-    arch::{atomic_add_f32, workgroup_memory_barrier_with_group_sync},
+    sync::{atomic_add_f32, workgroup_memory_barrier_with_group_sync},
     index::MaybeIndexUnchecked,
     macros::{spirv, spirv_bindgen},
 };

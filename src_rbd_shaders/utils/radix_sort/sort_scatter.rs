@@ -20,11 +20,11 @@
 //! Workgroup size: 256 threads
 //! Shared memory: Scratch arrays + histogram cache + local histogram
 
-use khal_std::arch::workgroup_memory_barrier_with_group_sync;
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use khal_std::{arch::atomic_add_u32_workgroup, iter::StepRng};
+use khal_std::{sync::atomic_add_u32_workgroup, iter::StepRng};
 
 use khal_std::index::MaybeIndexUnchecked;
 

@@ -8,7 +8,7 @@ use crate::grid::grid::Grid;
 use crate::models::default::{DefaultParticleModel, GpuParticleModel};
 use crate::solver::particle::{Kinematics, ParticleProperties};
 use crate::{DIM, Matrix, PaddedMatrix, sqrt};
-use khal_std::arch::atomic_min_u32;
+use khal_std::sync::atomic_min_u32;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 

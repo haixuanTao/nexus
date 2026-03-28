@@ -17,7 +17,7 @@
 
 use crate::grid::grid::*;
 use crate::solver::particle::{Position, associated_cell_index_in_block_off_by_one};
-use khal_std::arch::atomic_add_u32;
+use khal_std::sync::atomic_add_u32;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
@@ -131,13 +131,13 @@ pub fn gpu_mark_rigid_particles_needing_block(
         // needs its own block to ensure proper grid transfers.
         if i > 0 && i < NUM_ASSOC_BLOCKS as u32 {
             // Set the bit atomically.
-            khal_std::arch::atomic_or_u32(
+            khal_std::sync::atomic_or_u32(
                 &mut rigid_particle_needs_block.at_mut(entry_id),
                 entry_bit,
             );
         } else {
             // Clear the bit atomically.
-            khal_std::arch::atomic_and_u32(
+            khal_std::sync::atomic_and_u32(
                 &mut rigid_particle_needs_block.at_mut(entry_id),
                 !entry_bit,
             );
@@ -249,7 +249,7 @@ pub fn gpu_finalize_particles_sort(
         // Build per-node particle linked list.
         let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
         let node_global_id = active_block_id.physical_id().node_id(node_local_id);
-        let prev_head = khal_std::arch::atomic_exchange_u32(
+        let prev_head = khal_std::sync::atomic_exchange_u32(
             &mut nodes_linked_lists.at_mut(node_global_id.id as usize).head,
             id,
         );
@@ -292,7 +292,7 @@ pub fn gpu_sort_rigid_particles(
             // Build per-node rigid particle linked list.
             let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
             let node_global_id = active_block_id.physical_id().node_id(node_local_id);
-            let prev_head = khal_std::arch::atomic_exchange_u32(
+            let prev_head = khal_std::sync::atomic_exchange_u32(
                 &mut rigid_nodes_linked_lists
                     .at_mut(node_global_id.id as usize)
                     .head,

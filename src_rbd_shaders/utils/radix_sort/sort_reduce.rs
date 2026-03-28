@@ -11,7 +11,7 @@
 //! Workgroup size: 256 threads
 //! Shared memory: 256 entries for parallel reduction
 
-use khal_std::arch::workgroup_memory_barrier_with_group_sync;
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};

@@ -11,7 +11,7 @@
 use crate::material::{compute_stress, precompute};
 use crate::types::{ElementInfo, FemSimParams, VertexConstraint, VertexInfo, VertexState};
 use crate::{Matrix, VERTS_PER_ELEM, Vector, exp_f32, pad_vec, sqrt_f32, unpad_mat, unpad_vec};
-use khal_std::arch::atomic_add_f32;
+use khal_std::sync::atomic_add_f32;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
