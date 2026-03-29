@@ -86,10 +86,6 @@ pub async fn setup_graphics(
     let scene = scene_2d;
     #[cfg(feature = "dim3")]
     let scene = scene_3d;
-    #[cfg(feature = "dim2")]
-    let _ = scene_3d;
-    #[cfg(feature = "dim3")]
-    let _ = scene_2d;
     let fixed_color = Vec3::new(0.6, 0.6, 0.6);
 
     let mut instances = HashMap::new();

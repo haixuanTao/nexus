@@ -180,6 +180,7 @@ impl GpuPrefixSum {
 /// One stage in the multi-level prefix sum hierarchy.
 struct PrefixSumStage {
     /// Maximum number of elements this stage can handle.
+    #[allow(dead_code)]
     capacity: u32,
     /// GPU buffer for storing partial sums at this level.
     buffer: Tensor<u32>,

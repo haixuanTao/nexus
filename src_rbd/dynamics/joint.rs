@@ -260,6 +260,7 @@ pub struct GpuJointSolver {
 
 /// Arguments given to the joint solver.
 pub struct JointSolverArgs<'a> {
+    /// Number of constraint solving batches (iterations).
     pub num_batches: u32,
     /// The simulation parameters.
     pub sim_params: &'a Tensor<SimParams>,

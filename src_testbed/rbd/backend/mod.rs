@@ -30,6 +30,7 @@ pub trait SimulationBackend {
     fn num_batches(&self) -> usize;
 
     /// Step the simulation
+    #[allow(async_fn_in_trait)]
     async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RunStats;
 }
 

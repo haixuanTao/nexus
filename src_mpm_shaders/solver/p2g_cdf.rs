@@ -81,7 +81,7 @@ fn project_local_point_on_segment(a: Vec2, b: Vec2, point: Vec2) -> Vec2 {
 #[inline]
 fn p2g_cdf_step(
     packed_cell_index_in_block: u32,
-    cell_width: f32,
+    _cell_width: f32,
     cell_pos: Vector,
     shared_primitives: &[SharedPrimitive; NUM_SHARED_CELLS],
     shared_collider_ids: &[u32; NUM_SHARED_CELLS],
@@ -496,14 +496,16 @@ pub fn gpu_p2g_cdf(
 
     // Need to cap the iteration count on the web.
     #[cfg(feature = "web-compat")]
-    const K_RANGE: Range<u32> = 0..64;
+    #[allow(non_upper_case_globals)]
+    const k_range: Range<u32> = 0..64;
     #[cfg(not(feature = "web-compat"))]
-    let K_RANGE: Range<u32> = 0..len;
+    let k_range: Range<u32> = 0..len;
 
-    for _k in K_RANGE {
+    for _k in k_range {
         #[cfg(feature = "web-compat")]
         let ok = _k < len;
         #[cfg(not(feature = "web-compat"))]
+        #[allow(non_upper_case_globals)]
         const ok: bool = true;
 
         workgroup_memory_barrier_with_group_sync();

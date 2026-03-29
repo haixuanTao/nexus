@@ -170,7 +170,6 @@ fn particle_g2p<const USE_CPIC: bool>(
     // G2P
     if particles_kin.at(particle_id as usize).enabled != 0 {
         let particle_pos = particles_pos.read(particle_id as usize);
-        let particle_vel = particles_kin.at(particle_id as usize).velocity;
         let particle_cdf = particles_kin.at(particle_id as usize).cdf;
 
         let inv_d = QuadraticKernel::inv_d(cell_width);

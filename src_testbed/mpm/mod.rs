@@ -3,7 +3,6 @@ pub mod step;
 
 pub use data::*;
 
-use crate::RunState;
 use khal::Shader;
 use khal::backend::{GpuBackend as KhalGpuBackend, GpuTimestamps};
 use kiss3d::prelude::*;

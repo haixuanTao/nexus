@@ -3,7 +3,6 @@ use crate::mpm_shaders::solver::particle::{
 };
 use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use crate::solver::particle_model::GpuParticleModelData;
-use glamx::{Mat2, Mat3, Vec2, Vec3, Vec4};
 use khal::BufferUsages;
 use khal::backend::{Backend, GpuBackend, GpuBackendError};
 use nexus_rbd::dynamics::GpuBodySet;
@@ -15,7 +14,6 @@ use vortx::tensor::Tensor;
 use {
     crate::sampling::{self, SamplingBuffers, SamplingParams},
     nexus_rbd::dynamics::body::RapierBodyCouplingEntry,
-    nexus_rbd::shapes::ShapeBuffers,
 };
 
 /// Particle position type used on the GPU.

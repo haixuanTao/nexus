@@ -4,7 +4,7 @@
 //! including their poses, velocities, forces, and mass properties. It also provides
 //! [`GpuBodySet`] for managing collections of rigid bodies in GPU memory.
 
-use crate::math::{Point, Pose, Vector};
+use crate::math::{Pose, Vector};
 use crate::shapes::ShapeBuffers;
 
 use crate::shaders::dynamics::{LocalMassProperties, Velocity, WorldMassProperties};
@@ -31,14 +31,23 @@ use {
 pub struct GpuBodySet {
     len: u32,
     shapes_data: Vec<Shape>,
+    /// World-space mass properties for each body.
     pub mprops: Tensor<WorldMassProperties>,
+    /// Local-space mass properties for each body.
     pub local_mprops: Tensor<LocalMassProperties>,
+    /// Velocities (linear + angular) for each body.
     pub vels: Tensor<Velocity>,
+    /// Poses (position + orientation) for each body.
     pub poses: Tensor<Pose>,
+    /// Shape descriptors for each collider.
     pub shapes: Tensor<Shape>,
+    /// Vertex positions in local space for each collider shape.
     pub shapes_local_vertex_buffers: Tensor<PaddedVector>,
+    /// Vertex positions in world space for each collider shape.
     pub shapes_vertex_buffers: Tensor<PaddedVector>,
+    /// Triangle index buffers for each collider shape.
     pub shapes_index_buffers: Tensor<u32>,
+    /// Collider ID for each vertex.
     pub shapes_vertex_collider_id: Tensor<u32>,
 }
 

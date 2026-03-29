@@ -8,7 +8,6 @@ edition = { workspace = true }
 license = { workspace = true }
 
 [lib]
-crate-type = ["cdylib", "rlib"]
 path = "../../src_mpm_shaders/lib.rs"
 
 [lints]
@@ -25,6 +24,7 @@ push_constants = []
 # Enables some changes in the shaders for compatibility with web platforms.
 web-compat = []
 cpu = []
+cuda = []
 
 [dependencies]
 nexus_rbd_shaders3d = { path = "../nexus_rbd_shaders3d", default-features = false, features = ["dim3"] }

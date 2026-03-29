@@ -175,13 +175,11 @@ fn particle_g2p(
     _dt: f32,
     shared_nodes: &[NodeCdf; NUM_SHARED_CELLS],
 ) {
-    let mut contact_dist = 0.0f32;
     let mut particle_affinity = AffinityBits::EMPTY;
     let mut affinity_signs = [0.0f32; 16];
 
     let prev_affinity = particles_kin.at(particle_id as usize).cdf.affinity;
     let particle_pos = particles_pos.read(particle_id as usize);
-    let inv_d = QuadraticKernel::inv_d(cell_width);
     let ref_elt_pos_minus_particle_pos = dir_to_associated_grid_node(&particle_pos, cell_width);
     let w = QuadraticKernel::precompute_weights(ref_elt_pos_minus_particle_pos, cell_width);
 

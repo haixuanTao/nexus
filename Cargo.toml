@@ -27,18 +27,6 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dimforge/nexus"
 
-[workspace.features]
-default = ["webgpu", "f32"]
-dim2 = []
-dim3 = []
-f32 = []
-f64 = []
-webgpu = ["khal/webgpu"]
-cpu = []  # Enables CPU shader execution
-cpu-parallel = ["cpu"]  # Enables CPU shader execution with rayon parallelism
-cuda = ["khal/cuda"]  # Enables CUDA backend
-from_rapier = []  # Enables conversion from rapier types
-
 [workspace.dependencies]
 glamx = { version = "0.1", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
@@ -61,7 +49,7 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [patch.crates-io]
-glamx = { git = "https://github.com/dimforge/glamx", branch = "bytemuck"}
+#glamx = { git = "https://github.com/dimforge/glamx", branch = "bytemuck"}
 #parry2d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
 #parry3d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
 khal = { path = "../khal/crates/khal" }
@@ -70,7 +58,7 @@ khal-std = { path = "../khal/crates/khal-std" }
 vortx = { path = "../vortx" }
 vortx-shaders = { path = "../vortx/vortx-shaders" }
 
-#glamx = { path = "../glamx" }
+glamx = { path = "../glamx" }
 #kiss3d = { path = "../kiss3d" }
 parry2d = { path = "../parry/crates/parry2d" }
 parry3d = { path = "../parry/crates/parry3d" }

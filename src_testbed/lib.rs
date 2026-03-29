@@ -473,9 +473,7 @@ impl Testbed {
                     render_ctx,
                 }
             }
-            DemoBuilder::Mpm(_, _builder, _) => {
-                let _builder = *_builder;
-
+            DemoBuilder::Mpm(_, _, _) => {
                 let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
                     #[cfg(feature = "cpu")]
                     {
@@ -539,9 +537,7 @@ impl Testbed {
                     rigid_particle_node,
                 }
             }
-            DemoBuilder::Fem(_, _builder, _) => {
-                let _builder = *_builder;
-
+            DemoBuilder::Fem(_, _, _) => {
                 let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
                     #[cfg(feature = "cpu")]
                     {

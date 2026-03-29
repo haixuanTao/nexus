@@ -21,6 +21,7 @@ default = ["dim3"]
 dim3 = []
 unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
 cpu = []
+cuda = []
 
 [dependencies]
 vortx-shaders = { workspace = true }

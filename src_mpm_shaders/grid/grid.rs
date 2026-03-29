@@ -629,7 +629,7 @@ impl AffinityBits {
     }
 
     pub fn set_unsigned_bits(&mut self, other: Self) {
-        self.0 |= (other.0 & Self::AFFINITY_BITS_MASK);
+        self.0 |= other.0 & Self::AFFINITY_BITS_MASK;
     }
 
     pub fn set_bit(&mut self, i_collider: u32, signed: bool) {
@@ -645,7 +645,7 @@ impl AffinityBits {
     }
 
     pub fn or_sign_bit(&mut self, affinity2: Self, i_collider: u32) {
-        self.0 |= (affinity2.0 & (0x00010000u32 << i_collider));
+        self.0 |= affinity2.0 & (0x00010000u32 << i_collider);
     }
 
     /// Checks if two affinity fields are compatible (same sign for all shared affinities).

@@ -562,10 +562,6 @@ pub fn gpu_pcg_scatter_Ap(
     let s3 = unpad_vec(elem.S[3]);
 
     // For each vertex ki, compute Ap contribution from all vertices km.
-    #[cfg(feature = "dim2")]
-    let p_verts = [p0, p1, p2];
-    #[cfg(feature = "dim3")]
-    let p_verts = [p0, p1, p2, p3];
 
     // Vertex 0
     let mut ap0 = s_H_s_block(s[0], &hessian, s[0]) * p0

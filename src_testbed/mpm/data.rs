@@ -1,4 +1,3 @@
-use crate::RunState;
 use crate::mpm::step::SimulationStepResult;
 use khal::backend::GpuBackend;
 use nexus::mpm::pipeline::{MpmData, MpmPipeline};

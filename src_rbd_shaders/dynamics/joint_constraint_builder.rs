@@ -739,12 +739,6 @@ pub fn update_constraint(
     // The has_lin/ang_coupling test is needed to avoid shl overflow later.
     let has_lin_coupling = (coupled_axes & LIN_AXES_MASK) != 0;
     let first_coupled_lin_axis_id = (coupled_axes & LIN_AXES_MASK).trailing_zeros() as usize;
-
-    #[cfg(feature = "dim3")]
-    let _has_ang_coupling = (coupled_axes & ANG_AXES_MASK) != 0;
-    #[cfg(feature = "dim3")]
-    let _first_coupled_ang_axis_id = (coupled_axes & ANG_AXES_MASK).trailing_zeros() as usize;
-
     let helper = new_helper(frame1, frame2, mprops1.com, mprops2.com, locked_axes);
 
     let mut start = len;

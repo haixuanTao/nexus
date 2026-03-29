@@ -12,7 +12,7 @@ use crate::mpm_shaders::solver::timestep_bound::{
 };
 use crate::solver::{GpuParticleModelData, GpuParticles};
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
-use khal::{BufferUsages, Shader};
+use khal::Shader;
 use vortx::tensor::Tensor;
 
 /// GPU kernel responsible for computing an estimate on the maximum timestep that can

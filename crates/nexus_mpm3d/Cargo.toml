@@ -26,7 +26,7 @@ webgpu = ["khal/webgpu"]
 from_rapier = ["rapier3d", "parry3d", "nexus_rbd3d/from_rapier"]
 cpu = ["nexus_mpm_shaders3d/cpu", "nexus_rbd3d/cpu", "vortx/cpu"]
 cpu-parallel = ["cpu", "nexus_rbd3d/cpu-parallel", "vortx/cpu-parallel"]
-cuda = ["khal/cuda"]
+cuda = ["khal/cuda", "khal-builder/cuda", "nexus_mpm_shaders3d/cuda"]
 
 [dependencies]
 nexus_mpm_shaders3d = { path = "../nexus_mpm_shaders3d" }

@@ -11,7 +11,7 @@ use crate::solver::{
     SimulationParams, WgG2P, WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgIntegrateBodies, WgP2G,
     WgP2GCdf, WgParticleUpdate, WgRigidParticleUpdate, WgTimestepBounds,
 };
-use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
+use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use nexus_rbd::dynamics::GpuBodySet;
 use nexus_rbd::math::{Pose, Vector};

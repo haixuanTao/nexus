@@ -566,14 +566,16 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     let len = *max_linked_list_length_uniform;
 
     #[cfg(feature = "web-compat")] // Need to cap the iteration count on the web.
-    const K_RANGE: Range<u32> = 0..64;
+    #[allow(non_upper_case_globals)]
+    const k_range: Range<u32> = 0..64;
     #[cfg(not(feature = "web-compat"))]
-    let K_RANGE: Range<u32> = 0..len;
+    let k_range: Range<u32> = 0..len;
 
-    for _k in K_RANGE {
+    for _k in k_range {
         #[cfg(feature = "web-compat")]
         let ok = _k < len;
         #[cfg(not(feature = "web-compat"))]
+        #[allow(non_upper_case_globals)]
         const ok: bool = true;
 
         workgroup_memory_barrier_with_group_sync();

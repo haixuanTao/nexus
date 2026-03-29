@@ -613,7 +613,7 @@ impl GpuPhysicsPipeline {
                 validate_lbvh_topology(&tree, &sorted_colliders, num_colliders);
 
                 encoder = backend.begin_encoding();
-                pass = encoder.begin_pass("broad-phase-find-pairs", timestamps.as_deref_mut());
+                let _pass = encoder.begin_pass("broad-phase-find-pairs", timestamps.as_deref_mut());
             }
 
             let mut pass = encoder.begin_pass("lbvh-find-pairs", timestamps.as_deref_mut());

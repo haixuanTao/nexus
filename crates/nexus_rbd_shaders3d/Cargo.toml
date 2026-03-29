@@ -8,7 +8,6 @@ edition = { workspace = true }
 license = { workspace = true }
 
 [lib]
-crate-type = ["cdylib", "rlib"]
 path = "../../src_rbd_shaders/lib.rs"
 
 [lints]
@@ -23,6 +22,7 @@ dim3 = []
 unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
 push_constants = []
 cpu = []
+cuda = []
 
 [dependencies]
 vortx-shaders = { workspace = true }

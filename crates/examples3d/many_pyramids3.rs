@@ -37,7 +37,6 @@ fn build() -> SimulationState {
     let mut bodies = RigidBodySet::new();
     let mut colliders = ColliderSet::new();
     let impulse_joints = ImpulseJointSet::new();
-    let _multibody_joints = MultibodyJointSet::new();
 
     let rad = 0.5;
     let pyramid_count = 40;

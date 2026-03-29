@@ -11,6 +11,7 @@ use crate::{Matrix, PaddedMatrix, PaddingExt, Vector, abs, acos, cos, diag, sqrt
 use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use crate::glamx::MatExt;
 
 const TAU: f32 = 6.283185307179586;
 
@@ -92,66 +93,6 @@ fn fclamp(x: f32, lo: f32, hi: f32) -> f32 {
     }
 }
 
-/// Compute singular values of a 2x2 matrix from eigenvalues of M^T * M.
-#[cfg(feature = "dim2")]
-#[inline]
-fn singular_values(m: Matrix) -> Vector {
-    let mtm = m.transpose() * m;
-    let a = mtm.x_axis.x;
-    let b = mtm.y_axis.x;
-    let c = mtm.y_axis.y;
-    let avg = (a + c) * 0.5;
-    let half_diff = (a - c) * 0.5;
-    let diff = sqrt(half_diff * half_diff + b * b);
-    let s1 = sqrt(fmax(avg + diff, 0.0));
-    let s2 = sqrt(fmax(avg - diff, 0.0));
-    Vec2::new(s1, s2)
-}
-
-/// Compute singular values of a 3x3 matrix from eigenvalues of M^T * M.
-#[cfg(feature = "dim3")]
-#[inline]
-fn singular_values(m: Matrix) -> Vector {
-    let mtm = m.transpose() * m;
-    let a11 = mtm.x_axis.x;
-    let a12 = mtm.y_axis.x;
-    let a13 = mtm.z_axis.x;
-    let a22 = mtm.y_axis.y;
-    let a23 = mtm.z_axis.y;
-    let a33 = mtm.z_axis.z;
-
-    let c2 = a11 + a22 + a33; // trace
-    let c1 = a12 * a12 + a13 * a13 + a23 * a23 - a11 * a22 - a11 * a33 - a22 * a33;
-    let c0 = a11 * a22 * a33 + 2.0 * a12 * a13 * a23
-        - a11 * a23 * a23
-        - a22 * a13 * a13
-        - a33 * a12 * a12;
-
-    let p = c2 * c2 + 3.0 * c1;
-    let q = -(2.0 * c2 * c2 * c2 + 9.0 * c1 * c2 - 27.0 * c0);
-
-    let p = fmax(p / 9.0, 0.0);
-    let disc = fmax(q * q - 4.0 * p * p * p, 0.0);
-    let _ = disc;
-
-    if p < 1e-10 {
-        let v = c2 / 3.0;
-        Vec3::new(sqrt(fmax(v, 0.0)), sqrt(fmax(v, 0.0)), sqrt(fmax(v, 0.0)))
-    } else {
-        let phi = acos(fclamp(q / (2.0 * p * sqrt(p)), -1.0, 1.0));
-        let sqrt_p = sqrt(p);
-        let base = c2 / 3.0;
-        let e1 = base + 2.0 * sqrt_p * cos(phi / 3.0);
-        let e2 = base + 2.0 * sqrt_p * cos((phi - TAU) / 3.0);
-        let e3 = base + 2.0 * sqrt_p * cos((phi + TAU) / 3.0);
-        Vec3::new(
-            sqrt(fmax(e1, 0.0)),
-            sqrt(fmax(e2, 0.0)),
-            sqrt(fmax(e3, 0.0)),
-        )
-    }
-}
-
 /// Compute the clamped and scaled deformation matrix for rendering.
 #[cfg(feature = "dim2")]
 #[inline]
@@ -197,7 +138,7 @@ fn compute_color(
         let c = Vec2::new(abs(vel.x), abs(vel.y)) * dt * 100.0 + Vec2::splat(0.2);
         Vec4::new(c.x, c.y, base_color.z, base_color.w)
     } else if mode == RENDER_MODE_VOLUME {
-        let sv = singular_values(*def_grad);
+        let sv = def_grad.svd().s;
         let c = (Vec2::ONE - sv) / 0.005 + Vec2::splat(0.2);
         Vec4::new(c.x, c.y, base_color.z, base_color.w)
     } else if mode == RENDER_MODE_PHASE {
@@ -254,7 +195,7 @@ fn compute_color(
         let c = Vec3::new(abs(vel.x), abs(vel.y), abs(vel.z)) * dt * 100.0 + Vec3::splat(0.2);
         Vec4::new(c.x, c.y, c.z, base_color.w)
     } else if mode == RENDER_MODE_VOLUME {
-        let sv = singular_values(def_grad.remove_padding());
+        let sv = def_grad.remove_padding().svd().s;
         let c = (Vec3::ONE - sv) / 0.005 + Vec3::splat(0.2);
         Vec4::new(c.x, c.y, c.z, base_color.w)
     } else if mode == RENDER_MODE_PHASE {

@@ -26,7 +26,7 @@ webgpu = ["khal/webgpu"]
 from_rapier = ["rapier2d", "parry2d"]
 cpu = ["nexus_rbd_shaders2d/cpu", "vortx/cpu"]
 cpu-parallel = ["cpu", "vortx/cpu-parallel"]
-cuda = ["khal/cuda"]
+cuda = ["khal/cuda", "khal-builder/cuda", "nexus_rbd_shaders2d/cuda"]
 
 [dependencies]
 nexus_rbd_shaders2d = { path = "../nexus_rbd_shaders2d" }

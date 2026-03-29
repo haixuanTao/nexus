@@ -10,8 +10,6 @@ use crate::solver::GpuRigidParticles;
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
 use nexus_rbd::dynamics::GpuBodySet;
-use nexus_rbd::math::Vector;
-
 /// GPU kernels for updating rigid body particle positions.
 ///
 /// Transforms surface-sampled particles from local to world coordinates
@@ -21,6 +19,7 @@ pub struct WgRigidParticleUpdate {
     /// Kernel for transforming sample points.
     transform_sample_points: GpuTransformSamplePoints,
     /// Kernel for transforming shape vertex points.
+    #[allow(dead_code)]
     transform_shape_points: GpuTransformShapePoints,
 }
 

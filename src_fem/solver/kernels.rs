@@ -34,6 +34,7 @@ pub struct WgImplicitStep {
     pub(crate) init_implicit_step: GpuInitImplicitStep,
     pub(crate) precompute_material: GpuPrecomputeMaterial,
     pub(crate) compute_egh: GpuComputeEgh,
+    #[allow(dead_code)]
     pub(crate) compute_eg: GpuComputeEg,
     // Force assembly
     pub(crate) scatter_elastic_force_diag: GpuScatterElasticForceDiag,
