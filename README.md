@@ -1,4 +1,14 @@
-# nexus: cross-platform GPU physics simulation
+<p align="center">
+  <img src="assets/nexus-logo.png" height="200px">
+<br/>
+<p align="center" style="font-size: xx-large">
+        Cross-platform GPU multiphysics simulation
+</p>
+<p align="center">
+    <a href="https://discord.gg/vt9DJSW">
+        <img src="https://img.shields.io/discord/507548572338880513.svg?logo=discord&colorB=7289DA">
+    </a>
+</p>
 
 **/!\ This library is still under heavy development and is still missing many features.**
 
