@@ -1,30 +1,14 @@
 //! Collision detection for MPM grid nodes against collider shapes.
-//!
-//! Provides the `collide` function that tests a point against all collision
-//! shapes and returns the nearest contact distance field (CDF) data.
 
 use crate::grid::grid::{AffinityBits, NONE, NodeCdf};
 use crate::nexus_rbd_shaders::shapes::{SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH, Shape};
 use crate::{Pose, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 
-/// Tests a point against all collision shapes and returns the nearest
-/// contact distance field (CDF) data.
+/// Tests a point against all collision shapes and returns the nearest CDF data.
 ///
 /// For each non-polyline, non-trimesh shape, projects the point onto
-/// the shape boundary and tracks:
-/// - The distance to the closest collider surface.
-/// - Affinity bits (which colliders are nearby and whether the point is inside).
-/// - The ID of the closest collider.
-///
-/// # Parameters
-/// - `collision_shapes`: Buffer of collision shapes.
-/// - `collision_shape_poses`: Buffer of transforms (poses) for each shape.
-/// - `cell_width`: Grid cell width, used to cap the search distance.
-/// - `point`: The world-space point to test.
-///
-/// # Returns
-/// A `NodeCdf` with the distance, affinity bits, and closest collider ID.
+/// the shape boundary and tracks distance, affinity bits, and closest collider ID.
 pub fn collide(
     collision_shapes: &[Shape],
     collision_shape_poses: &[Pose],

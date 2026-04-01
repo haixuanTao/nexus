@@ -194,24 +194,7 @@ impl GpuColoring {
 
     /// Executes Luby's randomized graph coloring algorithm.
     ///
-    /// This method runs Luby's algorithm iteratively until all constraints are colored.
-    /// Each iteration assigns one color to a subset of constraints.
-    ///
-    /// # Parameters
-    ///
-    /// - `backend`: GPU backend for command submission
-    /// - `args`: Coloring arguments containing constraint graph buffers
-    /// - `stats`: Statistics structure to record coloring performance
-    ///
-    /// # Returns
-    ///
-    /// The total number of colors used. **Note**: Colors are 1-indexed, so valid
-    /// color indices are `[1..result]`.
-    ///
-    /// # CPU-GPU Synchronization
-    ///
-    /// This method requires CPU-GPU synchronization after each iteration to check
-    /// if any constraints remain uncolored, which can add overhead.
+    /// Returns the total number of colors used (1-indexed).
     pub async fn dispatch_luby<'a>(
         &self,
         backend: &GpuBackend,
@@ -264,26 +247,8 @@ impl GpuColoring {
 
     /// Executes the TOPO-GC (Topological Graph Coloring) algorithm.
     ///
-    /// TOPO-GC is the primary coloring algorithm, typically faster and producing fewer colors
-    /// than Luby. It may fail to converge for very complex graphs, in which case it returns
-    /// `None` and the caller should fall back to [`dispatch_luby`](Self::dispatch_luby).
-    ///
-    /// # Parameters
-    ///
-    /// - `backend`: GPU backend for command submission
-    /// - `args`: Coloring arguments containing constraint graph buffers
-    /// - `stats`: Statistics structure to record coloring performance
-    ///
-    /// # Returns
-    ///
-    /// - `Some(num_colors)` if coloring succeeded. **Note**: Colors are 1-indexed.
-    /// - `None` if the algorithm failed to converge (exceeded iteration limit).
-    ///
-    /// # Performance Optimization
-    ///
-    /// To reduce CPU-GPU synchronization overhead, this method batches 10 iterations
-    /// per readback. In the future, the batch size could be dynamically adjusted based on previous
-    /// frame's convergence rate for better performance.
+    /// Returns `Some(num_colors)` (1-indexed) on success, or `None` if convergence
+    /// fails (caller should fall back to [`dispatch_luby`](Self::dispatch_luby)).
     pub async fn dispatch_topo_gc<'a>(
         &self,
         backend: &GpuBackend,

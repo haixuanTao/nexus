@@ -1,19 +1,4 @@
-//! Contact Computation Module
-//!
-//! This module provides high-level contact computation functions for various shape pairs.
-//! Each function implements the narrow-phase collision detection algorithm specific to
-//! that pair of shape types.
-//!
-//! Implemented shape pairs:
-//! - Ball-Ball: Analytical distance-based computation
-//! - Cuboid-Ball: Point projection onto cuboid boundary
-//! - Ball-Cuboid: Inverse of cuboid-ball with coordinate transform
-//! - Cuboid-Cuboid: SAT + polygonal feature clipping
-//!
-//! Algorithm patterns:
-//! - Simple shapes (ball-ball): Direct analytical formulas
-//! - Mixed shapes (cuboid-ball): Point projection + distance test
-//! - Complex shapes (cuboid-cuboid): Multi-stage SAT + clipping + reduction
+//! Contact computation for shape pairs (ball-ball, cuboid-ball, cuboid-cuboid, etc).
 //!
 //! All functions operate in the local frame of the first shape, with the second
 //! shape's pose provided as a relative transform.

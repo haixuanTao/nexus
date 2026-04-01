@@ -43,14 +43,6 @@ impl GpuImpulses {
 
 impl WgIntegrateBodies {
     /// Computes and applies impulses to rigid bodies from MPM grid.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass
-    /// * `grid` - Grid containing accumulated momentum
-    /// * `sim_params` - Simulation parameters
-    /// * `impulses` - Impulse buffers to write
-    /// * `bodies` - Target rigid bodies
     pub fn launch(
         &self,
         pass: &mut GpuPass,
@@ -79,12 +71,6 @@ impl WgIntegrateBodies {
     /// Updates world-space mass properties for rigid bodies.
     ///
     /// Transforms local inertia tensors to world coordinates based on current poses.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass
-    /// * `impulses` - Impulse buffers (updated with center of mass)
-    /// * `bodies` - Bodies to update
     pub fn launch_update_world_mass_properties(
         &self,
         pass: &mut GpuPass,

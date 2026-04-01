@@ -1,24 +1,7 @@
-//! Constraint warmstarting (impulse caching across frames)
+//! Constraint warmstarting (impulse caching across frames).
 //!
-//! This module implements constraint warmstarting to transfer impulses solved at step `n - 1`
-//! to the constraint waiting to be solved at step `n`.
-//!
-//! What is Warmstarting?
-//! Instead of starting each frame's constraint solving from zero impulses, we
-//! reuse impulses from the previous frame as initial guesses. This dramatically
-//! reduces the number of iterations needed for convergence.
-//!
-//! Why Warmstarting Works:
-//! - Physics simulations have temporal coherence: contacts from one frame are
-//!   likely to persist to the next frame with similar impulse magnitudes
-//! - Starting from a good initial guess (previous frame's solution) means fewer
-//!   iterations to reach the correct solution
-//! - Improves stability by preventing sudden impulse changes between frames
-//!
-//! Contact Point Matching:
-//! - Contacts are matched by proximity in local coordinates.
-//! - Distance threshold: currently set to 10cm.
-//! - This handles small movements and minor geometry changes.
+//! Transfers impulses from frame `n-1` to frame `n` as initial guesses for the solver.
+//! Contacts are matched by proximity in local coordinates (threshold: 10cm).
 
 use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
@@ -77,22 +60,6 @@ pub fn gpu_transfer_warmstart_impulses(
 }
 
 /// Transfers warmstart impulses from previous frame to current frame.
-///
-/// For each new constraint:
-/// 1. Identify the two bodies involved
-/// 2. Search old constraints for matching body pair
-/// 3. Match contact points by local position proximity
-/// 4. Copy accumulated impulses if match found
-///
-/// Assumptions:
-/// - Solver body IDs in constraints match the body array indices
-/// - Body pair order is consistent across frames (A,B not swapped to B,A)
-/// - Contact points don't move more than 10cm in local space
-///
-/// Contact Point Matching:
-/// - Compares local_pt_a and local_pt_b for proximity
-/// - Distance threshold: 10cm (sq_threshold = 0.01 m²)
-/// - Handles small movements and rotations
 ///
 /// NOTE: this assumes that the solver body ids in the constraints match the index of the body itself.
 ///       This also assumes that bodies in a given constraint pair are always in the same order (they don't

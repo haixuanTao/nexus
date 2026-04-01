@@ -131,17 +131,8 @@ pub struct GpuPhysicsState {
 impl GpuPhysicsState {
     /// Creates a new GPU physics state from per-environment Rapier data structures.
     ///
-    /// Each environment can have different rigid bodies, colliders, joints, and sim params.
     /// Environments with fewer colliders/joints are padded with dummy fixed bodies.
-    ///
-    /// # Parameters
-    ///
-    /// - `backend`: The GPU backend used to allocate GPU buffers.
-    /// - `environments`: Per-environment data: (bodies, colliders, joints, sim_params).
-    ///
-    /// # Panics
-    ///
-    /// Panics if any rigid body has more than one collider attached, as this is not currently supported.
+    /// Panics if any rigid body has more than one collider attached.
     pub fn from_rapier(
         backend: &GpuBackend,
         environments: &[(&RigidBodySet, &ColliderSet, &ImpulseJointSet, &GpuSimParams)],
@@ -496,17 +487,6 @@ impl GpuPhysicsState {
 }
 
 /// The main GPU physics pipeline coordinating all simulation stages.
-///
-/// This structure contains all the compute shaders needed to run a complete physics simulation
-/// on the GPU. It orchestrates the following stages in each simulation step:
-///
-/// 1. **Gravity application**: Updates velocities with gravitational forces.
-/// 2. **Broad-phase**: Uses LBVH to find potentially colliding pairs.
-/// 3. **Narrow-phase**: Generates detailed contact information for collision pairs.
-/// 4. **Constraint preparation**: Converts contacts into solver constraints.
-/// 5. **Graph coloring**: Colors constraints to enable parallel solving.
-/// 6. **Constraint solving**: Iteratively solves constraints using TGS or PGS.
-/// 7. **Integration**: Updates poses based on solved velocities.
 pub struct GpuPhysicsPipeline {
     mprops_update: GpuMpropsUpdate,
     narrow_phase: GpuNarrowPhase,
@@ -537,19 +517,7 @@ impl GpuPhysicsPipeline {
 
     /// Executes one physics simulation timestep on the GPU.
     ///
-    /// This method runs the complete physics pipeline:
-    /// 1. Update world-space mass-properties.
-    /// 2. Builds LBVH and finds collision pairs (broad-phase).
-    /// 3. Generates contact manifolds (narrow-phase).
-    /// 4. Prepares solver constraints from contacts.
-    /// 5. Colors constraints for parallel solving.
-    /// 6. Solves constraints iteratively using TGS.
-    /// 7. Integrates velocities to update poses.
-    ///
-    /// # Buffer Resizing
-    ///
-    /// If the number of collision pairs exceeds buffer capacity, this method automatically
-    /// allocates larger buffers (next power of two) and re-runs the broad-phase.
+    /// Automatically resizes buffers (next power of two) if collision pair count exceeds capacity.
     pub async fn step(
         &self,
         backend: &GpuBackend,

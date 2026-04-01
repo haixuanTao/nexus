@@ -22,24 +22,6 @@ pub struct WgGrid {
 
 impl WgGrid {
     /// Sorts particles into grid cells and allocates sparse grid blocks.
-    ///
-    /// This orchestrates the entire particle sorting process including:
-    /// 1. Resetting the grid hashmap
-    /// 2. Touching blocks where particles exist
-    /// 3. Computing per-block particle counts
-    /// 4. Running prefix sums for particle indexing
-    /// 5. Finalizing sorted particle IDs
-    ///
-    /// # Arguments
-    ///
-    /// * `backend` - GPU backend
-    /// * `pass` - Compute pass
-    /// * `particles` - MPM particles to sort
-    /// * `rigid_particles` - Rigid body particles to consider
-    /// * `grid` - Target grid
-    /// * `prefix_sum` - Workspace for prefix sum operations
-    /// * `sort_module` - Sorting compute kernels
-    /// * `prefix_sum_module` - Prefix sum kernel
     pub fn launch_sort<GpuModel: GpuParticleModelData>(
         &self,
         backend: &GpuBackend,
@@ -251,12 +233,6 @@ impl GpuGrid {
     }
 
     /// Creates a new sparse grid with the specified capacity.
-    ///
-    /// # Arguments
-    ///
-    /// * `backend` - GPU backend for buffer allocation
-    /// * `capacity` - Maximum number of grid blocks (rounded up to power of 2)
-    /// * `cell_width` - Width of each grid cell in meters
     pub fn with_capacity(
         backend: &GpuBackend,
         capacity: u32,

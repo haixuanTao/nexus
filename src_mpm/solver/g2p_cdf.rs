@@ -18,13 +18,6 @@ pub struct WgG2PCdf {
 
 impl WgG2PCdf {
     /// Launches G2P with CDF updates for MPM particles.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass
-    /// * `sim_params` - Simulation parameters
-    /// * `grid` - Source grid
-    /// * `particles` - Target particles to update
     pub fn launch<GpuModel: GpuParticleModelData>(
         &self,
         pass: &mut GpuPass,

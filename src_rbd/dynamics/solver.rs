@@ -120,24 +120,7 @@ pub struct SolverArgs<'a> {
 }
 
 impl GpuSolver {
-    /// Prepares constraints for solving.
-    ///
-    /// This method:
-    /// 1. Clears solver velocities and constraint counts
-    /// 2. Initializes constraints from contact manifolds
-    /// 3. Performs prefix sum to build body-to-constraint mapping
-    /// 4. Sorts constraints by body pairs
-    ///
-    /// # Parameters
-    ///
-    /// - `pass`: The compute pass to record commands into
-    /// - `args`: Solver arguments containing all necessary buffers
-    /// - `prefix_sum_workspace`: Workspace for the prefix sum algorithm
-    ///
-    /// # GPU Performance
-    ///
-    /// Uses indirect dispatches based on the number of contacts, allowing the GPU
-    /// to handle variable workloads efficiently.
+    /// Prepares constraints for solving (init, prefix sum, sort).
     pub fn prepare<'a>(
         &self,
         backend: &GpuBackend,
@@ -199,19 +182,6 @@ impl GpuSolver {
     }
 
     /// Solves constraints using the TGS (Total Gauss-Seidel) algorithm.
-    ///
-    /// TGS is a constraint solver that provides better stability and convergence
-    /// than traditional PGS. It uses multiple substeps with intermediate position integration
-    /// and separate phases for bias (penetration correction) and velocity solving.
-    ///
-    /// # Algorithm Steps (per substep)
-    ///
-    /// 1. Apply accumulated velocity increments.
-    /// 2. Update nonlinear constraint terms based on new positions.
-    /// 3. Warmstart: apply previous frame's impulses.
-    /// 4. Solve with bias: correct penetrations.
-    /// 5. Integrate positions.
-    /// 6. Solve without bias: solve for velocities only.
     pub fn solve_tgs<'a>(
         &self,
         pass: &mut GpuPass,

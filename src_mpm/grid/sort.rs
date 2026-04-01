@@ -30,14 +30,6 @@ pub struct WgSort {
 
 impl WgSort {
     /// Sorts rigid body particles into grid cells.
-    ///
-    /// Builds spatial linked lists for efficient rigid-MPM particle interactions.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass
-    /// * `rigid_particles` - Rigid body surface particles to sort
-    /// * `grid` - Target grid structure
     pub fn launch_sort_rigid_particles(
         &self,
         pass: &mut khal::backend::GpuPass,

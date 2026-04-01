@@ -24,13 +24,6 @@ pub struct WgParticleUpdate {
 
 impl WgParticleUpdate {
     /// Launches the particle update kernel.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass to record commands into
-    /// * `sim_params` - Simulation parameters (timestep, gravity)
-    /// * `grid` - Grid metadata for boundary conditions
-    /// * `particles` - Particles to update (positions, deformations, material state)
     pub fn launch<GpuModel: GpuParticleModelData>(
         &self,
         pass: &mut GpuPass,

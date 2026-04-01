@@ -1,16 +1,4 @@
-//! Warmstarting mechanism for constraint solver temporal coherence.
-//!
-//! Warmstarting reuses impulses from the previous simulation frame to initialize the
-//! constraint solver, significantly improving convergence speed and stability. This exploits
-//! temporal coherence - the observation that adjacent frames in a simulation tend to have
-//! similar contact configurations and required impulses.
-//!
-//! # How It Works
-//!
-//! 1. After solving constraints in frame N, impulse accumulators are stored.
-//! 2. In frame N+1, new contacts are matched against old contacts.
-//! 3. Matching contacts inherit their previous impulses as starting guesses.
-//! 4. The solver converges faster since it starts closer to the solution.
+//! Warmstarting: reuses previous-frame impulses for faster solver convergence.
 
 use crate::shaders::dynamics::{
     GpuTransferWarmstartImpulses, TwoBodyConstraint, TwoBodyConstraintBuilder,
@@ -57,15 +45,6 @@ pub struct WarmstartArgs<'a> {
 
 impl GpuWarmstart {
     /// Transfers warmstart impulses from old constraints to new constraints.
-    ///
-    /// This method dispatches a compute shader that searches for matching contacts
-    /// between the previous and current frames. When a match is found, the impulse
-    /// accumulator from the old contact is copied to the new contact.
-    ///
-    /// # Parameters
-    ///
-    /// - `pass`: The compute pass to record commands into.
-    /// - `args`: Warmstart arguments containing old and new constraint buffers.
     pub fn transfer_warmstart_impulses<'a>(
         &self,
         pass: &mut GpuPass,

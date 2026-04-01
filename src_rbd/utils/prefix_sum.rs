@@ -1,15 +1,6 @@
-//! GPU parallel prefix sum (scan) algorithm.
+//! GPU parallel exclusive prefix sum (scan).
 //!
-//! This module implements an efficient parallel prefix sum on the GPU using a work-efficient
-//! algorithm. Prefix sum is a fundamental parallel primitive used throughout the physics engine.
-//!
-//! # What is Prefix Sum?
-//!
-//! Given an input array `[a₀, a₁, a₂, ..., aₙ]`, the prefix sum produces:
-//! `[0, a₀, a₀+a₁, a₀+a₁+a₂, ..., a₀+a₁+...+aₙ₋₁]`
-//!
-//! Note the special variant used here: a 0 is prepended as the first element, which is useful
-//! for computing array indices and offsets.
+//! Uses the variant where a 0 is prepended as the first element (useful for index/offset computation).
 
 use crate::shaders::utils::prefix_sum::{GpuAddDataGrp, GpuPrefixSumSweep};
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
@@ -32,21 +23,8 @@ impl GpuPrefixSum {
 
     /// Dispatches the prefix sum algorithm on GPU data.
     ///
-    /// Supports batched operation: if `num_batches > 1`, the data buffer is treated as
-    /// `num_batches` contiguous sub-arrays of equal size, and each sub-array is
-    /// independently prefix-summed.
-    ///
-    /// # Parameters
-    ///
-    /// - `backend`: The GPU backend
-    /// - `pass`: The compute pass to record commands into
-    /// - `workspace`: Workspace containing auxiliary buffers (resized automatically if needed)
-    /// - `data`: Input/output buffer (modified in-place)
-    /// - `num_batches`: Number of independent prefix sums to perform in parallel
-    ///
-    /// # Panics
-    ///
-    /// Panics if `THREADS` is not 256, as the shared memory size is hardcoded in the shader.
+    /// Supports batched operation: if `num_batches > 1`, each contiguous sub-array
+    /// is independently prefix-summed.
     pub fn launch(
         &self,
         backend: &GpuBackend,
@@ -154,14 +132,7 @@ impl GpuPrefixSum {
         Ok(())
     }
 
-    /// CPU reference implementation of the prefix sum algorithm.
-    ///
-    /// This method computes the same result as the GPU version but on the CPU.
-    /// Useful for testing and verification.
-    ///
-    /// # Parameters
-    ///
-    /// - `v`: Input/output vector (modified in-place)
+    /// CPU reference implementation for testing.
     pub fn eval_cpu(&self, v: &mut [u32]) {
         for i in 0..v.len() - 1 {
             v[i + 1] += v[i];
@@ -210,11 +181,6 @@ impl PrefixSumWorkspace {
     }
 
     /// Creates a workspace pre-allocated for a specific buffer size.
-    ///
-    /// # Parameters
-    ///
-    /// - `backend`: The GPU backend for allocating buffers
-    /// - `buffer_len`: Size of the data buffer that will be scanned
     pub fn with_capacity(backend: &GpuBackend, buffer_len: u32) -> Self {
         let mut result = Self::default();
         result.reserve(backend, buffer_len, 1);
@@ -223,13 +189,7 @@ impl PrefixSumWorkspace {
 
     /// Ensures the workspace has sufficient capacity for a given buffer size and batch count.
     ///
-    /// Resizes auxiliary buffers if needed. This is called automatically by [`GpuPrefixSum::launch`].
-    ///
-    /// # Parameters
-    ///
-    /// - `backend`: The GPU backend for allocating buffers
-    /// - `batch_stride`: Per-batch element count
-    /// - `num_batches`: Number of batches
+    /// Called automatically by [`GpuPrefixSum::launch`].
     pub fn reserve(&mut self, backend: &GpuBackend, batch_stride: u32, num_batches: u32) {
         if batch_stride == self.cached_batch_stride && num_batches == self.cached_num_batches {
             return;

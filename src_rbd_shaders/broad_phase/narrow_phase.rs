@@ -1,20 +1,6 @@
-//! Narrow Phase Contact Generation Kernels
+//! Narrow phase contact generation kernels.
 //!
-//! Computes contact manifolds from the collision pairs detected by the broad phase.
-//! It performs shape-specific narrow-phase collision detection for each potentially colliding pair.
-//!
-//! Pipeline:
-//! 1. reset: Clears contact counter.
-//! 2. main: Processes each collision pair, computes contacts, filters by distance.
-//! 3. init_indirect_args: Prepares indirect dispatch for constraint solver.
-//!
-//! Supported shape pairs:
-//! - Ball-Ball: Analytical distance computation
-//! - Ball-Cuboid / Cuboid-Ball: Point projection
-//! - Cuboid-Cuboid: SAT + feature clipping
-//! - PFM-PFM: GJK + EPA based contact
-//! - TriMesh-Convex: BVH traversal + per-triangle GJK/EPA
-//! - Polyline-Convex: BVH traversal + per-segment GJK/EPA
+//! Computes contact manifolds from collision pairs detected by the broad phase.
 
 use crate::queries::{
     ContactManifold, IndexedManifold, ball_ball, ball_convex, convex_ball, cuboid_cuboid, pfm_pfm,

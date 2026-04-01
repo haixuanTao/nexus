@@ -1,7 +1,4 @@
-//! Capsule Shape Module
-//!
-//! This module provides geometric operations for capsules (swept spheres).
-//! A capsule is defined by a line segment and a radius.
+//! Capsule shape (swept sphere along a segment).
 
 use crate::queries::{PolygonalFeature, ProjectionResult};
 use crate::shapes::segment::Segment;
@@ -9,9 +6,6 @@ use crate::{Pose, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 
 /// A capsule shape, defined by a central segment and a radius.
-///
-/// The capsule represents all points within `radius` distance from the segment.
-/// This is equivalent to sweeping a ball along the segment's path.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct Capsule {
@@ -40,15 +34,6 @@ impl Capsule {
     }
 
     /// Projects a point onto a capsule in its local coordinate frame.
-    ///
-    /// The algorithm first projects the point onto the central segment, then
-    /// projects radially onto the capsule surface if the point is outside.
-    ///
-    /// Parameters:
-    /// - capsule: The capsule shape
-    /// - pt: The point to project (in the capsule's local frame)
-    ///
-    /// Returns: The projected point (in the capsule's local frame)
     #[inline]
     pub fn project_local_point(&self, pt: Vector) -> Vector {
         let proj_on_axis = self.segment.project_local_point(pt);
@@ -64,13 +49,6 @@ impl Capsule {
     }
 
     /// Projects a point onto a transformed capsule in world space.
-    ///
-    /// Parameters:
-    /// - capsule: The capsule shape
-    /// - pose: The capsule's world-space pose
-    /// - pt: The point to project (in world space)
-    ///
-    /// Returns: The projected point (in world space)
     #[inline]
     pub fn project_point(&self, pose: Pose, pt: Vector) -> Vector {
         let local_pt = pose.inverse_transform_point(pt);
@@ -79,16 +57,7 @@ impl Capsule {
 
     /// Projects a point onto the boundary (surface) of a capsule in its local frame.
     ///
-    /// This always projects onto the capsule's surface, even if the point is inside.
-    ///
-    /// Parameters:
-    /// - capsule: The capsule shape
-    /// - pt: The point to project (in the capsule's local frame)
-    ///
-    /// Returns: ProjectionResult containing the surface point and is_inside flag
-    ///
-    /// Special case: If the point lies exactly on the capsule's central axis,
-    /// an arbitrary perpendicular direction is chosen for projection.
+    /// Always projects onto the surface, even if the point is inside.
     #[inline]
     pub fn project_local_point_on_boundary(&self, pt: Vector) -> ProjectionResult {
         let proj_on_axis = self.segment.project_local_point(pt);
@@ -112,13 +81,6 @@ impl Capsule {
     }
 
     /// Projects a point onto the boundary of a transformed capsule in world space.
-    ///
-    /// Parameters:
-    /// - capsule: The capsule shape
-    /// - pose: The capsule's world-space pose
-    /// - pt: The point to project (in world space)
-    ///
-    /// Returns: ProjectionResult with point in world space and is_inside flag
     #[inline]
     pub fn project_point_on_boundary(&self, pose: Pose, pt: Vector) -> ProjectionResult {
         let local_pt = pose.inverse_transform_point(pt);
@@ -182,16 +144,7 @@ impl Capsule {
     }
 }
 
-/// Computes an orthonormal basis from a single 3D vector.
-///
-/// Given a normalized vector v, this function computes two orthogonal vectors
-/// that together with v form an orthonormal basis. This is useful for
-/// constructing local coordinate frames.
-///
-/// Parameters:
-/// - v: A normalized 3D vector
-///
-/// Returns: An array of two orthogonal unit vectors perpendicular to v.
+/// Computes an orthonormal basis from a single normalized 3D vector.
 #[cfg(feature = "dim3")]
 #[inline]
 pub fn orthonormal_basis3(v: Vector) -> [Vector; 2] {
@@ -207,9 +160,6 @@ pub fn orthonormal_basis3(v: Vector) -> [Vector; 2] {
 }
 
 /// Finds an arbitrary vector orthogonal to the given vector.
-///
-/// This is a helper function used when a point lies exactly on the capsule's
-/// axis and we need to pick an arbitrary direction for projection.
 #[inline]
 pub fn any_orthogonal_vector(v: Vector) -> Vector {
     #[cfg(feature = "dim2")]

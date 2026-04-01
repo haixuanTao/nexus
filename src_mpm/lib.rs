@@ -1,24 +1,4 @@
-//! Nexus MPM: GPU-accelerated Material Point Method (MPM) physics simulation.
-//!
-//! Provides a high-performance implementation of the Material Point Method for
-//! simulating materials like fluids, sand, snow, and elastic solids. The simulation
-//! runs entirely on the GPU using compute shaders, achieving real-time performance
-//! for large particle systems.
-//!
-//! # Overview
-//!
-//! The MPM algorithm works by transferring data between particles (Lagrangian representation)
-//! and a background grid (Eulerian representation):
-//! 1. **P2G (Particle-to-Grid)**: Transfer particle mass and momentum to grid nodes
-//! 2. **Grid Update**: Solve momentum equations on the grid
-//! 3. **G2P (Grid-to-Particle)**: Transfer velocities back to particles and update positions
-//!
-//! Also supports two-way coupling with rigid bodies.
-//!
-//! # Features
-//!
-//! - `dim2`: Enable 2D simulation mode (mutually exclusive with `dim3`)
-//! - `dim3`: Enable 3D simulation mode (mutually exclusive with `dim2`)
+//! GPU-accelerated Material Point Method simulation with rigid body coupling.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::module_inception)]

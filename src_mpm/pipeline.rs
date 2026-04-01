@@ -24,20 +24,6 @@ use vortx::tensor::Tensor;
 use nexus_rbd::dynamics::body::{BodyCoupling, RapierBodyCouplingEntry};
 
 /// GPU compute pipeline for Material Point Method simulation.
-///
-/// This struct holds all the compiled compute shaders needed to execute a complete
-/// MPM simulation step. It orchestrates the following stages:
-/// 1. Update rigid body particles from coupled colliders
-/// 2. Sort particles into grid cells
-/// 3. Transfer data from particles to grid (P2G)
-/// 4. Update grid velocities with forces and boundary conditions
-/// 5. Transfer data from grid back to particles (G2P)
-/// 6. Update particle positions and deformation gradients
-/// 7. Apply impulses to coupled rigid bodies
-///
-/// # Type Parameters
-///
-/// * `GpuModel` - Particle material model data layout (must match shader expectations)
 pub struct MpmPipeline<GpuModel: GpuParticleModelData> {
     grid: WgGrid,
     prefix_sum: GpuPrefixSum,
@@ -145,10 +131,6 @@ pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
 impl<GpuModel: GpuParticleModelData> MpmPipelineHooks<GpuModel> for () {}
 
 /// GPU-resident simulation state for MPM.
-///
-/// Contains all the data needed to execute an MPM simulation step, including
-/// particles, grid, rigid body coupling information, and simulation parameters.
-/// All data lives in GPU memory for efficient computation.
 pub struct MpmData<GpuModel: GpuParticleModelData> {
     /// The simulation timestep.
     pub base_dt: f32,

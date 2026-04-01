@@ -35,12 +35,6 @@ pub struct GpuLbvh {
 
 /// GPU-resident state for LBVH construction and queries.
 ///
-/// Maintains all GPU buffers needed for building and querying the LBVH:
-/// - Morton codes and their sorted versions
-/// - Collider indices (sorted by Morton code)
-/// - The BVH tree structure itself
-/// - Radix sort workspace for Morton code sorting
-///
 /// Buffers automatically resize when the number of colliders changes.
 pub struct LbvhState {
     buffer_usages: BufferUsages,
@@ -54,14 +48,7 @@ pub struct LbvhState {
     sort_workspace: RadixSortWorkspace,
 }
 
-/// High-level LBVH broad-phase interface (shaders only).
-///
-/// Provides the complete LBVH pipeline:
-/// 1. Compute AABBs and domain bounds
-/// 2. Generate Morton codes for spatial sorting
-/// 3. Sort colliders by Morton code
-/// 4. Build binary tree structure
-/// 5. Traverse tree to find collision pairs
+/// High-level LBVH broad-phase interface.
 pub struct Lbvh {
     shaders: GpuLbvh,
     sort: RadixSort,
@@ -69,16 +56,11 @@ pub struct Lbvh {
 
 impl LbvhState {
     /// Creates a new LBVH state with default buffer usage flags.
-    ///
-    /// Initializes all buffers with `BufferUsages::STORAGE` flag for compute shader access.
     pub fn new(backend: &GpuBackend) -> Self {
         Self::with_usages(backend, BufferUsages::STORAGE)
     }
 
     /// Creates a new LBVH state with custom buffer usage flags.
-    ///
-    /// Allows specifying custom usage flags for debugging or special use cases
-    /// (e.g., adding `COPY_SRC` for buffer readback).
     pub fn with_usages(backend: &GpuBackend, usages: BufferUsages) -> Self {
         Self {
             n_sort: Tensor::scalar(backend, 0, usages).unwrap(),
@@ -148,13 +130,6 @@ impl Lbvh {
     }
 
     /// Rebuilds the LBVH tree from current collider poses and shapes.
-    ///
-    /// This method:
-    /// 1. Computes AABBs for all colliders
-    /// 2. Calculates the bounding domain
-    /// 3. Generates Morton codes for spatial sorting
-    /// 4. Sorts colliders by Morton code using radix sort
-    /// 5. Builds the binary BVH tree structure
     ///
     /// Should be called each frame before [`find_pairs`](Self::find_pairs) if colliders have moved.
     pub fn update_tree(

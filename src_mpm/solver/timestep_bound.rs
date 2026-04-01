@@ -15,10 +15,7 @@ use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuT
 use khal::Shader;
 use vortx::tensor::Tensor;
 
-/// GPU kernel responsible for computing an estimate on the maximum timestep that can
-/// be taken by the simulation without blowing up.
-///
-/// Note that this is a best-effort estimate. It does not completely eliminate risks of divergence.
+/// GPU kernel for estimating the maximum stable timestep (best-effort, does not eliminate all divergence risk).
 #[derive(Shader)]
 pub struct WgTimestepBounds {
     reset_timestep_bound: GpuResetTimestepBound,
@@ -26,12 +23,7 @@ pub struct WgTimestepBounds {
 }
 
 impl WgTimestepBounds {
-    /// Launches the timestep bounds estimation, and returns the estimated maximum timestep length.
-    ///
-    /// This method:
-    /// 1. Resets the atomic minimum to the maximum representable value
-    /// 2. Each particle thread computes its local timestep bound and atomically reduces
-    /// 3. Reads back the result to CPU
+    /// Launches the timestep bounds estimation and returns the estimated maximum timestep length.
     pub async fn compute_bounds<GpuModel: GpuParticleModelData>(
         &self,
         backend: &GpuBackend,

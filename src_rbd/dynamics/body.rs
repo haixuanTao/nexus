@@ -135,13 +135,6 @@ impl GpuBodySet {
     }
 
     /// Creates a new GPU body set from Rapier rigid bodies and colliders.
-    ///
-    /// # Parameters
-    ///
-    /// - `backend`: The GPU backend for allocating buffers.
-    /// - `bodies`: Rapier rigid body set.
-    /// - `colliders`: Rapier collider set.
-    /// - `coupling`: Body coupling entries specifying which bodies to include.
     #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
@@ -316,7 +309,7 @@ impl GpuBodySet {
 
     /// Returns the GPU buffer mapping each vertex to its collider ID.
     ///
-    /// This is used by wgsparkl for particle-body interactions.
+    /// This is used by nexus for particle-body interactions.
     pub fn shapes_vertex_collider_id(&self) -> &Tensor<u32> {
         &self.shapes_vertex_collider_id
     }

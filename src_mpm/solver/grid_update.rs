@@ -24,12 +24,6 @@ pub struct WgGridUpdate {
 
 impl WgGridUpdate {
     /// Launches the grid update kernel.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass to record commands into
-    /// * `sim_params` - Simulation parameters (gravity, timestep)
-    /// * `grid` - Grid with nodes to update
     pub fn launch(
         &self,
         pass: &mut GpuPass,

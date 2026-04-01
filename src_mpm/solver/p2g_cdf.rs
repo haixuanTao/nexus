@@ -19,13 +19,6 @@ pub struct WgP2GCdf {
 
 impl WgP2GCdf {
     /// Launches P2G transfer from rigid body particles to grid.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass
-    /// * `grid` - Target grid
-    /// * `rigid_particles` - Source rigid body particles
-    /// * `bodies` - Rigid body set for vertex data
     pub fn launch(
         &self,
         pass: &mut GpuPass,

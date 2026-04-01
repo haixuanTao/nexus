@@ -25,15 +25,6 @@ pub struct WgP2G {
 
 impl WgP2G {
     /// Launches the P2G kernel to transfer particle data to grid nodes.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass to record commands into
-    /// * `grid` - Target grid to write momentum into
-    /// * `particles` - Source particles to read from
-    /// * `impulses` - Impulse buffers for rigid body coupling
-    /// * `bodies` - Rigid bodies for coupling
-    /// * `body_materials` - Boundary conditions per rigid body
     pub fn launch<GpuModel: GpuParticleModelData>(
         &self,
         pass: &mut GpuPass,

@@ -1,14 +1,4 @@
 //! GPU-accelerated rigid-body physics engine built on khal/vortx.
-//!
-//! **nexus** provides a high-performance physics simulation system that runs entirely on the GPU,
-//! enabling massively parallel physics computation for thousands of rigid bodies. It is designed to
-//! work seamlessly across platforms including web and desktop.
-//!
-//! # See Also
-//!
-//! - [`khal`]: GPU compute framework providing shader loading and dispatch.
-//! - [`vortx`]: GPU tensor/buffer management.
-//! - [`glamx`]: Linear algebra types (Vec2, Vec3, Pose2, Pose3, etc.).
 
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
@@ -50,24 +40,18 @@ const VALIDATE_LBVH_TOPOLOGY: bool = false;
 pub mod dynamics;
 pub mod pipeline;
 
-/// Broad-phase collision detection algorithms implemented on the GPU.
-///
-/// Includes brute-force and LBVH (Linear Bounding Volume Hierarchy) implementations.
+/// Broad-phase collision detection (LBVH).
 pub mod broad_phase;
-/// Geometric query operations like ray-casting, point projection, and contact generation.
+/// Geometric queries (ray-casting, point projection, contact generation).
 pub mod queries;
-/// Geometric shape definitions and their GPU shader implementations.
+/// Shape definitions.
 pub mod shapes;
-/// Utility functions and data structures, including GPU radix sort.
+/// Utilities (GPU radix sort, prefix sum, etc.).
 pub mod utils;
 
 #[cfg(feature = "dim3")]
 pub mod math {
-    //! Compilation flags dependent aliases for mathematical types.
-    //!
-    //! Math type aliases for 3D builds.
-    //!
-    //! This module provides dimension-specific type aliases using glamx types.
+    //! Dimension-specific type aliases (3D).
 
     pub use glamx::{Mat3, Pose3, Quat, Vec3, Vec4};
 
@@ -107,11 +91,7 @@ pub mod math {
 
 #[cfg(feature = "dim2")]
 pub mod math {
-    //! Math type aliases for 2D builds.
-    //!
-    //! This module provides dimension-specific type aliases using glamx types.
-    //!
-    //! Compilation flags dependent aliases for mathematical types.
+    //! Dimension-specific type aliases (2D).
 
     pub use glamx::{Mat2, Pose2, Rot2, Vec2, Vec3};
 

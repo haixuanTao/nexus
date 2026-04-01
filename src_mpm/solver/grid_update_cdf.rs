@@ -18,12 +18,6 @@ pub struct WgGridUpdateCdf {
 
 impl WgGridUpdateCdf {
     /// Launches grid CDF update from rigid body geometries.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass
-    /// * `grid` - Grid to update with CDF data
-    /// * `bodies` - Rigid bodies providing collision geometry
     pub fn launch(
         &self,
         pass: &mut GpuPass,

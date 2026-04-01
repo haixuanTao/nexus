@@ -1,7 +1,4 @@
 //! Simulation and constraint regularization parameters.
-//!
-//! This module defines the core simulation parameters and helper functions for
-//! constraint-based physics simulation with regularization.
 
 /// Maximum floating-point value (used for unbounded parameters).
 pub const MAX_FLT: f32 = 3.4e38; // TODO: the exact value isn't accepted on browsers (not sure why): 3.40282347E+38;
@@ -117,12 +114,7 @@ impl Default for SimParams {
     }
 }
 
-/// Computes the inverse timestep (1/dt), i.e., steps per second (Hz).
-///
-/// Used throughout the solver to convert between forces and impulses:
-/// impulse = force * dt, so force = impulse * inv_dt
-///
-/// Returns: 1.0 / params.dt, or 0.0 if dt is zero (paused simulation)
+/// Computes the inverse timestep (1/dt). Returns 0.0 if dt is zero.
 pub fn inv_dt(params: &SimParams) -> f32 {
     if params.dt == 0.0 {
         0.0
@@ -132,28 +124,11 @@ pub fn inv_dt(params: &SimParams) -> f32 {
 }
 
 /// Computes the contact constraint angular frequency (rad/s).
-///
-/// Converts natural frequency (Hz) to angular frequency (rad/s):
-/// ω = 2π * f
-///
-/// Higher frequency = stiffer spring = faster correction of penetration.
-///
-/// Returns: Angular frequency in radians per second
 pub fn contact_angular_frequency(params: &SimParams) -> f32 {
     params.contact_natural_frequency * TWO_PI
 }
 
-/// Computes the contact ERP coefficient multiplied by inverse timestep.
-///
-/// This combined term (erp_inv_dt) is used to compute bias velocities for
-/// position correction in the constraint solver.
-///
-/// Formula: ERP / dt = ω / (dt * ω + 2ζ)
-/// where ω = angular frequency, ζ = damping ratio
-///
-/// The bias term in constraints: bias = (erp / dt) * position_error
-///
-/// Returns: ERP coefficient divided by timestep
+/// The `contact_erp` coefficient, multiplied by the inverse timestep length.
 pub fn contact_erp_inv_dt(params: &SimParams) -> f32 {
     let ang_freq = contact_angular_frequency(params);
     ang_freq / (params.dt * ang_freq + 2.0 * params.contact_damping_ratio)

@@ -1,24 +1,4 @@
-//! Contact constraint data structures
-//!
-//! This module defines the data structures for contact constraints used in the
-//! iterative constraint solver.
-//!
-//! Each contact manifold (a set of contact points between two bodies) generates:
-//! - Normal constraints: Prevent penetration along contact normal.
-//! - Tangent constraints: Model friction in tangent directions.
-//!
-//! The constraint solver iteratively applies impulses to satisfy:
-//! 1. Non-penetration: C_n >= 0 (unilateral constraint)
-//! 2. Friction: |C_t| <= μ * C_n (Coulomb friction cone)
-//!
-//! Solver Coefficients:
-//! - r: Inverse effective mass (1 / (m_eff))
-//! - rhs: Right-hand side (target relative velocity)
-//! - impulse: Accumulated impulse (Lagrange multiplier)
-//!
-//! Dimension-Specific Details:
-//! - 2D: SUB_LEN=1 (one tangent), MAX_CONSTRAINTS=2 contact points
-//! - 3D: SUB_LEN=2 (two tangents), MAX_CONSTRAINTS=4 contact points
+//! Contact constraint data structures for the iterative solver.
 
 use crate::{AngVector, Pad, Vector};
 

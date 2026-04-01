@@ -23,15 +23,6 @@ pub struct WgG2P {
 
 impl WgG2P {
     /// Launches the G2P kernel to update particle velocities from grid.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass to record commands into
-    /// * `sim_params` - Simulation parameters (timestep, gravity)
-    /// * `grid` - Source grid to interpolate from
-    /// * `particles` - Target particles to update
-    /// * `bodies` - Rigid bodies for velocity blending near contacts
-    /// * `body_materials` - Boundary conditions per rigid body
     pub fn launch<GpuModel: GpuParticleModelData>(
         &self,
         pass: &mut GpuPass,

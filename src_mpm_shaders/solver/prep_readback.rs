@@ -77,11 +77,13 @@ pub struct ReadbackData {
     pub _pad: f32,
 }
 
+// TODO: really needed?
 #[inline]
 fn fmax(a: f32, b: f32) -> f32 {
     if a > b { a } else { b }
 }
 
+// TODO: really needed?
 #[inline]
 fn fclamp(x: f32, lo: f32, hi: f32) -> f32 {
     if x < lo {

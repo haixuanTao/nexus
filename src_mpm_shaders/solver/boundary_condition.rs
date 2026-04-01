@@ -31,13 +31,7 @@ impl BoundaryCondition {
     }
 
     /// Projects a velocity according to this boundary condition.
-    ///
-    /// # Arguments
-    /// * `vel` - The velocity to project.
-    /// * `n` - The boundary normal (pointing inward).
-    ///
-    /// # Returns
-    /// The projected velocity after applying the boundary condition.
+    /// `n` is the boundary normal (pointing inward).
     pub fn project_velocity(&self, vel: Vector, n: Vector) -> Vector {
         if self.ty == BOUNDARY_CONDITION_STICK {
             return Vector::ZERO;

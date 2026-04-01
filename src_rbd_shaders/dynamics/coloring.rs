@@ -1,37 +1,7 @@
-//! Graph coloring for parallel constraint solving
+//! Graph coloring for parallel constraint solving.
 //!
-//! This module implements graph coloring algorithms to enable parallel constraint
-//! solving. The goal is to assign colors to constraints such that no two constraints
-//! of the same color share a rigid body, allowing parallel solving within each color.
-//!
-//! Why Graph Coloring?
-//! Sequential constraint solvers (Gauss-Seidel) are inherently serial because
-//! solving one constraint affects bodies involved in other constraints. Graph
-//! coloring breaks this dependency: constraints with the same color are independent
-//! and can be solved in parallel.
-//!
-//! Algorithms Implemented:
-//!
-//! 1. Jones-Plassmann-Luby (Luby's Algorithm):
-//!    - Randomized parallel algorithm.
-//!    - Each iteration: nodes with locally maximal random weights are colored.
-//!    - Better for sparse conflict graphs.
-//!    - Reference: https://developer.nvidia.com/blog/graph-coloring-more-parallelism-for-incomplete-lu-factorization/
-//!
-//! 2. Topo-GC (Topological Graph Coloring):
-//!    - Each node selects the smallest available color not used by neighbors.
-//!    - Typically produces fewer colors than Luby.
-//!    - Better for dense conflict graphs.
-//!    - Reference: https://people.csail.mit.edu/xchen/docs/ipdpsw-2016.pdf
-//!
-//! Performance:
-//! - Workgroup size: 64 threads (Topo-GC uses 1 for some kernels)
-//! - Luby: O(log n) iterations (average, O(n) worst-case).
-//! - Topo-GC: O(d) iterations where d is max degree, fewer colors
-//!
-//! Color Limits:
-//! - Topo-GC: Up to 63 colors (using 2x u32 bitmasks with 1 reserved bit for bookkeeping)
-//! - Luby: Unlimited colors
+//! Assigns colors to constraints so that no two constraints sharing a body get the
+//! same color. Implements Jones-Plassmann-Luby and Topo-GC algorithms.
 
 use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};

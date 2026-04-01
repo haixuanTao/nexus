@@ -25,15 +25,6 @@ pub struct WgRigidParticleUpdate {
 
 impl WgRigidParticleUpdate {
     /// Transforms rigid body particles from local to world space.
-    ///
-    /// Updates surface particle positions based on current rigid body poses.
-    /// Also transforms collision shape vertices for accurate collision detection.
-    ///
-    /// # Arguments
-    ///
-    /// * `pass` - Compute pass
-    /// * `bodies` - Rigid bodies with current poses
-    /// * `rigid_particles` - Particles to transform
     pub fn launch(
         &self,
         pass: &mut GpuPass,
