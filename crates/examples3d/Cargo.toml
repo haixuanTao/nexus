@@ -11,7 +11,7 @@ cpu-parallel = ["cpu", "nexus_testbed3d/cpu-parallel"]
 cuda = ["nexus_testbed3d/cuda"]
 
 [dependencies]
-glamx = { version = "0.1", default-features = false }
+glamx = { version = "0.2", default-features = false }
 nexus_testbed3d = { path = "../nexus_testbed3d" }
 nexus_rbd3d = { path = "../nexus_rbd3d" }
 rapier3d = "0.32"

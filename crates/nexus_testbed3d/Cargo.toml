@@ -26,7 +26,7 @@ cuda = ["nexus3d/cuda"]
 
 [dependencies]
 nexus3d = { path = "../nexus3d", features = ["rbd", "mpm", "fem", "from_rapier"]}
-glamx = { version = "0.1", default-features = false }
+glamx = { version = "0.2", default-features = false }
 khal = { version = "0.2", features = ["derive"] }
 vortx = "0.2"
 rapier3d = "0.32"

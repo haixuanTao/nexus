@@ -28,7 +28,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/dimforge/nexus"
 
 [workspace.dependencies]
-glamx = { version = "0.1", default-features = false, features = ["nostd-libm", "bytemuck"] }
+glamx = { version = "0.2", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
 khal = { version = "0.2", features = ["derive"] }
 khal-std = "0.1"
