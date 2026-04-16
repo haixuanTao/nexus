@@ -21,6 +21,7 @@ default = ["dim2"]
 dim2 = []
 unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
 cpu = []
+cpu-parallel = ["cpu", "vortx-shaders/cpu-parallel"]
 cuda = []
 
 [dependencies]

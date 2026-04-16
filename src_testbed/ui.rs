@@ -118,7 +118,6 @@ pub fn render_ui(
     selected_demo: &mut usize,
     ui_sections: &mut UiSections,
     backend_type: &mut BackendType,
-    use_cpu: &mut bool,
     run_state: &mut RunState,
     run_stats: &RunStats,
     active_demo: &mut ActiveDemo,
@@ -160,7 +159,6 @@ pub fn render_ui(
                                 builders,
                                 active_demo,
                                 backend_type,
-                                use_cpu,
                                 selected_demo,
                                 gpu,
                                 &mut result,
@@ -357,141 +355,93 @@ fn settings_section(
     builders: &[DemoBuilder],
     active_demo: &mut ActiveDemo,
     backend_type: &mut BackendType,
-    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))] use_cpu: &mut bool,
     selected_demo: &mut usize,
     gpu: Option<&KhalGpuBackend>,
     result: &mut UiInteractions,
 ) {
+    let is_rbd = matches!(active_demo, ActiveDemo::Rbd { .. });
+    backend_selector(ui, backend_type, selected_demo, gpu, is_rbd, result);
+    ui.add_space(4.0);
+
     match active_demo {
-        ActiveDemo::Rbd { .. } => {
-            rbd_settings(ui, backend_type, selected_demo, gpu, result);
-        }
+        ActiveDemo::Rbd { .. } => {}
         ActiveDemo::Mpm {
             stage,
             colliders_gfx,
             ..
         } => {
-            gpu_backend_selector(ui, backend_type, use_cpu, selected_demo, gpu, result);
-            ui.add_space(4.0);
             mpm_settings(ui, builders, stage, colliders_gfx, result);
         }
         ActiveDemo::Fem { stage, .. } => {
-            gpu_backend_selector(ui, backend_type, use_cpu, selected_demo, gpu, result);
-            ui.add_space(4.0);
             fem_settings(ui, builders, stage, result);
         }
     }
 }
 
-fn rbd_settings(
+/// Unified backend selector for all demo types. The "CPU (rapier)" option
+/// is only shown for RBD demos; for MPM/FEM demos a current Rapier selection
+/// is still preserved internally (see `create_active_demo`).
+fn backend_selector(
     ui: &mut egui::Ui,
     backend_type: &mut BackendType,
     selected_demo: &mut usize,
     gpu: Option<&KhalGpuBackend>,
+    is_rbd: bool,
     result: &mut UiInteractions,
 ) {
     ui.label(RichText::new("Physics Backend").strong());
     ui.add_space(2.0);
 
-    let mut backend_changed = false;
+    let mut new_backend: Option<BackendType> = None;
+    // For MPM/FEM, a Rapier selection is shown as CPU (nexus).
+    let effective = if !is_rbd && *backend_type == BackendType::Rapier {
+        BackendType::Cpu
+    } else {
+        *backend_type
+    };
 
     if gpu.is_some()
         && ui
-            .radio(
-                matches!(*backend_type, BackendType::Gpu { .. }),
-                "GPU (nexus)",
-            )
+            .radio(effective == BackendType::Gpu, "GPU (nexus)")
             .on_hover_text("GPU-accelerated physics with nexus")
             .clicked()
-        && !matches!(*backend_type, BackendType::Gpu { .. })
+        && effective != BackendType::Gpu
     {
-        *backend_type = BackendType::Gpu;
-        backend_changed = true;
+        new_backend = Some(BackendType::Gpu);
     }
 
     #[cfg(feature = "cuda")]
     if ui
-        .radio(*backend_type == BackendType::Cuda, "CUDA (nexus)")
+        .radio(effective == BackendType::Cuda, "CUDA (nexus)")
         .on_hover_text("GPU-accelerated physics with nexus via CUDA")
         .clicked()
-        && *backend_type != BackendType::Cuda
+        && effective != BackendType::Cuda
     {
-        *backend_type = BackendType::Cuda;
-        backend_changed = true;
+        new_backend = Some(BackendType::Cuda);
     }
 
     #[cfg(feature = "cpu")]
     if ui
-        .radio(*backend_type == BackendType::Cpu, "CPU (nexus)")
+        .radio(effective == BackendType::Cpu, "CPU (nexus)")
         .on_hover_text("CPU physics using the nexus GPU pipeline executed on CPU")
         .clicked()
-        && *backend_type != BackendType::Cpu
+        && effective != BackendType::Cpu
     {
-        *backend_type = BackendType::Cpu;
-        backend_changed = true;
+        new_backend = Some(BackendType::Cpu);
     }
 
-    if ui
-        .radio(*backend_type == BackendType::Rapier, "CPU (rapier)")
-        .on_hover_text("CPU physics with rapier")
-        .clicked()
+    if is_rbd
+        && ui
+            .radio(*backend_type == BackendType::Rapier, "CPU (rapier)")
+            .on_hover_text("CPU physics with rapier")
+            .clicked()
         && *backend_type != BackendType::Rapier
     {
-        *backend_type = BackendType::Rapier;
-        backend_changed = true;
+        new_backend = Some(BackendType::Rapier);
     }
 
-    if backend_changed {
-        result.new_selected_demo = Some(*selected_demo);
-    }
-}
-
-/// Backend selector for MPM/FEM demos: GPU, CUDA, and optionally CPU.
-fn gpu_backend_selector(
-    ui: &mut egui::Ui,
-    backend_type: &mut BackendType,
-    #[cfg_attr(not(feature = "cpu"), allow(unused_variables))] use_cpu: &mut bool,
-    selected_demo: &mut usize,
-    gpu: Option<&KhalGpuBackend>,
-    result: &mut UiInteractions,
-) {
-    ui.label(RichText::new("Execution Backend").strong());
-    ui.add_space(2.0);
-
-    let mut backend_changed = false;
-
-    if gpu.is_some()
-        && ui
-            .radio(
-                matches!(*backend_type, BackendType::Gpu { .. }) && !*use_cpu,
-                "GPU",
-            )
-            .clicked()
-        && !matches!(*backend_type, BackendType::Gpu { .. })
-    {
-        *backend_type = BackendType::Gpu;
-        *use_cpu = false;
-        backend_changed = true;
-    }
-
-    #[cfg(feature = "cuda")]
-    if ui
-        .radio(*backend_type == BackendType::Cuda, "CUDA")
-        .clicked()
-        && *backend_type != BackendType::Cuda
-    {
-        *backend_type = BackendType::Cuda;
-        *use_cpu = false;
-        backend_changed = true;
-    }
-
-    #[cfg(feature = "cpu")]
-    if ui.radio(*use_cpu, "CPU").clicked() && !*use_cpu {
-        *use_cpu = true;
-        backend_changed = true;
-    }
-
-    if backend_changed {
+    if let Some(bt) = new_backend {
+        *backend_type = bt;
         result.new_selected_demo = Some(*selected_demo);
     }
 }

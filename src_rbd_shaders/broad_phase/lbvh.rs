@@ -373,7 +373,10 @@ pub fn gpu_lbvh_refit_internal(
     let mut tree = SliceMut(tree, root_id(colliders_start) as usize);
 
     // All threads must execute the same number of outer loop iterations for uniform control flow.
-    let num_iterations = num_bodies.div_ceil(num_threads);
+    // NOTE: we calculate the interation count based on `colliders_batch_capacity` instead of
+    //       `num_bodies` since the latter is non-uniform because it originates from a storage
+    //       buffer.
+    let num_iterations = colliders_batch_capacity.div_ceil(num_threads);
 
     // NOTE: using unchecked indexing (via MaybeIndexUnchecked) because otherwise the bounds
     //        checking inserted by rustgpu breaks the shader when targeting some NVidia graphics

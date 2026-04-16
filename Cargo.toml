@@ -30,15 +30,15 @@ repository = "https://github.com/dimforge/nexus"
 [workspace.dependencies]
 glamx = { version = "0.2", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
-khal = { version = "0.2", features = ["derive"] }
-khal-std = "0.1"
-vortx = "0.2"
+khal-std = { version = "0.1", git = "https://github.com/dimforge/khal" }
+khal = { version = "0.1", git = "https://github.com/dimforge/khal", features = ["derive"]}
+vortx = { version = "0.1", git = "https://github.com/dimforge/vortx"}
 bytemuck = { version = "1", features = ["derive"] }
 web-time = "1"
 static_assertions = "1"
 
 # Shaders deps
-khal-builder = { path = "../khal/crates/khal-builder" }
+khal-builder = { git = "https://github.com/dimforge/khal" }
 vortx-shaders = { path = "../vortx/vortx-shaders", default-features = false }
 unroll = "0.1"
 crunchy = "0.2.4"
@@ -48,18 +48,26 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(feature, values("dim2", "dim3", "from_rapier", "cpu", "cuda"))',
 ] }
 
+[patch."https://github.com/dimforge/khal"]
+khal = { path = "../khal/crates/khal" }
+khal-derive = { path = "../khal/crates/khal-derive" }
+khal-std = { path = "../khal/crates/khal-std" }
+khal-builder = { path = "../khal/crates/khal-builder" }
+
 [patch.crates-io]
 #glamx = { git = "https://github.com/dimforge/glamx", branch = "bytemuck"}
 #parry2d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
 #parry3d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
-khal = { path = "../khal/crates/khal" }
-khal-derive = { path = "../khal/crates/khal-derive" }
-khal-std = { path = "../khal/crates/khal-std" }
-vortx = { path = "../vortx" }
-vortx-shaders = { path = "../vortx/vortx-shaders" }
+#khal = { path = "../khal/crates/khal" }
+#khal-derive = { path = "../khal/crates/khal-derive" }
+#khal-std = { path = "../khal/crates/khal-std" }
+#vortx = { path = "../vortx" }
+#vortx-shaders = { path = "../vortx/vortx-shaders" }
 
-glamx = { path = "../glamx" }
+#glamx = { path = "../glamx" }
 #kiss3d = { path = "../kiss3d" }
 parry2d = { path = "../parry/crates/parry2d" }
 parry3d = { path = "../parry/crates/parry3d" }
+rapier2d = { path = "../rapier/crates/rapier2d" }
+rapier3d = { path = "../rapier/crates/rapier3d" }
 #vortx = { path = "../vortx" }

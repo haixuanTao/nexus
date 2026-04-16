@@ -27,9 +27,9 @@ cuda = ["nexus3d/cuda"]
 [dependencies]
 nexus3d = { path = "../nexus3d", features = ["rbd", "mpm", "fem", "from_rapier"]}
 glamx = { version = "0.2", default-features = false }
-khal = { version = "0.2", features = ["derive"] }
-vortx = "0.2"
+khal = { workspace = true }
+vortx = { workspace = true }
 rapier3d = "0.32"
 bytemuck = { version = "1", features = ["derive"] }
-kiss3d = { version = "0.40", features = ["egui", "parry"] }
+kiss3d = { version = "0.41", features = ["egui"] }
 web-time = "1"

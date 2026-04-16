@@ -117,9 +117,12 @@ impl GpuPrefixSum {
             let start = batch * batch_stride;
             let batch_data = &mut slice[start..start + batch_stride];
 
-            // Inclusive prefix sum.
+            // Inclusive prefix sum. Uses wrapping_add to match GPU u32
+            // semantics: callers (e.g. MPM scan_values) may leave tail entries
+            // uninitialized, and the corresponding summed results are never
+            // read back downstream.
             for i in 0..batch_data.len() - 1 {
-                batch_data[i + 1] += batch_data[i];
+                batch_data[i + 1] = batch_data[i + 1].wrapping_add(batch_data[i]);
             }
 
             // Shift right to get exclusive prefix sum with leading 0.

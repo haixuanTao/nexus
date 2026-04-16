@@ -25,6 +25,7 @@ push_constants = []
 # Enables some changes in the shaders for compatibility with web platforms.
 web-compat = []
 cpu = []
+cpu-parallel = ["cpu", "vortx-shaders/cpu-parallel"]
 cuda = []
 
 [dependencies]

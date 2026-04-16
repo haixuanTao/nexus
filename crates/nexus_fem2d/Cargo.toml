@@ -24,7 +24,7 @@ f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
 cpu = ["nexus_fem_shaders2d/cpu", "vortx/cpu"]
-cpu-parallel = ["cpu", "vortx/cpu-parallel"]
+cpu-parallel = ["cpu", "nexus_fem_shaders2d/cpu-parallel", "vortx/cpu-parallel"]
 cuda = ["khal/cuda", "khal-builder/cuda", "nexus_fem_shaders2d/cuda"]
 
 [dependencies]

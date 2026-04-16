@@ -74,7 +74,6 @@ impl FemStage {
         self.gpu.submit(encoder).unwrap();
         let t_encoding = t_encoding.elapsed().as_secs_f32() * 1000.0;
 
-        println!("sync");
         self.gpu.synchronize().unwrap();
         let t_total_step = t_total.elapsed().as_secs_f32() * 1000.0;
 

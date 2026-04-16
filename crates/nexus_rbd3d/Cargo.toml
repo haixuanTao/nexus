@@ -25,7 +25,7 @@ f64 = []
 webgpu = ["khal/webgpu"]
 from_rapier = ["rapier3d", "parry3d"]
 cpu = ["nexus_rbd_shaders3d/cpu", "vortx/cpu"]
-cpu-parallel = ["cpu", "vortx/cpu-parallel"]
+cpu-parallel = ["cpu", "vortx/cpu-parallel", "nexus_rbd_shaders3d/cpu-parallel"]
 cuda = ["khal/cuda", "khal-builder/cuda", "nexus_rbd_shaders3d/cuda"]
 
 [dependencies]

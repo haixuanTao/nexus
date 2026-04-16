@@ -140,8 +140,6 @@ pub struct Testbed {
     ui_sections: UiSections,
     backend_type: BackendType,
     prev_backend_type: BackendType,
-    /// When true, MPM/FEM demos use CPU execution instead of GPU.
-    use_cpu: bool,
     run_state: RunState,
     run_stats: RunStats,
     gpu_init_error: Option<String>,
@@ -160,7 +158,6 @@ impl Testbed {
             },
             backend_type: BackendType::Gpu,
             prev_backend_type: BackendType::Gpu,
-            use_cpu: false,
             run_state: RunState::Paused,
             run_stats: RunStats::default(),
             gpu_init_error: None,
@@ -175,7 +172,6 @@ impl Testbed {
 
     pub fn with_cpu(mut self) -> Self {
         self.backend_type = BackendType::Cpu;
-        self.use_cpu = true;
         self
     }
 
@@ -251,15 +247,10 @@ impl Testbed {
         scene3d.add_directional_light(glamx::Vec3::new(-1.0, -1.0, -1.0));
         scene3d.add_directional_light(glamx::Vec3::new(1.0, 1.0, 1.0));
 
-        // Initialize GPU backends. Each is initialized lazily on first use
-        // and kept alive so switching backends in the UI is instant.
-        let mut webgpu: Option<KhalGpuBackend> = if self.use_cpu {
-            None
-        } else if !matches!(self.backend_type, BackendType::Gpu) {
-            None
-        } else {
-            self.init_webgpu().await
-        };
+        // Always probe the WebGPU backend at startup so the UI knows whether
+        // to offer it as an option, independent of the initial backend choice.
+        // Other backends (CUDA) are still lazily initialized on demand.
+        let mut webgpu: Option<KhalGpuBackend> = self.init_webgpu().await;
 
         #[cfg(feature = "cuda")]
         let mut cuda: Option<KhalGpuBackend> = if matches!(self.backend_type, BackendType::Cuda) {
@@ -338,23 +329,19 @@ impl Testbed {
             )
             .await
         {
-            let current_gpu = pick_gpu(
-                self.backend_type,
-                &webgpu,
-                #[cfg(feature = "cuda")]
-                &cuda,
-            );
+            // The UI uses `webgpu` directly (not `pick_gpu`) to decide whether
+            // to offer the GPU radio: availability must not depend on the
+            // currently-selected backend.
             let ui_res = render_ui(
                 &mut window,
                 &self.builders,
                 &mut self.selected_demo,
                 &mut self.ui_sections,
                 &mut self.backend_type,
-                &mut self.use_cpu,
                 &mut self.run_state,
                 &self.run_stats,
                 &mut active_demo,
-                current_gpu,
+                webgpu.as_ref(),
                 &self.gpu_init_error,
             );
 
@@ -456,6 +443,27 @@ impl Testbed {
         scene2d: &mut SceneNode2d,
         scene3d: &mut SceneNode3d,
     ) -> ActiveDemo {
+        /// Pick the khal backend for MPM/FEM demos based on the current backend
+        /// selection. `Rapier` is treated as `Cpu` so the user's Rapier choice
+        /// for RBD demos is preserved across demo switches.
+        fn cpu_or_gpu_backend(
+            kind: &str,
+            backend_type: BackendType,
+            gpu: Option<&KhalGpuBackend>,
+        ) -> KhalGpuBackend {
+            match backend_type {
+                #[cfg(feature = "cpu")]
+                BackendType::Cpu | BackendType::Rapier => KhalGpuBackend::Cpu,
+                #[cfg(not(feature = "cpu"))]
+                BackendType::Cpu | BackendType::Rapier => {
+                    panic!("CPU backend not available: compile with the 'cpu' feature")
+                }
+                _ => gpu
+                    .cloned()
+                    .unwrap_or_else(|| panic!("GPU required for {} demos", kind)),
+            }
+        }
+
         match &self.builders[self.selected_demo] {
             DemoBuilder::Rbd(_, builder, _) => {
                 let phys = builder();
@@ -474,17 +482,7 @@ impl Testbed {
                 }
             }
             DemoBuilder::Mpm(_, _, _) => {
-                let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
-                    #[cfg(feature = "cpu")]
-                    {
-                        KhalGpuBackend::Cpu
-                    }
-                    #[cfg(not(feature = "cpu"))]
-                    unreachable!()
-                } else {
-                    let gpu = gpu.expect("GPU required for MPM demos");
-                    gpu.clone()
-                };
+                let khal_backend = cpu_or_gpu_backend("MPM", self.backend_type, gpu);
 
                 // Create a new MpmStage with just the single selected builder.
                 // We pass all MPM builders so set_demo works.
@@ -538,17 +536,7 @@ impl Testbed {
                 }
             }
             DemoBuilder::Fem(_, _, _) => {
-                let khal_backend = if cfg!(feature = "cpu") && self.use_cpu {
-                    #[cfg(feature = "cpu")]
-                    {
-                        KhalGpuBackend::Cpu
-                    }
-                    #[cfg(not(feature = "cpu"))]
-                    unreachable!()
-                } else {
-                    let gpu = gpu.expect("GPU required for FEM demos");
-                    gpu.clone()
-                };
+                let khal_backend = cpu_or_gpu_backend("FEM", self.backend_type, gpu);
 
                 let fem_builders: Vec<_> = self
                     .builders

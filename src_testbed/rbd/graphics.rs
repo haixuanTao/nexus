@@ -9,7 +9,7 @@ use kiss3d::scene::{SceneNode2d, SceneNode3d};
 use rapier::math::DIM;
 use rapier::parry::shape::ShapeType;
 use std::collections::HashMap;
-
+use kiss3d::procedural::IndexBuffer;
 #[cfg(feature = "dim2")]
 use {
     glamx::{Mat2, Vec2},
@@ -257,7 +257,12 @@ pub async fn setup_graphics(
                         polyhedron_instances.entry(vertex_key).or_insert_with(|| {
                             let (vtx, idx) = poly.to_trimesh();
                             let trimesh = rapier::parry::shape::TriMesh::new(vtx, idx).unwrap();
-                            let mut render = RenderMesh::from(trimesh);
+                            let mut render = RenderMesh::new(
+                                trimesh.vertices().to_vec(),
+                                None,
+                                None,
+                                Some(IndexBuffer::Unified(trimesh.indices().to_vec()))
+                            );
                             render.replicate_vertices();
                             render.recompute_normals();
                             InstancedNode {
@@ -275,9 +280,13 @@ pub async fn setup_graphics(
                 #[cfg(feature = "dim3")]
                 ShapeType::TriMesh => {
                     use kiss3d::procedural::RenderMesh;
-
                     let trimesh = shape.as_trimesh().unwrap();
-                    let mut render = RenderMesh::from(trimesh.clone());
+                    let mut render = RenderMesh::new(
+                        trimesh.vertices().to_vec(),
+                        None,
+                        None,
+                        Some(IndexBuffer::Unified(trimesh.indices().to_vec()))
+                    );
                     render.replicate_vertices();
                     render.recompute_normals();
                     let node = scene.add_render_mesh(render, Vec3::ONE);
