@@ -45,7 +45,7 @@ impl CpuBackend {
             bodies: env.bodies.clone(),
             colliders: env.colliders.clone(),
             impulse_joints: env.impulse_joints.clone(),
-            multibody_joints: MultibodyJointSet::new(),
+            multibody_joints: env.multibody_joints.clone(),
             ccd_solver: CCDSolver::new(),
             poses_cache,
         }

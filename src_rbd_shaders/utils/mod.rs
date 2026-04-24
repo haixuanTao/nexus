@@ -1,6 +1,7 @@
 //! Utility algorithms.
 
 mod basis;
+pub mod linalg; // TODO: this should be moved to vortx
 pub mod prefix_sum;
 pub mod radix_sort;
 mod slice;

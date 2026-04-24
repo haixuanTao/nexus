@@ -13,6 +13,8 @@ mod constraint;
 mod joint;
 mod joint_constraint;
 mod joint_constraint_builder;
+#[cfg(feature = "dim3")]
+mod multibody;
 mod sim_params;
 mod solver_utils;
 mod warmstart;
@@ -37,6 +39,8 @@ pub use joint_constraint_builder::{
     limit_linear_coupled, lock_angular, lock_linear, motor_angular, motor_linear,
     motor_linear_coupled, new_helper, orthogonalize_constraints, solve_joint_constraint,
 };
+#[cfg(feature = "dim3")]
+pub use multibody::*;
 pub use sim_params::*;
 // Re-export solver items; update_constraint comes from joint_constraint_builder for joints
 pub use coloring::*;

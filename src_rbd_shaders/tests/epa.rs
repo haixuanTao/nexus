@@ -1,31 +1,25 @@
 //! Tests for the EPA (Expanding Polytope Algorithm).
 
-use crate::queries::gjk::gjk::{INTERSECTION, closest_points, cso_point_from_shapes};
-use crate::queries::gjk::voronoi_simplex;
-use crate::shapes::shape::Shape;
+use crate::queries::gjk::{Epa, INTERSECTION, closest_points, cso_point_from_shapes, VoronoiSimplex};
+use crate::shapes::Shape;
 use crate::{PaddedVector, Pose, Vector};
-
-#[cfg(feature = "dim2")]
-use crate::queries::gjk::epa2::Epa2 as Epa;
-#[cfg(feature = "dim3")]
-use crate::queries::gjk::epa3::Epa3 as Epa;
 
 #[test]
 fn test_penetration_depth() {
     // Two overlapping cuboids
     #[cfg(feature = "dim2")]
-    let half_extents = Vec2::new(1.0, 1.0);
+    let half_extents = glamx::Vec2::new(1.0, 1.0);
     #[cfg(feature = "dim3")]
-    let half_extents = Vec3::new(1.0, 1.0, 1.0);
+    let half_extents = glamx::Vec3::new(1.0, 1.0, 1.0);
 
     let shape1 = Shape::cuboid(half_extents);
     let shape2 = Shape::cuboid(half_extents);
 
     // Place shape2 at x = 1.0, so they overlap by 1.0
     #[cfg(feature = "dim2")]
-    let translation = Vec2::new(1.0, 0.0);
+    let translation = glamx::Vec2::new(1.0, 0.0);
     #[cfg(feature = "dim3")]
-    let translation = Vec3::new(1.0, 0.0, 0.0);
+    let translation = glamx::Vec3::new(1.0, 0.0, 0.0);
 
     let pose12 = Pose::from_translation(translation);
     let vertices = vec![];
@@ -33,7 +27,7 @@ fn test_penetration_depth() {
     let init_dir = Vector::X;
 
     let cso_point = cso_point_from_shapes(pose12, &shape1, &shape2, init_dir, &vertices);
-    let mut simplex = voronoi_simplex::init(cso_point);
+    let mut simplex = VoronoiSimplex::init(cso_point);
 
     // First run GJK to confirm intersection and build simplex
     let gjk_result = closest_points(
@@ -83,7 +77,7 @@ fn test_deep_penetration() {
     let init_dir = Vector::X;
 
     let cso_point = cso_point_from_shapes(pose12, &shape1, &shape2, init_dir, &vertices);
-    let mut simplex = voronoi_simplex::init(cso_point);
+    let mut simplex = VoronoiSimplex::init(cso_point);
 
     let gjk_result = closest_points(
         pose12,

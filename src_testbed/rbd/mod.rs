@@ -8,12 +8,13 @@ use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::dynamics::GpuSimParams;
 use nexus::rbd::pipeline::GpuPhysicsPipeline;
 use rapier::geometry::ColliderSet;
-use rapier::prelude::{ImpulseJointSet, RigidBodySet};
+use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodySet};
 
 pub struct BatchEnvironment {
     pub bodies: RigidBodySet,
     pub colliders: ColliderSet,
     pub impulse_joints: ImpulseJointSet,
+    pub multibody_joints: MultibodyJointSet,
     pub sim_params: GpuSimParams,
 }
 
@@ -27,11 +28,21 @@ impl SimulationState {
         colliders: ColliderSet,
         impulse_joints: ImpulseJointSet,
     ) -> Self {
+        Self::single_with_multibody(bodies, colliders, impulse_joints, MultibodyJointSet::new())
+    }
+
+    pub fn single_with_multibody(
+        bodies: RigidBodySet,
+        colliders: ColliderSet,
+        impulse_joints: ImpulseJointSet,
+        multibody_joints: MultibodyJointSet,
+    ) -> Self {
         Self {
             environments: vec![BatchEnvironment {
                 bodies,
                 colliders,
                 impulse_joints,
+                multibody_joints,
                 sim_params: GpuSimParams::default(),
             }],
         }

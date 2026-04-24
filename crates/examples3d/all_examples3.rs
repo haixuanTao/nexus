@@ -14,6 +14,7 @@ mod joint_prismatic3;
 mod joint_revolute3;
 mod joint_revolute_batch3;
 mod keva3;
+mod multibody_pendulum3;
 mod many_pyramids3;
 mod many_pyramids_batch3;
 mod primitives3;
@@ -84,6 +85,7 @@ pub fn demo_builders() -> Vec<DemoBuilder> {
         joint_prismatic3::builder(),
         joint_revolute3::builder(),
         joint_revolute_batch3::builder(),
+        multibody_pendulum3::builder(),
         trimesh3::builder(),
         // MPM demos.
         centilever_beam3::builder(),

@@ -1,10 +1,7 @@
 //! Tests for the GJK (Gilbert-Johnson-Keerthi) algorithm.
 
-use crate::queries::gjk::gjk::{
-    CLOSEST_POINTS, INTERSECTION, closest_points, cso_point_from_shapes,
-};
-use crate::queries::gjk::voronoi_simplex;
-use crate::shapes::shape::Shape;
+use crate::queries::gjk::{CLOSEST_POINTS, INTERSECTION, closest_points, cso_point_from_shapes, VoronoiSimplex};
+use crate::shapes::Shape;
 use crate::{PaddedVector, Pose, Vector};
 
 #[test]
@@ -17,9 +14,9 @@ fn test_separated_cuboids() {
 
     // Place shape2 at x = 4.0, so there's a gap of 2.0 between them
     #[cfg(feature = "dim2")]
-    let translation = Vec2::new(4.0, 0.0);
+    let translation = glamx::Vec2::new(4.0, 0.0);
     #[cfg(feature = "dim3")]
-    let translation = Vec3::new(4.0, 0.0, 0.0);
+    let translation = glamx::Vec3::new(4.0, 0.0, 0.0);
 
     let pose12 = Pose::from_translation(translation);
     let vertices = vec![];
@@ -28,7 +25,7 @@ fn test_separated_cuboids() {
     let init_dir = Vector::X;
 
     let cso_point = cso_point_from_shapes(pose12, &shape1, &shape2, init_dir, &vertices);
-    let mut simplex = voronoi_simplex::init(cso_point);
+    let mut simplex = VoronoiSimplex::init(cso_point);
 
     let result = closest_points(
         pose12,
@@ -60,20 +57,20 @@ fn test_nearly_touching_cuboids() {
 
     // Place shape2 at x = 2.01, so there's a tiny gap
     #[cfg(feature = "dim2")]
-    let translation = Vec2::new(2.01, 0.0);
+    let translation = glamx::Vec2::new(2.01, 0.0);
     #[cfg(feature = "dim3")]
-    let translation = Vec3::new(2.01, 0.0, 0.0);
+    let translation = glamx::Vec3::new(2.01, 0.0, 0.0);
 
     let pose12 = Pose::from_translation(translation);
     let vertices = vec![];
 
     #[cfg(feature = "dim2")]
-    let init_dir = Vec2::new(1.0, 0.0);
+    let init_dir = glamx::Vec2::new(1.0, 0.0);
     #[cfg(feature = "dim3")]
-    let init_dir = Vec3::new(1.0, 0.0, 0.0);
+    let init_dir = glamx::Vec3::new(1.0, 0.0, 0.0);
 
     let cso_point = cso_point_from_shapes(pose12, &shape1, &shape2, init_dir, &vertices);
-    let mut simplex = voronoi_simplex::init(cso_point);
+    let mut simplex = VoronoiSimplex::init(cso_point);
 
     let result = closest_points(
         pose12,
@@ -107,7 +104,7 @@ fn test_intersecting_cuboids() {
     let init_dir = Vector::ONE;
 
     let cso_point = cso_point_from_shapes(pose12, &shape1, &shape2, init_dir, &vertices);
-    let mut simplex = voronoi_simplex::init(cso_point);
+    let mut simplex = VoronoiSimplex::init(cso_point);
 
     let result = closest_points(
         pose12,
@@ -139,7 +136,7 @@ fn test_separated_capsules() {
     let init_dir = Vector::X;
 
     let cso_point = cso_point_from_shapes(pose12, &shape1, &shape2, init_dir, &vertices);
-    let mut simplex = voronoi_simplex::init(cso_point);
+    let mut simplex = VoronoiSimplex::init(cso_point);
 
     let result = closest_points(
         pose12,

@@ -9,6 +9,8 @@ use crate::dynamics::{
     ColoringArgs, GpuColoring, GpuImpulseJointSet, GpuJointSolver, GpuMpropsUpdate, GpuSolver,
     GpuWarmstart, JointSolverArgs, SolverArgs, warmstart::WarmstartArgs,
 };
+#[cfg(feature = "dim3")]
+use crate::dynamics::{GpuMultibodySet, GpuMultibodySolver};
 use crate::math::{Pose, Vector};
 use crate::queries::GpuIndexedContact;
 use crate::shaders::PaddedVector;
@@ -30,7 +32,7 @@ use vortx::tensor::Tensor;
 #[cfg(feature = "from_rapier")]
 use {
     crate::math::Point,
-    crate::rapier::dynamics::{ImpulseJointSet, RigidBodySet},
+    crate::rapier::dynamics::{ImpulseJointSet, MultibodyJointSet, RigidBodySet},
     crate::rapier::geometry::ColliderSet,
     crate::shapes::ShapeBuffers,
     crate::shapes::shape_from_parry,
@@ -124,6 +126,8 @@ pub struct GpuPhysicsState {
     uncolored_staging: Tensor<u32>,
     lbvh: LbvhState,
     joints: GpuImpulseJointSet,
+    #[cfg(feature = "dim3")]
+    multibodies: GpuMultibodySet,
     prefix_sum_workspace: PrefixSumWorkspace,
 }
 
@@ -135,12 +139,18 @@ impl GpuPhysicsState {
     /// Panics if any rigid body has more than one collider attached.
     pub fn from_rapier(
         backend: &GpuBackend,
-        environments: &[(&RigidBodySet, &ColliderSet, &ImpulseJointSet, &GpuSimParams)],
+        environments: &[(
+            &RigidBodySet,
+            &ColliderSet,
+            &ImpulseJointSet,
+            &MultibodyJointSet,
+            &GpuSimParams,
+        )],
     ) -> Self {
         let num_batches = environments.len() as u32;
         let max_colliders = environments
             .iter()
-            .map(|(_, c, _, _)| c.len())
+            .map(|(_, c, _, _, _)| c.len())
             .max()
             .unwrap_or(0);
 
@@ -158,24 +168,36 @@ impl GpuPhysicsState {
         // Collect per-batch sim params, adjusting dt for substeps.
         let num_solver_iterations = environments
             .iter()
-            .map(|(_, _, _, sp)| sp.num_solver_iterations)
+            .map(|(_, _, _, _, sp)| sp.num_solver_iterations)
             .max()
             .unwrap_or(4);
         let all_sim_params: Vec<GpuSimParams> = environments
             .iter()
-            .map(|(_, _, _, sp)| {
+            .map(|(_, _, _, _, sp)| {
                 let mut sp = **sp;
                 sp.dt /= sp.num_solver_iterations as f32;
                 sp
             })
             .collect();
+        // Pick representative dt (outer dt, not the per-substep one) from any batch.
+        let multibody_dt = environments
+            .first()
+            .map(|(_, _, _, _, sp)| sp.dt)
+            .unwrap_or(1.0 / 60.0);
 
         // Dummy data for padding shorter environments.
         let dummy_pose = Pose::default();
         let dummy_local_mprops = GpuLocalMassProperties::default();
         let dummy_mprops = GpuWorldMassProperties::default();
 
-        for (bodies, colliders, impulse_joints, _sim_params) in environments {
+        #[cfg(feature = "dim3")]
+        let mut multibody_envs: Vec<(
+            &MultibodyJointSet,
+            HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+            &RigidBodySet,
+        )> = Vec::new();
+
+        for (bodies, colliders, impulse_joints, multibody_joints, _sim_params) in environments {
             let env_collider_count = colliders.len();
             all_num_shapes.push(env_collider_count as u32);
             let mut body_ids = HashMap::new();
@@ -242,6 +264,8 @@ impl GpuPhysicsState {
                 all_shapes.push(dummy_shape);
             }
 
+            #[cfg(feature = "dim3")]
+            multibody_envs.push((multibody_joints, body_ids.clone(), bodies));
             joint_envs.push((impulse_joints, body_ids));
         }
 
@@ -268,6 +292,47 @@ impl GpuPhysicsState {
             .map(|(joints, body_ids)| (*joints, body_ids))
             .collect();
         let joints = GpuImpulseJointSet::from_rapier(backend, &joint_env_refs);
+
+        // Convert multibodies (3D only).
+        #[cfg(feature = "dim3")]
+        let multibodies = {
+            let mb_refs: Vec<(
+                &MultibodyJointSet,
+                &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+                &RigidBodySet,
+            )> = multibody_envs
+                .iter()
+                .map(|(mb, ids, bodies)| (*mb, ids, *bodies))
+                .collect();
+            let mut mb = GpuMultibodySet::from_rapier(
+                backend,
+                &mb_refs,
+                [0.0, -9.81, 0.0],
+            );
+            mb.set_dt(backend, multibody_dt);
+            mb
+        };
+
+        // Mark multibody-controlled bodies as kinematic (inv_mass = 0) in the shared
+        // body buffers so the rigid-body pipeline leaves them alone. The multibody
+        // solver owns their masses internally.
+        #[cfg(feature = "dim3")]
+        {
+            for (batch_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
+                let batch_offset = batch_idx * max_colliders;
+                for mb in mb_set.multibodies() {
+                    for link in mb.links() {
+                        if let Some(&rb_local_id) = body_ids.get(&link.rigid_body_handle()) {
+                            let global = batch_offset + rb_local_id as usize;
+                            all_local_mprops[global].inv_mass = Vector::ZERO;
+                            all_local_mprops[global].inv_principal_inertia = glamx::Vec3::ZERO;
+                            all_mprops[global].inv_mass = Vector::ZERO;
+                            all_mprops[global].inv_inertia = glamx::Mat4::ZERO;
+                        }
+                    }
+                }
+            }
+        }
 
         let num_colliders_per_batch = max_colliders;
         let num_bodies_total = num_colliders_per_batch * num_batches as usize;
@@ -386,6 +451,8 @@ impl GpuPhysicsState {
             solver_vels_out: Tensor::vector(backend, &all_vels, storage).unwrap(),
             solver_vels_inc: Tensor::vector(backend, &all_vels, storage).unwrap(),
             joints,
+            #[cfg(feature = "dim3")]
+            multibodies,
             local_mprops: Tensor::vector(backend, &all_local_mprops, storage).unwrap(),
             mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
             poses: Tensor::vector(
@@ -492,6 +559,8 @@ pub struct GpuPhysicsPipeline {
     narrow_phase: GpuNarrowPhase,
     solver: GpuSolver,
     joint_solver: GpuJointSolver,
+    #[cfg(feature = "dim3")]
+    multibody_solver: GpuMultibodySolver,
     prefix_sum: GpuPrefixSum,
     lbvh: Lbvh,
     coloring: GpuColoring,
@@ -508,6 +577,8 @@ impl GpuPhysicsPipeline {
             narrow_phase: GpuNarrowPhase::from_backend(backend).unwrap(),
             solver: GpuSolver::from_backend(backend).unwrap(),
             joint_solver: GpuJointSolver::from_backend(backend).unwrap(),
+            #[cfg(feature = "dim3")]
+            multibody_solver: GpuMultibodySolver::from_backend(backend).unwrap(),
             prefix_sum: GpuPrefixSum::from_backend(backend).unwrap(),
             lbvh: Lbvh::from_backend(backend),
             coloring: GpuColoring::from_backend(backend).unwrap(),
@@ -526,6 +597,30 @@ impl GpuPhysicsPipeline {
     ) -> RunStats {
         let mut stats = RunStats::default();
         let t_phase1 = web_time::Instant::now();
+
+        // Phase 0: Multibody step (3D only).
+        //
+        // Updates each articulated multibody's coords from the previous step's
+        // generalized acceleration, then refreshes link poses in the shared pose
+        // buffer so the rigid-body pipeline sees the articulated bodies in their
+        // new configuration. Contacts and constraints involving multibodies are
+        // not currently supported.
+        #[cfg(feature = "dim3")]
+        {
+            if !state.multibodies.is_empty() {
+                let mut encoder = backend.begin_encoding();
+                let mut pass = encoder.begin_pass("multibody-step", timestamps.as_deref_mut());
+                let args = crate::dynamics::MultibodySolverArgs {
+                    poses: &mut state.poses,
+                    colliders_batch_capacity: &state.colliders_batch_capacity,
+                };
+                self.multibody_solver
+                    .step(&mut pass, &mut state.multibodies, args)
+                    .unwrap();
+                drop(pass);
+                backend.submit(encoder).unwrap();
+            }
+        }
 
         // Phase 1: Update mass properties, build LBVH, and find collision pairs
         {

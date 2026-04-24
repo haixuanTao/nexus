@@ -74,6 +74,7 @@ fn build() -> SimulationState {
                     bodies,
                     colliders,
                     impulse_joints,
+                    multibody_joints: rapier3d::prelude::MultibodyJointSet::new(),
                     sim_params: Default::default(),
                 });
             }

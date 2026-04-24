@@ -7,10 +7,10 @@
 //! - GJK/EPA algorithms for convex shapes
 //! - SAT (Separating Axis Theorem) for specific shape pairs
 
-mod contact;
+pub(crate) mod contact; // This is pub(crate) for tests.
 mod contact_manifold;
 mod contact_pfm_pfm;
-mod gjk;
+pub(crate) mod gjk; // This is pub(crate) for tests.
 mod polygonal_feature;
 mod projection;
 mod ray;

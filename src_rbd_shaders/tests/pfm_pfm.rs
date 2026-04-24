@@ -1,7 +1,7 @@
 //! Tests for the PFM-PFM (Polygonal Feature Map) contact manifold generation.
 
 use crate::queries::contact::pfm_pfm;
-use crate::shapes::shape::Shape;
+use crate::shapes::Shape;
 use crate::{PaddedVector, Pose, Vector};
 use khal_std::index::MaybeIndexUnchecked;
 

@@ -47,7 +47,15 @@ impl GpuBackend {
         let envs: Vec<_> = phys
             .environments
             .iter()
-            .map(|e| (&e.bodies, &e.colliders, &e.impulse_joints, &e.sim_params))
+            .map(|e| {
+                (
+                    &e.bodies,
+                    &e.colliders,
+                    &e.impulse_joints,
+                    &e.multibody_joints,
+                    &e.sim_params,
+                )
+            })
             .collect();
         let state = GpuPhysicsState::from_rapier(gpu, &envs);
         let poses_cache = Self::read_poses(gpu, &state).await?;
@@ -74,7 +82,15 @@ impl GpuBackend {
         let envs: Vec<_> = phys
             .environments
             .iter()
-            .map(|e| (&e.bodies, &e.colliders, &e.impulse_joints, &e.sim_params))
+            .map(|e| {
+                (
+                    &e.bodies,
+                    &e.colliders,
+                    &e.impulse_joints,
+                    &e.multibody_joints,
+                    &e.sim_params,
+                )
+            })
             .collect();
         let state = GpuPhysicsState::from_rapier(gpu, &envs);
         let poses_cache = Self::read_poses(gpu, &state).await.unwrap_or_default();
