@@ -100,10 +100,30 @@ impl GpuImpulseJointSet {
     /// Each environment can have different joints. The joints are padded to the max
     /// joint count across all environments, and graph coloring is done independently
     /// per environment.
+    /// Convert per-environment rapier joints to GPU joints.
+    ///
+    /// `environments` is a slice of `(impulse_joints, body_ids)`. The optional
+    /// `multibody_groups` parameter — when provided — must be aligned with
+    /// `environments` and gives, for each body local id, the group it belongs to:
+    /// either its own id (free body) or a shared `multibody_id`. Bodies sharing
+    /// the same group act as a single node for graph coloring, mirroring rapier:
+    /// no two impulse-joint constraints sharing the same multibody group can be
+    /// solved in parallel.
     #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
         environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
+    ) -> Self {
+        Self::from_rapier_with_groups(backend, environments, &[])
+    }
+
+    /// Same as [`from_rapier`](Self::from_rapier) but with a per-environment
+    /// multibody-grouping table (see method-level docs for the rule).
+    #[cfg(feature = "from_rapier")]
+    pub fn from_rapier_with_groups(
+        backend: &GpuBackend,
+        environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
+        multibody_groups: &[Vec<u32>],
     ) -> Self {
         let usage = BufferUsages::STORAGE;
         let num_batches = environments.len() as u32;
@@ -121,7 +141,7 @@ impl GpuImpulseJointSet {
         let mut per_env_sorted_joints: Vec<Vec<ImpulseJoint>> = Vec::new();
         let mut per_env_color_groups: Vec<Vec<u32>> = Vec::new();
 
-        for (joints, body_ids) in environments {
+        for (env_idx, (joints, body_ids)) in environments.iter().enumerate() {
             let len = joints.len() as u32;
             all_num_joints.push(len);
 
@@ -131,19 +151,33 @@ impl GpuImpulseJointSet {
                 unsorted_gpu_joints.push(convert_impulse_joint(joint, body_ids));
             }
 
-            // Run graph coloring independently for this environment.
+            // Build the body-id → graph-group lookup. Without a multibody group
+            // table, every body is its own node. With one, bodies that share a
+            // multibody collapse to a single node so two impulse-joint contacts
+            // touching different bodies of the same multibody must be in
+            // different colors.
             let max_body_id = body_ids.values().copied().max().unwrap_or_default();
+            let body_group: Vec<u32> = if env_idx < multibody_groups.len()
+                && !multibody_groups[env_idx].is_empty()
+            {
+                multibody_groups[env_idx].clone()
+            } else {
+                (0..=max_body_id).collect()
+            };
+            let max_group = body_group.iter().copied().max().unwrap_or(0);
+
+            // Run graph coloring on the multibody-grouped graph.
             let mut colors = vec![];
-            let mut body_masks = vec![0u128; max_body_id as usize + 1];
+            let mut group_masks = vec![0u128; max_group as usize + 1];
 
             for joint in &unsorted_gpu_joints {
-                let a = joint.body_a as usize;
-                let b = joint.body_b as usize;
-                let mask = body_masks[a] | body_masks[b];
+                let a = body_group[joint.body_a as usize] as usize;
+                let b = body_group[joint.body_b as usize] as usize;
+                let mask = group_masks[a] | group_masks[b];
                 let color = mask.trailing_ones();
                 colors.push(color);
-                body_masks[a] |= 1 << color;
-                body_masks[b] |= 1 << color;
+                group_masks[a] |= 1 << color;
+                group_masks[b] |= 1 << color;
             }
 
             let env_num_colors = colors

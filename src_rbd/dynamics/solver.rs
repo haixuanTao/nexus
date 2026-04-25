@@ -13,6 +13,8 @@
 //!   (without bias).
 
 use crate::dynamics::joint::{GpuJointSolver, JointSolverArgs};
+#[cfg(feature = "dim3")]
+use crate::dynamics::multibody::{GpuMultibodySet, GpuMultibodySolver, MultibodySolverArgs};
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
@@ -182,14 +184,26 @@ impl GpuSolver {
     }
 
     /// Solves constraints using the TGS (Total Gauss-Seidel) algorithm.
+    ///
+    /// When `multibody` is `Some`, multibody substep work is interleaved with
+    /// the rigid-body substep work — one `multibody.apply_substep` call inside
+    /// each iteration of the substep loop, just like rapier's
+    /// `velocity_solver::solve_constraints`.
     pub fn solve_tgs<'a>(
         &self,
         pass: &mut GpuPass,
         joint_solver: &GpuJointSolver,
         args: SolverArgs<'a>,
         mut joint_args: JointSolverArgs<'a>,
+        #[cfg(feature = "dim3")]
+        multibody: Option<(&GpuMultibodySolver, &mut GpuMultibodySet)>,
     ) -> Result<(), GpuBackendError> {
         let num_substeps = args.num_solver_iterations;
+        #[cfg(feature = "dim3")]
+        let (mb_solver, mut mb_state) = match multibody {
+            Some((s, st)) => (Some(s), Some(st)),
+            None => (None, None),
+        };
 
         /*
          * Init solver vel increments.
@@ -206,7 +220,27 @@ impl GpuSolver {
 
         joint_solver.init(pass, &mut joint_args)?;
 
-        for _ in 0..num_substeps {
+        for substep_id in 0..num_substeps {
+            let _is_last_substep = substep_id == num_substeps - 1;
+
+            // Multibody work, interleaved per substep — mirrors rapier's
+            // `velocity_solver::solve_constraints` inner loop. Each call:
+            //   1. v += a · dt'  (using `a` from previous substep / init)
+            //   2. rebuild limit / motor constraints from current coords
+            //   3. one PGS sweep WITH bias
+            //   4. integrate positions (multibody coords / joint_rot)
+            //   5. if not last substep: rebuild M, LU, a (positions changed)
+            //   6. remove positional bias
+            //   7. one PGS sweep WITHOUT bias (stabilization)
+            #[cfg(feature = "dim3")]
+            if let (Some(solver), Some(state)) = (mb_solver, mb_state.as_deref_mut()) {
+                let mut mb_args = MultibodySolverArgs {
+                    poses: &mut *args.poses,
+                    colliders_batch_capacity: args.colliders_batch_capacity,
+                };
+                solver.apply_substep(pass, state, &mut mb_args, _is_last_substep)?;
+            }
+
             /*
              * Apply solver velocities increments.
              */

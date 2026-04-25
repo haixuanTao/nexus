@@ -24,7 +24,7 @@ fn build() -> SimulationState {
 
     let rad = 0.4;
     let link_len = 2.0;
-    let num_links = 20;
+    let num_links = 2; // 20;
 
     // Fixed root at origin.
     let root_body = RigidBodyBuilder::fixed();
@@ -50,7 +50,8 @@ fn build() -> SimulationState {
         let joint = RevoluteJointBuilder::new(Vec3::Z)
             .local_anchor1(parent_anchor)
             .local_anchor2(Vec3::new(-link_len * 0.8, 0.0, 0.0))
-            .contacts_enabled(false)
+            .limits([-0.1, 0.1])
+            // .contacts_enabled(false)
             .build();
         multibody_joints.insert(parent_handle, handle, joint, true);
 

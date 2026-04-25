@@ -291,7 +291,43 @@ impl GpuPhysicsState {
             .iter()
             .map(|(joints, body_ids)| (*joints, body_ids))
             .collect();
-        let joints = GpuImpulseJointSet::from_rapier(backend, &joint_env_refs);
+
+        // Per-environment "graph group" table: each body local id maps to either
+        // its own id (free body) or a shared multibody-group id. Bodies in the
+        // same multibody collapse to a single node for impulse-joint coloring,
+        // matching rapier's rule.
+        #[cfg(feature = "dim3")]
+        let multibody_groups: Vec<Vec<u32>> = {
+            let mut all_groups: Vec<Vec<u32>> = Vec::with_capacity(num_batches as usize);
+            for (env_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
+                let _ = env_idx;
+                let max_id = body_ids.values().copied().max().unwrap_or_default();
+                let mut group: Vec<u32> = (0..=max_id).collect();
+                // Assign a unique group id per multibody. We start above
+                // `max_body_id + 1` so multibody groups never collide with
+                // free-body ids that aren't part of any multibody.
+                let mut next_group = max_id + 1;
+                for mb in mb_set.multibodies() {
+                    let g = next_group;
+                    next_group += 1;
+                    for link in mb.links() {
+                        if let Some(&id) = body_ids.get(&link.rigid_body_handle()) {
+                            group[id as usize] = g;
+                        }
+                    }
+                }
+                all_groups.push(group);
+            }
+            all_groups
+        };
+        #[cfg(not(feature = "dim3"))]
+        let multibody_groups: Vec<Vec<u32>> = Vec::new();
+
+        let joints = GpuImpulseJointSet::from_rapier_with_groups(
+            backend,
+            &joint_env_refs,
+            &multibody_groups,
+        );
 
         // Convert multibodies (3D only).
         #[cfg(feature = "dim3")]
@@ -309,7 +345,7 @@ impl GpuPhysicsState {
                 &mb_refs,
                 [0.0, -9.81, 0.0],
             );
-            mb.set_dt(backend, multibody_dt);
+            mb.set_visible_dt(backend, multibody_dt);
             mb
         };
 
@@ -598,24 +634,23 @@ impl GpuPhysicsPipeline {
         let mut stats = RunStats::default();
         let t_phase1 = web_time::Instant::now();
 
-        // Phase 0: Multibody step (3D only).
+        // Phase 0: Multibody once-per-visible-step setup (3D only).
         //
-        // Updates each articulated multibody's coords from the previous step's
-        // generalized acceleration, then refreshes link poses in the shared pose
-        // buffer so the rigid-body pipeline sees the articulated bodies in their
-        // new configuration. Contacts and constraints involving multibodies are
-        // not currently supported.
+        // Builds the mass matrix and LU factor and computes the initial
+        // generalized acceleration `a`. Per-substep multibody work
+        // (`apply_substep`) is interleaved with the rigid-body substep loop in
+        // Phase 4 below, just like rapier's `velocity_solver`.
         #[cfg(feature = "dim3")]
         {
             if !state.multibodies.is_empty() {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass("multibody-step", timestamps.as_deref_mut());
-                let args = crate::dynamics::MultibodySolverArgs {
+                let mut pass = encoder.begin_pass("multibody-init-step", timestamps.as_deref_mut());
+                let mut args = crate::dynamics::MultibodySolverArgs {
                     poses: &mut state.poses,
                     colliders_batch_capacity: &state.colliders_batch_capacity,
                 };
                 self.multibody_solver
-                    .step(&mut pass, &mut state.multibodies, args)
+                    .init_step(&mut pass, &mut state.multibodies, &mut args)
                     .unwrap();
                 drop(pass);
                 backend.submit(encoder).unwrap();
@@ -959,12 +994,20 @@ impl GpuPhysicsPipeline {
         {
             let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("solver", timestamps.as_deref_mut());
+            #[cfg(feature = "dim3")]
+            let mb = if state.multibodies.is_empty() {
+                None
+            } else {
+                Some((&self.multibody_solver, &mut state.multibodies))
+            };
             self.solver
                 .solve_tgs(
                     &mut pass,
                     &self.joint_solver,
                     solver_args,
                     joint_solver_args,
+                    #[cfg(feature = "dim3")]
+                    mb,
                 )
                 .unwrap();
             drop(pass);

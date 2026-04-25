@@ -15,6 +15,6 @@ mod coloring;
 mod joint;
 mod mprops_update;
 #[cfg(feature = "dim3")]
-mod multibody;
+pub(crate) mod multibody;
 mod solver;
 pub mod warmstart;
