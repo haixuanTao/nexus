@@ -119,6 +119,8 @@ pub struct SolverArgs<'a> {
     pub colliders_batch_capacity: &'a Tensor<u32>,
     /// Number of solver iterations (max across all environments).
     pub num_solver_iterations: u32,
+    /// Per-body graph-coloring group id (multibody-aware).
+    pub body_group: &'a Tensor<u32>,
 }
 
 impl GpuSolver {
@@ -151,6 +153,7 @@ impl GpuSolver {
             args.constraints,
             args.constraint_builders,
             args.body_constraint_counts,
+            args.body_group,
             args.poses,
             args.vels,
             args.mprops,
@@ -176,6 +179,7 @@ impl GpuSolver {
             args.contacts,
             args.contacts_len,
             args.body_constraint_ids,
+            args.body_group,
             args.contacts_batch_capacity,
             args.colliders_batch_capacity,
         )?;
@@ -237,6 +241,11 @@ impl GpuSolver {
                 let mut mb_args = MultibodySolverArgs {
                     poses: &mut *args.poses,
                     colliders_batch_capacity: args.colliders_batch_capacity,
+                    mprops: args.mprops,
+                    contacts: args.contacts,
+                    contacts_len: args.contacts_len,
+                    contacts_batch_capacity: args.contacts_batch_capacity,
+                    solver_vels: &mut *args.solver_vels,
                 };
                 solver.apply_substep(pass, state, &mut mb_args, _is_last_substep)?;
             }

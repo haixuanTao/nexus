@@ -6,6 +6,26 @@ pub fn builder() -> DemoBuilder {
 }
 
 fn build() -> SimulationState {
+    let mut bodies = RigidBodySet::new();
+    let mut colliders = ColliderSet::new();
+    let impulse_joints = ImpulseJointSet::new();
+    let mut multibody_joints = MultibodyJointSet::new();
+
+    /*
+     * The ground
+     */
+    let ground_size = 100.0;
+    let ground_height = 0.1;
+
+    let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height - 5.0, 0.0));
+    let ground_handle = bodies.insert(rigid_body);
+    let collider = ColliderBuilder::cuboid(
+        ground_size,
+        ground_height,
+        ground_size,
+    );
+    colliders.insert_with_parent(collider, ground_handle, &mut bodies);
+
     /*
      * A 3-link pendulum modeled with rapier's MultibodyJointSet.
      *
@@ -17,14 +37,9 @@ fn build() -> SimulationState {
      * and runs `GpuMultibodySolver::step` each frame — no contacts or constraints
      * with multibodies are involved.
      */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let impulse_joints = ImpulseJointSet::new();
-    let mut multibody_joints = MultibodyJointSet::new();
-
     let rad = 0.4;
     let link_len = 2.0;
-    let num_links = 2; // 20;
+    let num_links = 10;
 
     // Fixed root at origin.
     let root_body = RigidBodyBuilder::fixed();
@@ -50,7 +65,7 @@ fn build() -> SimulationState {
         let joint = RevoluteJointBuilder::new(Vec3::Z)
             .local_anchor1(parent_anchor)
             .local_anchor2(Vec3::new(-link_len * 0.8, 0.0, 0.0))
-            .limits([-0.1, 0.1])
+            // .limits([-0.1, 0.1])
             // .contacts_enabled(false)
             .build();
         multibody_joints.insert(parent_handle, handle, joint, true);

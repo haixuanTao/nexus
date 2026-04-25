@@ -22,12 +22,16 @@
 #![cfg(feature = "dim3")]
 
 use crate::math::Pose;
+use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
-    GpuMbApplyGravityWithCoriolis, GpuMbBodyJacobians, GpuMbForwardKinematics,
-    GpuMbInitJointConstraints, GpuMbIntegrate, GpuMbIntegrateVelocities, GpuMbLuDecompose,
-    GpuMbLuSolve, GpuMbMassMatrix, GpuMbMassMatrixWithCoriolis, GpuMbRemoveJointConstraintBias,
-    GpuMbSolveJointConstraints, GpuMbUpdateVelocities, LocalMassProperties, MultibodyInfo,
-    MultibodyJointConstraint, MultibodyLinkStatic, MultibodyLinkWorkspace,
+    GpuMbApplyGravityWithCoriolis, GpuMbBodyJacobians, GpuMbFinalizeContactConstraints,
+    GpuMbForwardKinematics, GpuMbInitContactConstraints, GpuMbInitJointConstraints, GpuMbIntegrate,
+    GpuMbIntegrateVelocities, GpuMbLuDecompose, GpuMbLuSolve, GpuMbMassMatrix,
+    GpuMbMassMatrixWithCoriolis, GpuMbRemoveContactConstraintBias, GpuMbRemoveJointConstraintBias,
+    GpuMbSolveContactConstraints, GpuMbSolveJointConstraints, GpuMbUpdateVelocities,
+    LocalMassProperties, MAX_MB_CONTACTS_PER_MB, MultibodyContactConstraint, MultibodyInfo,
+    MultibodyJointConstraint, MultibodyLinkStatic, MultibodyLinkWorkspace, Velocity,
+    WorldMassProperties,
 };
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
@@ -102,6 +106,29 @@ pub struct GpuMultibodySet {
     joint_constraints: Tensor<MultibodyJointConstraint>,
     /// Per-constraint columns of `M⁻¹` (length `ndofs` each, contiguous per multibody).
     joint_constraint_columns: Tensor<f32>,
+
+    /// Per-body lookup `[multibody_idx, link_idx]` (`u32::MAX` sentinel for
+    /// free / non-multibody bodies). Indexed by the per-batch local body id;
+    /// matches the layout of the shared body buffers (stride =
+    /// `colliders_batch_capacity`). Used by the contact-constraint
+    /// generation kernel to find which multibody / link a contact touches.
+    body_to_link: Tensor<[u32; 2]>,
+
+    /// Per-multibody bank of contact constraints (1 normal + 2 friction per
+    /// touched contact point). Each constraint's M⁻¹ column lives at the
+    /// matching slot in `contact_constraint_columns`, and its `Jᵀ` row at the
+    /// matching slot in `contact_constraint_jacs`.
+    contact_constraints: Tensor<MultibodyContactConstraint>,
+    /// Per-constraint `Jᵀ` row (length `ndofs`) — the multibody side's
+    /// contribution to the constraint Jacobian, written by the init kernel.
+    contact_constraint_jacs: Tensor<f32>,
+    /// Per-constraint M⁻¹·Jᵀ column (length `ndofs`) — written by the
+    /// finalize kernel via LU back-substitution.
+    contact_constraint_columns: Tensor<f32>,
+    /// Per-multibody count of currently-active contact constraints. Filled
+    /// by the init kernel; read by the solve / finalize kernels.
+    contact_constraint_count: Tensor<u32>,
+
     /// Number of solver iterations to run on `joint_constraints` per `step()`.
     num_solver_iterations: u32,
 
@@ -114,6 +141,10 @@ pub struct GpuMultibodySet {
     i_coriolis_dt_batch_capacity: Tensor<u32>,
     joint_constraints_batch_capacity: Tensor<u32>,
     joint_constraint_columns_batch_capacity: Tensor<u32>,
+    contact_constraints_batch_capacity: Tensor<u32>,
+    contact_constraint_columns_batch_capacity: Tensor<u32>,
+    /// Stride (per-batch capacity) for `body_to_link` — same as colliders.
+    contacts_batch_capacity_for_mb: Tensor<u32>,
 
     /// Gravity vector (uploaded as `[f32; 3]`).
     gravity: Tensor<[f32; 3]>,
@@ -226,6 +257,7 @@ impl GpuMultibodySet {
             &RigidBodySet,
         )],
         gravity: [f32; 3],
+        colliders_per_batch: u32,
     ) -> Self {
         let num_batches = environments.len() as u32;
 
@@ -438,6 +470,34 @@ impl GpuMultibodySet {
         // One length-`dofs_cap` column of `M⁻¹` per constraint slot.
         let cons_col_cap = cons_cap.saturating_mul(dofs_cap).max(1);
 
+        // Per-multibody contact-constraint banks: every multibody owns a
+        // fixed-size slab of `MAX_MB_CONTACTS_PER_MB` slots (mirrors how
+        // joint constraints are sized — the init kernel marks unused slots as
+        // `kind = 0`).
+        let contact_cons_cap = mb_cap.saturating_mul(MAX_MB_CONTACTS_PER_MB).max(1);
+        let contact_cons_col_cap = contact_cons_cap.saturating_mul(dofs_cap).max(1);
+        let body_to_link_cap = colliders_per_batch.max(1);
+
+        // Build the per-body multibody/link lookup. Free / non-multibody bodies
+        // get the sentinel `[u32::MAX, u32::MAX]`. The kernel reads
+        // `body_to_link[batch_offset + body_local_id]` and skips the
+        // sentinel.
+        let mut all_body_to_link: Vec<[u32; 2]> =
+            vec![[u32::MAX, u32::MAX]; (body_to_link_cap * num_batches) as usize];
+        for (batch_idx, (set, body_ids, _)) in environments.iter().enumerate() {
+            let base = batch_idx * body_to_link_cap as usize;
+            for (mb_idx, mb) in set.multibodies().enumerate() {
+                for (link_idx, link) in mb.links().enumerate() {
+                    if let Some(&local) = body_ids.get(&link.rigid_body_handle()) {
+                        if (local as u32) < body_to_link_cap {
+                            all_body_to_link[base + local as usize] =
+                                [mb_idx as u32, link_idx as u32];
+                        }
+                    }
+                }
+            }
+        }
+
         // Flatten, padding each batch to `*_cap`.
         let mut all_infos: Vec<MultibodyInfo> =
             Vec::with_capacity((mb_cap * num_batches) as usize);
@@ -569,6 +629,34 @@ impl GpuMultibodySet {
                 storage,
             )
             .unwrap(),
+            body_to_link: Tensor::vector(backend, &all_body_to_link, storage).unwrap(),
+            contact_constraints: Tensor::vector(
+                backend,
+                &vec![
+                    MultibodyContactConstraint::default();
+                    (contact_cons_cap * num_batches) as usize
+                ],
+                storage,
+            )
+            .unwrap(),
+            contact_constraint_jacs: Tensor::vector(
+                backend,
+                &vec![0.0f32; (contact_cons_col_cap * num_batches) as usize],
+                storage,
+            )
+            .unwrap(),
+            contact_constraint_columns: Tensor::vector(
+                backend,
+                &vec![0.0f32; (contact_cons_col_cap * num_batches) as usize],
+                storage,
+            )
+            .unwrap(),
+            contact_constraint_count: Tensor::vector(
+                backend,
+                &vec![0u32; (mb_cap * num_batches) as usize],
+                storage,
+            )
+            .unwrap(),
             num_solver_iterations: 4,
 
             multibodies_batch_capacity: Tensor::scalar(backend, mb_cap, usage_u).unwrap(),
@@ -580,6 +668,16 @@ impl GpuMultibodySet {
             i_coriolis_dt_batch_capacity: Tensor::scalar(backend, icdt_cap, usage_u).unwrap(),
             joint_constraints_batch_capacity: Tensor::scalar(backend, cons_cap, usage_u).unwrap(),
             joint_constraint_columns_batch_capacity: Tensor::scalar(backend, cons_col_cap, usage_u).unwrap(),
+            contact_constraints_batch_capacity: Tensor::scalar(backend, contact_cons_cap, usage_u)
+                .unwrap(),
+            contact_constraint_columns_batch_capacity: Tensor::scalar(
+                backend,
+                contact_cons_col_cap,
+                usage_u,
+            )
+            .unwrap(),
+            contacts_batch_capacity_for_mb: Tensor::scalar(backend, body_to_link_cap, usage_u)
+                .unwrap(),
 
             gravity: Tensor::scalar(
                 backend,
@@ -695,6 +793,10 @@ pub struct GpuMultibodySolver {
     init_joint_constraints: GpuMbInitJointConstraints,
     solve_joint_constraints: GpuMbSolveJointConstraints,
     remove_joint_constraint_bias: GpuMbRemoveJointConstraintBias,
+    init_contact_constraints: GpuMbInitContactConstraints,
+    finalize_contact_constraints: GpuMbFinalizeContactConstraints,
+    solve_contact_constraints: GpuMbSolveContactConstraints,
+    remove_contact_constraint_bias: GpuMbRemoveContactConstraintBias,
     integrate_velocities: GpuMbIntegrateVelocities,
     integrate: GpuMbIntegrate,
 }
@@ -707,6 +809,16 @@ pub struct MultibodySolverArgs<'a> {
     pub poses: &'a mut Tensor<Pose>,
     /// Colliders-per-batch capacity (stride in the pose tensor).
     pub colliders_batch_capacity: &'a Tensor<u32>,
+    /// Free-body world mass properties (read by `init_contact_constraints`).
+    pub mprops: &'a Tensor<WorldMassProperties>,
+    /// Per-batch contact manifold list (filled by narrow-phase).
+    pub contacts: &'a Tensor<GpuIndexedContact>,
+    /// Per-batch contact count (parallel to `contacts`).
+    pub contacts_len: &'a Tensor<u32>,
+    /// Per-batch contact-buffer stride.
+    pub contacts_batch_capacity: &'a Tensor<u32>,
+    /// Free-body solver velocities (updated in place by `solve_contact_constraints`).
+    pub solver_vels: &'a mut Tensor<Velocity>,
 }
 
 impl GpuMultibodySolver {
@@ -970,6 +1082,75 @@ impl GpuMultibodySolver {
             &mb.joint_constraint_columns_batch_capacity,
         )?;
 
+        // 3b. Build + finalize + solve contact constraints (normal-only, free
+        //     body × multibody pairs only). Mirrors rapier's interleaved
+        //     "generic constraint" sweep order.
+        self.init_contact_constraints.call(
+            pass,
+            dispatch,
+            // descriptor_set 0 (sorted by binding index).
+            &mb.multibody_info,
+            &mb.links_static,
+            &mb.links_workspace,
+            &mb.body_jacobians,
+            &mb.body_to_link,
+            &mut mb.contact_constraints,
+            &mut mb.contact_constraint_jacs,
+            &mut mb.contact_constraint_count,
+            &mb.num_multibodies,
+            &mb.dt,
+            &mb.multibodies_batch_capacity,
+            &mb.links_batch_capacity,
+            &mb.jacobians_batch_capacity,
+            &mb.dof_batch_capacity,
+            &mb.contact_constraints_batch_capacity,
+            &mb.contact_constraint_columns_batch_capacity,
+            // descriptor_set 1.
+            args.mprops,
+            args.poses,
+            args.contacts,
+            args.contacts_len,
+            args.contacts_batch_capacity,
+            args.colliders_batch_capacity,
+            &mb.contacts_batch_capacity_for_mb,
+        )?;
+
+        self.finalize_contact_constraints.call(
+            pass,
+            dispatch,
+            &mb.multibody_info,
+            &mb.mass_matrices,
+            &mb.lu_pivots,
+            &mut mb.contact_constraints,
+            &mb.contact_constraint_jacs,
+            &mut mb.contact_constraint_columns,
+            &mb.contact_constraint_count,
+            &mb.num_multibodies,
+            &mb.multibodies_batch_capacity,
+            &mb.mass_matrix_batch_capacity,
+            &mb.dof_batch_capacity,
+            &mb.contact_constraints_batch_capacity,
+            &mb.contact_constraint_columns_batch_capacity,
+        )?;
+
+        self.solve_contact_constraints.call(
+            pass,
+            dispatch,
+            &mb.multibody_info,
+            &mut mb.contact_constraints,
+            &mb.contact_constraint_jacs,
+            &mb.contact_constraint_columns,
+            &mb.contact_constraint_count,
+            &mut mb.dof_velocities,
+            args.solver_vels,
+            &mb.num_multibodies,
+            &mb.multibodies_batch_capacity,
+            &mb.dof_batch_capacity,
+            &mb.contact_constraints_batch_capacity,
+            &mb.contact_constraint_columns_batch_capacity,
+            args.colliders_batch_capacity,
+        )?;
+
         // 4. Integrate positions with the corrected `v`.
         self.integrate.call(
             pass,
@@ -1003,6 +1184,15 @@ impl GpuMultibodySolver {
             &mb.multibodies_batch_capacity,
             &mb.joint_constraints_batch_capacity,
         )?;
+        self.remove_contact_constraint_bias.call(
+            pass,
+            dispatch,
+            &mut mb.contact_constraints,
+            &mb.contact_constraint_count,
+            &mb.num_multibodies,
+            &mb.multibodies_batch_capacity,
+            &mb.contact_constraints_batch_capacity,
+        )?;
 
         // 7. Final PGS sweep WITHOUT bias — settles velocity to pure-zero
         //    along constrained DOFs, eliminating the rebound that drives jitter.
@@ -1018,6 +1208,23 @@ impl GpuMultibodySolver {
             &mb.dof_batch_capacity,
             &mb.joint_constraints_batch_capacity,
             &mb.joint_constraint_columns_batch_capacity,
+        )?;
+        self.solve_contact_constraints.call(
+            pass,
+            dispatch,
+            &mb.multibody_info,
+            &mut mb.contact_constraints,
+            &mb.contact_constraint_jacs,
+            &mb.contact_constraint_columns,
+            &mb.contact_constraint_count,
+            &mut mb.dof_velocities,
+            args.solver_vels,
+            &mb.num_multibodies,
+            &mb.multibodies_batch_capacity,
+            &mb.dof_batch_capacity,
+            &mb.contact_constraints_batch_capacity,
+            &mb.contact_constraint_columns_batch_capacity,
+            args.colliders_batch_capacity,
         )?;
 
         Ok(())

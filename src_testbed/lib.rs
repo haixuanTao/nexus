@@ -182,7 +182,7 @@ impl Testbed {
             #[cfg(target_arch = "wasm32")]
             max_storage_buffers_per_shader_stage: 10,
             #[cfg(not(target_arch = "wasm32"))]
-            max_storage_buffers_per_shader_stage: 12,
+            max_storage_buffers_per_shader_stage: 14,
             max_compute_workgroup_storage_size: 19904,
             ..Default::default()
         };

@@ -67,6 +67,7 @@ pub fn gpu_solver_init_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
     constraint_builders: &mut [TwoBodyConstraintBuilder],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_constraint_counts: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_group: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] mprops: &[WorldMassProperties],
@@ -84,6 +85,7 @@ pub fn gpu_solver_init_constraints(
     let mut constraints = SliceMut(constraints, contacts_start);
     let mut constraint_builders = SliceMut(constraint_builders, contacts_start);
     let mut body_constraint_counts = SliceMut(body_constraint_counts, colliders_start);
+    let body_group = Slice(body_group, colliders_start);
     let poses = Slice(poses, colliders_start);
     let vels = Slice(vels, colliders_start);
     let mprops = Slice(mprops, colliders_start);
@@ -102,14 +104,21 @@ pub fn gpu_solver_init_constraints(
 
         let body1 = contacts.at(i as usize).colliders.x;
         let body2 = contacts.at(i as usize).colliders.y;
+        let group1 = body_group.read(body1 as usize);
+        let group2 = body_group.read(body2 as usize);
 
-        // HACK: add a better way of identifying static bodies.
-        if mprops.at(body1 as usize).inv_mass != Vector::ZERO {
-            atomic_add_u32(body_constraint_counts.at_mut(body1 as usize), 1);
+        // Count toward the body's GROUP slot. A body is "active" for the
+        // graph-coloring graph if it's a free dynamic body (inv_mass != 0) OR
+        // it's part of a multibody (group != self — the multibody handles its
+        // own dynamics but its bodies still need correct coloring so contacts
+        // touching different links of the same multibody never share a color).
+        let is_mb1 = group1 != body1;
+        if mprops.at(body1 as usize).inv_mass != Vector::ZERO || is_mb1 {
+            atomic_add_u32(body_constraint_counts.at_mut(group1 as usize), 1);
         }
-
-        if mprops.at(body2 as usize).inv_mass != Vector::ZERO {
-            atomic_add_u32(body_constraint_counts.at_mut(body2 as usize), 1);
+        let is_mb2 = group2 != body2;
+        if mprops.at(body2 as usize).inv_mass != Vector::ZERO || is_mb2 {
+            atomic_add_u32(body_constraint_counts.at_mut(group2 as usize), 1);
         }
     }
 }
@@ -161,8 +170,9 @@ pub fn gpu_solver_sort_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts: &[IndexedManifold],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_constraint_ids: &mut [u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] colliders_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_group: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] colliders_batch_capacity: &u32,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y as usize;
@@ -172,6 +182,7 @@ pub fn gpu_solver_sort_constraints(
 
     let contacts = Slice(contacts, contacts_start);
     let mut body_constraint_counts = SliceMut(body_constraint_counts, colliders_start);
+    let body_group = Slice(body_group, colliders_start);
     let mprops = Slice(mprops, colliders_start);
     let mut body_constraint_ids = SliceMut(body_constraint_ids, bci_start);
     let len = contacts_len.read(batch_id);
@@ -179,16 +190,18 @@ pub fn gpu_solver_sort_constraints(
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let body1 = contacts.at(i as usize).colliders.x as usize;
         let body2 = contacts.at(i as usize).colliders.y as usize;
+        let group1 = body_group.read(body1) as usize;
+        let group2 = body_group.read(body2) as usize;
 
-        // HACK: add a better way of identifying static bodies.
-        if mprops.at(body1).inv_mass != Vector::ZERO {
-            let id1 = atomic_add_u32(body_constraint_counts.at_mut(body1), 1);
+        let is_mb1 = group1 != body1;
+        if mprops.at(body1).inv_mass != Vector::ZERO || is_mb1 {
+            let id1 = atomic_add_u32(body_constraint_counts.at_mut(group1), 1);
             body_constraint_ids.write(id1 as usize, i);
         }
 
-        // HACK: add a better way of identifying static bodies.
-        if mprops.at(body2).inv_mass != Vector::ZERO {
-            let id2 = atomic_add_u32(body_constraint_counts.at_mut(body2), 1);
+        let is_mb2 = group2 != body2;
+        if mprops.at(body2).inv_mass != Vector::ZERO || is_mb2 {
+            let id2 = atomic_add_u32(body_constraint_counts.at_mut(group2), 1);
             body_constraint_ids.write(id2 as usize, i);
         }
     }

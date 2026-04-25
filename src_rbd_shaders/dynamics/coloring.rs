@@ -93,10 +93,11 @@ pub fn gpu_step_graph_coloring_luby(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] constraints_colors: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] constraints_rands: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] uncolored: &mut u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] curr_color: &u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] body_group: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] curr_color: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] contacts_len: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] colliders_batch_capacity: &u32,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y as usize;
@@ -106,6 +107,7 @@ pub fn gpu_step_graph_coloring_luby(
 
     let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
     let body_constraint_ids = Slice(body_constraint_ids, bci_start);
+    let body_group = Slice(body_group, colliders_start);
     let constraints = Slice(constraints, contacts_start);
     let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
     let constraints_rands = Slice(constraints_rands, contacts_start);
@@ -119,8 +121,9 @@ pub fn gpu_step_graph_coloring_luby(
         if constraints_colors.read(i) == MAX_U32 {
             // This constraint doesn't have a color yet.
             let rand_i = constraints_rands.read(i);
-            let body_a = constraints.at(i).solver_body_a;
-            let body_b = constraints.at(i).solver_body_b;
+            // Map raw body ids to graph-coloring GROUP ids (multibody-aware).
+            let body_a = body_group.read(constraints.at(i).solver_body_a as usize);
+            let body_b = body_group.read(constraints.at(i).solver_body_b as usize);
 
             let first_constraint_id_a = if body_a != 0 {
                 body_constraint_counts.read(body_a as usize - 1) as usize
@@ -283,8 +286,9 @@ pub fn gpu_step_graph_coloring_topo_gc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colored: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colors: &mut u32,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] colliders_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_group: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y as usize;
@@ -294,6 +298,7 @@ pub fn gpu_step_graph_coloring_topo_gc(
 
     let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
     let body_constraint_ids = Slice(body_constraint_ids, bci_start);
+    let body_group = Slice(body_group, colliders_start);
     let constraints = Slice(constraints, contacts_start);
     let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
     let mut colored = SliceMut(colored, contacts_start);
@@ -309,8 +314,9 @@ pub fn gpu_step_graph_coloring_topo_gc(
             // Note that we always mark the color 0 as occupied (cf. paper using i > 0).
             let mut color_mask = (1u32, 0u32);
 
-            let body_a = constraints.at(i).solver_body_a;
-            let body_b = constraints.at(i).solver_body_b;
+            // Map raw body ids to graph-coloring GROUP ids (multibody-aware).
+            let body_a = body_group.read(constraints.at(i).solver_body_a as usize);
+            let body_b = body_group.read(constraints.at(i).solver_body_b as usize);
 
             let first_constraint_id_a = if body_a != 0 {
                 body_constraint_counts.read(body_a as usize - 1) as usize
@@ -376,8 +382,9 @@ pub fn gpu_fix_conflicts_topo_gc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colored: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colors: &mut u32,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] colliders_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_group: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y as usize;
@@ -387,6 +394,7 @@ pub fn gpu_fix_conflicts_topo_gc(
 
     let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
     let body_constraint_ids = Slice(body_constraint_ids, bci_start);
+    let body_group = Slice(body_group, colliders_start);
     let constraints = Slice(constraints, contacts_start);
     let constraints_colors = Slice(constraints_colors, contacts_start);
     let mut colored = SliceMut(colored, contacts_start);
@@ -408,8 +416,9 @@ pub fn gpu_fix_conflicts_topo_gc(
 
             atomic_max_u32(num_colors, color_i);
         } else {
-            let body_a = constraints.at(i).solver_body_a;
-            let body_b = constraints.at(i).solver_body_b;
+            // Map raw body ids to graph-coloring GROUP ids (multibody-aware).
+            let body_a = body_group.read(constraints.at(i).solver_body_a as usize);
+            let body_b = body_group.read(constraints.at(i).solver_body_b as usize);
 
             let first_constraint_id_a = if body_a != 0 {
                 body_constraint_counts.read(body_a as usize - 1) as usize

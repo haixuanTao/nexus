@@ -93,6 +93,10 @@ pub struct ColoringArgs<'a> {
     pub contacts_batch_capacity: &'a Tensor<u32>,
     /// Maximum colliders per batch (stride between batches in body buffers).
     pub colliders_batch_capacity: &'a Tensor<u32>,
+    /// Per-body graph-coloring group id (multibody-aware): contacts touching
+    /// different bodies of the same multibody share a group and never share
+    /// a color. For free bodies, `body_group[i] = i`.
+    pub body_group: &'a Tensor<u32>,
 }
 
 impl GpuColoring {
@@ -127,6 +131,7 @@ impl GpuColoring {
             args.constraints_colors,
             args.constraints_rands,
             args.uncolored,
+            args.body_group,
             args.curr_color,
             args.contacts_len,
             args.contacts_batch_capacity,
@@ -166,6 +171,7 @@ impl GpuColoring {
             args.colored,
             args.uncolored,
             args.contacts_len,
+            args.body_group,
             args.contacts_batch_capacity,
             args.colliders_batch_capacity,
         )
@@ -187,6 +193,7 @@ impl GpuColoring {
             args.colored,
             args.uncolored,
             args.contacts_len,
+            args.body_group,
             args.contacts_batch_capacity,
             args.colliders_batch_capacity,
         )

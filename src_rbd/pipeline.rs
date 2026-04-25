@@ -128,6 +128,18 @@ pub struct GpuPhysicsState {
     joints: GpuImpulseJointSet,
     #[cfg(feature = "dim3")]
     multibodies: GpuMultibodySet,
+    /// Per-body "graph group" id, used by graph coloring to treat all bodies of
+    /// the same multibody as a single node. For free bodies, `body_group[i] = i`.
+    /// For bodies belonging to a multibody, all share the same group id (chosen
+    /// as the body id of the multibody's root link). Two contacts touching
+    /// different bodies of the same multibody therefore share the same group
+    /// and cannot be assigned the same color.
+    ///
+    /// The buffer is laid out flat across batches with stride
+    /// `colliders_batch_capacity`, matching the shared body-keyed buffers
+    /// (`new_constraints_counts` / `new_body_constraint_ids` / etc.).
+    #[allow(dead_code)]
+    body_group: Tensor<u32>,
     prefix_sum_workspace: PrefixSumWorkspace,
 }
 
@@ -344,6 +356,7 @@ impl GpuPhysicsState {
                 backend,
                 &mb_refs,
                 [0.0, -9.81, 0.0],
+                max_colliders as u32,
             );
             mb.set_visible_dt(backend, multibody_dt);
             mb
@@ -369,6 +382,42 @@ impl GpuPhysicsState {
                 }
             }
         }
+
+        // Build the per-body "graph group" lookup. Free bodies map to themselves
+        // (one body = one graph node). Bodies belonging to a multibody all map
+        // to a single shared group id (= the body id of the multibody's root
+        // link). Coloring kernels read `body_group[body_id]` instead of `body_id`
+        // when computing constraint adjacency, so contacts touching different
+        // bodies of the same multibody correctly conflict and never share a
+        // color.
+        // `body_group` stores PER-BATCH local indices (so a kernel can use the
+        // same `Slice(buf, colliders_start)` pattern as for `body_constraint_*`
+        // and just index by `group_local`).
+        let mut all_body_group: Vec<u32> =
+            Vec::with_capacity(max_colliders * num_batches as usize);
+        for _batch_idx in 0..num_batches as usize {
+            for b in 0..max_colliders {
+                all_body_group.push(b as u32);
+            }
+        }
+        #[cfg(feature = "dim3")]
+        for (batch_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
+            let base = batch_idx * max_colliders;
+            for mb in mb_set.multibodies() {
+                let group_local = mb
+                    .links()
+                    .next()
+                    .and_then(|root| body_ids.get(&root.rigid_body_handle()).copied());
+                let Some(group_local) = group_local else { continue };
+                for link in mb.links() {
+                    if let Some(&local) = body_ids.get(&link.rigid_body_handle()) {
+                        all_body_group[base + local as usize] = group_local;
+                    }
+                }
+            }
+        }
+        let body_group =
+            Tensor::vector(backend, &all_body_group, BufferUsages::STORAGE).unwrap();
 
         let num_colliders_per_batch = max_colliders;
         let num_bodies_total = num_colliders_per_batch * num_batches as usize;
@@ -489,6 +538,7 @@ impl GpuPhysicsState {
             joints,
             #[cfg(feature = "dim3")]
             multibodies,
+            body_group,
             local_mprops: Tensor::vector(backend, &all_local_mprops, storage).unwrap(),
             mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
             poses: Tensor::vector(
@@ -648,6 +698,11 @@ impl GpuPhysicsPipeline {
                 let mut args = crate::dynamics::MultibodySolverArgs {
                     poses: &mut state.poses,
                     colliders_batch_capacity: &state.colliders_batch_capacity,
+                    mprops: &state.mprops,
+                    contacts: &state.contacts,
+                    contacts_len: &state.contacts_len,
+                    contacts_batch_capacity: &state.contacts_batch_capacity,
+                    solver_vels: &mut state.solver_vels,
                 };
                 self.multibody_solver
                     .init_step(&mut pass, &mut state.multibodies, &mut args)
@@ -868,6 +923,7 @@ impl GpuPhysicsPipeline {
                 num_batches: state.num_batches,
                 num_colliders: state.num_colliders_per_batch,
                 num_solver_iterations: state.num_solver_iterations,
+                body_group: &state.body_group,
             };
             self.solver
                 .prepare(
@@ -915,6 +971,7 @@ impl GpuPhysicsPipeline {
             colored: &mut state.colored,
             contacts_batch_capacity: &state.contacts_batch_capacity,
             colliders_batch_capacity: &state.colliders_batch_capacity,
+            body_group: &state.body_group,
         };
 
         let num_colors = if let Some(colors) = self
@@ -944,6 +1001,7 @@ impl GpuPhysicsPipeline {
                 colored: &mut state.colored,
                 contacts_batch_capacity: &state.contacts_batch_capacity,
                 colliders_batch_capacity: &state.colliders_batch_capacity,
+                body_group: &state.body_group,
             };
             self.coloring
                 .dispatch_luby(backend, coloring_args, &mut stats)
@@ -979,6 +1037,7 @@ impl GpuPhysicsPipeline {
             num_batches: state.num_batches,
             num_colliders: state.num_colliders_per_batch,
             num_solver_iterations: state.num_solver_iterations,
+            body_group: &state.body_group,
         };
 
         // Phase 3: Solve constraints
