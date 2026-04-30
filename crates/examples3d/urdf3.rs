@@ -41,27 +41,27 @@ fn build() -> SimulationState {
         mesh_converter: None, // Some(MeshConverter::Obb),
         // Lift the robot above the ground. URDF is Z-up but the testbed is Y-up,
         // so rotate -90° around X so the robot stands upright.
-        // shift: Pose::from_parts(
-        //     Vec3::new(0.0, scale, 0.0),
-        //     Rotation::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-        // ),
+        shift: Pose::from_parts(
+            Vec3::new(0.0, scale, 0.0),
+            Rotation::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+        ),
         collider_blueprint: ColliderBuilder::ball(0.5).collision_groups(InteractionGroups::none()),
         ..UrdfLoaderOptions::default()
     };
 
     match UrdfRobot::from_file(&path, options, None) {
         Ok((robot, _)) => {
-            let handles = robot.insert_using_impulse_joints(
-                &mut bodies,
-                &mut colliders,
-                &mut impulse_joints,
-            );
-            // let handles = robot.insert_using_multibody_joints(
+            // let handles = robot.insert_using_impulse_joints(
             //     &mut bodies,
             //     &mut colliders,
-            //     &mut multibody_joints,
-            //     UrdfMultibodyOptions::DISABLE_SELF_CONTACTS
+            //     &mut impulse_joints,
             // );
+            let handles = robot.insert_using_multibody_joints(
+                &mut bodies,
+                &mut colliders,
+                &mut multibody_joints,
+                UrdfMultibodyOptions::DISABLE_SELF_CONTACTS
+            );
 
             for link in &handles.links {
                 for collider in &link.colliders {
