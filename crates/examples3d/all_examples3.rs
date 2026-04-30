@@ -5,6 +5,7 @@ use inflector::Inflector;
 use nexus_testbed3d::{DemoBuilder, Testbed};
 use std::cmp::Ordering;
 
+mod joints3;
 mod balls3;
 mod boxes3;
 mod boxes_and_balls3;
@@ -80,6 +81,7 @@ pub fn demo_builders() -> Vec<DemoBuilder> {
         many_pyramids3::builder(),
         many_pyramids_batch3::builder(),
         keva3::builder(),
+        joints3::builder(),
         joint_ball3::builder(),
         joint_fixed3::builder(),
         joint_prismatic3::builder(),

@@ -28,6 +28,14 @@ use super::sim_params::SimParams;
 
 const WORKGROUP_SIZE: u32 = 64;
 
+/// Maximum number of constraints an impulse joint can generate.
+///
+/// TODO(perf): in most cases, SPATIAL_DIM * 2 is very overkill. That would be
+///             a free joint with both limits and motors enabled along all axes.
+///             The most common case would be SPATIAL_DIM + 1 where a prismatic
+///             or revolute joint has a motor.
+const MAX_CONSTRAINTS_PER_JOINT: usize = SPATIAL_DIM * 2;
+
 /// Motor parameters for constraint solving.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
@@ -91,7 +99,7 @@ pub struct JointConstraint {
     pub im_b: Vector,
 
     /// The constraints for a joint. Up to 6 in 3D, and up to 3 in 2D.
-    pub elements: [JointConstraintElement; SPATIAL_DIM],
+    pub elements: [JointConstraintElement; MAX_CONSTRAINTS_PER_JOINT],
     /// The number of active `JointConstraint::elements`.
     pub len: u32,
     pub padding: [u32; 1],
@@ -116,7 +124,7 @@ pub struct JointConstraint {
     pub solver_vel_b: u32,
 
     /// The constraints for a joint. Up to 6 in 3D, and up to 3 in 2D.
-    pub elements: [JointConstraintElement; SPATIAL_DIM],
+    pub elements: [JointConstraintElement; MAX_CONSTRAINTS_PER_JOINT],
     /// The number of active `JointConstraint::elements`.
     pub len: u32,
     pub padding: [u32; 3],
@@ -129,7 +137,7 @@ impl Default for JointConstraint {
             solver_vel_b: 0,
             im_a: Vector::ZERO,
             im_b: Vector::ZERO,
-            elements: [JointConstraintElement::default(); SPATIAL_DIM],
+            elements: [JointConstraintElement::default(); MAX_CONSTRAINTS_PER_JOINT],
             len: 0,
             padding: [0; _],
         }

@@ -14,17 +14,17 @@ fn build() -> SimulationState {
     /*
      * The ground
      */
-    let ground_size = 100.0;
-    let ground_height = 0.1;
-
-    let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height - 5.0, 0.0));
-    let ground_handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::cuboid(
-        ground_size,
-        ground_height,
-        ground_size,
-    );
-    colliders.insert_with_parent(collider, ground_handle, &mut bodies);
+    // let ground_size = 100.0;
+    // let ground_height = 0.1;
+    //
+    // let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height - 5.0, 0.0));
+    // let ground_handle = bodies.insert(rigid_body);
+    // let collider = ColliderBuilder::cuboid(
+    //     ground_size,
+    //     ground_height,
+    //     ground_size,
+    // );
+    // colliders.insert_with_parent(collider, ground_handle, &mut bodies);
 
     /*
      * A 3-link pendulum modeled with rapier's MultibodyJointSet.
