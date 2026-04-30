@@ -71,8 +71,8 @@ fn convert_impulse_joint(
     body_ids: &HashMap<RigidBodyHandle, u32>,
 ) -> ImpulseJoint {
     ImpulseJoint {
-        body_a: body_ids[&joint.body1],
-        body_b: body_ids[&joint.body2],
+        body_a: body_ids[&joint.body1()],
+        body_b: body_ids[&joint.body2()],
         #[cfg(feature = "dim3")]
         padding: [0, 0],
         data: convert_generic_joint(joint.data),

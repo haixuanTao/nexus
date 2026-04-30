@@ -7,8 +7,33 @@ pub use graphics::{RenderContext, setup_graphics, update_instances};
 use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::dynamics::GpuSimParams;
 use nexus::rbd::pipeline::GpuPhysicsPipeline;
-use rapier::geometry::ColliderSet;
+use nexus::rbd::math::Pose;
+use rapier::geometry::{ColliderHandle, ColliderSet, SharedShape};
 use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodySet};
+use std::collections::HashMap;
+
+/// Custom visual shape that overrides a collider's default rendering. The shape is
+/// drawn at the collider's world pose composed with [`Self::local_pose`] (handy when
+/// the collider's shape is a proxy — e.g. an OBB — and the visual mesh sits in a
+/// different local frame).
+#[derive(Clone)]
+pub struct VisualShape {
+    pub shape: SharedShape,
+    pub local_pose: Pose,
+}
+
+impl VisualShape {
+    pub fn new(shape: SharedShape) -> Self {
+        Self {
+            shape,
+            local_pose: Pose::IDENTITY,
+        }
+    }
+
+    pub fn with_local_pose(shape: SharedShape, local_pose: Pose) -> Self {
+        Self { shape, local_pose }
+    }
+}
 
 pub struct BatchEnvironment {
     pub bodies: RigidBodySet,
@@ -16,6 +41,9 @@ pub struct BatchEnvironment {
     pub impulse_joints: ImpulseJointSet,
     pub multibody_joints: MultibodyJointSet,
     pub sim_params: GpuSimParams,
+    /// Optional per-collider visual override. When a collider handle is present in
+    /// this map its [`VisualShape`] is rendered instead of the collider's own shape.
+    pub visuals: HashMap<ColliderHandle, VisualShape>,
 }
 
 pub struct SimulationState {
@@ -37,6 +65,22 @@ impl SimulationState {
         impulse_joints: ImpulseJointSet,
         multibody_joints: MultibodyJointSet,
     ) -> Self {
+        Self::single_with_multibody_and_visuals(
+            bodies,
+            colliders,
+            impulse_joints,
+            multibody_joints,
+            HashMap::new(),
+        )
+    }
+
+    pub fn single_with_multibody_and_visuals(
+        bodies: RigidBodySet,
+        colliders: ColliderSet,
+        impulse_joints: ImpulseJointSet,
+        multibody_joints: MultibodyJointSet,
+        visuals: HashMap<ColliderHandle, VisualShape>,
+    ) -> Self {
         Self {
             environments: vec![BatchEnvironment {
                 bodies,
@@ -44,6 +88,7 @@ impl SimulationState {
                 impulse_joints,
                 multibody_joints,
                 sim_params: GpuSimParams::default(),
+                visuals,
             }],
         }
     }

@@ -26,6 +26,11 @@ pub struct InstancedNodeEntry {
     pub index: usize,
     pub color: [f32; 4],
     pub scale: [f32; DIM],
+    /// Local pose offset composed with the collider pose at render time. Defaults
+    /// to identity; populated when a [`super::VisualShape`] override is registered
+    /// in [`super::BatchEnvironment::visuals`] so that proxy-collider shapes (e.g.
+    /// OBBs) can be replaced at the right local frame.
+    pub local_pose: Pose,
 }
 
 /// Convert polygon vertices to a Vec<u32> key for exact matching in batching.
@@ -103,8 +108,14 @@ pub async fn setup_graphics(
         .unwrap_or(0);
 
     for (batch_idx, env) in phys.environments.iter().enumerate() {
-        for (i, (_, co)) in env.colliders.iter().enumerate() {
-            let shape = co.shape();
+        for (i, (handle, co)) in env.colliders.iter().enumerate() {
+            let visual_override = env.visuals.get(&handle);
+            let shape = visual_override
+                .map(|v| v.shape.as_ref())
+                .unwrap_or_else(|| co.shape());
+            let local_pose = visual_override
+                .map(|v| v.local_pose)
+                .unwrap_or(Pose::IDENTITY);
             let is_fixed = co.parent().map(|h| env.bodies[h].is_fixed()) != Some(false);
             let color = if is_fixed {
                 fixed_color
@@ -146,6 +157,7 @@ pub async fn setup_graphics(
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: [ball.radius * 2.0; DIM],
                     });
                 }
@@ -165,6 +177,7 @@ pub async fn setup_graphics(
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: (cuboid.half_extents * 2.0).into(),
                     });
                 }
@@ -183,6 +196,7 @@ pub async fn setup_graphics(
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: [cyl.radius, cyl.half_height * 2.0, cyl.radius],
                     });
                 }
@@ -200,6 +214,7 @@ pub async fn setup_graphics(
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: [c.radius, c.half_height * 2.0, c.radius],
                     });
                 }
@@ -219,6 +234,7 @@ pub async fn setup_graphics(
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         #[cfg(feature = "dim2")]
                         scale: [c.radius * 2.0, c.segment.length()],
                         #[cfg(feature = "dim3")]
@@ -242,6 +258,7 @@ pub async fn setup_graphics(
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: [1.0, 1.0],
                     });
                 }
@@ -274,6 +291,7 @@ pub async fn setup_graphics(
                     instanced_node.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: [1.0, 1.0, 1.0],
                     });
                 }
@@ -298,6 +316,7 @@ pub async fn setup_graphics(
                     singleton.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: [1.0; DIM],
                     });
                     singletons.push(singleton);
@@ -341,6 +360,7 @@ pub async fn setup_graphics(
                     singleton.entries.push(InstancedNodeEntry {
                         index,
                         color: [color.x, color.y, color.z, 1.0],
+                        local_pose,
                         scale: [1.0; DIM],
                     });
                     singletons.push(singleton);
@@ -399,8 +419,9 @@ pub fn update_instances(render_ctx: &mut RenderContext, physics_backend: &Physic
         instanced_node.data.clear();
 
         for entry in &instanced_node.entries {
-            let pose = &physics_backend.poses()[entry.index];
-            let (position, deformation) = pose_to_render_data(pose, &entry.scale);
+            let collider_pose = &physics_backend.poses()[entry.index];
+            let pose = *collider_pose * entry.local_pose;
+            let (position, deformation) = pose_to_render_data(&pose, &entry.scale);
 
             #[cfg(feature = "dim2")]
             {

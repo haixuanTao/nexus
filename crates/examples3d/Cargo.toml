@@ -15,6 +15,7 @@ glamx = { version = "0.2", default-features = false }
 nexus_testbed3d = { path = "../nexus_testbed3d" }
 nexus_rbd3d = { path = "../nexus_rbd3d" }
 rapier3d = "0.32"
+rapier3d-urdf = { version = "0.13", features = ["stl"] }
 khal = { workspace = true }
 Inflector = "0.11"
 kiss3d = "0.41"

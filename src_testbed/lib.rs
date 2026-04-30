@@ -40,7 +40,7 @@ use kiss3d::scene::{SceneNode2d, SceneNode3d};
 use kiss3d::window::Window;
 use rapier::geometry::ColliderHandle;
 
-pub use rbd::{BatchEnvironment, SimulationState};
+pub use rbd::{BatchEnvironment, SimulationState, VisualShape};
 
 #[cfg(feature = "dim2")]
 type RenderNode = SceneNode2d;

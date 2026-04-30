@@ -21,6 +21,7 @@ mod many_pyramids_batch3;
 mod primitives3;
 mod pyramid3;
 mod trimesh3;
+mod urdf3;
 
 // MPM examples.
 mod centilever_beam3;
@@ -89,6 +90,7 @@ pub fn demo_builders() -> Vec<DemoBuilder> {
         joint_revolute_batch3::builder(),
         multibody_pendulum3::builder(),
         trimesh3::builder(),
+        urdf3::builder(),
         // MPM demos.
         centilever_beam3::builder(),
         sand3::builder(),
