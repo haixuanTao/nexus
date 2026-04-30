@@ -254,6 +254,7 @@ impl GpuMultibodySet {
         environments: &[(
             &MultibodyJointSet,
             &HashMap<RigidBodyHandle, u32>,
+            &HashMap<RigidBodyHandle, crate::math::Pose>,
             &RigidBodySet,
         )],
         gravity: [f32; 3],
@@ -282,7 +283,7 @@ impl GpuMultibodySet {
         let mut global_max_icdt = 0u32;
         let mut global_max_cons = 0u32;
 
-        for (set, body_ids, bodies) in environments {
+        for (set, body_ids, body_collider_locals, bodies) in environments {
             let mut infos = Vec::new();
             let mut statics = Vec::new();
             let mut workspaces = Vec::new();
@@ -378,6 +379,25 @@ impl GpuMultibodySet {
 
                     // Lock all 6 DOFs on the root if its body is fixed.
                     let mut data = convert_generic_joint(link.joint().data);
+                    // Compensate for any collider local offset on this link's body
+                    // (and its parent's body) so the GPU solver — which sees the
+                    // collider world pose — gets anchors aligned with the bodies'
+                    // origins. See the matching comment in
+                    // `convert_impulse_joint`.
+                    if let Some(child_local) =
+                        body_collider_locals.get(&link.rigid_body_handle())
+                    {
+                        data.local_frame_b = child_local.inverse() * data.local_frame_b;
+                    }
+                    if let Some(parent_idx) = link.parent_id() {
+                        if let Some(parent_link) = mb.link(parent_idx) {
+                            if let Some(parent_local) = body_collider_locals
+                                .get(&parent_link.rigid_body_handle())
+                            {
+                                data.local_frame_a = parent_local.inverse() * data.local_frame_a;
+                            }
+                        }
+                    }
                     let link_ndofs = if link_idx == 0 && !root_is_dynamic {
                         data.locked_axes = 0x3f;
                         0u32
@@ -484,7 +504,7 @@ impl GpuMultibodySet {
         // sentinel.
         let mut all_body_to_link: Vec<[u32; 2]> =
             vec![[u32::MAX, u32::MAX]; (body_to_link_cap * num_batches) as usize];
-        for (batch_idx, (set, body_ids, _)) in environments.iter().enumerate() {
+        for (batch_idx, (set, body_ids, _, _)) in environments.iter().enumerate() {
             let base = batch_idx * body_to_link_cap as usize;
             for (mb_idx, mb) in set.multibodies().enumerate() {
                 for (link_idx, link) in mb.links().enumerate() {

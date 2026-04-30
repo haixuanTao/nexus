@@ -71,4 +71,5 @@ parry3d = { path = "../parry/crates/parry3d" }
 rapier2d = { path = "../rapier/crates/rapier2d" }
 rapier3d = { path = "../rapier/crates/rapier3d" }
 rapier3d-urdf = { path = "../rapier/crates/rapier3d-urdf" }
+rapier3d-meshloader = { path = "../rapier/crates/rapier3d-meshloader" }
 #vortx = { path = "../vortx" }

@@ -180,6 +180,7 @@ impl GpuPhysicsState {
         let mut joint_envs: Vec<(
             &ImpulseJointSet,
             HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+            HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
         )> = Vec::new();
 
         // Collect per-batch sim params, adjusting dt for substeps.
@@ -211,6 +212,7 @@ impl GpuPhysicsState {
         let mut multibody_envs: Vec<(
             &MultibodyJointSet,
             HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+            HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
             &RigidBodySet,
         )> = Vec::new();
 
@@ -218,6 +220,15 @@ impl GpuPhysicsState {
             let env_collider_count = colliders.len();
             all_num_shapes.push(env_collider_count as u32);
             let mut body_ids = HashMap::new();
+            // Per-body collider local pose. The GPU pipeline stores the collider's
+            // *world* pose in `poses`, while the joint/multibody solvers expect a
+            // body world pose. So we keep the offset around and use it to
+            // pre-compose the joint local frames at upload time so that
+            // `collider_world * local_frame_a` ends up equal to `body_world * j.local_frame1`.
+            let mut body_collider_locals: HashMap<
+                crate::rapier::dynamics::RigidBodyHandle,
+                Pose,
+            > = HashMap::new();
             let mut env_collider_idx = 0u32;
 
             for (_, co) in colliders.iter() {
@@ -261,6 +272,10 @@ impl GpuPhysicsState {
 
                 if let Some(h) = co.parent() {
                     body_ids.insert(h, env_collider_idx);
+                    body_collider_locals.insert(
+                        h,
+                        co.position_wrt_parent().copied().unwrap_or(Pose::IDENTITY),
+                    );
                 }
 
                 env_collider_idx += 1;
@@ -290,8 +305,13 @@ impl GpuPhysicsState {
             }
 
             #[cfg(feature = "dim3")]
-            multibody_envs.push((multibody_joints, body_ids.clone(), bodies));
-            joint_envs.push((impulse_joints, body_ids));
+            multibody_envs.push((
+                multibody_joints,
+                body_ids.clone(),
+                body_collider_locals.clone(),
+                bodies,
+            ));
+            joint_envs.push((impulse_joints, body_ids, body_collider_locals));
         }
 
         // NOTE: GPU doesn't like empty storage buffer bindings so add dummy data
@@ -312,9 +332,10 @@ impl GpuPhysicsState {
         let joint_env_refs: Vec<(
             &ImpulseJointSet,
             &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+            &HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
         )> = joint_envs
             .iter()
-            .map(|(joints, body_ids)| (*joints, body_ids))
+            .map(|(joints, body_ids, locals)| (*joints, body_ids, locals))
             .collect();
 
         // Per-environment "graph group" table: each body local id maps to either
@@ -324,7 +345,7 @@ impl GpuPhysicsState {
         #[cfg(feature = "dim3")]
         let multibody_groups: Vec<Vec<u32>> = {
             let mut all_groups: Vec<Vec<u32>> = Vec::with_capacity(num_batches as usize);
-            for (env_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
+            for (env_idx, (mb_set, body_ids, _, _)) in multibody_envs.iter().enumerate() {
                 let _ = env_idx;
                 let max_id = body_ids.values().copied().max().unwrap_or_default();
                 let mut group: Vec<u32> = (0..=max_id).collect();
@@ -360,10 +381,11 @@ impl GpuPhysicsState {
             let mb_refs: Vec<(
                 &MultibodyJointSet,
                 &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+                &HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
                 &RigidBodySet,
             )> = multibody_envs
                 .iter()
-                .map(|(mb, ids, bodies)| (*mb, ids, *bodies))
+                .map(|(mb, ids, locals, bodies)| (*mb, ids, locals, *bodies))
                 .collect();
             let mut mb = GpuMultibodySet::from_rapier(
                 backend,
@@ -380,7 +402,7 @@ impl GpuPhysicsState {
         // solver owns their masses internally.
         #[cfg(feature = "dim3")]
         {
-            for (batch_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
+            for (batch_idx, (mb_set, body_ids, _, _)) in multibody_envs.iter().enumerate() {
                 let batch_offset = batch_idx * max_colliders;
                 for mb in mb_set.multibodies() {
                     for link in mb.links() {
@@ -414,7 +436,7 @@ impl GpuPhysicsState {
             }
         }
         #[cfg(feature = "dim3")]
-        for (batch_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
+        for (batch_idx, (mb_set, body_ids, _, _)) in multibody_envs.iter().enumerate() {
             let base = batch_idx * max_colliders;
             for mb in mb_set.multibodies() {
                 let group_local = mb
