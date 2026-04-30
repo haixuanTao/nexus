@@ -96,6 +96,10 @@ pub struct GpuPhysicsState {
     index_buffers: Tensor<u32>,
     shapes: Tensor<Shape>,
     num_shapes: Tensor<u32>,
+    /// Per-collider [`crate::rapier::geometry::InteractionGroups`]. Used by the
+    /// broad-phase to skip pairs whose groups don't authorize an interaction.
+    /// Padded slots use empty memberships AND empty filter so they never match.
+    collision_groups: Tensor<crate::rapier::geometry::InteractionGroups>,
     collision_pairs: Tensor<[u32; 2]>,
     collision_pairs_len: Tensor<u32>,
     #[allow(dead_code)]
@@ -171,6 +175,7 @@ impl GpuPhysicsState {
         let mut all_mprops = Vec::new();
         let mut all_shapes = Vec::new();
         let mut all_num_shapes = Vec::new();
+        let mut all_collision_groups: Vec<crate::rapier::geometry::InteractionGroups> = Vec::new();
         let mut shape_buffers = ShapeBuffers::default();
         let mut joint_envs: Vec<(
             &ImpulseJointSet,
@@ -265,6 +270,7 @@ impl GpuPhysicsState {
                     shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape"),
                 );
                 all_poses.push(*co.position());
+                all_collision_groups.push(co.collision_groups());
             }
 
             // Pad to max_colliders with dummy fixed bodies.
@@ -274,6 +280,13 @@ impl GpuPhysicsState {
                 all_local_mprops.push(dummy_local_mprops);
                 all_mprops.push(dummy_mprops);
                 all_shapes.push(dummy_shape);
+                // Padding bodies: zero membership AND zero filter so the broad
+                // phase never matches them with anything.
+                all_collision_groups.push(crate::rapier::geometry::InteractionGroups::new(
+                    crate::rapier::geometry::Group::NONE,
+                    crate::rapier::geometry::Group::NONE,
+                    crate::rapier::geometry::InteractionTestMode::And,
+                ));
             }
 
             #[cfg(feature = "dim3")]
@@ -425,6 +438,8 @@ impl GpuPhysicsState {
         let all_vels = vec![GpuVelocity::default(); num_bodies_total];
         let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
         let shapes = Tensor::vector(backend, &all_shapes, storage).unwrap();
+        let collision_groups =
+            Tensor::vector(backend, &all_collision_groups, storage).unwrap();
 
         let num_shapes = Tensor::vector(
             backend,
@@ -551,6 +566,7 @@ impl GpuPhysicsState {
             index_buffers,
             shapes,
             num_shapes,
+            collision_groups,
             collision_pairs,
             collision_pairs_len,
             collision_pairs_len_staging,
@@ -782,6 +798,7 @@ impl GpuPhysicsPipeline {
                     &mut state.collision_pairs,
                     &mut state.collision_pairs_len,
                     &mut state.collision_pairs_indirect,
+                    &state.collision_groups,
                 )
                 .unwrap();
 
@@ -859,6 +876,7 @@ impl GpuPhysicsPipeline {
                     &mut state.collision_pairs,
                     &mut state.collision_pairs_len,
                     &mut state.collision_pairs_indirect,
+                    &state.collision_groups,
                 )
                 .unwrap();
             drop(pass);

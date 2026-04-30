@@ -39,7 +39,7 @@ web-time = { workspace = true }
 bvh = "0.7"
 
 # Optional dependencies for rapier/parry interop
-rapier3d = { version = "0.32", optional = true }
+rapier3d = { version = "0.32", optional = true, features = ["bytemuck"] }
 parry3d = { version = "0.26", optional = true }
 
 [dev-dependencies]

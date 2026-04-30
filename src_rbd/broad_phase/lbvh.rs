@@ -242,6 +242,7 @@ impl Lbvh {
         collision_pairs: &mut Tensor<[u32; 2]>,
         collision_pairs_len: &mut Tensor<u32>,
         collision_pairs_indirect: &mut Tensor<[u32; 3]>,
+        collision_groups: &Tensor<crate::rapier::geometry::InteractionGroups>,
     ) -> Result<(), GpuBackendError> {
         let colliders_per_batch = colliders_len / num_batches;
 
@@ -259,6 +260,7 @@ impl Lbvh {
             num_shapes,
             colliders_batch_capacity,
             collision_pairs_batch_capacity,
+            collision_groups,
         )?;
         self.shaders.lbvh_init_indirect_args.call(
             pass,

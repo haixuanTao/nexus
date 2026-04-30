@@ -526,6 +526,10 @@ pub fn gpu_lbvh_find_collision_pairs(
     //       This also simplifies this kernel significantly since we know easily at what index
     //       in `collision_pairs` a given batch should start.
     #[spirv(uniform, descriptor_set = 0, binding = 5)] collision_pairs_batch_capacity: &u32,
+    // Per-collider [`rapier3d::geometry::InteractionGroups`], used to authorize
+    // (or skip) a collision pair before it ever reaches the narrow phase.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    collision_groups: &[rapier3d::geometry::InteractionGroups],
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
@@ -538,9 +542,11 @@ pub fn gpu_lbvh_find_collision_pairs(
         (batch_id * *collision_pairs_batch_capacity) as usize,
     );
     let tree = Slice(tree, root_id(colliders_start) as usize);
+    let collision_groups = Slice(collision_groups, colliders_start as usize);
 
     for leaf_i in StepRng::new(invocation_id.x..num_bodies, num_threads) {
         let i = tree.at((first_leaf_id + leaf_i) as usize).left;
+        let groups_i = collision_groups.read(i as usize);
         let mut aabb1 = tree.at((first_leaf_id + leaf_i) as usize).aabb;
         let prediction = 2.0e-3; // TODO: should be configurable.
         let dilation = Vector::splat(prediction);
@@ -560,6 +566,14 @@ pub fn gpu_lbvh_find_collision_pairs(
             if curr_id >= first_leaf_id {
                 // We reached a leaf, register a collision pair.
                 let j = node.left;
+                let groups_j = collision_groups.read(j as usize);
+
+                // Skip pairs whose collision groups don't authorize an interaction.
+                // We use the strict `And` test even if either side is configured as
+                // `Or`, mirroring `InteractionGroups::test`'s priority rule (And wins).
+                if !groups_i.test(groups_j) {
+                    continue;
+                }
 
                 // NOTE: we don't have to compare i < j to avoid duplicates since that comparison already happened
                 //       alongside the AABB check.
