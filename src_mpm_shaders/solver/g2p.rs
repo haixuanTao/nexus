@@ -9,7 +9,7 @@ use crate::PaddingExt;
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
 use crate::nexus_rbd_shaders::dynamics::{
-    Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties, velocity_at_point,
+    Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties,
 };
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::params::SimulationParams;
@@ -216,7 +216,7 @@ fn particle_g2p<const USE_CPIC: bool>(
                             let body_com = body_mprops.at(cell_cdf.closest_id as usize).com;
                             let body_material = body_materials.read(cell_cdf.closest_id as usize);
                             let cell_center = dpt + particle_pos.pt;
-                            let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
+                            let body_pt_vel = body_vel.velocity_at_point(body_com, cell_center);
 
                             cell_vel = body_pt_vel
                                 + body_material
@@ -244,7 +244,7 @@ fn particle_g2p<const USE_CPIC: bool>(
                 if particle_cdf.affinity.bit(i_collider as u32) {
                     let body_vel = body_vels.read(i_collider as usize);
                     let body_com = body_mprops.at(i_collider as usize).com;
-                    rigid_vel += velocity_at_point(body_com, &body_vel, particle_pos.pt);
+                    rigid_vel += body_vel.velocity_at_point(body_com, particle_pos.pt);
                 }
             }
         }

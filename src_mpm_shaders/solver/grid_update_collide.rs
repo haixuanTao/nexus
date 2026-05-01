@@ -4,7 +4,6 @@
 //! storing the resulting contact distance field (CDF) data in each node's `cdf` field.
 
 use crate::grid::grid::*;
-use crate::nexus_rbd_shaders::dynamics::velocity_at_point;
 use crate::nexus_rbd_shaders::dynamics::{
     Velocity as BodyVelocity, WorldMassProperties as BodyMassProperties,
 };
@@ -167,7 +166,7 @@ pub fn gpu_grid_update_collide(
         // Found a collision, apply the boundary condition.
         let body_vel = body_vels.at(collision.closest_id);
         let body_com = body_mprops.at(collision.closest_id).com;
-        let body_vel_at_grid_pos = velocity_at_point(body_com, body_vel, cell_pt);
+        let body_vel_at_grid_pos = body_vel.velocity_at_point(body_com, cell_pt);
         let node_vel = nodes.at(global_id as usize).momentum_velocity;
         let body_material = body_materials.read(collision.closest_id);
         let delta_vel = node_vel - body_vel_at_grid_pos;

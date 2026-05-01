@@ -7,8 +7,7 @@
 
 use crate::grid::grid::Grid;
 use crate::nexus_rbd_shaders::dynamics::{
-    Impulse, LocalMassProperties, Velocity, WorldMassProperties, apply_impulse, integrate_velocity,
-    update_mprops,
+    Impulse, LocalMassProperties, Velocity, WorldMassProperties,
 };
 use crate::solver::params::SimulationParams;
 use crate::{AngVector, IVector, Pose, Vector, ang_length};
@@ -124,7 +123,7 @@ pub fn gpu_rigid_impulses_update(
         // Apply impulse and integrate.
         let current_vel = vels.read(idx);
         let current_mprops = mprops.read(idx);
-        let mut new_vel = apply_impulse(&current_mprops, &current_vel, &inc_impulse);
+        let mut new_vel = current_vel.apply_impulse(&current_mprops, &inc_impulse);
 
         // Cap the velocities to not move more than a fraction of a cell-width in a given substep.
         let linvel_norm = new_vel.linear.length();
@@ -146,40 +145,20 @@ pub fn gpu_rigid_impulses_update(
 
         let current_pose = poses.read(idx);
         let local_mp = local_mprops.read(idx);
-        let new_pose = integrate_velocity(current_pose, &new_vel, local_mp.com, sim_params.dt);
+        let new_pose = new_vel.integrate(&current_pose, local_mp.com, sim_params.dt);
 
         // Apply gravity.
         // Construct a mask: 1.0 where inv_mass != 0.0, 0.0 otherwise.
         #[cfg(feature = "dim2")]
         let mass_mask = Vec2::new(
-            if current_mprops.inv_mass.x != 0.0 {
-                1.0
-            } else {
-                0.0
-            },
-            if current_mprops.inv_mass.y != 0.0 {
-                1.0
-            } else {
-                0.0
-            },
+            (current_mprops.inv_mass.x != 0.0) as u32 as f32,
+            (current_mprops.inv_mass.y != 0.0) as u32 as f32,
         );
         #[cfg(feature = "dim3")]
         let mass_mask = Vec3::new(
-            if current_mprops.inv_mass.x != 0.0 {
-                1.0
-            } else {
-                0.0
-            },
-            if current_mprops.inv_mass.y != 0.0 {
-                1.0
-            } else {
-                0.0
-            },
-            if current_mprops.inv_mass.z != 0.0 {
-                1.0
-            } else {
-                0.0
-            },
+            (current_mprops.inv_mass.x != 0.0) as u32 as f32,
+            (current_mprops.inv_mass.y != 0.0) as u32 as f32,
+            (current_mprops.inv_mass.z != 0.0) as u32 as f32,
         );
         new_vel.linear += sim_params.gravity * mass_mask * sim_params.dt;
 
@@ -207,9 +186,8 @@ pub fn gpu_update_world_mass_properties(
 
     if id < mprops.len() as u32 {
         let idx = id as usize;
-        let pose = poses.read(idx);
         let local_mp = local_mprops.read(idx);
-        let new_mprops = update_mprops(pose, &local_mp);
+        let new_mprops = local_mp.to_world(poses.at(idx));
         incremental_impulses.at_mut(idx).com = new_mprops.com;
         mprops.write(idx, new_mprops);
     }

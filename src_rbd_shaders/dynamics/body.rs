@@ -1,6 +1,6 @@
 //! Rigid-body dynamics data structures and integration.
 
-use crate::{AngVector, Pose, Vector};
+use crate::{AngVector, Pose, Rotation, Vector};
 #[cfg(feature = "dim3")]
 use crate::{rotation_from_scaled_axis, rotation_renormalize_fast, rotation_to_matrix};
 
@@ -60,6 +60,42 @@ impl Default for LocalMassProperties {
             padding2: 0,
             #[cfg(feature = "dim2")]
             inv_inertia: 1.0,
+        }
+    }
+}
+
+impl LocalMassProperties {
+    #[cfg(feature = "dim2")]
+    /// Updates world-space mass properties from local properties and current pose (2D version).
+    pub fn to_world(&self, pose: &Pose) -> WorldMassProperties {
+        let world_com = pose * self.com;
+
+        WorldMassProperties {
+            inv_inertia: self.inv_inertia,
+            inv_mass: self.inv_mass,
+            com: world_com,
+            padding1: 0,
+        }
+    }
+
+    #[cfg(feature = "dim3")]
+    /// Updates world-space mass properties from local properties and current pose (3D version).
+    pub fn to_world(&self, pose: &Pose) -> WorldMassProperties {
+        let world_com = pose * self.com;
+        let rot_mat = rotation_to_matrix(pose.rotation * self.inertia_ref_frame);
+        let scaled_rot_mat = Mat3::from_cols(
+            rot_mat.x_axis * self.inv_principal_inertia.x,
+            rot_mat.y_axis * self.inv_principal_inertia.y,
+            rot_mat.z_axis * self.inv_principal_inertia.z,
+        );
+        let world_inv_inertia = scaled_rot_mat * rot_mat.transpose();
+
+        WorldMassProperties {
+            inv_inertia: glamx::Mat4::from_mat3(world_inv_inertia),
+            inv_mass: self.inv_mass,
+            com: world_com,
+            padding0: 0,
+            padding1: 0,
         }
     }
 }
@@ -161,6 +197,24 @@ impl Force {
     pub fn new(linear: Vector, angular: AngVector) -> Self {
         Self { linear, angular }
     }
+
+
+    /// Integrates forces over a timestep to compute velocity changes (explicit Euler).
+    pub fn integrate(
+        &self,
+        mprops: &WorldMassProperties,
+        velocity: &Velocity,
+        dt: f32,
+    ) -> Velocity {
+        let acc_lin = mprops.inv_mass * self.linear;
+        let acc_ang = mprops.inv_inertia_mul(self.angular);
+
+        Velocity::new(
+            velocity.linear + acc_lin * dt,
+            velocity.angular + acc_ang * dt,
+        )
+    }
+
 }
 
 /// Linear and angular velocity of a rigid body.
@@ -191,6 +245,84 @@ impl Velocity {
             padding1: 0,
         }
     }
+
+    /// Computes the linear velocity at a specific point on a rigid body.
+    pub fn velocity_at_point(&self, com: Vector, point: Vector) -> Vector {
+        let lever_arm = point - com;
+
+        #[cfg(feature = "dim2")]
+        {
+            self.linear + self.angular * Vec2::new(-lever_arm.y, lever_arm.x)
+        }
+        #[cfg(feature = "dim3")]
+        {
+            self.linear + self.angular.cross(lever_arm)
+        }
+    }
+
+    /// Integrates velocity over a timestep to compute the new pose.
+    pub fn integrate(&self, pose: &Pose, local_com: Vector, dt: f32) -> Pose {
+        let init_com = pose * local_com;
+        let init_tra = pose.translation;
+        #[cfg(feature = "dim2")]
+        let delta_ang = Rot2::new(self.angular * dt);
+        #[cfg(feature = "dim3")]
+        let delta_ang = rotation_from_scaled_axis(self.angular * dt);
+        let delta_lin = self.linear * dt;
+        let new_translation = init_com + delta_ang * (init_tra - init_com) + delta_lin;
+        #[cfg(feature = "dim2")]
+        let new_rotation = delta_ang * pose.rotation;
+        #[cfg(feature = "dim3")]
+        let new_rotation = rotation_renormalize_fast(delta_ang * pose.rotation);
+
+        Pose::from_parts(new_translation, new_rotation)
+    }
+
+    /// Same as [`Self::integrate`] but with the angular part linearized and the local
+    /// center-of-mass assumed to be zero.
+    #[inline]
+    #[cfg(feature = "dim2")]
+    pub(crate) fn integrate_linearized(
+        &self,
+        dt: f32,
+        translation: &mut Vector,
+        rotation: &mut Rotation,
+    ) {
+        let dang = self.angular * dt;
+        let new_cos = rotation.re - dang * rotation.im;
+        let new_sin = rotation.im + dang * rotation.re;
+        *rotation = Rot2::from_cos_sin_unchecked(new_cos, new_sin);
+        // NOTE: don't use renormalize_fast since the linearization might cause more drift.
+        rotation.normalize_mut();
+        *translation += self.linear * dt;
+    }
+
+    /// Same as [`Self::integrate`] but with the angular part linearized and the local
+    /// center-of-mass assumed to be zero.
+    #[inline]
+    #[cfg(feature = "dim3")]
+    pub(crate) fn integrate_linearized(
+        &self,
+        dt: f32,
+        translation: &mut Vector,
+        rotation: &mut Rotation,
+    ) {
+        // Rotations linearization is inspired from
+        // https://ahrs.readthedocs.io/en/latest/filters/angular.html (not using the matrix form).
+        let hang = self.angular * (dt * 0.5);
+        // Quaternion identity + `hang` seen as a quaternion.
+        let id_plus_hang = Rotation::from_xyzw(hang.x, hang.y, hang.z, 1.0);
+        *rotation = id_plus_hang * *rotation;
+        *rotation = rotation.normalize();
+        *translation += self.linear * dt;
+    }
+
+    /// Applies an impulse to a rigid body, computing the resulting velocity change.
+    pub fn apply_impulse(&self, mprops: &WorldMassProperties, imp: &Impulse) -> Velocity {
+        let acc_lin = mprops.inv_mass * imp.linear;
+        let acc_ang = mprops.inv_inertia_mul(imp.angular);
+        Velocity::new(self.linear + acc_lin, self.angular + acc_ang)
+    }
 }
 
 /// Complete state of a rigid body (pose and velocity).
@@ -202,110 +334,4 @@ pub struct RigidBodyState {
 
     /// The rigid-body's velocity (linear and angular).
     pub velocity: Velocity,
-}
-
-/// Applies an impulse to a rigid body, computing the resulting velocity change.
-pub fn apply_impulse(mprops: &WorldMassProperties, velocity: &Velocity, imp: &Impulse) -> Velocity {
-    let acc_lin = mprops.inv_mass * imp.linear;
-    let acc_ang = mprops.inv_inertia_mul(imp.angular);
-
-    Velocity::new(velocity.linear + acc_lin, velocity.angular + acc_ang)
-}
-
-/// Integrates forces over a timestep to compute velocity changes (explicit Euler).
-pub fn integrate_forces(
-    mprops: &WorldMassProperties,
-    velocity: &Velocity,
-    force: &Force,
-    dt: f32,
-) -> Velocity {
-    let acc_lin = mprops.inv_mass * force.linear;
-    let acc_ang = mprops.inv_inertia_mul(force.angular);
-
-    Velocity::new(
-        velocity.linear + acc_lin * dt,
-        velocity.angular + acc_ang * dt,
-    )
-}
-
-#[cfg(feature = "dim2")]
-/// Integrates velocity over a timestep to compute the new pose (2D version).
-pub fn integrate_velocity(pose: Pose, vels: &Velocity, local_com: Vector, dt: f32) -> Pose {
-    use glamx::Pose2;
-
-    let init_com = pose * local_com;
-    let init_tra = pose.translation;
-    let delta_ang = Rot2::new(vels.angular * dt);
-    let delta_lin = vels.linear * dt;
-    let new_translation = init_com + delta_ang * (init_tra - init_com) + delta_lin;
-    let new_rotation = delta_ang * pose.rotation;
-
-    Pose2::from_parts(new_translation, new_rotation)
-}
-
-#[cfg(feature = "dim3")]
-/// Integrates velocity over a timestep to compute the new pose (3D version).
-pub fn integrate_velocity(pose: Pose, vels: &Velocity, local_com: Vector, dt: f32) -> Pose {
-    use glamx::Pose3;
-
-    let init_com = pose * local_com;
-    let init_tra = pose.translation;
-    let delta_ang = rotation_from_scaled_axis(vels.angular * dt);
-    let delta_lin = vels.linear * dt;
-    let new_translation = init_com + delta_ang * (init_tra - init_com) + delta_lin;
-    let new_rotation = rotation_renormalize_fast(delta_ang * pose.rotation);
-
-    Pose3::from_parts(new_translation, new_rotation)
-}
-
-#[cfg(feature = "dim2")]
-/// Updates world-space mass properties from local properties and current pose (2D version).
-pub fn update_mprops(pose: Pose, local_mprops: &LocalMassProperties) -> WorldMassProperties {
-    let world_com = pose * local_mprops.com;
-
-    WorldMassProperties {
-        inv_inertia: local_mprops.inv_inertia,
-        inv_mass: local_mprops.inv_mass,
-        com: world_com,
-        #[cfg(feature = "dim2")]
-        padding1: 0,
-    }
-}
-
-#[cfg(feature = "dim3")]
-/// Updates world-space mass properties from local properties and current pose (3D version).
-pub fn update_mprops(pose: Pose, local_mprops: &LocalMassProperties) -> WorldMassProperties {
-    let world_com = pose * local_mprops.com;
-    let rot_mat = rotation_to_matrix(pose.rotation * local_mprops.inertia_ref_frame);
-    let diag = Mat3::from_cols(
-        Vec3::new(local_mprops.inv_principal_inertia.x, 0.0, 0.0),
-        Vec3::new(0.0, local_mprops.inv_principal_inertia.y, 0.0),
-        Vec3::new(0.0, 0.0, local_mprops.inv_principal_inertia.z),
-    );
-
-    let world_inv_inertia = rot_mat * diag * rot_mat.transpose();
-
-    WorldMassProperties {
-        inv_inertia: glamx::Mat4::from_mat3(world_inv_inertia),
-        inv_mass: local_mprops.inv_mass,
-        com: world_com,
-        #[cfg(feature = "dim3")]
-        padding0: 0,
-        #[cfg(feature = "dim3")]
-        padding1: 0,
-    }
-}
-
-/// Computes the linear velocity at a specific point on a rigid body.
-pub fn velocity_at_point(com: Vector, vels: &Velocity, point: Vector) -> Vector {
-    let lever_arm = point - com;
-
-    #[cfg(feature = "dim2")]
-    {
-        vels.linear + vels.angular * Vec2::new(-lever_arm.y, lever_arm.x)
-    }
-    #[cfg(feature = "dim3")]
-    {
-        vels.linear + vels.angular.cross(lever_arm)
-    }
 }

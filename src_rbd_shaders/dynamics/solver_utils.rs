@@ -7,7 +7,7 @@
 //!   is solved with a single PGS iteration (with bias) followed by position update, followed by another PGS iteration
 //!   (without bias).
 
-use super::body::{LocalMassProperties, Velocity, WorldMassProperties, integrate_velocity};
+use super::body::{LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{
     SUB_LEN, TwoBodyConstraint, TwoBodyConstraintBuilder, TwoBodyConstraintNormalPart,
     TwoBodyConstraintTangentPart,
@@ -679,14 +679,4 @@ pub fn remove_cfm_and_bias(constraint: &mut TwoBodyConstraint) {
     constraint.elements.at_mut(3).normal_part.rhs =
         constraint.elements.at(3).normal_part.rhs_wo_bias;
     constraint.cfm_factor = 1.0;
-}
-
-/// Integrates velocity to update pose.
-pub fn integrate_pose(
-    pose: Pose,
-    solver_vel: &Velocity,
-    local_mprops: &LocalMassProperties,
-    dt: f32,
-) -> Pose {
-    integrate_velocity(pose, solver_vel, local_mprops.com, dt)
 }

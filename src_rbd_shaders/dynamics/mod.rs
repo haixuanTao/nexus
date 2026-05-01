@@ -45,7 +45,7 @@ pub use coloring::*;
 pub use mprops_update::*;
 pub use solver::*;
 pub use solver_utils::{
-    contact_to_constraint, integrate_pose, remove_cfm_and_bias, solve_constraint_gauss_seidel,
+    contact_to_constraint, remove_cfm_and_bias, solve_constraint_gauss_seidel,
     warmstart_body, warmstart_constraint,
 };
 pub use warmstart::*;

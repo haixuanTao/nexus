@@ -9,7 +9,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::Pose;
 
-use super::body::{LocalMassProperties, WorldMassProperties, update_mprops};
+use super::body::{LocalMassProperties, WorldMassProperties};
 use crate::utils::{Slice, SliceMut};
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -38,7 +38,7 @@ pub fn gpu_update_mprops(
 
     for i in StepRng::new(invocation_id.x..num_colliders, num_threads) {
         let idx = i as usize;
-        let new_mprops = update_mprops(poses.read(idx), local_mprops.at(idx));
+        let new_mprops = local_mprops.at(idx).to_world(poses.at(idx));
         mprops.write(idx, new_mprops);
     }
 }

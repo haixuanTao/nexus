@@ -8,7 +8,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 use crate::{AngVector, Pose, Vector};
 use khal_std::{sync::atomic_add_u32, index::MaybeIndexUnchecked, iter::StepRng};
 
-use super::body::{LocalMassProperties, Velocity, WorldMassProperties, integrate_velocity};
+use super::body::{LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
 use super::sim_params::SimParams;
 use super::solver_utils::{
@@ -461,7 +461,7 @@ pub fn gpu_integrate(
         let vels = solver_vels.at(idx);
         poses.write(
             idx,
-            integrate_velocity(poses.read(idx), vels, local_mprops.at(idx).com, params.dt),
+            vels.integrate(poses.at(idx), local_mprops.at(idx).com, params.dt),
         );
     }
 }

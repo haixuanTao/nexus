@@ -11,7 +11,7 @@
 
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
-use crate::nexus_rbd_shaders::dynamics::{Velocity as BodyVelocity, velocity_at_point};
+use crate::nexus_rbd_shaders::dynamics::{Velocity as BodyVelocity};
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::particle::{Kinematics, Position, dir_to_associated_grid_node};
 use crate::{AngVector, Matrix, PaddingExt, TWO_WAYS_COUPLING_ENABLED, Vector};
@@ -190,7 +190,7 @@ fn p2g_step<const USE_CPIC: bool>(
                     let body_com = body_impulses.at(collider_id as usize).com;
                     let body_material = body_materials.read(collider_id as usize);
                     let cell_center = dpt + particle_pos.pt;
-                    let body_pt_vel = velocity_at_point(body_com, &body_vel, cell_center);
+                    let body_pt_vel = body_vel.velocity_at_point(body_com, cell_center);
                     let particle_ghost_vel = body_pt_vel
                         + body_material
                             .project_velocity(particle_vel - body_pt_vel, particle_normal);
