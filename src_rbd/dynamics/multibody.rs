@@ -848,12 +848,16 @@ pub struct GpuMultibodySolver {
 /// of the rigid-body pipeline (FK writes link poses there); mass properties are
 /// now owned by the multibody itself.
 pub struct MultibodySolverArgs<'a> {
-    /// Body world-origin poses (written by FK; consumed by every per-body
-    /// computation — gravity, jacobians, mass matrix, integration).
+    /// Body poses (written by FK; consumed by every per-body computation —
+    /// gravity, jacobians, mass matrix, integration). Inside the substep loop
+    /// this points to `solver_body_poses` (rapier's COM-centered solver
+    /// pose); during phase-0 init this points to `body_poses`. Multibody
+    /// links carry zero local-COM in the shared mprops buffer so the two are
+    /// equivalent for their slots.
     pub poses: &'a mut Tensor<Pose>,
-    /// Per-collider world poses (= `poses[i] * collider_local_poses[i]`). Used
-    /// by `init_contact_constraints` since contact features are expressed in
-    /// the collider local frame.
+    /// Per-collider world poses, used by `init_contact_constraints` to
+    /// recover world-space contact normals and points from manifold features
+    /// expressed in collider-local space.
     pub collider_world_poses: &'a Tensor<Pose>,
     /// Colliders-per-batch capacity (stride in the pose tensor).
     pub colliders_batch_capacity: &'a Tensor<u32>,

@@ -123,11 +123,18 @@ fn gcross_(a: Vector, b: Vector) -> Vector {
 }
 
 /// Converts a contact manifold to a solver constraint.
+///
+/// `collider_world_poses` are used to recover the world-space contact normal
+/// and contact point (the manifold expresses both in collider-local space).
+/// `solver_body_poses` (rapier's COM-centered solver pose) are used for the
+/// world center of mass and to express the contact anchors in COM-local space
+/// — that's the frame the solver's `update_constraint` will integrate.
 #[inline(always)]
 pub fn contact_to_constraint(
     indexed_contact: &IndexedManifold,
     mprops: &Slice<WorldMassProperties>,
-    poses: &Slice<Pose>,
+    collider_world_poses: &Slice<Pose>,
+    solver_body_poses: &Slice<Pose>,
     vels: &Slice<Velocity>,
     params: &SimParams,
     constraint: &mut TwoBodyConstraint,
@@ -139,12 +146,16 @@ pub fn contact_to_constraint(
 
     let mprops1 = mprops.at(id1 as usize);
     let mprops2 = mprops.at(id2 as usize);
-    let pose1 = poses.read(id1 as usize);
-    let pose2 = poses.read(id2 as usize);
+    // Contact features (`points_a`, `normal_a`) are stored in collider A's
+    // local space, so only `cpose1` is needed to recover their world-space
+    // forms; collider B's pose isn't read here.
+    let cpose1 = collider_world_poses.read(id1 as usize);
+    let spose1 = solver_body_poses.read(id1 as usize);
+    let spose2 = solver_body_poses.read(id2 as usize);
     let vel1 = vels.at(id1 as usize);
     let vel2 = vels.at(id2 as usize);
 
-    let force_dir1 = -(pose1.rotation * contact.normal_a);
+    let force_dir1 = -(cpose1.rotation * contact.normal_a);
 
     let cfm_factor = contact_cfm_factor(params);
     let inv_dt_val = inv_dt(params);
@@ -170,10 +181,12 @@ pub fn contact_to_constraint(
     }
 
     for k in 0..(contact.len as usize) {
-        let pt = pose1
+        let pt = cpose1
             * (contact.points_a.at(k).pt + contact.normal_a * contact.points_a.at(k).dist / 2.0);
-        let dp1 = pt - mprops1.com;
-        let dp2 = pt - mprops2.com;
+        // `mprops.com` and `solver_body_pose.translation` are equal (both are
+        // the world COM); use the latter to mirror rapier's solver convention.
+        let dp1 = pt - spose1.translation;
+        let dp2 = pt - spose2.translation;
         let contact_vel1 = vel1.linear + gcross_(vel1.angular, dp1);
         let contact_vel2 = vel2.linear + gcross_(vel2.angular, dp2);
 
@@ -284,9 +297,11 @@ pub fn contact_to_constraint(
             constraint.elements.at_mut(k).tangent_part = tangent_part;
         }
 
-        // Builder info for warmstarting
-        builder.infos.at_mut(k).local_pt_a = pose1.inverse_transform_point(pt);
-        builder.infos.at_mut(k).local_pt_b = pose2.inverse_transform_point(pt);
+        // Builder info for warmstarting. Anchors are stored in the solver-body
+        // (COM-centered) frame, matching rapier — `update_constraint` then
+        // recovers the world point as `solver_body_pose * local_pt`.
+        builder.infos.at_mut(k).local_pt_a = spose1.inverse_transform_point(pt);
+        builder.infos.at_mut(k).local_pt_b = spose2.inverse_transform_point(pt);
         builder.infos.at_mut(k).dist = dist;
         builder.infos.at_mut(k).normal_vel = normal_rhs_wo_bias;
     }

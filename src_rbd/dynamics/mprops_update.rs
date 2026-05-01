@@ -41,6 +41,11 @@ impl GpuMpropsUpdate {
 
 /// GPU shader that recomputes the world pose of every collider from the body
 /// world pose and the collider's body-local offset.
+///
+/// Now that the per-substep solver work runs on COM-centered solver poses
+/// (`solver_body_poses`), the collider world poses only need to be refreshed
+/// once per step, before broad-phase / narrow-phase / contact-to-constraint
+/// conversion. Inside the substep loop, only the solver poses are mutated.
 #[derive(Shader)]
 pub struct GpuSyncColliderPosesShader {
     /// Compute pipeline for the collider-pose sync kernel.
@@ -48,10 +53,7 @@ pub struct GpuSyncColliderPosesShader {
 }
 
 impl GpuSyncColliderPosesShader {
-    /// Dispatches the collider-pose sync kernel. Should be called after every
-    /// step that mutates `body_poses` (integration, multibody forward
-    /// kinematics) and before the broad-phase / narrow-phase / contact
-    /// constraint conversion read collider world poses.
+    /// Dispatches the collider-pose sync kernel.
     pub fn dispatch(
         &self,
         pass: &mut GpuPass,

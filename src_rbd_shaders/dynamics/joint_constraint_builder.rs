@@ -709,11 +709,13 @@ pub fn update_constraint(
     let mprops1 = mprops.at(body1 as usize);
     let mprops2 = mprops.at(body2 as usize);
 
+    // `joint.local_frame_a/b` were already shifted into solver-body
+    // (COM-centered) space at `gpu_init_joint_constraints` time, and
+    // `pose1`/`pose2` are the COM-centered solver body poses, so
+    // `pose * local_frame` directly gives the world-space anchor frame.
     let frame1 = pose1 * joint.local_frame_a;
     let frame2 = pose2 * joint.local_frame_b;
 
-    // TODO: needs adjustment if the pose origin isn't the same as the
-    //       center of mass.
     let world_com1 = pose1.translation;
     let world_com2 = pose2.translation;
 
@@ -739,7 +741,7 @@ pub fn update_constraint(
     // The has_lin/ang_coupling test is needed to avoid shl overflow later.
     let has_lin_coupling = (coupled_axes & LIN_AXES_MASK) != 0;
     let first_coupled_lin_axis_id = (coupled_axes & LIN_AXES_MASK).trailing_zeros() as usize;
-    let helper = new_helper(frame1, frame2, mprops1.com, mprops2.com, locked_axes);
+    let helper = new_helper(frame1, frame2, world_com1, world_com2, locked_axes);
 
     let mut start = len;
 

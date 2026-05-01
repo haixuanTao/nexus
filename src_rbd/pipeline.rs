@@ -85,16 +85,16 @@ pub struct GpuPhysicsState {
     num_colliders_per_batch: u32,
     num_solver_iterations: u32,
     sim_params: Tensor<GpuSimParams>,
-    /// Per-body world-origin pose (matches rapier's `RigidBody::position`). This is
-    /// the pose used by integration, joint solving, mass-properties update, and
-    /// multibody forward-kinematics.
+    /// Per-body world-origin pose (matches rapier's `RigidBody::position`). This
+    /// is the canonical pose stored between steps and the input to per-step
+    /// mass-properties update and multibody FK. The substep loop does NOT
+    /// touch this — see [`Self::solver_body_poses`].
     body_poses: Tensor<Pose>,
-    /// Per-collider world pose (matches rapier's `Collider::position`). Equals
-    /// `body_poses[i] * collider_local_poses[i]`. Refreshed by
-    /// [`crate::shaders::dynamics::gpu_sync_collider_poses`] after each
-    /// integration substep / multibody forward-kinematics, and consumed by the
-    /// broad-phase, narrow-phase and contact-to-constraint conversion.
-    collider_world_poses: Tensor<Pose>,
+    /// Per-body COM-centered pose (rapier's `SolverPose`). Equals
+    /// `body_poses[i].prepend_translation(local_mprops[i].com)`. Seeded from
+    /// `body_poses` at step start, mutated by the solver substep loop, and
+    /// converted back to `body_poses` by `finalize` at step end.
+    solver_body_poses: Tensor<Pose>,
     local_mprops: Tensor<GpuLocalMassProperties>,
     mprops: Tensor<GpuWorldMassProperties>,
     vels: Tensor<GpuVelocity>,
@@ -110,6 +110,8 @@ pub struct GpuPhysicsState {
     /// matching rapier's `Collider::position()` semantics. Set to identity for
     /// colliders without a parent.
     collider_local_poses: Tensor<Pose>,
+    /// World-pose of colliders, used by collision detection.
+    collider_world_poses: Tensor<Pose>,
     /// Per-collider [`crate::rapier::geometry::InteractionGroups`]. Used by the
     /// broad-phase to skip pairs whose groups don't authorize an interaction.
     /// Padded slots use empty memberships AND empty filter so they never match.
@@ -191,7 +193,6 @@ impl GpuPhysicsState {
         let mut all_num_shapes = Vec::new();
         let mut all_collision_groups: Vec<crate::rapier::geometry::InteractionGroups> = Vec::new();
         let mut all_collider_local_poses: Vec<Pose> = Vec::new();
-        let mut all_collider_world_poses: Vec<Pose> = Vec::new();
         let mut shape_buffers = ShapeBuffers::default();
         let mut joint_envs: Vec<(
             &ImpulseJointSet,
@@ -308,7 +309,6 @@ impl GpuPhysicsState {
                 // `gpu_sync_collider_poses` kernel keeps in sync each step.
                 all_poses.push(body_pose);
                 all_collider_local_poses.push(collider_local_pose);
-                all_collider_world_poses.push(*co.position());
                 all_collision_groups.push(co.collision_groups());
             }
 
@@ -317,7 +317,6 @@ impl GpuPhysicsState {
             for _ in env_collider_count..max_colliders {
                 all_poses.push(dummy_pose);
                 all_collider_local_poses.push(Pose::IDENTITY);
-                all_collider_world_poses.push(dummy_pose);
                 all_local_mprops.push(dummy_local_mprops);
                 all_mprops.push(dummy_mprops);
                 all_shapes.push(dummy_shape);
@@ -429,6 +428,14 @@ impl GpuPhysicsState {
                             let global = batch_offset + rb_local_id as usize;
                             all_local_mprops[global].inv_mass = Vector::ZERO;
                             all_local_mprops[global].inv_principal_inertia = glamx::Vec3::ZERO;
+                            // Multibody links must have a zero local COM in the
+                            // shared body buffer: the multibody substep writes
+                            // body-origin poses to `solver_body_poses`, and we
+                            // need `init_solver_bodies` / `finalize` (which
+                            // shift by ±local_com) to be no-ops here so the
+                            // multibody apply_substep can treat solver poses
+                            // as body-origin poses.
+                            all_local_mprops[global].com = Vector::ZERO;
                             all_mprops[global].inv_mass = Vector::ZERO;
                             all_mprops[global].inv_inertia = glamx::Mat4::ZERO;
                         }
@@ -605,9 +612,21 @@ impl GpuPhysicsState {
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             )
             .unwrap(),
+            // Sized like `body_poses`. Will be (re-)seeded each step before
+            // the solver runs; the initial contents don't matter, but using
+            // the body poses here keeps the buffer in a sensible state.
+            solver_body_poses: Tensor::vector(
+                backend,
+                &all_poses,
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            )
+            .unwrap(),
+            // Sized like `body_poses`. Refreshed by `gpu_sync_collider_poses`
+            // once per step before broad-phase / narrow-phase /
+            // contact-to-constraint init.
             collider_world_poses: Tensor::vector(
                 backend,
-                &all_collider_world_poses,
+                &all_poses,
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             )
             .unwrap(),
@@ -669,10 +688,12 @@ impl GpuPhysicsState {
 }
 
 impl GpuPhysicsState {
-    /// Returns a reference to the GPU buffer containing rigid body poses.
+    /// Per-collider world pose (= `body_poses[i] * collider_local_poses[i]`).
+    /// This is what rendering / debug tooling typically wants — the actual
+    /// pose of each collider's shape in world space.
     ///
-    /// The poses are represented as similarity transformations (position + rotation + scale)
-    /// in world space.
+    /// Refreshed once per step before broad-phase / narrow-phase / contact
+    /// constraint init; not mutated during the substep loop.
     pub fn poses(&self) -> &Tensor<Pose> {
         &self.collider_world_poses
     }
@@ -682,7 +703,7 @@ impl GpuPhysicsState {
         &self.body_poses
     }
 
-    /// Per-collider world pose (= `body_poses[i] * collider_local_poses[i]`).
+    /// Per-collider world pose. Same as [`Self::poses`].
     pub fn collider_world_poses(&self) -> &Tensor<Pose> {
         &self.collider_world_poses
     }
@@ -820,7 +841,9 @@ impl GpuPhysicsPipeline {
                 .unwrap();
 
             // Refresh `collider_world_poses = body_poses * collider_local_poses`
-            // before any broad-phase, narrow-phase or contact-to-constraint work.
+            // before any broad-phase, narrow-phase or contact-to-constraint
+            // work. The substep loop only mutates `solver_body_poses`, so this
+            // is the only sync we need per step (no longer once per substep).
             self.sync_collider_poses
                 .dispatch(
                     &mut pass,
@@ -842,7 +865,7 @@ impl GpuPhysicsPipeline {
                     backend,
                     &mut encoder,
                     &mut state.lbvh,
-                    state.collider_world_poses.len() as u32,
+                    state.collider_local_poses.len() as u32,
                     state.num_batches,
                     &state.collider_world_poses,
                     &state.vertex_buffers,
@@ -975,7 +998,6 @@ impl GpuPhysicsPipeline {
             let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("narrow-phase", timestamps.as_deref_mut());
 
-            // Narrow phase — operates on collider world poses.
             self.narrow_phase
                 .dispatch(
                     &mut pass,
@@ -1011,8 +1033,9 @@ impl GpuPhysicsPipeline {
                 sim_params: &state.sim_params,
                 colliders_len: &state.num_shapes,
                 body_poses: &mut state.body_poses,
+                solver_body_poses: &mut state.solver_body_poses,
                 collider_local_poses: &state.collider_local_poses,
-                collider_world_poses: &mut state.collider_world_poses,
+                collider_world_poses: &state.collider_world_poses,
                 vels: &mut state.vels,
                 solver_vels: &mut state.solver_vels,
                 solver_vels_out: &state.solver_vels_out,
@@ -1127,8 +1150,9 @@ impl GpuPhysicsPipeline {
             sim_params: &state.sim_params,
             colliders_len: &state.num_shapes,
             body_poses: &mut state.body_poses,
+            solver_body_poses: &mut state.solver_body_poses,
             collider_local_poses: &state.collider_local_poses,
-            collider_world_poses: &mut state.collider_world_poses,
+            collider_world_poses: &state.collider_world_poses,
             vels: &mut state.vels,
             solver_vels: &mut state.solver_vels,
             solver_vels_out: &state.solver_vels_out,

@@ -18,11 +18,12 @@ use crate::dynamics::multibody::{GpuMultibodySet, GpuMultibodySolver, MultibodyS
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
-    GpuApplySolverVelsInc, GpuInitSolverVelsInc, GpuIntegrate, GpuRemoveCfmAndBiasKernel,
-    GpuSolverCleanup, GpuSolverFinalize, GpuSolverIncColor, GpuSolverInitConstraints,
-    GpuSolverResetColor, GpuSolverSortConstraints, GpuSolverUpdateConstraints, GpuStepGaussSeidel,
-    GpuSyncColliderPoses, GpuWarmstart, GpuWarmstartWithoutColors, LocalMassProperties, SimParams,
-    TwoBodyConstraint, TwoBodyConstraintBuilder, Velocity, WorldMassProperties,
+    GpuApplySolverVelsInc, GpuInitSolverBodies, GpuInitSolverVelsInc, GpuIntegrateLinearized,
+    GpuRemoveCfmAndBiasKernel, GpuSolverCleanup, GpuSolverFinalize, GpuSolverIncColor,
+    GpuSolverInitConstraints, GpuSolverResetColor, GpuSolverSortConstraints,
+    GpuSolverUpdateConstraints, GpuStepGaussSeidel, GpuWarmstart, GpuWarmstartWithoutColors,
+    LocalMassProperties, SimParams, TwoBodyConstraint, TwoBodyConstraintBuilder, Velocity,
+    WorldMassProperties,
 };
 use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
@@ -53,17 +54,18 @@ pub struct GpuSolver {
     step_gauss_seidel: GpuStepGaussSeidel,
     /// Initializes solver velocity increments.
     init_solver_vels_inc: GpuInitSolverVelsInc,
+    /// Seeds the COM-centered solver poses from the body world poses
+    /// (rapier's `SolverBodies::copy_from`). Run once per step.
+    init_solver_bodies: GpuInitSolverBodies,
     /// Applies accumulated solver velocity increments.
     apply_solver_vels_inc: GpuApplySolverVelsInc,
     /// Integrates positions from velocities.
-    integrate: GpuIntegrate,
-    /// Writes solver velocities back to body storage.
+    integrate_linearized: GpuIntegrateLinearized,
+    /// Writes solver velocities and converts the COM-centered solver poses
+    /// back to body-origin poses.
     finalize: GpuSolverFinalize,
     /// Removes CFM and bias terms for velocity-only solving.
     remove_cfm_and_bias_kernel: GpuRemoveCfmAndBiasKernel,
-    /// Refreshes `collider_world_poses` from `body_poses * collider_local_poses`
-    /// after every body-pose write within the substep loop.
-    sync_collider_poses: GpuSyncColliderPoses,
 }
 
 /// Arguments for constraint solver dispatch.
@@ -92,16 +94,23 @@ pub struct SolverArgs<'a> {
     pub sim_params: &'a Tensor<SimParams>,
     /// Number of colliders per batch (uniform scalar, used as loop bound).
     pub colliders_len: &'a Tensor<u32>,
-    /// Rigid body world-origin poses. Used for integration, joint solving and
-    /// the body side of multibody work. Mirrors rapier's `RigidBody::position`.
+    /// Rigid body world-origin poses. Mirrors rapier's `RigidBody::position`.
+    /// Read at the start of each step to seed [`Self::solver_body_poses`] and
+    /// written back at the end of the substep loop by `finalize`.
     pub body_poses: &'a mut Tensor<Pose>,
-    /// Per-collider local pose, used by [`Self::collider_world_poses`] sync and
-    /// any place that needs to derive a collider world pose from a body pose.
+    /// Rigid-body poses centered at the rigid-body center-of-mass — rapier's
+    /// `SolverPose`. This is the only pose buffer the solver substep loop
+    /// touches: contact / joint constraints, gauss-seidel and integration all
+    /// read and write it. Seeded from `body_poses` at step start and written
+    /// back to `body_poses` at step end.
+    pub solver_body_poses: &'a mut Tensor<Pose>,
+    /// Per-collider local pose relative to the rigid-body it is attached to.
     pub collider_local_poses: &'a Tensor<Pose>,
-    /// Per-collider world poses (= `body_poses[i] * collider_local_poses[i]`).
-    /// Consumed by contact constraint init / update which deal with contact
-    /// data expressed in collider-local frames.
-    pub collider_world_poses: &'a mut Tensor<Pose>,
+    /// Per-collider world poses (= `body_poses[i] * collider_local_poses[i]`),
+    /// kept up-to-date once per step before broad/narrow-phase. Used by
+    /// `init_constraints` to recover the world-space contact normal and
+    /// contact point from the manifold's collider-local features.
+    pub collider_world_poses: &'a Tensor<Pose>,
     /// Rigid body velocities.
     pub vels: &'a mut Tensor<Velocity>,
     /// Solver working velocities.
@@ -155,8 +164,24 @@ impl GpuSolver {
             args.colliders_batch_capacity,
         )?;
 
-        // Init constraints — contact features (points, normals) live in collider
-        // local space, so the constraint builder needs collider world poses.
+        // Seed `solver_body_poses` from `body_poses`: rapier's
+        // `SolverBodies::copy_from`. After this, only the COM-centered solver
+        // poses are touched until the final `finalize` writeback.
+        self.init_solver_bodies.call(
+            pass,
+            [args.num_colliders, args.num_batches, 1],
+            args.body_poses,
+            args.local_mprops,
+            args.solver_body_poses,
+            args.colliders_len,
+            args.colliders_batch_capacity,
+        )?;
+
+        // Init constraints — contact features (points, normals) live in
+        // collider-local space, so we read `collider_world_poses` to recover
+        // the world contact point and normal, while `solver_body_poses`
+        // (rapier's COM-centered solver pose) provides the world COM and the
+        // frame in which contact anchors are stored.
         self.init_constraints.call(
             pass,
             args.contacts_len_indirect,
@@ -167,6 +192,7 @@ impl GpuSolver {
             args.body_constraint_counts,
             args.body_group,
             args.collider_world_poses,
+            args.solver_body_poses,
             args.vels,
             args.mprops,
             args.sim_params,
@@ -251,8 +277,8 @@ impl GpuSolver {
             #[cfg(feature = "dim3")]
             if let (Some(solver), Some(state)) = (mb_solver, mb_state.as_deref_mut()) {
                 let mut mb_args = MultibodySolverArgs {
-                    poses: &mut *args.body_poses,
-                    collider_world_poses: &*args.collider_world_poses,
+                    poses: &mut *args.solver_body_poses,
+                    collider_world_poses: args.collider_world_poses,
                     colliders_batch_capacity: args.colliders_batch_capacity,
                     mprops: args.mprops,
                     contacts: args.contacts,
@@ -276,21 +302,6 @@ impl GpuSolver {
             )?;
 
             /*
-             * Refresh collider world poses after the multibody apply_substep
-             * may have changed body poses, so the contact constraints' update
-             * step sees consistent collider transforms.
-             */
-            self.sync_collider_poses.call(
-                pass,
-                [args.num_colliders, args.num_batches, 1],
-                args.body_poses,
-                args.collider_local_poses,
-                args.collider_world_poses,
-                args.colliders_len,
-                args.colliders_batch_capacity,
-            )?;
-
-            /*
              * Update nonlinear terms.
              */
             self.update_constraints.call(
@@ -299,13 +310,13 @@ impl GpuSolver {
                 args.constraints,
                 args.constraint_builders,
                 args.contacts_len,
-                args.collider_world_poses,
+                args.solver_body_poses,
                 args.sim_params,
                 args.contacts_batch_capacity,
                 args.colliders_batch_capacity,
             )?;
 
-            joint_solver.update(pass, &mut joint_args, args.body_poses)?;
+            joint_solver.update(pass, &mut joint_args, args.solver_body_poses)?;
 
             /*
              * Warmstart.
@@ -349,32 +360,16 @@ impl GpuSolver {
             /*
              * Integrate positions only.
              */
-            self.integrate.call(
+            self.integrate_linearized.call(
                 pass,
                 [args.num_colliders, args.num_batches, 1],
-                args.body_poses,
+                args.solver_body_poses,
                 args.solver_vels,
-                args.local_mprops,
                 args.colliders_len,
                 args.sim_params,
                 args.colliders_batch_capacity,
             )?;
 
-            /*
-             * Body poses changed via integration — re-sync collider world poses
-             * before the next substep iteration's update_constraints (or, on
-             * the last substep, before phase-1 of the next step picks them up
-             * via mprops_update / broad-phase).
-             */
-            self.sync_collider_poses.call(
-                pass,
-                [args.num_colliders, args.num_batches, 1],
-                args.body_poses,
-                args.collider_local_poses,
-                args.collider_world_poses,
-                args.colliders_len,
-                args.colliders_batch_capacity,
-            )?;
 
             /*
              * Solve WITHOUT bias.
@@ -407,13 +402,17 @@ impl GpuSolver {
         }
 
         /*
-         * Writeback body velocities.
+         * Writeback body velocities and convert COM-centered solver poses
+         * back to body-origin poses.
          */
         self.finalize.call(
             pass,
             [args.num_colliders, args.num_batches, 1],
             args.vels,
             args.solver_vels,
+            args.body_poses,
+            args.solver_body_poses,
+            args.local_mprops,
             args.colliders_len,
             args.colliders_batch_capacity,
         )?;

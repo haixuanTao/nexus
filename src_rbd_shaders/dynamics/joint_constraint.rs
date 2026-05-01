@@ -248,13 +248,24 @@ pub fn gpu_init_joint_constraints(
         let idx = i as usize;
         let joint = joints.at(idx);
 
+        // Mirror rapier `GenericJoint::transform_to_solver_body_space`: the
+        // joint's local anchor frames are expressed relative to the body's
+        // origin, but the solver works in COM-centered space, so subtract the
+        // body local center of mass from each anchor's translation.
+        // TODO: handle the rapier "is_fixed" branch (`local_frame = body_pose * local_frame`).
+        let mut joint_data = joint.data;
+        joint_data.local_frame_a.translation -=
+            local_mprops.at(joint.body_a as usize).com;
+        joint_data.local_frame_b.translation -=
+            local_mprops.at(joint.body_b as usize).com;
+
         builders.write(
             idx,
             JointConstraintBuilder {
                 body1: joint.body_a,
                 body2: joint.body_b,
                 joint_id: i,
-                joint: joint.data,
+                joint: joint_data,
                 constraint_id: i,
             },
         );
