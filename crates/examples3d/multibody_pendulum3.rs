@@ -39,7 +39,7 @@ fn build() -> SimulationState {
      */
     let rad = 0.4;
     let link_len = 2.0;
-    let num_links = 10;
+    let num_links = 20;
 
     // Fixed root at origin.
     let root_body = RigidBodyBuilder::fixed();

@@ -24,7 +24,7 @@ use mpm::MpmStage;
 use nexus::mpm::solver::GpuParticleModel;
 use nexus::rbd::pipeline::{GpuPhysicsPipeline, RunStats};
 pub use rbd::BackendType;
-use rbd::{PhysicsBackend, RenderContext, setup_graphics, setup_physics, update_instances};
+use rbd::{RenderContext, setup_graphics, setup_physics, update_instances};
 use ui::{render_compiling_message, render_ui};
 
 #[cfg(feature = "dim3")]
@@ -40,7 +40,7 @@ use kiss3d::scene::{SceneNode2d, SceneNode3d};
 use kiss3d::window::Window;
 use rapier::geometry::ColliderHandle;
 
-pub use rbd::{BatchEnvironment, SimulationState, VisualShape};
+pub use rbd::{BatchEnvironment, PhysicsBackend, SimulationState, VisualShape};
 
 #[cfg(feature = "dim2")]
 type RenderNode = SceneNode2d;
@@ -68,8 +68,18 @@ pub struct CameraSetup {
     pub target: glamx::Vec3,
 }
 
+/// Per-step hook for an RBD demo. Called *before* every physics step (only when
+/// the simulation is running) with a mutable reference to the active backend
+/// and the elapsed simulated time in seconds.
+pub type RbdTick = Box<dyn FnMut(&mut PhysicsBackend, f64)>;
+
 pub enum DemoBuilder {
-    Rbd(&'static str, fn() -> SimulationState, Option<CameraSetup>),
+    Rbd(
+        &'static str,
+        fn() -> SimulationState,
+        Option<fn() -> RbdTick>,
+        Option<CameraSetup>,
+    ),
     Mpm(
         String,
         mpm::MpmSceneBuildFn<GpuParticleModel>,
@@ -80,7 +90,7 @@ pub enum DemoBuilder {
 
 impl DemoBuilder {
     pub fn rbd(name: &'static str, f: fn() -> SimulationState) -> Self {
-        Self::Rbd(name, f, None)
+        Self::Rbd(name, f, None, None)
     }
 
     pub fn mpm(name: impl Into<String>, f: mpm::MpmSceneBuildFn<GpuParticleModel>) -> Self {
@@ -91,9 +101,18 @@ impl DemoBuilder {
         Self::Fem(name.into(), f, None)
     }
 
+    /// Attach a per-step tick factory to an RBD demo. Each demo activation
+    /// calls the factory once to produce a fresh [`RbdTick`] closure.
+    pub fn with_rbd_tick(mut self, tick_factory: fn() -> RbdTick) -> Self {
+        if let Self::Rbd(_, _, t, _) = &mut self {
+            *t = Some(tick_factory);
+        }
+        self
+    }
+
     pub fn with_camera(mut self, eye: glamx::Vec3, target: glamx::Vec3) -> Self {
         match &mut self {
-            Self::Rbd(_, _, c) | Self::Mpm(_, _, c) | Self::Fem(_, _, c) => {
+            Self::Rbd(_, _, _, c) | Self::Mpm(_, _, c) | Self::Fem(_, _, c) => {
                 *c = Some(CameraSetup { eye, target });
             }
         }
@@ -110,9 +129,9 @@ impl DemoBuilder {
 
     pub fn camera(&self) -> Option<&CameraSetup> {
         match self {
-            DemoBuilder::Rbd(_, _, c) | DemoBuilder::Mpm(_, _, c) | DemoBuilder::Fem(_, _, c) => {
-                c.as_ref()
-            }
+            DemoBuilder::Rbd(_, _, _, c)
+            | DemoBuilder::Mpm(_, _, c)
+            | DemoBuilder::Fem(_, _, c) => c.as_ref(),
         }
     }
 }
@@ -121,6 +140,10 @@ enum ActiveDemo {
     Rbd {
         physics: rbd::PhysicsContext,
         render_ctx: RenderContext,
+        /// Optional per-step tick produced by the demo's tick factory.
+        tick: Option<RbdTick>,
+        /// Total elapsed simulated time, accumulated across non-paused steps.
+        sim_time: f64,
     },
     Mpm {
         stage: MpmStage<GpuParticleModel>,
@@ -371,6 +394,7 @@ impl Testbed {
                     ActiveDemo::Rbd {
                         physics,
                         mut render_ctx,
+                        ..
                     } => {
                         render_ctx.clear();
                         if !backend_changed {
@@ -465,7 +489,7 @@ impl Testbed {
         }
 
         match &self.builders[self.selected_demo] {
-            DemoBuilder::Rbd(_, builder, _) => {
+            DemoBuilder::Rbd(_, builder, tick_factory, _) => {
                 let phys = builder();
                 let physics = setup_physics(
                     gpu,
@@ -476,9 +500,12 @@ impl Testbed {
                 )
                 .await;
                 let render_ctx = setup_graphics(scene2d, scene3d, &phys).await;
+                let tick = tick_factory.map(|f| f());
                 ActiveDemo::Rbd {
                     physics,
                     render_ctx,
+                    tick,
+                    sim_time: 0.0,
                 }
             }
             DemoBuilder::Mpm(_, _, _) => {
@@ -578,9 +605,17 @@ impl Testbed {
             ActiveDemo::Rbd {
                 physics,
                 render_ctx,
+                tick,
+                sim_time,
             } => {
                 if self.run_state != RunState::Paused {
+                    if let Some(tick_fn) = tick.as_mut() {
+                        tick_fn(&mut physics.backend, *sim_time);
+                    }
                     self.run_stats = physics.backend.step(gpu).await;
+                    // Advance the demo's sim-time counter using the same
+                    // fixed-dt assumption everyone in the testbed uses.
+                    *sim_time += 1.0 / 60.0;
                 }
                 update_instances(render_ctx, &physics.backend);
             }

@@ -33,8 +33,9 @@ use crate::shaders::dynamics::{
     MultibodyJointConstraint, MultibodyLinkStatic, MultibodyLinkWorkspace, Velocity,
     WorldMassProperties,
 };
-use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
+use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
+use rapier3d::prelude::JointAxis;
 use vortx::tensor::Tensor;
 
 #[cfg(feature = "from_rapier")]
@@ -74,6 +75,9 @@ pub struct GpuMultibodySet {
     multibody_info: Tensor<MultibodyInfo>,
     /// Per-batch static link data.
     links_static: Tensor<MultibodyLinkStatic>,
+    /// CPU-side mirror of [`Self::links_static`] used to support runtime
+    /// mutations like motor changes without round-tripping through a GPU read.
+    links_static_mirror: Vec<MultibodyLinkStatic>,
     /// Per-batch per-step link workspace.
     links_workspace: Tensor<MultibodyLinkWorkspace>,
     /// Per-link mass properties (owned by the multibody — the shared body mprops
@@ -230,6 +234,39 @@ impl GpuMultibodySet {
             BufferUsages::STORAGE | BufferUsages::COPY_DST,
         )
         .unwrap();
+    }
+
+    /// Sets a motor's target velocity on a multibody joint and uploads the
+    /// updated link to the GPU. `link_id` is the global link id within the
+    /// batch (matches the body / collider index that was given to
+    /// [`from_rapier`](Self::from_rapier)). `axis` is the joint axis index
+    /// (0..=2 for linear, 3..=5 for angular).
+    ///
+    /// The motor is also auto-enabled (its bit is set in `motor_axes`) so the
+    /// solver actually drives the joint at the requested velocity.
+    pub fn set_motor_velocity(
+        &mut self,
+        backend: &GpuBackend,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_vel: f32,
+    ) -> Result<(), GpuBackendError> {
+        let stride = self.links_per_batch;
+        let global_idx = (batch * stride + link_id) as usize;
+        let axis_id = axis as usize;
+        let entry = match self.links_static_mirror.get_mut(global_idx) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+        entry.data.motors[axis_id].target_vel = target_vel;
+        entry.data.motor_axes |= 1u32 << axis_id;
+        let snapshot = *entry;
+        backend.write_buffer(
+            self.links_static.buffer_mut(),
+            global_idx as u64,
+            std::slice::from_ref(&snapshot),
+        )
     }
 
     /// Upload a new gravity vector.
@@ -569,7 +606,13 @@ impl GpuMultibodySet {
 
             num_multibodies: Tensor::vector(backend, &all_num_mb, usage_u).unwrap(),
             multibody_info: Tensor::vector(backend, &all_infos, storage).unwrap(),
-            links_static: Tensor::vector(backend, &all_statics, storage).unwrap(),
+            links_static: Tensor::vector(
+                backend,
+                &all_statics,
+                storage | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
+            links_static_mirror: all_statics.clone(),
             links_workspace: Tensor::vector(backend, &all_ws, storage).unwrap(),
             links_mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
             dof_values: Tensor::vector(backend, &all_dof_vals, storage).unwrap(),

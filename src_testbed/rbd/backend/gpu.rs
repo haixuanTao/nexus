@@ -1,6 +1,7 @@
 use super::SimulationBackend;
 use crate::rbd::SimulationState;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps};
+use rapier::prelude::JointAxis;
 use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};
 
@@ -118,6 +119,26 @@ impl GpuBackend {
     #[allow(dead_code)]
     pub async fn new(gpu: &KhalGpuBackend, phys: &SimulationState) -> Self {
         Self::try_new(gpu, phys).await.unwrap()
+    }
+
+    /// See [`super::PhysicsBackend::set_multibody_motor_velocity`].
+    pub fn set_multibody_motor_velocity(
+        &mut self,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_vel: f32,
+    ) {
+        #[cfg(feature = "dim3")]
+        let _ = self
+            .state
+            .multibodies_mut()
+            .set_motor_velocity(&self.gpu, batch, link_id, axis, target_vel);
+        #[cfg(feature = "dim2")]
+        {
+            let _ = (batch, link_id, axis, target_vel);
+            todo!()
+        }
     }
 }
 

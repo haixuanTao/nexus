@@ -1,11 +1,36 @@
-use nexus_testbed3d::{DemoBuilder, SimulationState, VisualShape};
+use nexus_testbed3d::{DemoBuilder, PhysicsBackend, RbdTick, SimulationState, VisualShape};
 use rapier3d::prelude::*;
 use rapier3d_urdf::{UrdfLoaderOptions, UrdfMultibodyOptions, UrdfRobot};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub fn builder() -> DemoBuilder {
-    DemoBuilder::rbd("URDF (multibody)", build)
+    DemoBuilder::rbd("URDF (multibody)", build).with_rbd_tick(apply_random_ang_motors)
+}
+
+/// Tick factory: every 5 simulated seconds, re-randomize each multibody joint's
+/// angular-X motor target velocity within `[-0.1, 0.1]` rad/s so the robot
+/// stays in slow continuous motion with periodically changing direction.
+fn apply_random_ang_motors() -> RbdTick {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let mut next_change_at = 0.0_f64;
+    let interval = 5.0;
+    Box::new(move |backend: &mut PhysicsBackend, sim_time: f64| {
+        if sim_time < next_change_at {
+            return;
+        }
+        next_change_at = sim_time + interval;
+
+        let n = backend.num_bodies() as u32;
+        let num_batches = backend.num_batches() as u32;
+        for batch in 0..num_batches {
+            for link_id in 0..n {
+                let target_vel: f32 = rng.random_range(-0.6f32..=0.6);
+                backend.set_multibody_motor_velocity(batch, link_id, JointAxis::AngX, target_vel);
+            }
+        }
+    })
 }
 
 fn urdf_path() -> PathBuf {
@@ -50,7 +75,17 @@ fn build() -> SimulationState {
     };
 
     match UrdfRobot::from_file(&path, options, None) {
-        Ok((robot, _)) => {
+        Ok((mut robot, _)) => {
+            // Switch every joint's `AngX` motor to acceleration-based mode so the
+            // tick-driven motor target velocity feels right regardless of link
+            // mass. Initial target velocity is 0 — the per-step tick (registered
+            // via `with_rbd_tick` on the demo builder) re-randomizes it every
+            // 5 simulated seconds.
+            for urdf_joint in &mut robot.joints {
+                urdf_joint.joint.set_motor_model(JointAxis::AngX, MotorModel::AccelerationBased);
+                urdf_joint.joint.set_motor_velocity(JointAxis::AngX, 0.0, 1.0);
+            }
+
             // let handles = robot.insert_using_impulse_joints(
             //     &mut bodies,
             //     &mut colliders,

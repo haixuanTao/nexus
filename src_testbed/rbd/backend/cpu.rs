@@ -5,7 +5,7 @@ use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::RunStats;
 use rapier::dynamics::{CCDSolver, IntegrationParameters, IslandManager};
 use rapier::geometry::{BroadPhaseBvh, ColliderSet, NarrowPhase};
-use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, PhysicsPipeline, RigidBodySet};
+use rapier::prelude::{ImpulseJointSet, JointAxis, MultibodyJointSet, PhysicsPipeline, RigidBodySet};
 
 /// CPU-based physics backend using rapier
 pub struct CpuBackend {
@@ -23,6 +23,36 @@ pub struct CpuBackend {
 }
 
 impl CpuBackend {
+    /// See [`super::PhysicsBackend::set_multibody_motor_velocity`].
+    pub fn set_multibody_motor_velocity(
+        &mut self,
+        _batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_vel: f32,
+    ) {
+        // Walk every multibody and apply on the link whose body's local id
+        // matches `link_id`. For a one-collider-per-body world the local id is
+        // also the body id.
+        let mut handle = None;
+        for (h, _) in self.bodies.iter() {
+            if h.into_raw_parts().0 as u32 == link_id {
+                handle = Some(h);
+                break;
+            }
+        }
+        let Some(handle) = handle else { return };
+        if let Some(link) = self.multibody_joints.rigid_body_link(handle) {
+            let multibody_handle = link.multibody;
+            let link_id_in_mb = link.id;
+            if let Some(mb) = self.multibody_joints.get_multibody_mut(multibody_handle) {
+                if let Some(link) = mb.link_mut(link_id_in_mb) {
+                    link.joint.data.set_motor_velocity(axis, target_vel, 1.0);
+                }
+            }
+        }
+    }
+
     pub fn new(phys: &SimulationState) -> Self {
         let env = &phys.environments[0];
         let mut poses_cache = Vec::new();

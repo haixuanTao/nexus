@@ -5,6 +5,7 @@ pub use cpu::CpuBackend;
 pub use gpu::GpuBackend;
 
 use khal::backend::GpuBackend as KhalGpuBackend;
+use rapier::prelude::JointAxis;
 use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::RunStats;
 
@@ -73,6 +74,26 @@ impl PhysicsBackend {
         match self {
             PhysicsBackend::Cpu(backend) => backend.num_batches(),
             PhysicsBackend::Gpu(backend) => backend.num_batches(),
+        }
+    }
+
+    /// Set a multibody joint motor's target velocity for the link `link_id`
+    /// in batch `batch`, on joint axis `axis` (0..=2 = linear, 3..=5 = angular).
+    /// The motor on that axis is enabled automatically.
+    pub fn set_multibody_motor_velocity(
+        &mut self,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_vel: f32,
+    ) {
+        match self {
+            PhysicsBackend::Cpu(backend) => {
+                backend.set_multibody_motor_velocity(batch, link_id, axis, target_vel)
+            }
+            PhysicsBackend::Gpu(backend) => {
+                backend.set_multibody_motor_velocity(batch, link_id, axis, target_vel)
+            }
         }
     }
 }

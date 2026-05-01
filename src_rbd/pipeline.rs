@@ -276,21 +276,15 @@ impl GpuPhysicsState {
                         ..Default::default()
                     };
                     local.inv_mass = Vector::ZERO;
-                    #[cfg(feature = "dim3")]
-                    {
-                        local.inv_principal_inertia = glamx::Vec3::ZERO;
-                    }
-                    #[cfg(feature = "dim2")]
-                    {
-                        local.inv_inertia = 0.0;
-                    }
                     world.inv_mass = Vector::ZERO;
                     #[cfg(feature = "dim3")]
                     {
+                        local.inv_principal_inertia = glamx::Vec3::ZERO;
                         world.inv_inertia = glamx::Mat4::ZERO;
                     }
                     #[cfg(feature = "dim2")]
                     {
+                        local.inv_inertia = 0.0;
                         world.inv_inertia = 0.0;
                     }
                     (local, world)
@@ -696,6 +690,13 @@ impl GpuPhysicsState {
     /// The set of joints part of the simulation.
     pub fn joints(&self) -> &GpuImpulseJointSet {
         &self.joints
+    }
+
+    /// Mutable access to the multibody set, useful for runtime mutations like
+    /// per-step motor changes.
+    #[cfg(feature = "dim3")]
+    pub fn multibodies_mut(&mut self) -> &mut crate::dynamics::GpuMultibodySet {
+        &mut self.multibodies
     }
 
     /// Returns a reference to the GPU buffer containing collision shapes.
