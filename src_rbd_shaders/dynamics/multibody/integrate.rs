@@ -5,8 +5,10 @@
 //!   coords, joint_rot updated per-link using `v`
 //!
 //! The angular-DOF update mirrors rapier's `MultibodyJoint::integrate`:
-//!   - 1 free angular DOF:  coords[DIM + dof_id] += v * dt; joint_rot from axis-angle.
-//!   - 3 free angular DOFs: joint_rot = exp(v * dt) * joint_rot; coords[3..6] += v * dt.
+//!   - 1 free angular DOF:  coords[DIM + dof_id] += v * dt; joint_rot from
+//!     axis-angle (3D) / scalar angle (2D).
+//!   - 3 free angular DOFs: joint_rot = exp(v * dt) * joint_rot;
+//!     coords[3..6] += v * dt. (3D only.)
 //!   - 0 free angular DOFs: no-op.
 //!
 //! After this pass, `dof_velocities` and each link's `coords` / `joint_rot` are updated.
@@ -16,13 +18,15 @@ use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use glamx::Vec3;
-
+use parry::math::VectorExt;
 use crate::utils::{Slice, SliceMut};
-use crate::{rotation_from_scaled_axis, rotation_renormalize_fast};
+use crate::{ANG_DIM, DIM};
+#[cfg(feature = "dim2")]
+use crate::rotation_from_angle;
+#[cfg(feature = "dim3")]
+use crate::{Vector, rotation_from_scaled_axis, rotation_renormalize_fast};
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
-use super::utils::{basis_vec3, coord_get, coord_set};
 
 /// Update generalized velocities: `v += a · dt`.
 ///
@@ -112,38 +116,47 @@ pub fn gpu_mb_integrate(
 
         // Free linear DOFs first, in axis order.
         let mut curr_free = 0u32;
-        for i in 0u32..3 {
+        for i in 0..DIM {
             if (locked & (1 << i)) == 0 {
                 let v = dof_vel.read(aid + curr_free as usize);
-                let new = coord_get(&ws.coords, i) + v * dt;
-                coord_set(&mut ws.coords, i, new);
+                *ws.coords.at_mut(i as usize) += v * dt;
                 curr_free += 1;
             }
         }
 
         // Free angular DOFs.
-        let ang_locked = (locked >> 3) & 0x7;
-        let num_ang = 3 - ang_locked.count_ones();
+        let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
+        let num_ang = ANG_DIM - ang_locked.count_ones();
         if num_ang == 1 {
-            let dof_id = (!ang_locked & 0x7).trailing_zeros();
-            let v = dof_vel.read(aid + curr_free as usize);
-            let idx = 3 + dof_id;
-            let new = coord_get(&ws.coords, idx) + v * dt;
-            coord_set(&mut ws.coords, idx, new);
-            ws.joint_rot = rotation_from_scaled_axis(basis_vec3(dof_id) * new);
+            #[cfg(feature = "dim3")]
+            {
+                let dof_id = (!ang_locked & 0x7).trailing_zeros();
+                let v = dof_vel.read(aid + curr_free as usize);
+                let idx = 3 + dof_id;
+                let new = ws.coords.read(idx as usize) + v * dt;
+                ws.coords.write(idx as usize, new);
+                ws.joint_rot = rotation_from_scaled_axis(Vector::ith(dof_id as usize, new));
+            }
+            #[cfg(feature = "dim2")]
+            {
+                let v = dof_vel.read(aid + curr_free as usize);
+                let new = ws.coords.read(DIM as usize) + v * dt;
+                ws.coords.write(DIM as usize, new);
+                ws.joint_rot = rotation_from_angle(new);
+            }
         } else if num_ang == 3 {
-            let vx = dof_vel.read(aid + curr_free as usize);
-            let vy = dof_vel.read(aid + (curr_free + 1) as usize);
-            let vz = dof_vel.read(aid + (curr_free + 2) as usize);
-            let ang = Vec3::new(vx, vy, vz);
-            let disp = rotation_from_scaled_axis(ang * dt);
-            ws.joint_rot = rotation_renormalize_fast(disp * ws.joint_rot);
-            let c3 = coord_get(&ws.coords, 3) + vx * dt;
-            let c4 = coord_get(&ws.coords, 4) + vy * dt;
-            let c5 = coord_get(&ws.coords, 5) + vz * dt;
-            coord_set(&mut ws.coords, 3, c3);
-            coord_set(&mut ws.coords, 4, c4);
-            coord_set(&mut ws.coords, 5, c5);
+            #[cfg(feature = "dim3")]
+            {
+                let vx = dof_vel.read(aid + curr_free as usize);
+                let vy = dof_vel.read(aid + (curr_free + 1) as usize);
+                let vz = dof_vel.read(aid + (curr_free + 2) as usize);
+                let ang = Vector::new(vx, vy, vz);
+                let disp = rotation_from_scaled_axis(ang * dt);
+                ws.joint_rot = rotation_renormalize_fast(disp * ws.joint_rot);
+                *ws.coords.at_mut(3) += vx * dt;
+                *ws.coords.at_mut(4) += vy * dt;
+                *ws.coords.at_mut(5) += vz * dt;
+            }
         }
         // num_ang == 0: no-op.
 

@@ -25,6 +25,10 @@ pub use glamx;
 pub extern crate parry2d as parry;
 #[cfg(feature = "dim3")]
 pub extern crate parry3d as parry;
+#[cfg(feature = "dim2")]
+pub extern crate rapier2d as rapier;
+#[cfg(feature = "dim3")]
+pub extern crate rapier3d as rapier;
 
 /// The vector type for the current dimension (Vec2 in 2D, Vec3 in 3D).
 #[cfg(feature = "dim2")]
@@ -70,6 +74,13 @@ pub const DIM: u32 = 2;
 /// The dimension constant.
 #[cfg(feature = "dim3")]
 pub const DIM: u32 = 3;
+
+/// Number of rotational degrees of freedom of a rigid-body (1 in 2D, 3 in 3D).
+#[cfg(feature = "dim2")]
+pub const ANG_DIM: u32 = 1;
+/// Number of rotational degrees of freedom of a rigid-body (1 in 2D, 3 in 3D).
+#[cfg(feature = "dim3")]
+pub const ANG_DIM: u32 = 3;
 
 //
 // Rotation helper functions

@@ -20,13 +20,14 @@ use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
+use crate::DIM;
+use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::Slice;
 use crate::utils::linalg::{MatSlice, lu_solve_in_place};
 
 use super::types::{
     MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic, MultibodyLinkWorkspace,
 };
-use super::utils::coord_get;
 
 /// Compute joint motor parameters mirroring rapier's `JointMotor::motor_params`.
 #[inline]
@@ -154,12 +155,12 @@ pub fn gpu_mb_init_joint_constraints(
         let mut curr_free_dof = 0u32;
 
         // Linear DOFs first.
-        for axis in 0u32..3 {
+        for axis in 0..DIM {
             if (locked & (1 << axis)) != 0 {
                 continue;
             }
             let abs_dof = stat.assembly_id + curr_free_dof;
-            let curr_pos = coord_get(&ws.coords, axis);
+            let curr_pos = ws.coords.read(axis as usize);
 
             if (motor_axes & (1 << axis)) != 0 {
                 let has_limits = (limit_axes & (1 << axis)) != 0;
@@ -210,12 +211,12 @@ pub fn gpu_mb_init_joint_constraints(
         }
 
         // Angular DOFs.
-        for axis in 3u32..6 {
+        for axis in DIM..(SPATIAL_DIM as u32) {
             if (locked & (1 << axis)) != 0 {
                 continue;
             }
             let abs_dof = stat.assembly_id + curr_free_dof;
-            let curr_pos = coord_get(&ws.coords, axis);
+            let curr_pos = ws.coords.read(axis as usize);
 
             if (limit_axes & (1 << axis)) != 0 {
                 emit_limit_constraint(

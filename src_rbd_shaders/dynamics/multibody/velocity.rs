@@ -7,13 +7,12 @@ use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use glamx::Vec3;
-
+use parry::math::VectorExt;
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::utils::{Slice, SliceMut};
+use crate::{ANG_DIM, AngVector, DIM, Vector, gcross_av};
 
 use super::types::{MAX_JOINT_DOFS, MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
-use super::utils::basis_vec3;
 
 /// Body-local velocity contributed by this joint, given the joint's free-DOF
 /// velocities `vels` (rapier's `MultibodyJoint::jacobian_mul_coordinates`).
@@ -21,29 +20,42 @@ use super::utils::basis_vec3;
 fn jacobian_mul_coordinates(
     locked_axes: u32,
     vels: [f32; MAX_JOINT_DOFS],
-) -> (Vec3, Vec3) {
-    let mut lin = Vec3::ZERO;
-    let mut ang = Vec3::ZERO;
+) -> (Vector, AngVector) {
+    let mut lin = Vector::ZERO;
+    #[cfg(feature = "dim3")]
+    let mut ang = AngVector::ZERO;
+    #[cfg(feature = "dim2")]
+    let mut ang: AngVector = 0.0;
     let mut curr = 0u32;
 
-    for i in 0u32..3 {
+    for i in 0..DIM {
         if (locked_axes & (1 << i)) == 0 {
-            lin += basis_vec3(i) * vels[curr as usize];
+            lin += Vector::ith(i as usize, vels[curr as usize]);
             curr += 1;
         }
     }
 
-    let ang_locked = (locked_axes >> 3) & 0x7;
-    let num_ang = 3 - ang_locked.count_ones();
+    let ang_locked = (locked_axes >> DIM) & ((1 << ANG_DIM) - 1);
+    let num_ang = ANG_DIM - ang_locked.count_ones();
     if num_ang == 1 {
-        let dof_id = (!ang_locked & 0x7).trailing_zeros();
-        ang += basis_vec3(dof_id) * vels[curr as usize];
+        #[cfg(feature = "dim3")]
+        {
+            let dof_id = (!ang_locked & 0x7).trailing_zeros();
+            ang += Vector::ith(dof_id as usize, vels[curr as usize]);
+        }
+        #[cfg(feature = "dim2")]
+        {
+            ang += vels[curr as usize];
+        }
     } else if num_ang == 3 {
-        ang += Vec3::new(
-            vels[curr as usize],
-            vels[(curr + 1) as usize],
-            vels[(curr + 2) as usize],
-        );
+        #[cfg(feature = "dim3")]
+        {
+            ang += AngVector::new(
+                vels[curr as usize],
+                vels[(curr + 1) as usize],
+                vels[(curr + 2) as usize],
+            );
+        }
     }
     (lin, ang)
 }
@@ -120,7 +132,17 @@ pub fn gpu_mb_update_velocities(
                 parent_ws.local_to_world.rotation * stat.data.local_frame_a.rotation;
 
             ws.joint_velocity.linear = transform_rot * jv_local_lin;
-            ws.joint_velocity.angular = transform_rot * jv_local_ang;
+            // 3D: the angular velocity is rotated like a vector. 2D: the scalar
+            // angular velocity is invariant under rotation, so transform_rot is
+            // unused for the angular component.
+            #[cfg(feature = "dim3")]
+            {
+                ws.joint_velocity.angular = transform_rot * jv_local_ang;
+            }
+            #[cfg(feature = "dim2")]
+            {
+                ws.joint_velocity.angular = jv_local_ang;
+            }
 
             // new_rb_vels = parent_rb.vels + joint_velocity, then shift corrections.
             let mut new_lin = parent_ws.rb_vels.linear + ws.joint_velocity.linear;
@@ -131,8 +153,8 @@ pub fn gpu_mb_update_velocities(
             let parent_world_com = parent_ws.local_to_world * parent_lmp.com;
             let shift = world_com - parent_world_com;
 
-            new_lin += parent_ws.rb_vels.angular.cross(shift);
-            new_lin += ws.joint_velocity.angular.cross(ws.shift23);
+            new_lin += gcross_av(parent_ws.rb_vels.angular, shift);
+            new_lin += gcross_av(ws.joint_velocity.angular, ws.shift23);
 
             ws.rb_vels = Velocity::new(new_lin, new_ang);
         }

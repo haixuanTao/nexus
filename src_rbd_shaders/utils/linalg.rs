@@ -9,8 +9,12 @@
 //! All matrices are dense column-major. Views can overlap the same buffer; the
 //! caller is responsible for avoiding write-write conflicts.
 
+#[cfg(feature = "dim2")]
+use glamx::Vec2;
 use glamx::{Mat3, Vec3};
 use khal_std::index::MaybeIndexUnchecked;
+
+use crate::DIM;
 
 /// Maximum number of DOFs per multibody that operations stack-allocating scratch
 /// space assume. If a multibody exceeds this, callers must split or extend the
@@ -154,11 +158,12 @@ pub fn axpy_mat(
     }
 }
 
-/// `m := beta * m + alpha * Jᵀ · diag(mass·I₃, I_world) · J`.
+/// `m := beta * m + alpha * Jᵀ · diag(mass·I₃, I_world) · J` (3D).
 ///
 /// The spatial mass matrix is block-diagonal: a scalar `mass` on the linear rows
 /// and a 3×3 world-space `inertia` on the angular rows. `j` is `6 × ndofs`, `m`
 /// is `ndofs × ndofs`. Exploits the block structure to avoid a full 6×6 multiply.
+#[cfg(feature = "dim3")]
 #[inline]
 pub fn quadform_spatial(
     buf_m: &mut [f32],
@@ -212,6 +217,43 @@ pub fn quadform_spatial(
     }
 }
 
+/// `m := beta * m + alpha * Jᵀ · diag(mass·I₂, inertia) · J` (2D).
+///
+/// The spatial mass matrix is diagonal: `(mass, mass, inertia)`. `j` is
+/// `3 × ndofs`, `m` is `ndofs × ndofs`.
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn quadform_spatial(
+    buf_m: &mut [f32],
+    m: MatSlice,
+    alpha: f32,
+    mass: f32,
+    inertia: f32,
+    buf_j: &[f32],
+    j: MatSlice,
+    beta: f32,
+) {
+    let ndofs = m.rows;
+    let mut wj = [0.0f32; 3 * MAX_MB_DOFS];
+    let wj_view = MatSlice::dense(0, 3, ndofs);
+    for c in 0..ndofs {
+        wj[wj_view.idx(0, c)] = buf_j.read(j.idx(0, c)) * mass;
+        wj[wj_view.idx(1, c)] = buf_j.read(j.idx(1, c)) * mass;
+        wj[wj_view.idx(2, c)] = buf_j.read(j.idx(2, c)) * inertia;
+    }
+
+    for cc in 0..ndofs {
+        for rr in 0..ndofs {
+            let mut s = 0.0f32;
+            for k in 0..3u32 {
+                s += buf_j.read(j.idx(k, rr)) * wj[wj_view.idx(k, cc)];
+            }
+            let idx = m.idx(rr, cc);
+            buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
+        }
+    }
+}
+
 /// `y := beta * y + alpha * Aᵀ · x` where `A` is a view into `buf_a` and `x` is a
 /// 6-vector. `y_offset` is where `y` starts in `buf_y`; `y` has length `a.cols`.
 #[inline]
@@ -256,6 +298,264 @@ pub fn skew(t: Vec3) -> Mat3 {
         Vec3::new(-t.z, 0.0, t.x),
         Vec3::new(t.y, -t.x, 0.0),
     )
+}
+
+/// `c := beta * c + alpha * [t]_×ᵀ · b`, with `b`, `c` views into different
+/// flat buffers. `b` has `ANG_DIM` rows, `c` has `DIM` rows; `t` is a `Vector`.
+///
+/// In 3D this is `c += [t]_×ᵀ · b` with the 3×3 transposed cross-product
+/// matrix. In 2D, `b` has a single (angular) row and we expand to
+/// `c[:, j] += alpha · (t.y · b[0, j], -t.x · b[0, j])` — i.e. each angular
+/// scalar produces the linear-velocity contribution `b[0,j] × t`.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_skew_tr_lhs_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    let a = skew_tr(t);
+    for j in 0..c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_skew_tr_lhs_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec2,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    for j in 0..c.cols {
+        let bw = buf_b.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (t.y * bw));
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * (-t.x * bw));
+    }
+}
+
+/// `c := beta * c + alpha * [t]_× · b` with `b`, `c` views into different
+/// flat buffers. `b` has `DIM` rows, `c` has `DIM` rows; `t` is an
+/// `AngVector`.
+///
+/// In 3D this is `c += [t]_× · b` (the 3×3 cross-product matrix). In 2D the
+/// angular `t` is a scalar `ω` and `[ω]_× · v = (-ω·v.y, ω·v.x)` for each
+/// 2D column of `b`.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_skew_lhs_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    let a = skew(t);
+    for j in 0..c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_skew_lhs_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    omega: f32,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    for j in 0..c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (-omega * by));
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * (omega * bx));
+    }
+}
+
+/// `c := beta * c + alpha * inertia · b` (cross-buffer), where `inertia`
+/// is the world-space rigid-body inertia (Mat3 in 3D, scalar in 2D), and
+/// `b`, `c` have `ANG_DIM` rows.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_inertia_lhs_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    inertia: Mat3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    for j in 0..c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = inertia.x_axis * bx + inertia.y_axis * by + inertia.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_inertia_lhs_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    inertia: f32,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    for j in 0..c.cols {
+        let bw = buf_b.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (inertia * bw));
+    }
+}
+
+/// `c := beta * c + alpha * (parent_w · skew_tr(shift)) · b` — a fused
+/// `[parent_w]_× · [shift]_×ᵀ` left-multiply, used by the Coriolis term
+/// `coriolis_v += (parent_w · shift_cross_tr) · parent_j_w`.
+///
+/// In 3D this performs a Mat3 · Mat3 followed by Mat3 · 3×ndofs. In 2D the
+/// fused operator collapses to per-column `parent_ω · (-shift.x · b[0,j],
+/// -shift.y · b[0,j])` — applying `[ω]_×` to the result of
+/// `skew_tr(shift) · scalar` gives `(-ω · shift.x · scalar, -ω · shift.y · scalar)`.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_omega_skew_tr_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    parent_w: Vec3,
+    shift: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    let combined = skew(parent_w) * skew_tr(shift);
+    for j in 0..c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = combined.x_axis * bx + combined.y_axis * by + combined.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_omega_skew_tr_cross_buf(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    parent_w: f32,
+    shift: Vec2,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+) {
+    // [ω]_× · skew_tr(shift) acting on a scalar bw:
+    // skew_tr(shift) · bw = (shift.y · bw, -shift.x · bw)
+    // [ω]_× · (a, b) = (-ω · b, ω · a) = (ω · shift.x · bw, ω · shift.y · bw)
+    for j in 0..c.cols {
+        let bw = buf_b.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (parent_w * shift.x * bw));
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * (parent_w * shift.y * bw));
+    }
+}
+
+/// Same-buffer variant of [`gemm_skew_tr_lhs_cross_buf`] (`b` and `c` are
+/// disjoint views into the same flat buffer).
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_skew_tr_lhs(
+    buf: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    b: MatSlice,
+    beta: f32,
+) {
+    let a = skew_tr(t);
+    for j in 0..c.cols {
+        let bx = buf.read(b.idx(0, j));
+        let by = buf.read(b.idx(1, j));
+        let bz = buf.read(b.idx(2, j));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf.write(i0, beta * buf.read(i0) + alpha * p.x);
+        buf.write(i1, beta * buf.read(i1) + alpha * p.y);
+        buf.write(i2, beta * buf.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_skew_tr_lhs(
+    buf: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec2,
+    b: MatSlice,
+    beta: f32,
+) {
+    for j in 0..c.cols {
+        let bw = buf.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        buf.write(i0, beta * buf.read(i0) + alpha * (t.y * bw));
+        buf.write(i1, beta * buf.read(i1) + alpha * (-t.x * bw));
+    }
 }
 
 /// `dst := alpha * src + dst`, but `src` lives in its own flat buffer.

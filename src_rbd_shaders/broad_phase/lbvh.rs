@@ -27,6 +27,7 @@ use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
+use rapier::geometry::InteractionGroups;
 
 const WORKGROUP_SIZE: u32 = 64;
 const REDUCTION_WORKGROUP_SIZE: u32 = 128;
@@ -526,10 +527,10 @@ pub fn gpu_lbvh_find_collision_pairs(
     //       This also simplifies this kernel significantly since we know easily at what index
     //       in `collision_pairs` a given batch should start.
     #[spirv(uniform, descriptor_set = 0, binding = 5)] collision_pairs_batch_capacity: &u32,
-    // Per-collider [`rapier3d::geometry::InteractionGroups`], used to authorize
+    // Per-collider groups, used to authorize
     // (or skip) a collision pair before it ever reaches the narrow phase.
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
-    collision_groups: &[rapier3d::geometry::InteractionGroups],
+    collision_groups: &[InteractionGroups],
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;

@@ -1,14 +1,20 @@
 //! Per-link / per-multibody data structures shared across all multibody
 //! kernels.
 
+#[cfg(feature = "dim3")]
 use glamx::{Quat, Vec3};
+#[cfg(feature = "dim2")]
+use glamx::{Rot2, Vec2};
 
-use crate::Pose;
 use crate::dynamics::body::Velocity;
-use crate::dynamics::joint::GenericJoint;
+use crate::dynamics::joint::{GenericJoint, SPATIAL_DIM};
+use crate::{Pose, Rotation, Vector};
 
-/// Max degrees of freedom any single joint can expose (6 = free root).
-pub const MAX_JOINT_DOFS: usize = 6;
+/// Max degrees of freedom any single joint can expose.
+///
+/// In 3D this is 6 (a free root joint). In 2D it is 3 (2 lin + 1 ang).
+/// Equivalent to `SPATIAL_DIM`.
+pub const MAX_JOINT_DOFS: usize = SPATIAL_DIM;
 
 /// Maximum number of simultaneously-active multibody contact constraints per
 /// multibody. Sized for typical use (a single multibody touching the
@@ -43,7 +49,9 @@ pub struct MultibodyLinkStatic { // TODO: change the name to `MultibodyLink` ?
     /// 1 if this joint's generalized velocities are user-controlled (ignored by the
     /// LU solve). 0 otherwise.
     pub kinematic: u32,
-    /// Pad to 16-byte alignment before `data`.
+    /// Pad to 16-byte alignment before `data` in 3D (Pose3 starts with a Quat).
+    /// In 2D, Pose2 only needs 4-byte alignment so no extra padding is required.
+    #[cfg(feature = "dim3")]
     pub _pad0: [u32; 2],
     /// Joint configuration — reused directly from the impulse-joint infrastructure.
     pub data: GenericJoint,
@@ -56,8 +64,9 @@ pub struct MultibodyLinkStatic { // TODO: change the name to `MultibodyLink` ?
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
+#[cfg(feature = "dim3")]
 pub struct MultibodyLinkWorkspace {
-    /// Accumulated joint rotation (fed to `body_to_parent`).
+    /// Accumulated joint rotation (fed to `body_to_parent`). Quat in 3D.
     pub joint_rot: Quat,
     /// Generalized coordinates for this joint. Only the first `ndofs` entries are
     /// meaningful. Free linear DOFs come first (in axis order), then free angular DOFs.
@@ -81,6 +90,40 @@ pub struct MultibodyLinkWorkspace {
     pub rb_vels: Velocity,
     /// Per-link kinematic acceleration (rapier's `workspace.accs[i]`).
     /// Populated by the Coriolis  variant of `apply_gravity`.
+    pub kinematic_acc: Velocity,
+}
+
+/// Per-link workspace updated every step.
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
+#[repr(C)]
+#[cfg(feature = "dim2")]
+pub struct MultibodyLinkWorkspace {
+    /// Accumulated joint rotation (fed to `body_to_parent`). Rot2 in 2D.
+    pub joint_rot: Rot2,
+    /// Generalized coordinates for this joint. Only the first `ndofs` entries are
+    /// meaningful. Free linear DOFs come first (in axis order), then the free
+    /// angular DOF (only one in 2D).
+    pub coords: [f32; MAX_JOINT_DOFS],
+    /// Pad: `joint_rot` (8) + `coords` (12) = 20; Pose2 contains a Vec2 which
+    /// std430 aligns to 8, so 4 bytes of padding are required here.
+    pub _pad0: u32,
+    /// Local-to-parent transform.
+    pub local_to_parent: Pose,
+    /// Local-to-world transform (the link's body pose).
+    pub local_to_world: Pose,
+    /// Vector (world frame) from the parent COM to the joint frame on the parent side.
+    pub shift02: Vec2,
+    /// Vector (world frame) from the joint frame on the child side to this link's COM.
+    pub shift23: Vec2,
+    /// World-space spatial velocity added by this joint (rapier's `link.joint_velocity`).
+    pub joint_velocity: Velocity,
+    /// World-space total rigid-body velocity (rapier's `rb.vels`).
+    pub rb_vels: Velocity,
+    /// Per-link kinematic acceleration (rapier's `workspace.accs[i]`).
     pub kinematic_acc: Velocity,
 }
 
@@ -143,6 +186,7 @@ pub struct MultibodyJointConstraint { // TODO: rename to MultibodyUnitJointConst
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
+#[cfg(feature = "dim3")]
 pub struct MultibodyContactConstraint {
     /// Multibody index within the batch.
     pub multibody_id: u32,
@@ -187,6 +231,40 @@ pub struct MultibodyContactConstraint {
     pub _pad4: [u32; 2],
 }
 
+/// 2D variant of [`MultibodyContactConstraint`] — angular jacobian collapses
+/// to a scalar.
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(
+    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    derive(bytemuck::Pod, bytemuck::Zeroable)
+)]
+#[repr(C)]
+#[cfg(feature = "dim2")]
+pub struct MultibodyContactConstraint {
+    pub multibody_id: u32,
+    pub link_id: u32,
+    pub kind: u32,
+    pub free_body_id: u32,
+
+    pub free_body_im: f32,
+    /// Free-body angular jacobian (`r_free × jac_dir`) — scalar in 2D.
+    pub ang_jac: f32,
+    /// `ang_jac · effective_world_inv_inertia` (scalar in 2D).
+    pub ii_ang_jac: f32,
+    pub _pad0: u32,
+
+    /// Free-body linear jacobian.
+    pub lin_jac: Vec2,
+
+    pub inv_lhs: f32,
+    pub rhs: f32,
+    pub rhs_wo_bias: f32,
+    pub impulse: f32,
+
+    pub cfm_coeff: f32,
+    pub cfm_gain: f32,
+}
+
 /// Descriptor for one multibody: where its links live, how many DOFs it has, and
 /// the offsets into the dense jacobian/mass-matrix/gen-force tensors.
 #[derive(Clone, Copy, Default)]
@@ -205,17 +283,21 @@ pub struct MultibodyInfo {
     /// Total DOFs (sum of each link's `ndofs`).
     pub ndofs: u32,
     /// Offset (in f32 entries) into the `body_jacobians` tensor; each link has
-    /// `6 * ndofs` contiguous entries, stacked link-by-link in assembly order.
+    /// `SPATIAL_DIM * ndofs` contiguous entries, stacked link-by-link in
+    /// assembly order.
     pub jacobian_offset: u32,
     /// Offset (in f32 entries) into the `mass_matrices` tensor. Block size: `ndofs * ndofs`.
     pub mass_matrix_offset: u32,
-    /// 0 if the root joint is fixed, 1 if it's a free 6-DOF joint.
+    /// 0 if the root joint is fixed, 1 if it's a free joint.
     pub root_is_dynamic: u32,
-    /// Offset (in f32 entries) into `coriolis_v` / `coriolis_w`. Each link has
-    /// `3 * ndofs` contiguous entries, stacked link-by-link in assembly order.
+    /// Offset (in f32 entries) into `coriolis_v` (`DIM × ndofs` per link) and
+    /// `coriolis_w` (`ANG_DIM × ndofs` per link, stride matches `coriolis_v`'s
+    /// `DIM × ndofs` slot allocation in the shared layout). Stacked
+    /// link-by-link in assembly order.
     pub coriolis_offset: u32,
-    /// Offset (in f32 entries) into `i_coriolis_dt`. One 6×ndofs scratch slot
-    /// per multibody (transient — overwritten per link during assembly).
+    /// Offset (in f32 entries) into `i_coriolis_dt`. One `SPATIAL_DIM × ndofs`
+    /// scratch slot per multibody (transient — overwritten per link during
+    /// assembly).
     pub i_coriolis_dt_offset: u32,
     /// First constraint index for this multibody in the `joint_constraints`
     /// buffer. Each multibody owns `max_constraints` contiguous slots; the

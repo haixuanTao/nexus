@@ -4,10 +4,10 @@
 //! per link we build a kinematic acceleration `acc` recursively from the parent's,
 //! then form the "external force" with the inertial / gyroscopic corrections:
 //!
-//!   acc[i] = acc[parent] + 2·parent_ω × joint_vel.linvel + parent_ω × joint_vel.angvel
+//!   acc[i] = acc[parent] + 2·parent_ω × joint_vel.linvel + parent_ω × joint_vel.angvel  (3D only)
 //!          + parent_ω × (parent_ω × shift02) + parent_α × shift02
 //!   acc[i].linvel += rb.ω × (rb.ω × shift23) + acc[i].angvel × shift23
-//!   gyroscopic     = rb.ω × (I · rb.ω)
+//!   gyroscopic     = rb.ω × (I · rb.ω)            (zero in 2D)
 //!   f_ext_lin  = rb.F_lin - m · acc.linvel        (here rb.F_lin = m·g)
 //!   f_ext_ang  = rb.τ     - gyroscopic - I · acc.angvel
 //!   τ         += J_iᵀ · (f_ext_lin, f_ext_ang)
@@ -15,15 +15,16 @@
 //! Finally, `τ -= damping ⊙ velocities`, matching
 //!   `self.accelerations.cmpy(-1.0, &self.damping, &self.velocities, 1.0)`.
 
+use glamx::{Vec2, Vec3};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use glamx::Vec3;
-
 use crate::dynamics::body::{LocalMassProperties, Velocity};
+use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::linalg::{MatSlice, fill, gemv_tr_spatial};
 use crate::utils::{Slice, SliceMut};
+use crate::{AngVector, Vector, gcross_av};
 
 use super::mass_matrix::link_world_inertia;
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
@@ -41,6 +42,8 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_velocities: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] damping: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
+    // TODO: this is only worth keepign as a storage buffer (instead of an uniform)
+    //       if we can have different gravity per batch.
     #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] gravity: &[f32; 3],
     #[spirv(uniform, descriptor_set = 0, binding = 10)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 11)] links_batch_capacity: &u32,
@@ -76,18 +79,25 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     let accelerations = MatSlice::dense(gen_base, ndofs, 1);
     fill(gen_forces, accelerations, 0.0);
 
-    let gx = gravity[0];
-    let gy = gravity[1];
-    let gz = gravity[2];
+    let _ = stat_slice; // not currently used; kept for future kinematic-DOF gating.
+
+    #[cfg(feature = "dim3")]
+    let g = Vec3::new(gravity[0], gravity[1], gravity[2]);
+    #[cfg(feature = "dim2")]
+    let g = Vec2::new(gravity[0], gravity[1]);
 
     for k in 0..num_links {
-        let stat = stat_slice.read(k as usize);
         let mut ws = ws_slice.read(k as usize);
 
         // Build kinematic acceleration `acc` (eqs 42–45).
-        let mut acc_lin = Vec3::ZERO;
-        let mut acc_ang = Vec3::ZERO;
+        let mut acc_lin = Vector::ZERO;
+        #[cfg(feature = "dim3")]
+        let mut acc_ang: AngVector = AngVector::ZERO;
+        #[cfg(feature = "dim2")]
+        let mut acc_ang: AngVector = 0.0;
+
         if k != 0 {
+            let stat = stat_slice.read(k as usize);
             let parent_ws = ws_slice.read(stat.parent_link_id as usize);
             let parent_acc = parent_ws.kinematic_acc;
             let parent_ang = parent_ws.rb_vels.angular;
@@ -96,18 +106,21 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
             acc_ang = parent_acc.angular;
 
             // 2 · parent_ω × joint_vel.linvel
-            acc_lin += parent_ang.cross(ws.joint_velocity.linear) * 2.0;
-            // parent_ω × joint_vel.angvel
-            acc_ang += parent_ang.cross(ws.joint_velocity.angular);
+            acc_lin += gcross_av(parent_ang, ws.joint_velocity.linear) * 2.0;
+            // parent_ω × joint_vel.angvel — vanishes in 2D (angular is scalar).
+            #[cfg(feature = "dim3")]
+            {
+                acc_ang += parent_ang.cross(ws.joint_velocity.angular);
+            }
             // parent_ω × (parent_ω × shift02)
-            acc_lin += parent_ang.cross(parent_ang.cross(ws.shift02));
+            acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, ws.shift02));
             // parent_α × shift02
-            acc_lin += parent_acc.angular.cross(ws.shift02);
+            acc_lin += gcross_av(parent_acc.angular, ws.shift02);
         }
         // Self-shift: rb.ω × (rb.ω × shift23), acc.ω × shift23.
         let rb_ang = ws.rb_vels.angular;
-        acc_lin += rb_ang.cross(rb_ang.cross(ws.shift23));
-        acc_lin += acc_ang.cross(ws.shift23);
+        acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, ws.shift23));
+        acc_lin += gcross_av(acc_ang, ws.shift23);
 
         ws.kinematic_acc = Velocity::new(acc_lin, acc_ang);
         ws_slice.write(k as usize, ws);
@@ -120,19 +133,35 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
         let mass = 1.0 / inv_mass_x;
         let rb_inertia = link_world_inertia(&ws, &lmp);
 
-        // rb.forces = (m·g, 0). Build `external_forces` per rapier.
+        // Gyroscopic torque: `rb.ω × (I · rb.ω)` in 3D, 0 in 2D.
+        #[cfg(feature = "dim3")]
         let gyroscopic = {
             let i_omega = rb_inertia * rb_ang;
             rb_ang.cross(i_omega)
         };
+        #[cfg(feature = "dim2")]
+        let gyroscopic: AngVector = 0.0;
+
+        // I · acc.angvel — Mat3·Vec3 in 3D, scalar·scalar in 2D.
         let i_acc_ang = rb_inertia * acc_ang;
-        let f_lin = Vec3::new(mass * gx, mass * gy, mass * gz) - acc_lin * mass;
+
+        // f_ext_lin = m·g - m·acc_lin.
+        #[cfg(feature = "dim3")]
+        let f_lin = (g - acc_lin) * mass;
+        #[cfg(feature = "dim2")]
+        let f_lin = (g - acc_lin) * mass;
         let f_ang = -gyroscopic - i_acc_ang;
-        let external_forces = [f_lin.x, f_lin.y, f_lin.z, f_ang.x, f_ang.y, f_ang.z];
+
+        // Pack `(f_lin, f_ang)` as a flat SPATIAL_DIM-vector for the gemv.
+        #[cfg(feature = "dim3")]
+        let external_forces: [f32; SPATIAL_DIM] =
+            [f_lin.x, f_lin.y, f_lin.z, f_ang.x, f_ang.y, f_ang.z];
+        #[cfg(feature = "dim2")]
+        let external_forces: [f32; SPATIAL_DIM] = [f_lin.x, f_lin.y, f_ang];
 
         let body_jacobian = MatSlice::dense(
-            mb_jac_base + (k as usize) * 6 * (ndofs as usize),
-            6,
+            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+            SPATIAL_DIM as u32,
             ndofs,
         );
 

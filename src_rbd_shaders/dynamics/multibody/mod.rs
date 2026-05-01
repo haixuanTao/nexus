@@ -32,8 +32,6 @@
 //! workgroup per multibody. Links are independent across multibodies so the
 //! batch × multibody grid parallelises fine.
 
-#![cfg(feature = "dim3")]
-
 mod contact_constraints;
 mod forward_kinematics;
 mod gravity;

@@ -5,27 +5,38 @@
 //!     self.augmented_mass.quadform(1.0, &rb_mass_matrix_wo_gyro, body_jacobian, 1.0);
 //!
 //! Here we use `quadform_spatial` which exploits the block-diagonal structure of the
-//! per-link 6×6 spatial mass (`diag(m·I₃, I_world)`) to avoid forming the full 6×6.
+//! per-link spatial mass to avoid forming the full SPATIAL_DIM × SPATIAL_DIM matrix.
 //! World-space inertia is recomputed from the link's current orientation.
 
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
+#[cfg(feature = "dim3")]
 use glamx::{Mat3, Vec3};
 
 use crate::dynamics::body::LocalMassProperties;
-use crate::rotation_to_matrix;
+use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::Slice;
 use crate::utils::linalg::{
-    MAX_MB_DOFS, MatSlice, copy_from, fill, gemm_tr, quadform_spatial, skew, skew_tr,
+    MAX_MB_DOFS, MatSlice, copy_from, fill, gemm_inertia_lhs_cross_buf,
+    gemm_omega_skew_tr_cross_buf, gemm_skew_tr_lhs_cross_buf, gemm_tr, quadform_spatial,
 };
+#[cfg(feature = "dim3")]
+use crate::utils::linalg::gemm_skew_lhs_cross_buf;
+use crate::{ANG_DIM, DIM};
+#[cfg(feature = "dim3")]
+use crate::rotation_to_matrix;
 
 use super::jacobian::joint_jacobian;
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 
-/// World-space 3×3 inertia for this link:
-/// `I_world = R · diag(principal_inertia) · Rᵀ` with `R = world_rot · inertia_ref_frame`.
+/// World-space inertia for this link.
+///
+/// In 3D returns a `Mat3` (`I_world = R · diag(principal_inertia) · Rᵀ`). In 2D
+/// returns the scalar moment of inertia (already in world frame because there
+/// is only one rotational DOF).
+#[cfg(feature = "dim3")]
 #[inline]
 pub(super) fn link_world_inertia(ws: &MultibodyLinkWorkspace, lmp: &LocalMassProperties) -> Mat3 {
     let ipi = lmp.inv_principal_inertia;
@@ -34,13 +45,21 @@ pub(super) fn link_world_inertia(ws: &MultibodyLinkWorkspace, lmp: &LocalMassPro
     let pz = if ipi.z != 0.0 { 1.0 / ipi.z } else { 0.0 };
     let r = rotation_to_matrix(ws.local_to_world.rotation * lmp.inertia_ref_frame);
     // M = r · diag(px, py, pz) (column-scale); I = M · rᵀ.
-    let m = Mat3::from_cols(
-        r.x_axis * px, r.y_axis * py, r.z_axis * pz,
-    );
+    let m = Mat3::from_cols(r.x_axis * px, r.y_axis * py, r.z_axis * pz);
     m * r.transpose()
 }
 
-/// Assemble the augmented mass matrix `M = Σᵢ Jᵢᵀ · diag(mᵢ·I₃, Iᵢ_world) · Jᵢ`.
+#[cfg(feature = "dim2")]
+#[inline]
+pub(super) fn link_world_inertia(_ws: &MultibodyLinkWorkspace, lmp: &LocalMassProperties) -> f32 {
+    if lmp.inv_inertia != 0.0 {
+        1.0 / lmp.inv_inertia
+    } else {
+        0.0
+    }
+}
+
+/// Assemble the augmented mass matrix `M = Σᵢ Jᵢᵀ · diag(mᵢ·I, Iᵢ_world) · Jᵢ`.
 ///
 /// Damping is added to the diagonal (`M[i, i] += damping[i] * dt`), matching
 /// rapier's trailing loop in `update_inertias`.
@@ -107,8 +126,8 @@ pub fn gpu_mb_mass_matrix(
 
         // body_jacobian view for this link.
         let body_jacobian = MatSlice::dense(
-            mb_jac_base + (k as usize) * 6 * (ndofs as usize),
-            6,
+            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+            SPATIAL_DIM as u32,
             ndofs,
         );
 
@@ -140,24 +159,15 @@ pub fn gpu_mb_mass_matrix(
 //
 // Mass matrix with Coriolis + gyroscopic terms.
 //
-// Mirrors the full `Multibody::update_inertias` algorithm from rapier:
-//   1. Per link, compute the gyroscopically-augmented inertia
-//        I_aug = I + ([ω]_× · I − [Iω]_×) · dt
-//      and accumulate `acc_augmented_mass += Jᵢᵀ · diag(mᵢ·I₃, I_aug) · Jᵢ`.
-//   2. Build per-link `coriolis_v[i]` (3×ndofs) and `coriolis_w[i]` (3×ndofs)
-//      recursively from the parent, using all of shift02, parent ω, joint velocity.
-//   3. Add the self-shift contribution (shift23 + own ω).
-//   4. Meld into `acc_augmented_mass` via `i_coriolis_dt` scratch:
-//        i_coriolis_dt_v = dt · mass · coriolis_v
-//        i_coriolis_dt_w = dt · I · coriolis_w
-//        acc_augmented_mass += Jᵀ · i_coriolis_dt
-//
-// Requires `gpu_mb_update_velocities` to have been run first so that
-// `ws.joint_velocity` and `ws.rb_vels` hold the current per-link world velocities.
+// Mirrors rapier's `update_inertias`. In 3D this includes a gyroscopic
+// derivative `[ω]_× · I − [Iω]_×` on the augmented inertia and the full
+// `coriolis_w` propagation; in 2D the gyroscopic term is zero and
+// `coriolis_w` collapses to a 1-row block.
 
-/// Scale each column of `dst_v` (3 × ndofs) by a scalar, in place: `dst_v := scale · src_v`.
+/// Scale each column of `dst_v` (`DIM × ndofs`) by a scalar, in place:
+/// `dst_v := scale · src_v`.
 #[inline]
-fn scaled_copy_3xn(
+fn scaled_copy_lin_dim(
     buf_dst: &mut [f32],
     dst: MatSlice,
     scale: f32,
@@ -165,7 +175,7 @@ fn scaled_copy_3xn(
     src: MatSlice,
 ) {
     for c in 0..dst.cols {
-        for r in 0u32..3 {
+        for r in 0..DIM {
             buf_dst.write(dst.idx(r, c), scale * buf_src.read(src.idx(r, c)));
         }
     }
@@ -230,10 +240,10 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
     let acc_augmented_mass = MatSlice::dense(mb_mm_base, ndofs, ndofs);
     fill(mass_matrices, acc_augmented_mass, 0.0);
 
-    // i_coriolis_dt view (6 × ndofs, fully overwritten each link).
-    let i_coriolis_dt_view = MatSlice::dense(mb_icdt_base, 6, ndofs);
-    let i_coriolis_dt_v = i_coriolis_dt_view.fixed_rows(0, 3);
-    let i_coriolis_dt_w = i_coriolis_dt_view.fixed_rows(3, 3);
+    // i_coriolis_dt view (SPATIAL_DIM × ndofs, fully overwritten each link).
+    let i_coriolis_dt_view = MatSlice::dense(mb_icdt_base, SPATIAL_DIM as u32, ndofs);
+    let i_coriolis_dt_v = i_coriolis_dt_view.fixed_rows(0, DIM);
+    let i_coriolis_dt_w = i_coriolis_dt_view.fixed_rows(DIM, ANG_DIM);
 
     for k in 0..num_links {
         let stat = stat_slice.read(k as usize);
@@ -243,28 +253,39 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
         let inv_mass_x = lmp.inv_mass.x;
         if inv_mass_x == 0.0 {
             // Still need to zero this link's coriolis block so children don't
-            // propagate garbage.
-            let coriolis_v_i =
-                MatSlice::dense(mb_cor_base + (k as usize) * 3 * (ndofs as usize), 3, ndofs);
-            let coriolis_w_i = coriolis_v_i; // same shape + location in the other buffer
-            fill(coriolis_v, coriolis_v_i, 0.0);
-            fill(coriolis_w, coriolis_w_i, 0.0);
+            // propagate garbage. Shared layout: each slot reserves DIM rows in
+            // both buffers (the angular block uses only the first ANG_DIM rows).
+            let coriolis_block = MatSlice::dense(
+                mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
+                DIM,
+                ndofs,
+            );
+            fill(coriolis_v, coriolis_block, 0.0);
+            fill(coriolis_w, coriolis_block, 0.0);
             continue;
         }
         let mass = 1.0 / inv_mass_x;
         let rb_inertia = link_world_inertia(&ws, &lmp);
 
-        let body_jacobian =
-            MatSlice::dense(mb_jac_base + (k as usize) * 6 * (ndofs as usize), 6, ndofs);
+        let body_jacobian = MatSlice::dense(
+            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+            SPATIAL_DIM as u32,
+            ndofs,
+        );
 
-        // Gyroscopic derivative: aug_I = I + ([ω]_× · I − [Iω]_×) · dt.
-        let angvel = ws.rb_vels.angular;
-        let w_skew = skew(angvel);
-        let i_omega = rb_inertia * angvel;
-        let i_omega_skew = skew(i_omega);
-        let w_skew_i = w_skew * rb_inertia;
-        let gyro_mat = w_skew - i_omega_skew;
-        let augmented_inertia = rb_inertia + gyro_mat * dt;
+        // Gyroscopic derivative: aug_I = I + ([ω]_× · I − [Iω]_×) · dt (3D).
+        // In 2D the gyroscopic matrix is zero (scalar inertia, scalar angvel).
+        #[cfg(feature = "dim3")]
+        let augmented_inertia = {
+            let angvel = ws.rb_vels.angular;
+            let w_skew = crate::utils::linalg::skew(angvel);
+            let i_omega = rb_inertia * angvel;
+            let i_omega_skew = crate::utils::linalg::skew(i_omega);
+            let gyro_mat = w_skew * rb_inertia - i_omega_skew;
+            rb_inertia + gyro_mat * dt
+        };
+        #[cfg(feature = "dim2")]
+        let augmented_inertia = rb_inertia;
 
         // acc_augmented_mass.quadform(1.0, &concat_rb_mass_matrix(mass, augmented_inertia),
         //                             body_jacobian, 1.0);
@@ -280,102 +301,109 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
         );
 
         // Coriolis matrix assembly.
-        let rb_j_w = body_jacobian.fixed_rows(3, 3);
-        let coriolis_v_i =
-            MatSlice::dense(mb_cor_base + (k as usize) * 3 * (ndofs as usize), 3, ndofs);
-        let coriolis_w_i = coriolis_v_i; // views are structurally identical in the two buffers.
+        let rb_j_w = body_jacobian.fixed_rows(DIM, ANG_DIM);
+        let coriolis_v_i = MatSlice::dense(
+            mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
+            DIM,
+            ndofs,
+        );
+        let coriolis_w_i = MatSlice::dense(
+            mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
+            ANG_DIM,
+            ndofs,
+        );
 
         if k != 0 {
             let parent_id = stat.parent_link_id;
             let parent_link = ws_slice.read(parent_id as usize);
             let parent_j = MatSlice::dense(
-                mb_jac_base + (parent_id as usize) * 6 * (ndofs as usize),
-                6,
+                mb_jac_base + (parent_id as usize) * SPATIAL_DIM * (ndofs as usize),
+                SPATIAL_DIM as u32,
                 ndofs,
             );
-            let parent_j_w = parent_j.fixed_rows(3, 3);
+            let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
             let parent_coriolis_v = MatSlice::dense(
-                mb_cor_base + (parent_id as usize) * 3 * (ndofs as usize),
-                3,
+                mb_cor_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
+                DIM,
                 ndofs,
             );
-            let parent_coriolis_w = parent_coriolis_v;
-            let parent_w = skew(parent_link.rb_vels.angular);
+            let parent_coriolis_w = MatSlice::dense(
+                mb_cor_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
+                ANG_DIM,
+                ndofs,
+            );
+            let parent_w = parent_link.rb_vels.angular;
 
-            // coriolis_v.copy_from(parent_coriolis_v);
-            // coriolis_w.copy_from(parent_coriolis_w);
+            // coriolis_v.copy_from(parent_coriolis_v); coriolis_w.copy_from(parent_coriolis_w).
             copy_from(coriolis_v, coriolis_v_i, parent_coriolis_v);
             copy_from(coriolis_w, coriolis_w_i, parent_coriolis_w);
 
             // coriolis_v += [shift02]^T_× · parent_coriolis_w.
-            // (parent_coriolis_w lives in `coriolis_w`, not in `coriolis_v`, hence the
-            // cross-buffer variant.)
-            let shift_cross_tr_02 = skew_tr(ws.shift02);
-            gemm_mat3_cross_buf(
+            gemm_skew_tr_lhs_cross_buf(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
-                shift_cross_tr_02,
+                ws.shift02,
                 coriolis_w,
                 parent_coriolis_w,
                 1.0,
             );
 
-            // coriolis_v += dvel_cross^T · parent_j_w, with
+            // coriolis_v += dvel_cross^T · parent_j_w  with
             //   dvel = rb.vels.angvel × shift02 + 2 · joint_velocity.linvel.
-            let dvel = ws.rb_vels.angular.cross(ws.shift02)
+            let dvel = crate::gcross_av(ws.rb_vels.angular, ws.shift02)
                 + ws.joint_velocity.linear * 2.0;
-            let dvel_cross_tr = skew_tr(dvel);
-            gemm_mat3_cross_buf(
+            gemm_skew_tr_lhs_cross_buf(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
-                dvel_cross_tr,
+                dvel,
                 body_jacobians,
                 parent_j_w,
                 1.0,
             );
 
             // coriolis_v += [joint_vel_lin]^T_× · parent_j_w.
-            let jv_lin_cross_tr = skew_tr(ws.joint_velocity.linear);
-            gemm_mat3_cross_buf(
+            gemm_skew_tr_lhs_cross_buf(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
-                jv_lin_cross_tr,
+                ws.joint_velocity.linear,
                 body_jacobians,
                 parent_j_w,
                 1.0,
             );
 
             // coriolis_v += (parent_w · shift02_cross_tr) · parent_j_w.
-            let combined = parent_w * shift_cross_tr_02;
-            gemm_mat3_cross_buf(
+            gemm_omega_skew_tr_cross_buf(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
-                combined,
+                parent_w,
+                ws.shift02,
                 body_jacobians,
                 parent_j_w,
                 1.0,
             );
 
-            // coriolis_w += -[joint_vel_ang]_× · parent_j_w.
-            let jv_ang_skew = skew(ws.joint_velocity.angular);
-            gemm_mat3_cross_buf(
-                coriolis_w,
-                coriolis_w_i,
-                -1.0,
-                jv_ang_skew,
-                body_jacobians,
-                parent_j_w,
-                1.0,
-            );
+            // coriolis_w += -[joint_vel_ang]_× · parent_j_w (only contributes in 3D).
+            #[cfg(feature = "dim3")]
+            {
+                gemm_skew_lhs_cross_buf(
+                    coriolis_w,
+                    coriolis_w_i,
+                    -1.0,
+                    ws.joint_velocity.angular,
+                    body_jacobians,
+                    parent_j_w,
+                    1.0,
+                );
+            }
 
             // Joint jacobian contribution to Coriolis (skipped for kinematic joints).
             if stat.kinematic == 0 {
-                let mut tmp = [0.0f32; 36];
-                let tmp_view = MatSlice::dense(0, 6, 6);
+                let mut tmp = [0.0f32; SPATIAL_DIM * SPATIAL_DIM];
+                let tmp_view = MatSlice::dense(0, SPATIAL_DIM as u32, SPATIAL_DIM as u32);
                 let joint_j = tmp_view.columns(0, stat.ndofs);
                 joint_jacobian(
                     &stat,
@@ -384,38 +412,54 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                     joint_j,
                 );
                 // coriolis_v_part += 2 · parent_w · rb_joint_j_v.
-                // coriolis_w_part += parent_w · rb_joint_j_w.
-                // Both operands are stack slices of `tmp`, so we inline a column-major
-                // `gemm_mat3_lhs` variant that reads `src` by index.
+                // coriolis_w_part += parent_w · rb_joint_j_w (3D only — angular block
+                // collapses to a scalar in 2D).
                 let coriolis_v_part = coriolis_v_i.columns(stat.assembly_id, stat.ndofs);
                 let coriolis_w_part = coriolis_w_i.columns(stat.assembly_id, stat.ndofs);
-                for c in 0..stat.ndofs {
-                    let jv = Vec3::new(
-                        tmp[tmp_view.idx(0, c)],
-                        tmp[tmp_view.idx(1, c)],
-                        tmp[tmp_view.idx(2, c)],
-                    );
-                    let jw = Vec3::new(
-                        tmp[tmp_view.idx(3, c)],
-                        tmp[tmp_view.idx(4, c)],
-                        tmp[tmp_view.idx(5, c)],
-                    );
-                    let pv = parent_w * jv;
-                    let pw = parent_w * jw;
-                    // coriolis_v_part[:, c] += 2.0 * pv
-                    let iv0 = coriolis_v_part.idx(0, c);
-                    let iv1 = coriolis_v_part.idx(1, c);
-                    let iv2 = coriolis_v_part.idx(2, c);
-                    coriolis_v.write(iv0, coriolis_v.read(iv0) + 2.0 * pv.x);
-                    coriolis_v.write(iv1, coriolis_v.read(iv1) + 2.0 * pv.y);
-                    coriolis_v.write(iv2, coriolis_v.read(iv2) + 2.0 * pv.z);
-                    // coriolis_w_part[:, c] += pw
-                    let iw0 = coriolis_w_part.idx(0, c);
-                    let iw1 = coriolis_w_part.idx(1, c);
-                    let iw2 = coriolis_w_part.idx(2, c);
-                    coriolis_w.write(iw0, coriolis_w.read(iw0) + pw.x);
-                    coriolis_w.write(iw1, coriolis_w.read(iw1) + pw.y);
-                    coriolis_w.write(iw2, coriolis_w.read(iw2) + pw.z);
+
+                #[cfg(feature = "dim3")]
+                {
+                    let parent_w_skew = crate::utils::linalg::skew(parent_w);
+                    for c in 0..stat.ndofs {
+                        let jv = Vec3::new(
+                            tmp[tmp_view.idx(0, c)],
+                            tmp[tmp_view.idx(1, c)],
+                            tmp[tmp_view.idx(2, c)],
+                        );
+                        let jw = Vec3::new(
+                            tmp[tmp_view.idx(3, c)],
+                            tmp[tmp_view.idx(4, c)],
+                            tmp[tmp_view.idx(5, c)],
+                        );
+                        let pv = parent_w_skew * jv;
+                        let pw = parent_w_skew * jw;
+                        let iv0 = coriolis_v_part.idx(0, c);
+                        let iv1 = coriolis_v_part.idx(1, c);
+                        let iv2 = coriolis_v_part.idx(2, c);
+                        coriolis_v.write(iv0, coriolis_v.read(iv0) + 2.0 * pv.x);
+                        coriolis_v.write(iv1, coriolis_v.read(iv1) + 2.0 * pv.y);
+                        coriolis_v.write(iv2, coriolis_v.read(iv2) + 2.0 * pv.z);
+                        let iw0 = coriolis_w_part.idx(0, c);
+                        let iw1 = coriolis_w_part.idx(1, c);
+                        let iw2 = coriolis_w_part.idx(2, c);
+                        coriolis_w.write(iw0, coriolis_w.read(iw0) + pw.x);
+                        coriolis_w.write(iw1, coriolis_w.read(iw1) + pw.y);
+                        coriolis_w.write(iw2, coriolis_w.read(iw2) + pw.z);
+                    }
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    // 2D: rb_joint_j_v = (jv_x, jv_y), parent_w is a scalar ω.
+                    // [ω]_× · v = (-ω·v.y, ω·v.x).
+                    for c in 0..stat.ndofs {
+                        let jvx = tmp[tmp_view.idx(0, c)];
+                        let jvy = tmp[tmp_view.idx(1, c)];
+                        let iv0 = coriolis_v_part.idx(0, c);
+                        let iv1 = coriolis_v_part.idx(1, c);
+                        coriolis_v.write(iv0, coriolis_v.read(iv0) + 2.0 * (-parent_w * jvy));
+                        coriolis_v.write(iv1, coriolis_v.read(iv1) + 2.0 * (parent_w * jvx));
+                    }
+                    let _ = coriolis_w_part;
                 }
             }
         } else {
@@ -428,34 +472,33 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
         //   coriolis_v += [ω × shift23]^T_× · rb_j_w
         //   coriolis_v += (skew(ω) · [shift23]^T_×) · rb_j_w
         {
-            let shift_cross_tr_23 = skew_tr(ws.shift23);
-            gemm_mat3_cross_buf(
+            gemm_skew_tr_lhs_cross_buf(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
-                shift_cross_tr_23,
+                ws.shift23,
                 coriolis_w,
                 coriolis_w_i,
                 1.0,
             );
 
-            let dvel_cross_tr_23 = skew_tr(ws.rb_vels.angular.cross(ws.shift23));
-            gemm_mat3_cross_buf(
+            let dvel_23 = crate::gcross_av(ws.rb_vels.angular, ws.shift23);
+            gemm_skew_tr_lhs_cross_buf(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
-                dvel_cross_tr_23,
+                dvel_23,
                 body_jacobians,
                 rb_j_w,
                 1.0,
             );
 
-            let combined_self = skew(ws.rb_vels.angular) * shift_cross_tr_23;
-            gemm_mat3_cross_buf(
+            gemm_omega_skew_tr_cross_buf(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
-                combined_self,
+                ws.rb_vels.angular,
+                ws.shift23,
                 body_jacobians,
                 rb_j_w,
                 1.0,
@@ -466,14 +509,14 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
         //   i_coriolis_dt_v := dt · mass · coriolis_v
         //   i_coriolis_dt_w := dt · (rb_inertia · coriolis_w)
         //   acc_augmented_mass += Jᵀ · i_coriolis_dt.
-        scaled_copy_3xn(
+        scaled_copy_lin_dim(
             i_coriolis_dt,
             i_coriolis_dt_v,
             mass * dt,
             coriolis_v,
             coriolis_v_i,
         );
-        gemm_mat3_cross_buf(
+        gemm_inertia_lhs_cross_buf(
             i_coriolis_dt,
             i_coriolis_dt_w,
             dt,
@@ -503,38 +546,4 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
 
     // TODO: remove this?
     let _ = MAX_MB_DOFS;
-}
-
-/// `c := beta * c + alpha * A_mat3 * b` where `A` is an inline 3×3 and `b`, `c`
-/// live in *different* flat buffers. Same as `gemm_mat3_lhs` but with a second
-/// buffer for the right-hand-side view.
-#[inline]
-fn gemm_mat3_cross_buf(
-    buf_c: &mut [f32],
-    c: MatSlice,
-    alpha: f32,
-    a: Mat3,
-    buf_b: &[f32],
-    b: MatSlice,
-    beta: f32,
-) {
-    for j in 0..c.cols {
-        let i0 = c.idx(0, j);
-        let i1 = c.idx(1, j);
-        let i2 = c.idx(2, j);
-        let b = Vec3::new(
-           buf_b.read(b.idx(0, j)),
-           buf_b.read(b.idx(1, j)),
-           buf_b.read(b.idx(2, j)),
-        );
-        let c = Vec3::new(
-            buf_c.read(i0),
-            buf_c.read(i1),
-            buf_c.read(i2),
-        );
-        let abc = beta * c + alpha * (a * b);
-        buf_c.write(i0, abc.x);
-        buf_c.write(i1, abc.y);
-        buf_c.write(i2, abc.z);
-    }
 }

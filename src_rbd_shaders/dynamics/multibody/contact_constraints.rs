@@ -24,13 +24,12 @@ use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use glamx::Vec3;
-
-use crate::Pose;
 use crate::dynamics::body::{Velocity, WorldMassProperties};
+use crate::dynamics::joint::SPATIAL_DIM;
 use crate::queries::IndexedManifold;
 use crate::utils::Slice;
 use crate::utils::linalg::{MatSlice, lu_solve_in_place};
+use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot};
 
 use super::types::{
     MAX_MB_CONTACTS_PER_MB, MultibodyContactConstraint, MultibodyInfo, MultibodyLinkStatic,
@@ -52,29 +51,42 @@ fn fill_contact_jac_row(
     mb_jac_base: usize,
     ndofs: u32,
     link_id: u32,
-    unit_force: Vec3,
-    unit_torque: Vec3,
+    unit_force: Vector,
+    unit_torque: AngVector,
     out_jacs: &mut [f32],
     col_offset: usize,
     accumulate: bool,
 ) {
-    // Per-link 6×ndofs jacobian (rows 0-2 = J_v, rows 3-5 = J_w).
-    let link_jac_base = mb_jac_base + (link_id as usize) * 6 * (ndofs as usize);
-    let link_j = MatSlice::dense(link_jac_base, 6, ndofs);
-    let (link_j_v, link_j_w) = link_j.rows_range_pair(0, 3, 3, 3);
+    // Per-link SPATIAL_DIM × ndofs jacobian (rows 0..DIM = J_v, rows
+    // DIM..SPATIAL_DIM = J_w).
+    let link_jac_base = mb_jac_base + (link_id as usize) * SPATIAL_DIM * (ndofs as usize);
+    let link_j = MatSlice::dense(link_jac_base, SPATIAL_DIM as u32, ndofs);
+    let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
     for j in 0..ndofs {
-        let jv0 = body_jacobians.read(link_j_v.idx(0, j));
-        let jv1 = body_jacobians.read(link_j_v.idx(1, j));
-        let jv2 = body_jacobians.read(link_j_v.idx(2, j));
-        let jw0 = body_jacobians.read(link_j_w.idx(0, j));
-        let jw1 = body_jacobians.read(link_j_w.idx(1, j));
-        let jw2 = body_jacobians.read(link_j_w.idx(2, j));
-        let dot = unit_force.x * jv0
-            + unit_force.y * jv1
-            + unit_force.z * jv2
-            + unit_torque.x * jw0
-            + unit_torque.y * jw1
-            + unit_torque.z * jw2;
+        // Linear contribution: `unit_force · J_v[:, j]`.
+        let dot;
+        #[cfg(feature = "dim3")]
+        {
+            let jv0 = body_jacobians.read(link_j_v.idx(0, j));
+            let jv1 = body_jacobians.read(link_j_v.idx(1, j));
+            let jv2 = body_jacobians.read(link_j_v.idx(2, j));
+            let jw0 = body_jacobians.read(link_j_w.idx(0, j));
+            let jw1 = body_jacobians.read(link_j_w.idx(1, j));
+            let jw2 = body_jacobians.read(link_j_w.idx(2, j));
+            dot = unit_force.x * jv0
+                + unit_force.y * jv1
+                + unit_force.z * jv2
+                + unit_torque.x * jw0
+                + unit_torque.y * jw1
+                + unit_torque.z * jw2;
+        }
+        #[cfg(feature = "dim2")]
+        {
+            let jv0 = body_jacobians.read(link_j_v.idx(0, j));
+            let jv1 = body_jacobians.read(link_j_v.idx(1, j));
+            let jw0 = body_jacobians.read(link_j_w.idx(0, j));
+            dot = unit_force.x * jv0 + unit_force.y * jv1 + unit_torque * jw0;
+        }
         let prev = if accumulate {
             out_jacs.read(col_offset + j as usize)
         } else {
@@ -194,23 +206,16 @@ pub fn gpu_mb_init_contact_constraints(
             (l2[1], u32::MAX, id1)
         };
 
-        // Skip degenerate self-contacts on the same link (geometry shouldn't
-        // produce these, but be defensive).
+        // Skip degenerate self-contacts on the same link.
         if is_self && mb_link_id_a == mb_link_id_b {
             continue;
         }
 
         let pose1 = poses.read(colliders_start + id1 as usize);
         let world_normal = pose1.rotation * im.contact.normal_a;
-        // Convention: `lin_jac` = impulse direction on the "B-side" body.
-        //   - Free contact: B-side = free body. lin_jac = +world_normal_a if
-        //     mb=1, -world_normal_a if mb=2.
-        //   - Self-contact: B-side = link `mb_link_id_b` (= rapier's body 2).
-        //     lin_jac = +world_normal_a (impulse on body 2 = -force_dir1).
         let lin_jac = if is_self || mb_on_1 { world_normal } else { -world_normal };
         let mb_normal = -lin_jac;
 
-        // Free-body mass-properties (only valid for the free-contact path).
         let free_mp = if is_self {
             WorldMassProperties::default()
         } else {
@@ -220,8 +225,6 @@ pub fn gpu_mb_init_contact_constraints(
 
         let link_ws_a = ws_slice.read(mb_link_id_a as usize);
         let link_origin_a = link_ws_a.local_to_world.translation;
-        // For self-contacts the second link's origin is read inside the
-        // contact-point loop; for free contacts this is unused.
         let link_origin_b_default = link_origin_a;
 
         for k in 0..im.contact.len {
@@ -230,26 +233,20 @@ pub fn gpu_mb_init_contact_constraints(
             }
             let pt_local = im.contact.points_a.read(k as usize).pt;
             let dist = im.contact.points_a.read(k as usize).dist;
-            // World contact point — mid-point between the two surfaces, matching
-            // rapier's `pose1 * (pt_a + normal_a * dist / 2)`.
             let pt_world = pose1 * (pt_local + im.contact.normal_a * (dist * 0.5));
 
             // A-side (link `mb_link_id_a`, rapier's body 1): impulse along
             // `force_dir1 = -world_normal_a = mb_normal`.
             let shift_a = pt_world - link_origin_a;
-            let torque_a = shift_a.cross(mb_normal);
+            let torque_a = gcross(shift_a, mb_normal);
 
-            // Penetration bias: rapier's clamped `erp_inv_dt · (dist + allowed_lin_err)`.
             let rhs_bias =
                 (erp_inv_dt * (dist + allowed_lin_err)).clamp(-max_corr_velocity, 0.0);
-            // Repulsion against any positive distance — clears float drift.
             let rhs_wo_bias = if dist > 0.0 { dist * inv_dt } else { 0.0 };
 
             let slot = count;
             let col_offset = col_base + (slot as usize) * dofs_stride;
 
-            // Always start by writing A-side jacobian (overwriting any prior
-            // slot content). For self-contacts we then accumulate the B-side.
             fill_contact_jac_row(
                 body_jacobians,
                 mb_jac_base,
@@ -263,20 +260,15 @@ pub fn gpu_mb_init_contact_constraints(
             );
 
             // For free contacts, the free body's J row is encoded via
-            // `lin_jac` / `ang_jac` / `ii_ang_jac` on the constraint and
-            // applied directly to `solver_vels` during solve. For
-            // self-contacts, both sides go through the same multibody, so
-            // the B-side jacobian must be added into the same `Jᵀ` row.
+            // `lin_jac` / `ang_jac` / `ii_ang_jac` on the constraint.
+            // For self-contacts the B-side jacobian is folded into `J_mb`.
             let (ang_jac, ii_ang_jac, link_id_for_struct) = if is_self {
                 let link_ws_b = ws_slice.read(mb_link_id_b as usize);
                 let link_origin_b = link_ws_b.local_to_world.translation;
                 let _ = link_origin_b_default;
                 let shift_b = pt_world - link_origin_b;
-                // B-side (link `mb_link_id_b`, rapier's body 2): impulse
-                // along `+world_normal_a = lin_jac`. Torque arg matches
-                // rapier's `torque_dir2 = dp2 × (-force_dir1) = shift_b ×
-                // lin_jac`.
-                let torque_b = shift_b.cross(lin_jac);
+                // B-side: impulse along `+world_normal_a = lin_jac`.
+                let torque_b = gcross(shift_b, lin_jac);
                 fill_contact_jac_row(
                     body_jacobians,
                     mb_jac_base,
@@ -288,17 +280,24 @@ pub fn gpu_mb_init_contact_constraints(
                     col_offset,
                     true,
                 );
-                // ang_jac / ii_ang_jac aren't used by the solve path when
-                // `free_body_id == u32::MAX`; keep them zero for clarity.
-                (Vec3::ZERO, Vec3::ZERO, mb_link_id_a)
+                #[cfg(feature = "dim3")]
+                {
+                    (AngVector::ZERO, AngVector::ZERO, mb_link_id_a)
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    (0.0f32, 0.0f32, mb_link_id_a)
+                }
             } else {
                 let _ = link_origin_b_default;
                 let free_shift = pt_world - free_mp.com;
-                let aj = free_shift.cross(lin_jac);
+                let aj = gcross(free_shift, lin_jac);
                 let iiaj = free_mp.inv_inertia_mul(aj);
                 (aj, iiaj, mb_link_id_a)
             };
 
+            // Build constraint with dim-aware fields.
+            #[cfg(feature = "dim3")]
             let cons = MultibodyContactConstraint {
                 multibody_id: mb_idx,
                 link_id: link_id_for_struct,
@@ -319,6 +318,24 @@ pub fn gpu_mb_init_contact_constraints(
                 cfm_coeff: 0.0,
                 cfm_gain: 0.0,
                 _pad4: [0; 2],
+            };
+            #[cfg(feature = "dim2")]
+            let cons = MultibodyContactConstraint {
+                multibody_id: mb_idx,
+                link_id: link_id_for_struct,
+                kind: 1,
+                free_body_id,
+                free_body_im: free_im,
+                ang_jac,
+                ii_ang_jac,
+                _pad0: 0,
+                lin_jac,
+                inv_lhs: 0.0,
+                rhs: rhs_wo_bias + rhs_bias,
+                rhs_wo_bias,
+                impulse: 0.0,
+                cfm_coeff: 0.0,
+                cfm_gain: 0.0,
             };
             contact_constraints.write(cons_base + slot as usize, cons);
             count += 1;
@@ -409,15 +426,14 @@ pub fn gpu_mb_finalize_contact_constraints(
             inv_r_mb += j * c;
         }
         // 4) Add free body's contribution: im (since lin_jac is unit) +
-        //    ang_jac · ii_ang_jac. For self-contacts both sides are already
-        //    folded into the multibody-side `Jᵀ`, so there's no free-body
-        //    term — `inv_lhs` is just `1 / (Jᵀ·column)`.
+        //    ang_jac · ii_ang_jac. For self-contacts the B-side is folded into
+        //    `J_mb`, so there's no free-body term.
         let mut cons = contact_constraints.read(cons_base + s as usize);
         let is_self = cons.free_body_id == u32::MAX;
         let inv_r_free = if is_self {
             0.0
         } else {
-            cons.free_body_im + cons.ang_jac.dot(cons.ii_ang_jac)
+            cons.free_body_im + gdot(cons.ang_jac, cons.ii_ang_jac)
         };
         let total = inv_r_mb + inv_r_free;
         cons.inv_lhs = if total > 0.0 { 1.0 / total } else { 0.0 };
@@ -478,9 +494,6 @@ pub fn gpu_mb_solve_contact_constraints(
         let col_offset = col_base + (s as usize) * dofs_stride;
 
         // J · u = J_mb · v_mb_dofs + J_free · v_free.
-        // For self-contacts (`free_body_id == u32::MAX`), the B-side jacobian
-        // is folded into `J_mb` already, so there's no separate free-body
-        // term to add.
         let is_self = cons.free_body_id == u32::MAX;
         let mut j_dot_v = 0.0f32;
         for i in 0..ndofs {
@@ -494,28 +507,18 @@ pub fn gpu_mb_solve_contact_constraints(
             solver_vels.read(colliders_start + cons.free_body_id as usize)
         };
         if !is_self {
-            j_dot_v += cons.lin_jac.dot(free.linear) + cons.ang_jac.dot(free.angular);
+            j_dot_v += cons.lin_jac.dot(free.linear) + gdot(cons.ang_jac, free.angular);
         }
 
-        // rapier's contact PGS step: `dlambda = -r · (dvel + cfm·λ)` where
-        // `dvel = J·u + rhs`. Note this is the OPPOSITE sign convention from
-        // the joint-limit kernel, which uses `+r · (dvel - cfm·λ)`. The
-        // difference: joint limits encode "target velocity = -rhs" with
-        // positive rhs at excess; contacts encode "target separation = -rhs"
-        // with negative rhs at penetration.
         let rhs_total = j_dot_v + cons.rhs;
         let raw_imp = cons.impulse
             - cons.inv_lhs * (rhs_total + cons.cfm_gain * cons.impulse);
-        // Normal impulse must be ≥ 0 (no pulling apart).
         let new_imp = if raw_imp < 0.0 { 0.0 } else { raw_imp };
         let delta = new_imp - cons.impulse;
         cons.impulse = new_imp;
         contact_constraints.write(cons_base + s as usize, cons);
 
         if delta != 0.0 {
-            // Multibody side: `Jᵀ` was packed with `mb_normal = -lin_jac` for
-            // the A-side (and accumulated with `+lin_jac` for the B-side on
-            // self-contacts). To push the multibody apart, add `delta·column`.
             for i in 0..ndofs {
                 let v_idx = v_base + i as usize;
                 let cur = dof_velocities.read(v_idx);
@@ -523,7 +526,6 @@ pub fn gpu_mb_solve_contact_constraints(
                 dof_velocities.write(v_idx, cur + delta * col);
             }
             if !is_self {
-                // Free body side: solver_vels += delta · M_free⁻¹ · J_free^T.
                 let mut new_free = free;
                 new_free.linear =
                     new_free.linear + cons.lin_jac * (cons.free_body_im * delta);
