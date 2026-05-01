@@ -4,7 +4,7 @@ pub use crate::shaders::dynamics::SimParams as GpuSimParams;
 pub use body::{BodyCoupling, BodyCouplingEntry, BodyDesc, GpuBodySet};
 pub use coloring::{ColoringArgs, GpuColoring};
 pub use joint::{GpuImpulseJointSet, GpuJointSolver, JointSolverArgs};
-pub use mprops_update::GpuMpropsUpdate;
+pub use mprops_update::{GpuMpropsUpdate, GpuSyncColliderPosesShader};
 #[cfg(feature = "dim3")]
 pub use multibody::{GpuMultibodySet, GpuMultibodySolver, MultibodySolverArgs};
 pub use solver::{GpuSolver, SolverArgs};

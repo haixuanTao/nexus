@@ -21,8 +21,8 @@ use crate::shaders::dynamics::{
     GpuApplySolverVelsInc, GpuInitSolverVelsInc, GpuIntegrate, GpuRemoveCfmAndBiasKernel,
     GpuSolverCleanup, GpuSolverFinalize, GpuSolverIncColor, GpuSolverInitConstraints,
     GpuSolverResetColor, GpuSolverSortConstraints, GpuSolverUpdateConstraints, GpuStepGaussSeidel,
-    GpuWarmstart, GpuWarmstartWithoutColors, LocalMassProperties, SimParams, TwoBodyConstraint,
-    TwoBodyConstraintBuilder, Velocity, WorldMassProperties,
+    GpuSyncColliderPoses, GpuWarmstart, GpuWarmstartWithoutColors, LocalMassProperties, SimParams,
+    TwoBodyConstraint, TwoBodyConstraintBuilder, Velocity, WorldMassProperties,
 };
 use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
@@ -61,6 +61,9 @@ pub struct GpuSolver {
     finalize: GpuSolverFinalize,
     /// Removes CFM and bias terms for velocity-only solving.
     remove_cfm_and_bias_kernel: GpuRemoveCfmAndBiasKernel,
+    /// Refreshes `collider_world_poses` from `body_poses * collider_local_poses`
+    /// after every body-pose write within the substep loop.
+    sync_collider_poses: GpuSyncColliderPoses,
 }
 
 /// Arguments for constraint solver dispatch.
@@ -89,8 +92,16 @@ pub struct SolverArgs<'a> {
     pub sim_params: &'a Tensor<SimParams>,
     /// Number of colliders per batch (uniform scalar, used as loop bound).
     pub colliders_len: &'a Tensor<u32>,
-    /// Rigid body poses.
-    pub poses: &'a mut Tensor<Pose>,
+    /// Rigid body world-origin poses. Used for integration, joint solving and
+    /// the body side of multibody work. Mirrors rapier's `RigidBody::position`.
+    pub body_poses: &'a mut Tensor<Pose>,
+    /// Per-collider local pose, used by [`Self::collider_world_poses`] sync and
+    /// any place that needs to derive a collider world pose from a body pose.
+    pub collider_local_poses: &'a Tensor<Pose>,
+    /// Per-collider world poses (= `body_poses[i] * collider_local_poses[i]`).
+    /// Consumed by contact constraint init / update which deal with contact
+    /// data expressed in collider-local frames.
+    pub collider_world_poses: &'a mut Tensor<Pose>,
     /// Rigid body velocities.
     pub vels: &'a mut Tensor<Velocity>,
     /// Solver working velocities.
@@ -144,7 +155,8 @@ impl GpuSolver {
             args.colliders_batch_capacity,
         )?;
 
-        // Init constraints
+        // Init constraints — contact features (points, normals) live in collider
+        // local space, so the constraint builder needs collider world poses.
         self.init_constraints.call(
             pass,
             args.contacts_len_indirect,
@@ -154,7 +166,7 @@ impl GpuSolver {
             args.constraint_builders,
             args.body_constraint_counts,
             args.body_group,
-            args.poses,
+            args.collider_world_poses,
             args.vels,
             args.mprops,
             args.sim_params,
@@ -239,7 +251,8 @@ impl GpuSolver {
             #[cfg(feature = "dim3")]
             if let (Some(solver), Some(state)) = (mb_solver, mb_state.as_deref_mut()) {
                 let mut mb_args = MultibodySolverArgs {
-                    poses: &mut *args.poses,
+                    poses: &mut *args.body_poses,
+                    collider_world_poses: &*args.collider_world_poses,
                     colliders_batch_capacity: args.colliders_batch_capacity,
                     mprops: args.mprops,
                     contacts: args.contacts,
@@ -263,6 +276,21 @@ impl GpuSolver {
             )?;
 
             /*
+             * Refresh collider world poses after the multibody apply_substep
+             * may have changed body poses, so the contact constraints' update
+             * step sees consistent collider transforms.
+             */
+            self.sync_collider_poses.call(
+                pass,
+                [args.num_colliders, args.num_batches, 1],
+                args.body_poses,
+                args.collider_local_poses,
+                args.collider_world_poses,
+                args.colliders_len,
+                args.colliders_batch_capacity,
+            )?;
+
+            /*
              * Update nonlinear terms.
              */
             self.update_constraints.call(
@@ -271,13 +299,13 @@ impl GpuSolver {
                 args.constraints,
                 args.constraint_builders,
                 args.contacts_len,
-                args.poses,
+                args.collider_world_poses,
                 args.sim_params,
                 args.contacts_batch_capacity,
                 args.colliders_batch_capacity,
             )?;
 
-            joint_solver.update(pass, &mut joint_args, args.poses)?;
+            joint_solver.update(pass, &mut joint_args, args.body_poses)?;
 
             /*
              * Warmstart.
@@ -324,11 +352,27 @@ impl GpuSolver {
             self.integrate.call(
                 pass,
                 [args.num_colliders, args.num_batches, 1],
-                args.poses,
+                args.body_poses,
                 args.solver_vels,
                 args.local_mprops,
                 args.colliders_len,
                 args.sim_params,
+                args.colliders_batch_capacity,
+            )?;
+
+            /*
+             * Body poses changed via integration — re-sync collider world poses
+             * before the next substep iteration's update_constraints (or, on
+             * the last substep, before phase-1 of the next step picks them up
+             * via mprops_update / broad-phase).
+             */
+            self.sync_collider_poses.call(
+                pass,
+                [args.num_colliders, args.num_batches, 1],
+                args.body_poses,
+                args.collider_local_poses,
+                args.collider_world_poses,
+                args.colliders_len,
                 args.colliders_batch_capacity,
             )?;
 

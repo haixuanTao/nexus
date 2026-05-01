@@ -85,7 +85,16 @@ pub struct GpuPhysicsState {
     num_colliders_per_batch: u32,
     num_solver_iterations: u32,
     sim_params: Tensor<GpuSimParams>,
-    poses: Tensor<Pose>,
+    /// Per-body world-origin pose (matches rapier's `RigidBody::position`). This is
+    /// the pose used by integration, joint solving, mass-properties update, and
+    /// multibody forward-kinematics.
+    body_poses: Tensor<Pose>,
+    /// Per-collider world pose (matches rapier's `Collider::position`). Equals
+    /// `body_poses[i] * collider_local_poses[i]`. Refreshed by
+    /// [`crate::shaders::dynamics::gpu_sync_collider_poses`] after each
+    /// integration substep / multibody forward-kinematics, and consumed by the
+    /// broad-phase, narrow-phase and contact-to-constraint conversion.
+    collider_world_poses: Tensor<Pose>,
     local_mprops: Tensor<GpuLocalMassProperties>,
     mprops: Tensor<GpuWorldMassProperties>,
     vels: Tensor<GpuVelocity>,
@@ -96,6 +105,11 @@ pub struct GpuPhysicsState {
     index_buffers: Tensor<u32>,
     shapes: Tensor<Shape>,
     num_shapes: Tensor<u32>,
+    /// Per-collider local pose, expressed in the parent rigid-body's frame. The
+    /// world pose of the collider's shape is `poses[i] * collider_local_poses[i]`,
+    /// matching rapier's `Collider::position()` semantics. Set to identity for
+    /// colliders without a parent.
+    collider_local_poses: Tensor<Pose>,
     /// Per-collider [`crate::rapier::geometry::InteractionGroups`]. Used by the
     /// broad-phase to skip pairs whose groups don't authorize an interaction.
     /// Padded slots use empty memberships AND empty filter so they never match.
@@ -176,11 +190,12 @@ impl GpuPhysicsState {
         let mut all_shapes = Vec::new();
         let mut all_num_shapes = Vec::new();
         let mut all_collision_groups: Vec<crate::rapier::geometry::InteractionGroups> = Vec::new();
+        let mut all_collider_local_poses: Vec<Pose> = Vec::new();
+        let mut all_collider_world_poses: Vec<Pose> = Vec::new();
         let mut shape_buffers = ShapeBuffers::default();
         let mut joint_envs: Vec<(
             &ImpulseJointSet,
             HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
-            HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
         )> = Vec::new();
 
         // Collect per-batch sim params, adjusting dt for substeps.
@@ -212,7 +227,6 @@ impl GpuPhysicsState {
         let mut multibody_envs: Vec<(
             &MultibodyJointSet,
             HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
-            HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
             &RigidBodySet,
         )> = Vec::new();
 
@@ -220,15 +234,6 @@ impl GpuPhysicsState {
             let env_collider_count = colliders.len();
             all_num_shapes.push(env_collider_count as u32);
             let mut body_ids = HashMap::new();
-            // Per-body collider local pose. The GPU pipeline stores the collider's
-            // *world* pose in `poses`, while the joint/multibody solvers expect a
-            // body world pose. So we keep the offset around and use it to
-            // pre-compose the joint local frames at upload time so that
-            // `collider_world * local_frame_a` ends up equal to `body_world * j.local_frame1`.
-            let mut body_collider_locals: HashMap<
-                crate::rapier::dynamics::RigidBodyHandle,
-                Pose,
-            > = HashMap::new();
             let mut env_collider_idx = 0u32;
 
             for (_, co) in colliders.iter() {
@@ -242,40 +247,57 @@ impl GpuPhysicsState {
                     );
                 }
 
-                let mut local_mprops = GpuLocalMassProperties::default();
-                let mut mprops = GpuWorldMassProperties {
-                    com: parent
-                        .map(|body| body.translation())
-                        .unwrap_or(Vector::ZERO),
-                    ..Default::default()
+                // Mass properties — taken from the rapier rigid-body so the GPU
+                // solver sees the same effective mass / COM / inertia as rapier
+                // would. This includes the body-local COM offset, which the
+                // integrator and joint solver assume is in the body's frame.
+                // Parentless colliders are modeled as colliders attached to an
+                // implicit fixed body anchored at the world origin: the body pose
+                // is IDENTITY and the collider's world transform is folded into
+                // its body-local offset. This keeps every code path that consumes
+                // `body_poses` agnostic of the parent/no-parent distinction.
+                let (body_pose, collider_local_pose) = match parent {
+                    Some(b) => (
+                        *b.position(),
+                        co.position_wrt_parent().copied().unwrap_or(Pose::IDENTITY),
+                    ),
+                    None => (Pose::IDENTITY, *co.position()),
                 };
-                if parent.map(|b| !b.is_dynamic()).unwrap_or(true) {
-                    local_mprops.inv_mass = Vector::ZERO;
+                let is_dynamic = parent.map(|b| b.is_dynamic()).unwrap_or(false);
+                let (local_mprops, mprops) = if let (Some(parent), true) = (parent, is_dynamic) {
+                    let m = parent.mass_properties();
+                    let local = local_mprops_from_rapier(&m.local_mprops);
+                    let world = world_mprops_from_local(&body_pose, &local);
+                    (local, world)
+                } else {
+                    let mut local = GpuLocalMassProperties::default();
+                    let mut world = GpuWorldMassProperties {
+                        com: body_pose.translation,
+                        ..Default::default()
+                    };
+                    local.inv_mass = Vector::ZERO;
                     #[cfg(feature = "dim3")]
                     {
-                        local_mprops.inv_principal_inertia = glamx::Vec3::ZERO;
+                        local.inv_principal_inertia = glamx::Vec3::ZERO;
                     }
                     #[cfg(feature = "dim2")]
                     {
-                        local_mprops.inv_inertia = 0.0;
+                        local.inv_inertia = 0.0;
                     }
-                    mprops.inv_mass = Vector::ZERO;
+                    world.inv_mass = Vector::ZERO;
                     #[cfg(feature = "dim3")]
                     {
-                        mprops.inv_inertia = glamx::Mat4::ZERO;
+                        world.inv_inertia = glamx::Mat4::ZERO;
                     }
                     #[cfg(feature = "dim2")]
                     {
-                        mprops.inv_inertia = 0.0;
+                        world.inv_inertia = 0.0;
                     }
-                }
+                    (local, world)
+                };
 
                 if let Some(h) = co.parent() {
                     body_ids.insert(h, env_collider_idx);
-                    body_collider_locals.insert(
-                        h,
-                        co.position_wrt_parent().copied().unwrap_or(Pose::IDENTITY),
-                    );
                 }
 
                 env_collider_idx += 1;
@@ -284,7 +306,15 @@ impl GpuPhysicsState {
                 all_shapes.push(
                     shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape"),
                 );
-                all_poses.push(*co.position());
+                // Mirror rapier: bodies hold a world-origin pose, colliders hold
+                // their local offset and a world pose `body * local`. Joint /
+                // solver / integrator / mprops_update / multibody-FK consume
+                // `body_poses`. Broad-phase, narrow-phase and contact-to-constraint
+                // consume `collider_world_poses`, which the
+                // `gpu_sync_collider_poses` kernel keeps in sync each step.
+                all_poses.push(body_pose);
+                all_collider_local_poses.push(collider_local_pose);
+                all_collider_world_poses.push(*co.position());
                 all_collision_groups.push(co.collision_groups());
             }
 
@@ -292,6 +322,8 @@ impl GpuPhysicsState {
             let dummy_shape = all_shapes.last().copied().unwrap_or_default();
             for _ in env_collider_count..max_colliders {
                 all_poses.push(dummy_pose);
+                all_collider_local_poses.push(Pose::IDENTITY);
+                all_collider_world_poses.push(dummy_pose);
                 all_local_mprops.push(dummy_local_mprops);
                 all_mprops.push(dummy_mprops);
                 all_shapes.push(dummy_shape);
@@ -305,13 +337,8 @@ impl GpuPhysicsState {
             }
 
             #[cfg(feature = "dim3")]
-            multibody_envs.push((
-                multibody_joints,
-                body_ids.clone(),
-                body_collider_locals.clone(),
-                bodies,
-            ));
-            joint_envs.push((impulse_joints, body_ids, body_collider_locals));
+            multibody_envs.push((multibody_joints, body_ids.clone(), bodies));
+            joint_envs.push((impulse_joints, body_ids));
         }
 
         // NOTE: GPU doesn't like empty storage buffer bindings so add dummy data
@@ -332,10 +359,9 @@ impl GpuPhysicsState {
         let joint_env_refs: Vec<(
             &ImpulseJointSet,
             &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
-            &HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
         )> = joint_envs
             .iter()
-            .map(|(joints, body_ids, locals)| (*joints, body_ids, locals))
+            .map(|(joints, body_ids)| (*joints, body_ids))
             .collect();
 
         // Per-environment "graph group" table: each body local id maps to either
@@ -345,7 +371,7 @@ impl GpuPhysicsState {
         #[cfg(feature = "dim3")]
         let multibody_groups: Vec<Vec<u32>> = {
             let mut all_groups: Vec<Vec<u32>> = Vec::with_capacity(num_batches as usize);
-            for (env_idx, (mb_set, body_ids, _, _)) in multibody_envs.iter().enumerate() {
+            for (env_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
                 let _ = env_idx;
                 let max_id = body_ids.values().copied().max().unwrap_or_default();
                 let mut group: Vec<u32> = (0..=max_id).collect();
@@ -381,11 +407,10 @@ impl GpuPhysicsState {
             let mb_refs: Vec<(
                 &MultibodyJointSet,
                 &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
-                &HashMap<crate::rapier::dynamics::RigidBodyHandle, Pose>,
                 &RigidBodySet,
             )> = multibody_envs
                 .iter()
-                .map(|(mb, ids, locals, bodies)| (*mb, ids, locals, *bodies))
+                .map(|(mb, ids, bodies)| (*mb, ids, *bodies))
                 .collect();
             let mut mb = GpuMultibodySet::from_rapier(
                 backend,
@@ -402,7 +427,7 @@ impl GpuPhysicsState {
         // solver owns their masses internally.
         #[cfg(feature = "dim3")]
         {
-            for (batch_idx, (mb_set, body_ids, _, _)) in multibody_envs.iter().enumerate() {
+            for (batch_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
                 let batch_offset = batch_idx * max_colliders;
                 for mb in mb_set.multibodies() {
                     for link in mb.links() {
@@ -436,7 +461,7 @@ impl GpuPhysicsState {
             }
         }
         #[cfg(feature = "dim3")]
-        for (batch_idx, (mb_set, body_ids, _, _)) in multibody_envs.iter().enumerate() {
+        for (batch_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
             let base = batch_idx * max_colliders;
             for mb in mb_set.multibodies() {
                 let group_local = mb
@@ -460,6 +485,8 @@ impl GpuPhysicsState {
         let all_vels = vec![GpuVelocity::default(); num_bodies_total];
         let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
         let shapes = Tensor::vector(backend, &all_shapes, storage).unwrap();
+        let collider_local_poses =
+            Tensor::vector(backend, &all_collider_local_poses, storage).unwrap();
         let collision_groups =
             Tensor::vector(backend, &all_collision_groups, storage).unwrap();
 
@@ -578,9 +605,15 @@ impl GpuPhysicsState {
             body_group,
             local_mprops: Tensor::vector(backend, &all_local_mprops, storage).unwrap(),
             mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
-            poses: Tensor::vector(
+            body_poses: Tensor::vector(
                 backend,
                 &all_poses,
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            )
+            .unwrap(),
+            collider_world_poses: Tensor::vector(
+                backend,
+                &all_collider_world_poses,
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             )
             .unwrap(),
@@ -588,6 +621,7 @@ impl GpuPhysicsState {
             index_buffers,
             shapes,
             num_shapes,
+            collider_local_poses,
             collision_groups,
             collision_pairs,
             collision_pairs_len,
@@ -646,7 +680,17 @@ impl GpuPhysicsState {
     /// The poses are represented as similarity transformations (position + rotation + scale)
     /// in world space.
     pub fn poses(&self) -> &Tensor<Pose> {
-        &self.poses
+        &self.collider_world_poses
+    }
+
+    /// Per-body world-origin pose (matches rapier's `RigidBody::position`).
+    pub fn body_poses(&self) -> &Tensor<Pose> {
+        &self.body_poses
+    }
+
+    /// Per-collider world pose (= `body_poses[i] * collider_local_poses[i]`).
+    pub fn collider_world_poses(&self) -> &Tensor<Pose> {
+        &self.collider_world_poses
     }
 
     /// The set of joints part of the simulation.
@@ -680,6 +724,7 @@ impl GpuPhysicsState {
 /// The main GPU physics pipeline coordinating all simulation stages.
 pub struct GpuPhysicsPipeline {
     mprops_update: GpuMpropsUpdate,
+    sync_collider_poses: crate::dynamics::GpuSyncColliderPosesShader,
     narrow_phase: GpuNarrowPhase,
     solver: GpuSolver,
     joint_solver: GpuJointSolver,
@@ -698,6 +743,8 @@ impl GpuPhysicsPipeline {
     pub fn from_backend(backend: &GpuBackend) -> Self {
         Self {
             mprops_update: GpuMpropsUpdate::from_backend(backend).unwrap(),
+            sync_collider_poses:
+                crate::dynamics::GpuSyncColliderPosesShader::from_backend(backend).unwrap(),
             narrow_phase: GpuNarrowPhase::from_backend(backend).unwrap(),
             solver: GpuSolver::from_backend(backend).unwrap(),
             joint_solver: GpuJointSolver::from_backend(backend).unwrap(),
@@ -734,7 +781,8 @@ impl GpuPhysicsPipeline {
                 let mut encoder = backend.begin_encoding();
                 let mut pass = encoder.begin_pass("multibody-init-step", timestamps.as_deref_mut());
                 let mut args = crate::dynamics::MultibodySolverArgs {
-                    poses: &mut state.poses,
+                    poses: &mut state.body_poses,
+                    collider_world_poses: &state.collider_world_poses,
                     colliders_batch_capacity: &state.colliders_batch_capacity,
                     mprops: &state.mprops,
                     contacts: &state.contacts,
@@ -755,13 +803,29 @@ impl GpuPhysicsPipeline {
             let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("update-mprops", timestamps.as_deref_mut());
 
-            // Update mass properties
+            // Update mass properties — uses body world poses to compute the
+            // world COM and inertia tensor.
             self.mprops_update
                 .dispatch(
                     &mut pass,
                     &mut state.mprops,
                     &state.local_mprops,
-                    &state.poses,
+                    &state.body_poses,
+                    &state.num_shapes,
+                    &state.colliders_batch_capacity,
+                    state.num_colliders_per_batch,
+                    state.num_batches,
+                )
+                .unwrap();
+
+            // Refresh `collider_world_poses = body_poses * collider_local_poses`
+            // before any broad-phase, narrow-phase or contact-to-constraint work.
+            self.sync_collider_poses
+                .dispatch(
+                    &mut pass,
+                    &state.body_poses,
+                    &state.collider_local_poses,
+                    &mut state.collider_world_poses,
                     &state.num_shapes,
                     &state.colliders_batch_capacity,
                     state.num_colliders_per_batch,
@@ -771,15 +835,15 @@ impl GpuPhysicsPipeline {
 
             drop(pass);
 
-            // Build LBVH and find collision pairs
+            // Build LBVH and find collision pairs (uses collider world poses).
             self.lbvh
                 .update_tree(
                     backend,
                     &mut encoder,
                     &mut state.lbvh,
-                    state.poses.len() as u32,
+                    state.collider_world_poses.len() as u32,
                     state.num_batches,
-                    &state.poses,
+                    &state.collider_world_poses,
                     &state.vertex_buffers,
                     &state.shapes,
                     &state.num_shapes,
@@ -792,7 +856,7 @@ impl GpuPhysicsPipeline {
             if crate::VALIDATE_LBVH_TOPOLOGY {
                 backend.submit(encoder).unwrap();
 
-                let num_colliders = state.poses.len() as u32;
+                let num_colliders = state.collider_world_poses.len() as u32;
                 let tree: Vec<LbvhNode> = backend
                     .slow_read_vec(state.lbvh.tree().buffer())
                     .await
@@ -812,7 +876,7 @@ impl GpuPhysicsPipeline {
                 .find_pairs(
                     &mut pass,
                     &mut state.lbvh,
-                    state.poses.len() as u32,
+                    state.body_poses.len() as u32,
                     state.num_batches,
                     &state.num_shapes,
                     &state.colliders_batch_capacity,
@@ -890,7 +954,7 @@ impl GpuPhysicsPipeline {
                 .find_pairs(
                     &mut pass,
                     &mut state.lbvh,
-                    state.poses.len() as u32,
+                    state.body_poses.len() as u32,
                     state.num_batches,
                     &state.num_shapes,
                     &state.colliders_batch_capacity,
@@ -910,12 +974,12 @@ impl GpuPhysicsPipeline {
             let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("narrow-phase", timestamps.as_deref_mut());
 
-            // Narrow phase
+            // Narrow phase — operates on collider world poses.
             self.narrow_phase
                 .dispatch(
                     &mut pass,
-                    state.poses.len() as u32,
-                    &state.poses,
+                    state.body_poses.len() as u32,
+                    &state.collider_world_poses,
                     &state.shapes,
                     &state.vertex_buffers,
                     &state.index_buffers,
@@ -945,7 +1009,9 @@ impl GpuPhysicsPipeline {
                 constraint_builders: &mut state.new_constraint_builders,
                 sim_params: &state.sim_params,
                 colliders_len: &state.num_shapes,
-                poses: &mut state.poses,
+                body_poses: &mut state.body_poses,
+                collider_local_poses: &state.collider_local_poses,
+                collider_world_poses: &mut state.collider_world_poses,
                 vels: &mut state.vels,
                 solver_vels: &mut state.solver_vels,
                 solver_vels_out: &state.solver_vels_out,
@@ -1059,7 +1125,9 @@ impl GpuPhysicsPipeline {
             constraint_builders: &mut state.new_constraint_builders,
             sim_params: &state.sim_params,
             colliders_len: &state.num_shapes,
-            poses: &mut state.poses,
+            body_poses: &mut state.body_poses,
+            collider_local_poses: &state.collider_local_poses,
+            collider_world_poses: &mut state.collider_world_poses,
             vels: &mut state.vels,
             solver_vels: &mut state.solver_vels,
             solver_vels_out: &state.solver_vels_out,
@@ -1389,5 +1457,77 @@ fn validate_lbvh_topology(tree: &[LbvhNode], sorted_colliders: &[u32], num_colli
         );
     } else {
         eprintln!("[LBVH] VALIDATION FAILED: {} errors found", errors);
+    }
+}
+
+/// Builds a GPU-side [`LocalMassProperties`] from a parry/rapier
+/// [`crate::rapier::prelude::MassProperties`]. The body-local COM, principal-axis
+/// frame, inverse mass and inverse principal inertia are copied verbatim.
+#[cfg(feature = "from_rapier")]
+fn local_mprops_from_rapier(
+    mprops: &crate::rapier::prelude::MassProperties,
+) -> GpuLocalMassProperties {
+    #[cfg(feature = "dim2")]
+    {
+        GpuLocalMassProperties {
+            inv_mass: glamx::Vec2::splat(mprops.inv_mass),
+            com: mprops.local_com,
+            padding2: 0,
+            inv_inertia: mprops.inv_principal_inertia,
+        }
+    }
+    #[cfg(feature = "dim3")]
+    {
+        GpuLocalMassProperties {
+            inertia_ref_frame: mprops.principal_inertia_local_frame,
+            inv_principal_inertia: mprops.inv_principal_inertia,
+            padding0: 0,
+            inv_mass: glamx::Vec3::splat(mprops.inv_mass),
+            padding1: 0,
+            com: mprops.local_com,
+            padding2: 0,
+        }
+    }
+}
+
+/// Computes the world-space mass properties of a body from its body-origin world
+/// pose and body-local mass properties. Mirrors the GPU `update_mprops` shader
+/// so the buffer is consistent the moment the simulation starts.
+#[cfg(feature = "from_rapier")]
+fn world_mprops_from_local(
+    pose: &Pose,
+    local: &GpuLocalMassProperties,
+) -> GpuWorldMassProperties {
+    #[cfg(feature = "dim2")]
+    {
+        GpuWorldMassProperties {
+            inv_inertia: local.inv_inertia,
+            inv_mass: local.inv_mass,
+            padding1: 0,
+            com: *pose * local.com,
+        }
+    }
+    #[cfg(feature = "dim3")]
+    {
+        // Build the world-space inverse inertia tensor: R * diag * R^T, with R
+        // the rotation taking body space to the world principal-inertia frame.
+        // Mirrors the GPU `update_mprops` shader so the buffer is consistent
+        // before the first `update_mprops` dispatch.
+        let world_principal_frame = pose.rotation * local.inertia_ref_frame;
+        let rot_mat = glamx::Mat3::from_quat(world_principal_frame);
+        let scaled = glamx::Mat3::from_cols(
+            rot_mat.x_axis * local.inv_principal_inertia.x,
+            rot_mat.y_axis * local.inv_principal_inertia.y,
+            rot_mat.z_axis * local.inv_principal_inertia.z,
+        );
+        let inv_inertia_3 = scaled * rot_mat.transpose();
+        let inv_inertia = glamx::Mat4::from_mat3(inv_inertia_3);
+        GpuWorldMassProperties {
+            inv_inertia,
+            inv_mass: local.inv_mass,
+            padding0: 0,
+            com: *pose * local.com,
+            padding1: 0,
+        }
     }
 }

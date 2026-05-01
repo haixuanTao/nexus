@@ -69,28 +69,13 @@ fn convert_generic_joint(joint: RapierGenericJoint) -> GenericJoint {
 fn convert_impulse_joint(
     joint: &RapierImpulseJoint,
     body_ids: &HashMap<RigidBodyHandle, u32>,
-    body_collider_locals: &HashMap<RigidBodyHandle, crate::math::Pose>,
 ) -> ImpulseJoint {
-    let mut data = convert_generic_joint(joint.data);
-    // The GPU pipeline stores the *collider's* world pose in `poses`, but the
-    // joint solver expects to compose it with anchors expressed in the *body's*
-    // local frame. Pre-multiply each anchor by the inverse of the corresponding
-    // body's collider local offset so that
-    //     pose1 * local_frame_a = (body1_world * collider_local1)
-    //                             * collider_local1.inverse() * j.local_frame1
-    //                           = body1_world * j.local_frame1.
-    if let Some(c1) = body_collider_locals.get(&joint.body1()) {
-        data.local_frame_a = c1.inverse() * data.local_frame_a;
-    }
-    if let Some(c2) = body_collider_locals.get(&joint.body2()) {
-        data.local_frame_b = c2.inverse() * data.local_frame_b;
-    }
     ImpulseJoint {
         body_a: body_ids[&joint.body1()],
         body_b: body_ids[&joint.body2()],
         #[cfg(feature = "dim3")]
         padding: [0, 0],
-        data,
+        data: convert_generic_joint(joint.data),
     }
 }
 
@@ -127,11 +112,7 @@ impl GpuImpulseJointSet {
     #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
-        environments: &[(
-            &ImpulseJointSet,
-            &HashMap<RigidBodyHandle, u32>,
-            &HashMap<RigidBodyHandle, crate::math::Pose>,
-        )],
+        environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
     ) -> Self {
         Self::from_rapier_with_groups(backend, environments, &[])
     }
@@ -141,18 +122,14 @@ impl GpuImpulseJointSet {
     #[cfg(feature = "from_rapier")]
     pub fn from_rapier_with_groups(
         backend: &GpuBackend,
-        environments: &[(
-            &ImpulseJointSet,
-            &HashMap<RigidBodyHandle, u32>,
-            &HashMap<RigidBodyHandle, crate::math::Pose>,
-        )],
+        environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
         multibody_groups: &[Vec<u32>],
     ) -> Self {
         let usage = BufferUsages::STORAGE;
         let num_batches = environments.len() as u32;
         let max_joints = environments
             .iter()
-            .map(|(joints, _, _)| joints.len())
+            .map(|(joints, _)| joints.len())
             .max()
             .unwrap_or(0) as u32;
 
@@ -164,20 +141,14 @@ impl GpuImpulseJointSet {
         let mut per_env_sorted_joints: Vec<Vec<ImpulseJoint>> = Vec::new();
         let mut per_env_color_groups: Vec<Vec<u32>> = Vec::new();
 
-        for (env_idx, (joints, body_ids, body_collider_locals)) in
-            environments.iter().enumerate()
-        {
+        for (env_idx, (joints, body_ids)) in environments.iter().enumerate() {
             let len = joints.len() as u32;
             all_num_joints.push(len);
 
             // Convert joints.
             let mut unsorted_gpu_joints = vec![];
             for (_, joint) in joints.iter() {
-                unsorted_gpu_joints.push(convert_impulse_joint(
-                    joint,
-                    body_ids,
-                    body_collider_locals,
-                ));
+                unsorted_gpu_joints.push(convert_impulse_joint(joint, body_ids));
             }
 
             // Build the body-id → graph-group lookup. Without a multibody group
