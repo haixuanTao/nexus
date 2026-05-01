@@ -174,6 +174,8 @@ pub fn quadform_spatial(
     // W·J has the same layout as J (6 × ndofs): the first 3 rows scale by `mass`,
     // the last 3 rows are `inertia · J_w[:, c]`. We precompute it per column to
     // avoid redundant inertia multiplies inside the r-loop.
+    // TODO(PERF): check the shader codegen to ensure the array doesn’t get copied over and
+    //             over destroying performances.
     let mut wj = [0.0f32; 6 * MAX_MB_DOFS];
     let wj_view = MatSlice::dense(0, 6, ndofs);
     for c in 0..ndofs {
@@ -213,18 +215,18 @@ pub fn quadform_spatial(
 /// `y := beta * y + alpha * Aᵀ · x` where `A` is a view into `buf_a` and `x` is a
 /// 6-vector. `y_offset` is where `y` starts in `buf_y`; `y` has length `a.cols`.
 #[inline]
-pub fn gemv_tr_spatial(
+pub fn gemv_tr_spatial<const XDIM: usize>(
     buf_y: &mut [f32],
     y_offset: usize,
     alpha: f32,
     buf_a: &[f32],
     a: MatSlice,
-    x: [f32; 6],
+    x: [f32; XDIM], // TODO: use const-generics instead of hard-coding 6
     beta: f32,
 ) {
     for c in 0..a.cols {
         let mut s = 0.0f32;
-        for r in 0..6u32 {
+        for r in 0..XDIM as u32 {
             s += buf_a.read(a.idx(r, c)) * x[r as usize];
         }
         let idx = y_offset + c as usize;
