@@ -21,6 +21,7 @@
 
 #![cfg(feature = "dim3")]
 
+use crate::shaders::utils::linalg::MAX_MB_DOFS;
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
@@ -337,6 +338,10 @@ impl GpuMultibodySet {
             let mut cons_off = 0u32;
 
             for (mb_idx, mb) in set.multibodies().enumerate() {
+                if mb.ndofs() > MAX_MB_DOFS {
+                    panic!("Multibody {} dofs {} exceed the maximum supported {}.", mb_idx, mb.ndofs(), MAX_MB_DOFS);
+                }
+
                 // rapier always creates the root with a free 6-DOF joint and only
                 // converts it to a fixed joint later during its own step. Since we
                 // don't run rapier's step here, detect a fixed root body and lock
@@ -435,7 +440,14 @@ impl GpuMultibodySet {
                     statics.push(stat);
                     assembly_counter += link_ndofs;
 
-                    let ws = make_workspace_init();
+                    let mut ws = make_workspace_init();
+                    if let Some(rb) = bodies.get(link.rigid_body_handle()) {
+                        let pos = rb.position();
+                        ws.coords[0] = pos.translation.x;
+                        ws.coords[1] = pos.translation.y;
+                        ws.coords[2] = pos.translation.z;
+                        ws.joint_rot = pos.rotation;
+                    }
                     workspaces.push(ws);
 
                     // Per-link mass properties (real masses stored here so the

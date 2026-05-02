@@ -124,8 +124,14 @@ pub struct SolverArgs<'a> {
     /// Local-space mass properties.
     pub local_mprops: &'a Tensor<LocalMassProperties>,
     /// Number of constraints per body.
+    ///
+    /// All constraints of all the bodies part of the same multibody are counted in a single
+    /// entry at its root’s body index.
     pub body_constraint_counts: &'a mut Tensor<u32>,
     /// Constraint IDs associated with each body.
+    ///
+    /// All constraints of all the bodies part of the same multibody are in the same list associated
+    /// to the multibody’s root.
     pub body_constraint_ids: &'a mut Tensor<u32>,
     /// Color assigned to each constraint by graph coloring.
     pub constraints_colors: &'a Tensor<u32>,

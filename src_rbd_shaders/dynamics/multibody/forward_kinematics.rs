@@ -56,12 +56,23 @@ pub fn gpu_mb_forward_kinematics(
     let local_mprops_slice = Slice(links_local_mprops, first_link_global);
     let mut poses_slice = SliceMut(poses, coll_start);
 
-    // Special case for the root, which has no parent.
+    // Root: a fixed root inherits its pose from the rigid-body pipeline (the
+    // pose buffer is the source of truth). A free root reconstructs its pose
+    // from the integrated joint coords / rotation and publishes it back to the
+    // shared pose buffer for downstream consumers (FK of children, collision).
     {
-        let root_pose = poses_slice.read(stat_slice.at(0).rb_id as usize);
-        let link = ws_slice.at_mut(0);
+        let stat = stat_slice.read(0);
+        let mut link = ws_slice.read(0);
+        let root_pose = if mb.root_is_dynamic == 0 {
+            poses_slice.read(stat.rb_id as usize)
+        } else {
+            let pose = body_to_parent(&stat, &link);
+            poses_slice.write(stat.rb_id as usize, pose);
+            pose
+        };
         link.local_to_parent = root_pose;
         link.local_to_world = root_pose;
+        ws_slice.write(0, link);
     }
 
     for k in 1..num_links {
