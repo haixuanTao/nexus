@@ -15,7 +15,7 @@ pub use fem_shaders::types;
 pub use fem_shaders::{DIM, Matrix, PaddedMatrix, PaddedVector, VERTS_PER_ELEM, Vector};
 
 use khal::re_exports::include_dir::{Dir, include_dir};
-pub static SPIRV_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/shaders-spirv");
+pub static SPIRV_DIR: Dir<'static> = include_dir!("$OUT_DIR/shaders-spirv");
 
 /// Cast a Tensor<T> reference to Tensor<U> via bytemuck.
 #[allow(dead_code)]

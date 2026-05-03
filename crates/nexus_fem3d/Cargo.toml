@@ -38,3 +38,4 @@ web-time = { workspace = true }
 
 [build-dependencies]
 khal-builder = {workspace = true}
+nexus_fem_shaders3d = { version = "0.1", path = "../nexus_fem_shaders3d" }

@@ -52,3 +52,4 @@ rand = "0.9"
 
 [build-dependencies]
 khal-builder = {workspace = true}
+nexus_mpm_shaders2d = { version = "0.1", path = "../nexus_mpm_shaders2d" }

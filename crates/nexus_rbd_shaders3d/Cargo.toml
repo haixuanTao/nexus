@@ -6,6 +6,7 @@ repository = { workspace = true }
 version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
+links = "nexus_rbd_shaders3d"
 
 [lib]
 path = "../../src_rbd_shaders/lib.rs"

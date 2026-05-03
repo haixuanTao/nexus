@@ -6,6 +6,7 @@ repository = { workspace = true }
 version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
+links = "nexus_mpm_shaders2d"
 
 
 [lib]

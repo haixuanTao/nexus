@@ -1,13 +1,12 @@
 use khal_builder::KhalBuilder;
+use std::path::PathBuf;
 
 fn main() {
-    let shader_crate = "../nexus_mpm_shaders3d";
-    let output_dir = "../../crates/nexus_mpm3d/shaders-spirv";
-    let src_dir = "../../src_mpm_shaders";
+    let output_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR not set by cargo"))
+        .join("shaders-spirv");
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
-    let mut builder = KhalBuilder::new(shader_crate, true)
-        .shader_src(src_dir)
+    let mut builder = KhalBuilder::from_dependency("nexus_mpm_shaders3d", true)
         .feature("dim3");
 
     if target_arch == "wasm32" {

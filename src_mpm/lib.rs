@@ -22,7 +22,7 @@ pub extern crate rapier3d as rapier;
 use khal::re_exports::include_dir::{Dir, include_dir};
 
 /// Embedded SPIR-V shader directory.
-pub static SPIRV_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/shaders-spirv");
+pub static SPIRV_DIR: Dir<'static> = include_dir!("$OUT_DIR/shaders-spirv");
 
 pub mod grid;
 pub mod models;
