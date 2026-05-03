@@ -35,14 +35,14 @@ pub fn count_free_ang_dofs(locked: u32) -> u32 {
 ///
 /// Mirrors rapier's `MultibodyJoint::body_to_parent`: starts from `joint_rot * local_frame_b⁻¹`,
 /// prepends a translation for each free linear DOF, and finally composes with `local_frame_a`.
-pub fn body_to_parent(stat: &MultibodyLinkStatic, ws: &MultibodyLinkWorkspace) -> Pose {
+pub fn body_to_parent(stat: &MultibodyLinkStatic, link: &MultibodyLinkWorkspace) -> Pose {
     let locked = stat.data.locked_axes;
     let mut transform =
-        Pose::from_parts(Vector::ZERO, ws.joint_rot) * stat.data.local_frame_b.inverse();
+        Pose::from_parts(Vector::ZERO, link.joint_rot) * stat.data.local_frame_b.inverse();
 
     for i in 0..DIM {
         if (locked & (1 << i)) == 0 {
-            let t = Vector::ith(i as usize, ws.coords.read(i as usize));
+            let t = Vector::ith(i as usize, link.coords.read(i as usize));
             transform = Pose::from_parts(t, Rotation::IDENTITY) * transform;
         }
     }

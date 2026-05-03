@@ -117,8 +117,13 @@ pub fn gpu_mb_init_joint_constraints(
     let mb_mm_base = mm_start + mb.mass_matrix_offset as usize;
     let piv_offset = dof_start + mb.first_dof as usize;
     let cons_base = cons_start + mb.first_constraint as usize;
-    // One column of M⁻¹ per constraint slot, ndofs floats each.
-    let col_base = col_start + (mb.first_constraint as usize) * (ndofs as usize);
+    // One column of M⁻¹ per constraint slot — `dof_batch_capacity` floats
+    // per slot (only the first `ndofs` of each are meaningful, but we use
+    // the batch-wide max as the stride to match the host allocation
+    // `cons_col_cap = cons_cap * dofs_cap` and to avoid two multibodies
+    // with different ndofs stomping on each other's columns).
+    let dofs_stride = *dof_batch_capacity as usize;
+    let col_base = col_start + (mb.first_constraint as usize) * dofs_stride;
 
     let stat_slice = Slice(links_static, first_link_global);
     let ws_slice = Slice(links_workspace, first_link_global);
@@ -171,6 +176,7 @@ pub fn gpu_mb_init_joint_constraints(
                     joint_constraint_columns,
                     cons_base,
                     col_base,
+                    dofs_stride,
                     slot,
                     abs_dof,
                     ndofs,
@@ -194,6 +200,7 @@ pub fn gpu_mb_init_joint_constraints(
                     joint_constraint_columns,
                     cons_base,
                     col_base,
+                    dofs_stride,
                     slot,
                     abs_dof,
                     ndofs,
@@ -224,6 +231,7 @@ pub fn gpu_mb_init_joint_constraints(
                     joint_constraint_columns,
                     cons_base,
                     col_base,
+                    dofs_stride,
                     slot,
                     abs_dof,
                     ndofs,
@@ -246,6 +254,7 @@ pub fn gpu_mb_init_joint_constraints(
                     joint_constraint_columns,
                     cons_base,
                     col_base,
+                    dofs_stride,
                     slot,
                     abs_dof,
                     ndofs,
@@ -270,11 +279,16 @@ pub fn gpu_mb_init_joint_constraints(
 
 /// Solve `M · column = e_{dof_id}` and pack `inv_lhs = 1 / column[dof_id]`,
 /// matching `inv_lhs = 1 / (Jᵀ M⁻¹ J)` for J = e_{dof_id}.
+///
+/// Per-constraint column stride is `dofs_stride` (= batch-wide
+/// `dof_batch_capacity`), not this multibody's `ndofs` — see the matching
+/// `col_base` computation in `gpu_mb_init_joint_constraints` for why.
 #[inline]
 fn compute_constraint_column(
     joint_constraint_columns: &mut [f32],
     col_base: usize,
     slot: u32,
+    dofs_stride: usize,
     ndofs: u32,
     dof_id: u32,
     mass_matrices: &[f32],
@@ -282,7 +296,8 @@ fn compute_constraint_column(
     lu_pivots: &[u32],
     piv_offset: usize,
 ) -> f32 {
-    let col_offset = col_base + (slot as usize) * (ndofs as usize);
+    let _ = ndofs;
+    let col_offset = col_base + (slot as usize) * dofs_stride;
     lu_solve_unit(
         mass_matrices,
         m,
@@ -304,6 +319,7 @@ fn emit_limit_constraint(
     joint_constraint_columns: &mut [f32],
     cons_base: usize,
     col_base: usize,
+    dofs_stride: usize,
     slot: u32,
     dof_id: u32,
     ndofs: u32,
@@ -331,6 +347,7 @@ fn emit_limit_constraint(
         joint_constraint_columns,
         col_base,
         slot,
+        dofs_stride,
         ndofs,
         dof_id,
         mass_matrices,
@@ -368,6 +385,7 @@ fn emit_motor_constraint(
     joint_constraint_columns: &mut [f32],
     cons_base: usize,
     col_base: usize,
+    dofs_stride: usize,
     slot: u32,
     dof_id: u32,
     ndofs: u32,
@@ -407,6 +425,7 @@ fn emit_motor_constraint(
         joint_constraint_columns,
         col_base,
         slot,
+        dofs_stride,
         ndofs,
         dof_id,
         mass_matrices,
@@ -506,7 +525,11 @@ pub fn gpu_mb_solve_joint_constraints(
     }
     let v_base = dof_start + mb.first_dof as usize;
     let cons_base = cons_start + mb.first_constraint as usize;
-    let col_base = col_start + (mb.first_constraint as usize) * (ndofs as usize);
+    // Per-constraint column stride is the batch-wide `dof_batch_capacity`,
+    // not this multibody's `ndofs` — see the matching computation in
+    // `gpu_mb_init_joint_constraints`.
+    let dofs_stride = *dof_batch_capacity as usize;
+    let col_base = col_start + (mb.first_constraint as usize) * dofs_stride;
 
     for s in 0..mb.max_constraints {
         let mut cons = joint_constraints.read(cons_base + s as usize);
@@ -533,7 +556,7 @@ pub fn gpu_mb_solve_joint_constraints(
         for i in 0..ndofs {
             let v_idx = v_base + i as usize;
             let cur = dof_velocities.read(v_idx);
-            let col = joint_constraint_columns.read(col_base + (s as usize) * (ndofs as usize) + i as usize);
+            let col = joint_constraint_columns.read(col_base + (s as usize) * dofs_stride + i as usize);
             dof_velocities.write(v_idx, cur - delta * col);
         }
     }

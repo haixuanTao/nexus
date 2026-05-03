@@ -16,11 +16,36 @@ use crate::{Pose, Rotation, Vector};
 /// Equivalent to `SPATIAL_DIM`.
 pub const MAX_JOINT_DOFS: usize = SPATIAL_DIM;
 
-/// Maximum number of simultaneously-active multibody contact constraints per
+/// Maximum number of simultaneously-active multibody contact **points** per
 /// multibody. Sized for typical use (a single multibody touching the
 /// environment with up to ~32 contact points × 2 manifold sides). Per-multibody
 /// banks of this size are pre-allocated; surplus slots are left inactive.
 pub const MAX_MB_CONTACTS_PER_MB: u32 = 64;
+
+/// Number of constraint slots reserved per contact point — one normal +
+/// `DIM-1` friction tangents (Coulomb friction). Mirrors rapier's
+/// `ContactConstraintNormalPart` + `ContactConstraintTangentPart` layout.
+#[cfg(feature = "dim2")]
+pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 2;
+/// Number of constraint slots reserved per contact point — one normal +
+/// `DIM-1` friction tangents (Coulomb friction). Mirrors rapier's
+/// `ContactConstraintNormalPart` + `ContactConstraintTangentPart` layout.
+#[cfg(feature = "dim3")]
+pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 3;
+
+/// Total constraint slots reserved per multibody (= contact points × DIM).
+pub const MAX_MB_CONTACT_CONSTRAINTS_PER_MB: u32 =
+    MAX_MB_CONTACTS_PER_MB * CONTACT_CONSTRAINTS_PER_POINT;
+
+/// `kind` value: inactive / unused slot.
+pub const MB_CONTACT_KIND_INACTIVE: u32 = 0;
+/// `kind` value: active normal-direction (non-penetration) constraint.
+pub const MB_CONTACT_KIND_NORMAL: u32 = 1;
+/// `kind` value: active friction tangent constraint. Its impulse is
+/// dynamically clamped to `±(friction_coeff · normal.impulse)` at solve
+/// time, where `normal` is the constraint at slot
+/// `normal_constraint_slot` (relative to the multibody's `cons_base`).
+pub const MB_CONTACT_KIND_TANGENT: u32 = 2;
 
 /// Sentinel marking a link with no parent (the root).
 pub const MULTIBODY_ROOT: u32 = u32::MAX;
@@ -179,7 +204,13 @@ pub struct MultibodyJointConstraint { // TODO: rename to MultibodyUnitJointConst
 /// is a multibody whose impulse is propagated through `M⁻¹ · Jᵀ` (stored as a
 /// per-constraint column in `contact_constraint_columns`).
 ///
-/// TODO: handle friction and contact between two multibodies
+/// `kind` values (see `MB_CONTACT_KIND_*`): 0 = inactive (skipped),
+/// 1 = active normal (non-penetration) constraint, 2 = active friction
+/// tangent constraint. Tangent slots reuse the same struct but treat
+/// `lin_jac` / `ang_jac` as the tangent direction; the normal slot's
+/// current impulse drives the tangent's clamp limit.
+///
+/// TODO: handle contact between two multibodies.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
     not(any(target_arch = "spirv", target_arch = "nvptx64")),
@@ -192,7 +223,7 @@ pub struct MultibodyContactConstraint {
     pub multibody_id: u32,
     /// Link index within `multibody_id`.
     pub link_id: u32,
-    /// 0 = inactive (skipped), 1 = active normal constraint.
+    /// `MB_CONTACT_KIND_*` discriminant.
     pub kind: u32,
     /// Local body id (in the shared body buffers) of the free-body side.
     pub free_body_id: u32,
@@ -200,11 +231,21 @@ pub struct MultibodyContactConstraint {
     /// Free body's effective inverse mass (scalar — assumes isotropic mass).
     /// Zero for static bodies.
     pub free_body_im: f32,
-    pub _pad0: [u32; 3],
+    /// Coulomb friction coefficient `μ` used by tangent slots; for normal
+    /// slots this is propagated forward (the same `μ` covers all of the
+    /// contact's tangents).
+    pub friction_coeff: f32,
+    /// Slot index (relative to the multibody's `cons_base`) of the
+    /// associated normal constraint. Tangent slots read
+    /// `cons[normal_constraint_slot].impulse` to compute their clamp limit
+    /// `±μ · normal_impulse`. For normal slots this is just self.
+    pub normal_constraint_slot: u32,
+    pub _pad0: u32,
 
-    /// Free-body linear jacobian: `+normal` on body B's side or `-normal`
-    /// on body A's side, depending on which side of the contact pair is
-    /// the multibody.
+    /// Free-body linear jacobian: `+jac_dir` on body B's side or
+    /// `-jac_dir` on body A's side, depending on which side of the contact
+    /// pair is the multibody. For normal slots, `jac_dir = world_normal`;
+    /// for tangent slots, `jac_dir = world_tangent`.
     pub lin_jac: Vec3,
     pub _pad1: u32,
     /// Free-body angular jacobian (`r_free × jac_dir`).
@@ -218,7 +259,8 @@ pub struct MultibodyContactConstraint {
 
     /// `1 / (J · M⁻¹ · Jᵀ)`.
     pub inv_lhs: f32,
-    /// `J·v_target + bias` — bias from penetration (`erp_inv_dt · depth`).
+    /// `J·v_target + bias` — bias from penetration (`erp_inv_dt · depth`)
+    /// for normals, surface velocity for tangents.
     pub rhs: f32,
     /// `rhs` without the positional bias (used by the stabilization sweep).
     pub rhs_wo_bias: f32,
@@ -251,8 +293,14 @@ pub struct MultibodyContactConstraint {
     pub ang_jac: f32,
     /// `ang_jac · effective_world_inv_inertia` (scalar in 2D).
     pub ii_ang_jac: f32,
-    pub _pad0: u32,
+    /// Coulomb friction coefficient `μ`.
+    pub friction_coeff: f32,
 
+    /// Slot index (relative to `cons_base`) of the associated normal
+    /// constraint. Tangents read `cons[normal_constraint_slot].impulse` to
+    /// compute their clamp limit `±μ · normal_impulse`.
+    pub normal_constraint_slot: u32,
+    pub _pad0: [u32; 1],
     /// Free-body linear jacobian.
     pub lin_jac: Vec2,
 

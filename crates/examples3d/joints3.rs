@@ -600,16 +600,15 @@ fn build_variant(use_articulations: bool) -> SimulationState {
         Vector::new(34.0, 0.0, 0.0),
         use_articulations,
     );
-    // FIXME: not working with multibodies
-    // // create_fixed_joints(
-    // //     &mut bodies,
-    // //     &mut colliders,
-    // //     &mut impulse_joints,
-    // //     &mut multibody_joints,
-    // //     Vector::new(0.0, 10.0, 0.0),
-    // //     10,
-    // //     use_articulations,
-    // // );
+    create_fixed_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut impulse_joints,
+        &mut multibody_joints,
+        Vector::new(0.0, 10.0, 0.0),
+        10,
+        use_articulations,
+    );
     create_actuated_revolute_joints(
         &mut bodies,
         &mut colliders,
@@ -628,15 +627,15 @@ fn build_variant(use_articulations: bool) -> SimulationState {
         3,
         use_articulations,
     );
-    // FIXME: CRASH for multibodies
-    // // create_spherical_joints(
-    // //     &mut bodies,
-    // //     &mut colliders,
-    // //     &mut impulse_joints,
-    // //     &mut multibody_joints,
-    // //     15,
-    // //     use_articulations,
-    // // );
+
+    create_spherical_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut impulse_joints,
+        &mut multibody_joints,
+        9,
+        use_articulations,
+    );
     create_spherical_joints_with_limits(
         &mut bodies,
         &mut colliders,

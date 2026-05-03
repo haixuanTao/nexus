@@ -32,7 +32,8 @@ use crate::shaders::dynamics::{
     GpuMbRemoveImpulseJointConstraintBias, GpuMbRemoveJointConstraintBias,
     GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints, GpuMbSolveJointConstraints,
     GpuMbUpdateImpulseJointConstraints, GpuMbUpdateVelocities, LocalMassProperties,
-    MAX_AXIS_CONSTRAINTS, MAX_MB_CONTACTS_PER_MB, MbImpulseJointBuilder, MbImpulseJointConstraint,
+    MAX_AXIS_CONSTRAINTS, MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder,
+    MbImpulseJointConstraint,
     MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic,
     MultibodyLinkWorkspace, SIDE_KIND_BODY, SIDE_KIND_FIXED, SIDE_KIND_MB, Velocity,
     WorldMassProperties,
@@ -470,13 +471,20 @@ impl GpuMultibodySet {
                     assembly_counter += link_ndofs;
 
                     let mut ws = make_workspace_init();
-                    if let Some(rb) = bodies.get(link.rigid_body_handle()) {
-                        let pos = rb.position();
-                        ws.coords[0] = pos.translation.x;
-                        ws.coords[1] = pos.translation.y;
-                        ws.coords[2] = pos.translation.z;
-                        ws.joint_rot = pos.rotation;
+                    ws.coords = link.joint.coords().into();
+                    ws.joint_rot = link.joint.joint_rot();
+
+                    // For free joints at the root, copy the rigid-body pose directly.
+                    if link.joint.data.locked_axes.is_empty() {
+                        if let Some(rb) = bodies.get(link.rigid_body_handle()) {
+                            let pos = rb.position();
+                            ws.coords[0] = pos.translation.x;
+                            ws.coords[1] = pos.translation.y;
+                            ws.coords[2] = pos.translation.z;
+                            ws.joint_rot = pos.rotation;
+                        }
                     }
+
                     workspaces.push(ws);
 
                     // Per-link mass properties (real masses stored here so the
@@ -549,10 +557,12 @@ impl GpuMultibodySet {
         let cons_col_cap = cons_cap.saturating_mul(dofs_cap).max(1);
 
         // Per-multibody contact-constraint banks: every multibody owns a
-        // fixed-size slab of `MAX_MB_CONTACTS_PER_MB` slots (mirrors how
-        // joint constraints are sized — the init kernel marks unused slots as
-        // `kind = 0`).
-        let contact_cons_cap = mb_cap.saturating_mul(MAX_MB_CONTACTS_PER_MB).max(1);
+        // fixed-size slab of `MAX_MB_CONTACT_CONSTRAINTS_PER_MB` slots —
+        // each contact point produces 1 normal + (DIM-1) friction tangent
+        // constraint slots. The init kernel marks unused slots as `kind = 0`.
+        let contact_cons_cap = mb_cap
+            .saturating_mul(MAX_MB_CONTACT_CONSTRAINTS_PER_MB)
+            .max(1);
         let contact_cons_col_cap = contact_cons_cap.saturating_mul(dofs_cap).max(1);
         let body_to_link_cap = colliders_per_batch.max(1);
 
@@ -804,6 +814,7 @@ impl GpuMultibodySet {
             contacts_batch_capacity_for_mb: Tensor::scalar(backend, body_to_link_cap, usage_u)
                 .unwrap(),
 
+            // FIXME: should be read from the simulation settings.
             gravity: Tensor::scalar(
                 backend,
                 gravity,
