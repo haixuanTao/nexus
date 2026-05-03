@@ -28,10 +28,13 @@ use crate::shaders::dynamics::{
     GpuMbApplyGravityWithCoriolis, GpuMbBodyJacobians, GpuMbFinalizeContactConstraints,
     GpuMbForwardKinematics, GpuMbInitContactConstraints, GpuMbInitJointConstraints, GpuMbIntegrate,
     GpuMbIntegrateVelocities, GpuMbLuDecompose, GpuMbLuSolve, GpuMbMassMatrix,
-    GpuMbMassMatrixWithCoriolis, GpuMbRemoveContactConstraintBias, GpuMbRemoveJointConstraintBias,
-    GpuMbSolveContactConstraints, GpuMbSolveJointConstraints, GpuMbUpdateVelocities,
-    LocalMassProperties, MAX_MB_CONTACTS_PER_MB, MultibodyContactConstraint, MultibodyInfo,
-    MultibodyJointConstraint, MultibodyLinkStatic, MultibodyLinkWorkspace, Velocity,
+    GpuMbMassMatrixWithCoriolis, GpuMbRemoveContactConstraintBias,
+    GpuMbRemoveImpulseJointConstraintBias, GpuMbRemoveJointConstraintBias,
+    GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints, GpuMbSolveJointConstraints,
+    GpuMbUpdateImpulseJointConstraints, GpuMbUpdateVelocities, LocalMassProperties,
+    MAX_AXIS_CONSTRAINTS, MAX_MB_CONTACTS_PER_MB, MbImpulseJointBuilder, MbImpulseJointConstraint,
+    MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic,
+    MultibodyLinkWorkspace, SIDE_KIND_BODY, SIDE_KIND_FIXED, SIDE_KIND_MB, Velocity,
     WorldMassProperties,
 };
 use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuPass};
@@ -41,7 +44,9 @@ use vortx::tensor::Tensor;
 
 #[cfg(feature = "from_rapier")]
 use {
-    crate::rapier::dynamics::{MultibodyJointSet, RigidBodyHandle, RigidBodySet},
+    crate::rapier::dynamics::{
+        ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodySet,
+    },
     crate::shaders::dynamics::{GenericJoint, JointLimits, JointMotor},
     std::collections::HashMap,
 };
@@ -133,6 +138,30 @@ pub struct GpuMultibodySet {
     /// Per-multibody count of currently-active contact constraints. Filled
     /// by the init kernel; read by the solve / finalize kernels.
     contact_constraint_count: Tensor<u32>,
+
+    /// Per-batch number of multibody-touching impulse joints. Counts
+    /// joints whose body1 OR body2 is part of any multibody — these go
+    /// through the `MbImpulseJointConstraint` path because the regular
+    /// impulse-joint solver can't propagate impulses through `M⁻¹·Jᵀ`.
+    mb_imp_joint_count: Tensor<u32>,
+    /// Per-batch slab of impulse-joint builder descriptors. One slot per
+    /// joint touching the multibody side; padded to
+    /// `mb_imp_joints_per_batch` with all-zero entries.
+    mb_imp_joint_builders: Tensor<MbImpulseJointBuilder>,
+    /// Per-batch slab of axis constraints — `MAX_AXIS_CONSTRAINTS` slots
+    /// per builder. Filled (and inactive-marked) by
+    /// `gpu_mb_update_impulse_joint_constraints`.
+    mb_imp_joint_constraints: Tensor<MbImpulseJointConstraint>,
+    /// Per-batch flat jacobians buffer — stores `J / W·J` for both sides
+    /// of every axis constraint of every joint. See
+    /// `MbImpulseJointConstraint` for the per-axis layout.
+    mb_imp_joint_jacobians: Tensor<f32>,
+
+    /// Capacities (per-batch strides) for the impulse-joint slabs above.
+    mb_imp_joints_batch_capacity: Tensor<u32>,
+    mb_imp_joint_constraints_batch_capacity: Tensor<u32>,
+    mb_imp_joint_jacobians_batch_capacity: Tensor<u32>,
+    mb_imp_joints_per_batch: u32,
 
     /// Number of solver iterations to run on `joint_constraints` per `step()`.
     num_solver_iterations: u32,
@@ -712,6 +741,47 @@ impl GpuMultibodySet {
                 storage,
             )
             .unwrap(),
+
+            // Impulse-joint buffers are sized for "no MB-touching joints" by
+            // default — `set_impulse_joints` resizes them at pipeline build
+            // time when the host has actually counted the joints.
+            mb_imp_joint_count: Tensor::vector(
+                backend,
+                &vec![0u32; num_batches as usize],
+                storage | BufferUsages::UNIFORM,
+            )
+            .unwrap(),
+            mb_imp_joint_builders: Tensor::vector(
+                backend,
+                &vec![<MbImpulseJointBuilder as bytemuck::Zeroable>::zeroed(); num_batches as usize],
+                storage,
+            )
+            .unwrap(),
+            mb_imp_joint_constraints: Tensor::vector(
+                backend,
+                &vec![
+                    MbImpulseJointConstraint::default();
+                    (MAX_AXIS_CONSTRAINTS as usize) * (num_batches as usize)
+                ],
+                storage,
+            )
+            .unwrap(),
+            mb_imp_joint_jacobians: Tensor::vector(
+                backend,
+                &vec![0.0f32; num_batches as usize],
+                storage,
+            )
+            .unwrap(),
+            mb_imp_joints_batch_capacity: Tensor::scalar(backend, 1u32, usage_u).unwrap(),
+            mb_imp_joint_constraints_batch_capacity: Tensor::scalar(
+                backend,
+                MAX_AXIS_CONSTRAINTS,
+                usage_u,
+            )
+            .unwrap(),
+            mb_imp_joint_jacobians_batch_capacity: Tensor::scalar(backend, 1u32, usage_u).unwrap(),
+            mb_imp_joints_per_batch: 0,
+
             num_solver_iterations: 4,
 
             multibodies_batch_capacity: Tensor::scalar(backend, mb_cap, usage_u).unwrap(),
@@ -747,6 +817,209 @@ impl GpuMultibodySet {
             )
             .unwrap(),
         }
+    }
+
+    /// Number of multibody-touching impulse joints in any batch.
+    pub fn mb_impulse_joints_per_batch(&self) -> u32 {
+        self.mb_imp_joints_per_batch
+    }
+
+    /// Upload the per-batch impulse joints whose body1 OR body2 is part
+    /// of a multibody. These joints are routed through the
+    /// `MbImpulseJointConstraint` solver path (rapier's
+    /// `JointGenericExternalConstraintBuilder`); free-only impulse joints
+    /// stay in the regular `GpuImpulseJointSet` path because they don't
+    /// need `M⁻¹·Jᵀ` propagation.
+    ///
+    /// `environments` matches the layout used elsewhere in the pipeline:
+    /// one entry per batch, in the same order as the multibody envs that
+    /// were passed to `from_rapier`. Free-only joints are silently
+    /// skipped here.
+    #[cfg(feature = "from_rapier")]
+    pub fn set_impulse_joints(
+        &mut self,
+        backend: &GpuBackend,
+        environments: &[(
+            &ImpulseJointSet,
+            &MultibodyJointSet,
+            &HashMap<RigidBodyHandle, u32>,
+            &RigidBodySet,
+        )],
+    ) {
+        assert_eq!(environments.len() as u32, self.num_batches);
+
+        // Stage 1 — per-batch list of touched joints + their side metadata.
+        let mut per_env_builders: Vec<Vec<MbImpulseJointBuilder>> =
+            Vec::with_capacity(self.num_batches as usize);
+        let mut max_joints = 0u32;
+        let mut max_jac_floats = 0u32;
+
+        for (batch_idx, (impulse_joints, mb_set, body_ids, bodies)) in
+            environments.iter().enumerate()
+        {
+            let _ = batch_idx;
+            // body local id → (mb_index_in_batch, link_index_within_mb).
+            let mut body_to_mb_link: HashMap<u32, (u32, u32)> = HashMap::new();
+            for (mb_idx, mb) in mb_set.multibodies().enumerate() {
+                for (link_idx, link) in mb.links().enumerate() {
+                    if let Some(&local) = body_ids.get(&link.rigid_body_handle()) {
+                        body_to_mb_link.insert(local, (mb_idx as u32, link_idx as u32));
+                    }
+                }
+            }
+
+            let mut builders = Vec::new();
+            let mut jac_offset = 0u32;
+            let mut constraint_id = 0u32;
+
+            for (_handle, joint) in impulse_joints.iter() {
+                let body1 = joint.body1();
+                let body2 = joint.body2();
+                let local1 = match body_ids.get(&body1) {
+                    Some(&id) => id,
+                    None => continue,
+                };
+                let local2 = match body_ids.get(&body2) {
+                    Some(&id) => id,
+                    None => continue,
+                };
+
+                let mb1 = body_to_mb_link.get(&local1).copied();
+                let mb2 = body_to_mb_link.get(&local2).copied();
+                if mb1.is_none() && mb2.is_none() {
+                    continue; // Free-only joint; existing path handles it.
+                }
+
+                let rb1 = bodies.get(body1);
+                let rb2 = bodies.get(body2);
+
+                // Mirror rapier's `LinkOrBody` resolution + `transform_to_solver_body_space`.
+                // Side A:
+                let (side_a_kind, side_a_id, side_a_link, ndofs_a) = match (mb1, rb1) {
+                    (Some((mb_idx, link_idx)), _) => {
+                        let mb = mb_set.multibodies().nth(mb_idx as usize).unwrap();
+                        (
+                            SIDE_KIND_MB,
+                            mb_idx,
+                            link_idx,
+                            mb.ndofs() as u32,
+                        )
+                    }
+                    (None, Some(rb)) if rb.is_dynamic() => {
+                        (SIDE_KIND_BODY, local1, 0, 6)
+                    }
+                    _ => (SIDE_KIND_FIXED, u32::MAX, 0, 0),
+                };
+
+                let (side_b_kind, side_b_id, side_b_link, ndofs_b) = match (mb2, rb2) {
+                    (Some((mb_idx, link_idx)), _) => {
+                        let mb = mb_set.multibodies().nth(mb_idx as usize).unwrap();
+                        (
+                            SIDE_KIND_MB,
+                            mb_idx,
+                            link_idx,
+                            mb.ndofs() as u32,
+                        )
+                    }
+                    (None, Some(rb)) if rb.is_dynamic() => {
+                        (SIDE_KIND_BODY, local2, 0, 6)
+                    }
+                    _ => (SIDE_KIND_FIXED, u32::MAX, 0, 0),
+                };
+
+                if ndofs_a + ndofs_b == 0 {
+                    continue; // Both sides static — no constraint to solve.
+                }
+
+                // Mirror rapier `GenericJoint::transform_to_solver_body_space`:
+                // shift each anchor frame's translation into COM space (and,
+                // if the side is fixed, fold the body's pose into the local
+                // frame). For now we only handle the dynamic / multibody
+                // cases — fixed side support is a TODO that mirrors
+                // rapier's `is_fixed` branch.
+                let mut joint_data = convert_generic_joint(joint.data);
+                if side_a_kind != SIDE_KIND_FIXED {
+                    if let Some(rb) = rb1 {
+                        let com = rb.mass_properties().local_mprops.local_com;
+                        joint_data.local_frame_a.translation -= com;
+                    }
+                }
+                if side_b_kind != SIDE_KIND_FIXED {
+                    if let Some(rb) = rb2 {
+                        let com = rb.mass_properties().local_mprops.local_com;
+                        joint_data.local_frame_b.translation -= com;
+                    }
+                }
+
+                // Per-axis stride = 2 * (ndofs_a + ndofs_b); reserve
+                // MAX_AXIS_CONSTRAINTS slots up front so the kernel can
+                // walk them sequentially without rechecking.
+                let stride = 2 * (ndofs_a + ndofs_b);
+                let cap_floats = stride * MAX_AXIS_CONSTRAINTS;
+                let builder = MbImpulseJointBuilder {
+                    joint: joint_data,
+                    side_a_kind,
+                    side_a_id,
+                    side_a_link,
+                    joint_id: builders.len() as u32,
+                    side_b_kind,
+                    side_b_id,
+                    side_b_link,
+                    constraint_id: constraint_id,
+                    jacobian_offset: jac_offset,
+                    jacobian_capacity: cap_floats,
+                    #[cfg(feature = "dim3")]
+                    _pad0: [0; 2],
+                };
+                builders.push(builder);
+                constraint_id += MAX_AXIS_CONSTRAINTS;
+                jac_offset += cap_floats;
+            }
+
+            max_joints = max_joints.max(builders.len() as u32);
+            max_jac_floats = max_jac_floats.max(jac_offset);
+            per_env_builders.push(builders);
+        }
+
+        // Stage 2 — flatten with per-batch padding to `max_joints`.
+        let joints_cap = max_joints.max(1);
+        let cons_cap = (joints_cap * MAX_AXIS_CONSTRAINTS).max(1);
+        let jac_cap = max_jac_floats.max(1);
+
+        let mut all_builders: Vec<MbImpulseJointBuilder> =
+            Vec::with_capacity((joints_cap * self.num_batches) as usize);
+        let mut all_counts: Vec<u32> = Vec::with_capacity(self.num_batches as usize);
+        let dummy: MbImpulseJointBuilder = bytemuck::Zeroable::zeroed();
+        for env in &per_env_builders {
+            all_counts.push(env.len() as u32);
+            all_builders.extend_from_slice(env);
+            for _ in env.len()..joints_cap as usize {
+                all_builders.push(dummy);
+            }
+        }
+
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        let usage_u = storage | BufferUsages::UNIFORM;
+        self.mb_imp_joint_count = Tensor::vector(backend, &all_counts, usage_u).unwrap();
+        self.mb_imp_joint_builders = Tensor::vector(backend, &all_builders, storage).unwrap();
+        self.mb_imp_joint_constraints = Tensor::vector(
+            backend,
+            &vec![MbImpulseJointConstraint::default(); (cons_cap * self.num_batches) as usize],
+            storage,
+        )
+        .unwrap();
+        self.mb_imp_joint_jacobians = Tensor::vector(
+            backend,
+            &vec![0.0f32; (jac_cap * self.num_batches) as usize],
+            storage,
+        )
+        .unwrap();
+        self.mb_imp_joints_batch_capacity = Tensor::scalar(backend, joints_cap, usage_u).unwrap();
+        self.mb_imp_joint_constraints_batch_capacity =
+            Tensor::scalar(backend, cons_cap, usage_u).unwrap();
+        self.mb_imp_joint_jacobians_batch_capacity =
+            Tensor::scalar(backend, jac_cap, usage_u).unwrap();
+        self.mb_imp_joints_per_batch = joints_cap;
     }
 
     /// Upload a new integration timestep.
@@ -852,6 +1125,9 @@ pub struct GpuMultibodySolver {
     finalize_contact_constraints: GpuMbFinalizeContactConstraints,
     solve_contact_constraints: GpuMbSolveContactConstraints,
     remove_contact_constraint_bias: GpuMbRemoveContactConstraintBias,
+    update_impulse_joint_constraints: GpuMbUpdateImpulseJointConstraints,
+    solve_impulse_joint_constraints: GpuMbSolveImpulseJointConstraints,
+    remove_impulse_joint_constraint_bias: GpuMbRemoveImpulseJointConstraintBias,
     integrate_velocities: GpuMbIntegrateVelocities,
     integrate: GpuMbIntegrate,
 }
@@ -1215,6 +1491,63 @@ impl GpuMultibodySolver {
             args.colliders_batch_capacity,
         )?;
 
+        // 3c. Multibody-touching impulse joints — generic (rb-mb / mb-mb)
+        //     constraints. Mirrors rapier's `JointGenericExternalConstraintBuilder::update`
+        //     plus a PGS sweep WITH bias.
+        if mb.mb_imp_joints_per_batch > 0 {
+            let imp_dispatch = [mb.mb_imp_joints_per_batch, mb.num_batches, 1];
+            self.update_impulse_joint_constraints.call(
+                pass,
+                imp_dispatch,
+                // set 0 storage (binding 0..=4)
+                &mb.mb_imp_joint_builders,
+                &mut mb.mb_imp_joint_constraints,
+                &mut mb.mb_imp_joint_jacobians,
+                &mb.mb_imp_joint_count,
+                &mb.dt,
+                // set 0 uniforms (binding 5..=7)
+                &mb.mb_imp_joints_batch_capacity,
+                &mb.mb_imp_joint_constraints_batch_capacity,
+                &mb.mb_imp_joint_jacobians_batch_capacity,
+                // set 1 storage (binding 0..=6)
+                &mb.multibody_info,
+                &mb.links_workspace,
+                &mb.body_jacobians,
+                &mb.mass_matrices,
+                &mb.lu_pivots,
+                args.poses,
+                args.mprops,
+                // set 1 uniforms (binding 7..=12)
+                &mb.multibodies_batch_capacity,
+                &mb.links_batch_capacity,
+                &mb.jacobians_batch_capacity,
+                &mb.mass_matrix_batch_capacity,
+                &mb.dof_batch_capacity,
+                args.colliders_batch_capacity,
+            )?;
+            // Solve sweep is single-workgroup, threads(1) — see kernel doc.
+            self.solve_impulse_joint_constraints.call(
+                pass,
+                [1u32, mb.num_batches, 1],
+                // set 0 storage (binding 0..=3)
+                &mb.mb_imp_joint_builders,
+                &mut mb.mb_imp_joint_constraints,
+                &mb.mb_imp_joint_jacobians,
+                &mb.mb_imp_joint_count,
+                // set 0 uniforms (binding 4..=5)
+                &mb.mb_imp_joints_batch_capacity,
+                &mb.mb_imp_joint_constraints_batch_capacity,
+                // set 1 storage (binding 0..=2)
+                &mb.multibody_info,
+                &mut mb.dof_velocities,
+                args.solver_vels,
+                // set 1 uniforms (binding 3..=5)
+                &mb.multibodies_batch_capacity,
+                &mb.dof_batch_capacity,
+                args.colliders_batch_capacity,
+            )?;
+        }
+
         // 4. Integrate positions with the corrected `v`.
         self.integrate.call(
             pass,
@@ -1257,6 +1590,18 @@ impl GpuMultibodySolver {
             &mb.multibodies_batch_capacity,
             &mb.contact_constraints_batch_capacity,
         )?;
+        if mb.mb_imp_joints_per_batch > 0 {
+            let imp_dispatch = [mb.mb_imp_joints_per_batch, mb.num_batches, 1];
+            self.remove_impulse_joint_constraint_bias.call(
+                pass,
+                imp_dispatch,
+                &mb.mb_imp_joint_builders,
+                &mut mb.mb_imp_joint_constraints,
+                &mb.mb_imp_joint_count,
+                &mb.mb_imp_joints_batch_capacity,
+                &mb.mb_imp_joint_constraints_batch_capacity,
+            )?;
+        }
 
         // 7. Final PGS sweep WITHOUT bias — settles velocity to pure-zero
         //    along constrained DOFs, eliminating the rebound that drives jitter.
@@ -1290,6 +1635,29 @@ impl GpuMultibodySolver {
             &mb.contact_constraint_columns_batch_capacity,
             args.colliders_batch_capacity,
         )?;
+        if mb.mb_imp_joints_per_batch > 0 {
+            // Final stabilization sweep WITHOUT bias.
+            self.solve_impulse_joint_constraints.call(
+                pass,
+                [1u32, mb.num_batches, 1],
+                // set 0 storage
+                &mb.mb_imp_joint_builders,
+                &mut mb.mb_imp_joint_constraints,
+                &mb.mb_imp_joint_jacobians,
+                &mb.mb_imp_joint_count,
+                // set 0 uniforms
+                &mb.mb_imp_joints_batch_capacity,
+                &mb.mb_imp_joint_constraints_batch_capacity,
+                // set 1 storage
+                &mb.multibody_info,
+                &mut mb.dof_velocities,
+                args.solver_vels,
+                // set 1 uniforms
+                &mb.multibodies_batch_capacity,
+                &mb.dof_batch_capacity,
+                args.colliders_batch_capacity,
+            )?;
+        }
 
         Ok(())
     }

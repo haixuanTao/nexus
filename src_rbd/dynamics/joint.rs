@@ -125,13 +125,56 @@ impl GpuImpulseJointSet {
         environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
         multibody_groups: &[Vec<u32>],
     ) -> Self {
+        Self::from_rapier_filtered(backend, environments, multibody_groups, &[])
+    }
+
+    /// Build the GPU set, optionally filtering out joints whose body1 OR
+    /// body2 is part of any multibody. The skipped joints must instead be
+    /// uploaded to the multibody side via
+    /// `GpuMultibodySet::set_impulse_joints` — those go through the
+    /// multibody generic-constraint path because the regular impulse
+    /// solver can't propagate impulses through `M⁻¹·Jᵀ`.
+    ///
+    /// `is_mb_body[env][body_local_id]` should be `true` iff the body is
+    /// part of any multibody. Empty (or shorter-than-`environments`) skip
+    /// vector means "no skip" and falls back to the old behavior.
+    #[cfg(feature = "from_rapier")]
+    pub fn from_rapier_filtered(
+        backend: &GpuBackend,
+        environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
+        multibody_groups: &[Vec<u32>],
+        is_mb_body: &[Vec<bool>],
+    ) -> Self {
         let usage = BufferUsages::STORAGE;
         let num_batches = environments.len() as u32;
-        let max_joints = environments
-            .iter()
-            .map(|(joints, _)| joints.len())
-            .max()
-            .unwrap_or(0) as u32;
+
+        let is_mb_for = |env_idx: usize, body_local: u32| -> bool {
+            if env_idx >= is_mb_body.len() {
+                return false;
+            }
+            is_mb_body[env_idx]
+                .get(body_local as usize)
+                .copied()
+                .unwrap_or(false)
+        };
+
+        // Per-batch joint count drops the MB-touching joints, since they
+        // get routed through the multibody constraint path.
+        let mut filtered_lens: Vec<u32> = Vec::with_capacity(num_batches as usize);
+        for (env_idx, (joints, body_ids)) in environments.iter().enumerate() {
+            let mut count = 0u32;
+            for (_, joint) in joints.iter() {
+                let a = body_ids.get(&joint.body1()).copied();
+                let b = body_ids.get(&joint.body2()).copied();
+                let skip_a = a.map(|id| is_mb_for(env_idx, id)).unwrap_or(false);
+                let skip_b = b.map(|id| is_mb_for(env_idx, id)).unwrap_or(false);
+                if !skip_a && !skip_b {
+                    count += 1;
+                }
+            }
+            filtered_lens.push(count);
+        }
+        let max_joints = filtered_lens.iter().copied().max().unwrap_or(0);
 
         let mut global_num_colors = 0u32;
         let mut global_max_color_group_len = 0u32;
@@ -142,12 +185,19 @@ impl GpuImpulseJointSet {
         let mut per_env_color_groups: Vec<Vec<u32>> = Vec::new();
 
         for (env_idx, (joints, body_ids)) in environments.iter().enumerate() {
-            let len = joints.len() as u32;
+            let len = filtered_lens[env_idx];
             all_num_joints.push(len);
 
-            // Convert joints.
+            // Convert joints, dropping any with at least one multibody side.
             let mut unsorted_gpu_joints = vec![];
             for (_, joint) in joints.iter() {
+                let a = body_ids.get(&joint.body1()).copied();
+                let b = body_ids.get(&joint.body2()).copied();
+                let skip_a = a.map(|id| is_mb_for(env_idx, id)).unwrap_or(false);
+                let skip_b = b.map(|id| is_mb_for(env_idx, id)).unwrap_or(false);
+                if skip_a || skip_b {
+                    continue;
+                }
                 unsorted_gpu_joints.push(convert_impulse_joint(joint, body_ids));
             }
 

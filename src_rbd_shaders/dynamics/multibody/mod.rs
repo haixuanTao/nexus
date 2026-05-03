@@ -35,6 +35,7 @@
 mod contact_constraints;
 mod forward_kinematics;
 mod gravity;
+mod impulse_joint_constraints;
 mod integrate;
 mod jacobian;
 mod joint_constraints;
@@ -47,6 +48,7 @@ mod velocity;
 pub use contact_constraints::*;
 pub use forward_kinematics::*;
 pub use gravity::*;
+pub use impulse_joint_constraints::*;
 pub use integrate::*;
 pub use jacobian::*;
 pub use joint_constraints::*;

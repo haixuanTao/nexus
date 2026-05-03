@@ -361,16 +361,21 @@ impl GpuPhysicsState {
         // its own id (free body) or a shared multibody-group id. Bodies in the
         // same multibody collapse to a single node for impulse-joint coloring,
         // matching rapier's rule.
+        //
+        // We also build `is_mb_body[env][body_local]` — true iff the body is
+        // part of some multibody. The regular `GpuImpulseJointSet` skips any
+        // joint touching such a body; those joints are routed to
+        // `GpuMultibodySet::set_impulse_joints` instead so they go through
+        // the generic `M⁻¹·Jᵀ` solver path.
         #[cfg(feature = "dim3")]
-        let multibody_groups: Vec<Vec<u32>> = {
+        let (multibody_groups, is_mb_body): (Vec<Vec<u32>>, Vec<Vec<bool>>) = {
             let mut all_groups: Vec<Vec<u32>> = Vec::with_capacity(num_batches as usize);
+            let mut all_is_mb: Vec<Vec<bool>> = Vec::with_capacity(num_batches as usize);
             for (env_idx, (mb_set, body_ids, _)) in multibody_envs.iter().enumerate() {
                 let _ = env_idx;
                 let max_id = body_ids.values().copied().max().unwrap_or_default();
                 let mut group: Vec<u32> = (0..=max_id).collect();
-                // Assign a unique group id per multibody. We start above
-                // `max_body_id + 1` so multibody groups never collide with
-                // free-body ids that aren't part of any multibody.
+                let mut is_mb: Vec<bool> = vec![false; (max_id + 1) as usize];
                 let mut next_group = max_id + 1;
                 for mb in mb_set.multibodies() {
                     let g = next_group;
@@ -378,20 +383,24 @@ impl GpuPhysicsState {
                     for link in mb.links() {
                         if let Some(&id) = body_ids.get(&link.rigid_body_handle()) {
                             group[id as usize] = g;
+                            is_mb[id as usize] = true;
                         }
                     }
                 }
                 all_groups.push(group);
+                all_is_mb.push(is_mb);
             }
-            all_groups
+            (all_groups, all_is_mb)
         };
         #[cfg(not(feature = "dim3"))]
-        let multibody_groups: Vec<Vec<u32>> = Vec::new();
+        let (multibody_groups, is_mb_body): (Vec<Vec<u32>>, Vec<Vec<bool>>) =
+            (Vec::new(), Vec::new());
 
-        let joints = GpuImpulseJointSet::from_rapier_with_groups(
+        let joints = GpuImpulseJointSet::from_rapier_filtered(
             backend,
             &joint_env_refs,
             &multibody_groups,
+            &is_mb_body,
         );
 
         // Convert multibodies (3D only).
@@ -412,6 +421,23 @@ impl GpuPhysicsState {
                 max_colliders as u32,
             );
             mb.set_visible_dt(backend, multibody_dt);
+
+            // Route MB-touching impulse joints (those skipped by the
+            // regular `GpuImpulseJointSet`) to the multibody generic
+            // constraint path.
+            let imp_refs: Vec<(
+                &crate::rapier::dynamics::ImpulseJointSet,
+                &MultibodyJointSet,
+                &HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
+                &RigidBodySet,
+            )> = joint_envs
+                .iter()
+                .zip(multibody_envs.iter())
+                .map(|((imp, body_ids), (mb_set, _, bodies))| {
+                    (*imp, *mb_set, body_ids, *bodies)
+                })
+                .collect();
+            mb.set_impulse_joints(backend, &imp_refs);
             mb
         };
 
