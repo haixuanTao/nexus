@@ -35,14 +35,25 @@ pub fn count_free_ang_dofs(locked: u32) -> u32 {
 ///
 /// Mirrors rapier's `MultibodyJoint::body_to_parent`: starts from `joint_rot * local_frame_b⁻¹`,
 /// prepends a translation for each free linear DOF, and finally composes with `local_frame_a`.
-pub fn body_to_parent(stat: &MultibodyLinkStatic, link: &MultibodyLinkWorkspace) -> Pose {
+///
+/// Takes the workspace fields by reference so that callers don't have to
+/// materialise the full ~240 B struct in Function-storage memory just to
+/// access two small fields. The `&[f32; MAX_JOINT_DOFS]` form means the
+/// coords array stays in storage memory rather than being copied through a
+/// Function-storage temporary at the call boundary.
+#[inline]
+pub fn body_to_parent(
+    stat: &MultibodyLinkStatic,
+    joint_rot: Rotation,
+    coords: &[f32; MAX_JOINT_DOFS],
+) -> Pose {
     let locked = stat.data.locked_axes;
     let mut transform =
-        Pose::from_parts(Vector::ZERO, link.joint_rot) * stat.data.local_frame_b.inverse();
+        Pose::from_parts(Vector::ZERO, joint_rot) * stat.data.local_frame_b.inverse();
 
     for i in 0..DIM {
         if (locked & (1 << i)) == 0 {
-            let t = Vector::ith(i as usize, link.coords.read(i as usize));
+            let t = Vector::ith(i as usize, coords.read(i as usize));
             transform = Pose::from_parts(t, Rotation::IDENTITY) * transform;
         }
     }

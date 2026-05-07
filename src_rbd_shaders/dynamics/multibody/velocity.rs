@@ -12,14 +12,17 @@ use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::utils::{Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Vector, gcross_av};
 
-use super::types::{MAX_JOINT_DOFS, MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
+use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 
-/// Body-local velocity contributed by this joint, given the joint's free-DOF
-/// velocities `vels` (rapier's `MultibodyJoint::jacobian_mul_coordinates`).
+/// Body-local velocity contributed by this joint, reading the joint's free-DOF
+/// velocities directly from `vel_slice[assembly_id..]` rather than via a stack
+/// array. The stack version forces a `[f32; MAX_JOINT_DOFS]` Function-storage
+/// variable which spills to private memory.
 #[inline]
 fn jacobian_mul_coordinates(
     locked_axes: u32,
-    vels: [f32; MAX_JOINT_DOFS],
+    assembly_id: u32,
+    vel_slice: &Slice<f32>,
 ) -> (Vector, AngVector) {
     let mut lin = Vector::ZERO;
     #[cfg(feature = "dim3")]
@@ -30,7 +33,8 @@ fn jacobian_mul_coordinates(
 
     for i in 0..DIM {
         if (locked_axes & (1 << i)) == 0 {
-            lin += Vector::ith(i as usize, vels[curr as usize]);
+            let v = vel_slice.read((assembly_id + curr) as usize);
+            lin += Vector::ith(i as usize, v);
             curr += 1;
         }
     }
@@ -41,20 +45,21 @@ fn jacobian_mul_coordinates(
         #[cfg(feature = "dim3")]
         {
             let dof_id = (!ang_locked & 0x7).trailing_zeros();
-            ang += Vector::ith(dof_id as usize, vels[curr as usize]);
+            let v = vel_slice.read((assembly_id + curr) as usize);
+            ang += Vector::ith(dof_id as usize, v);
         }
         #[cfg(feature = "dim2")]
         {
-            ang += vels[curr as usize];
+            let v = vel_slice.read((assembly_id + curr) as usize);
+            ang += v;
         }
     } else if num_ang == 3 {
         #[cfg(feature = "dim3")]
         {
-            ang += AngVector::new(
-                vels[curr as usize],
-                vels[(curr + 1) as usize],
-                vels[(curr + 2) as usize],
-            );
+            let vx = vel_slice.read((assembly_id + curr) as usize);
+            let vy = vel_slice.read((assembly_id + curr + 1) as usize);
+            let vz = vel_slice.read((assembly_id + curr + 2) as usize);
+            ang += AngVector::new(vx, vy, vz);
         }
     }
     (lin, ang)
@@ -110,56 +115,63 @@ pub fn gpu_mb_update_velocities(
     for k in 0..num_links {
         let k_usize = k as usize;
         let stat = stat_slice.read(k_usize);
-        let mut ws = ws_slice.read(k_usize);
 
-        // Gather this joint's free-DOF velocities from the flat tensor.
-        let mut vels = [0.0f32; MAX_JOINT_DOFS];
-        for d in 0..stat.ndofs {
-            vels[d as usize] = vel_slice.read((stat.assembly_id + d) as usize);
-        }
-        let (jv_local_lin, jv_local_ang) =
-            jacobian_mul_coordinates(stat.data.locked_axes, vels);
+        // Joint-local body velocity contribution. Reads `dof_velocities` directly
+        // — no `[f32; MAX_JOINT_DOFS]` Function-storage scratch.
+        let (jv_local_lin, jv_local_ang) = jacobian_mul_coordinates(
+            stat.data.locked_axes,
+            stat.assembly_id,
+            &vel_slice,
+        );
 
-        if k == 0 {
+        let (joint_velocity, rb_vels) = if k == 0 {
             // Root: joint velocity already in world frame.
-            ws.joint_velocity = Velocity::new(jv_local_lin, jv_local_ang);
-            ws.rb_vels = ws.joint_velocity;
+            let jv = Velocity::new(jv_local_lin, jv_local_ang);
+            (jv, jv)
         } else {
             let parent_id = stat.parent_link_id as usize;
-            // Parent workspace is read-only here; reference avoids a 240 B copy.
+            // Read the parent's needed fields by-reference; avoid a full
+            // workspace copy.
             let parent_ws = ws_slice.at(parent_id);
+            let parent_to_world_rot = parent_ws.local_to_world.rotation;
+            let parent_world_com_pose = parent_ws.local_to_world;
+            let parent_rb_lin = parent_ws.rb_vels.linear;
+            let parent_rb_ang = parent_ws.rb_vels.angular;
+
             let parent_lmp = local_mprops_slice.read(parent_id);
-            let transform_rot =
-                parent_ws.local_to_world.rotation * stat.data.local_frame_a.rotation;
+            let transform_rot = parent_to_world_rot * stat.data.local_frame_a.rotation;
 
-            ws.joint_velocity.linear = transform_rot * jv_local_lin;
-            // 3D: the angular velocity is rotated like a vector. 2D: the scalar
-            // angular velocity is invariant under rotation, so transform_rot is
-            // unused for the angular component.
             #[cfg(feature = "dim3")]
-            {
-                ws.joint_velocity.angular = transform_rot * jv_local_ang;
-            }
+            let joint_velocity = Velocity::new(
+                transform_rot * jv_local_lin,
+                transform_rot * jv_local_ang,
+            );
             #[cfg(feature = "dim2")]
-            {
-                ws.joint_velocity.angular = jv_local_ang;
-            }
+            let joint_velocity = Velocity::new(transform_rot * jv_local_lin, jv_local_ang);
 
-            // new_rb_vels = parent_rb.vels + joint_velocity, then shift corrections.
-            let mut new_lin = parent_ws.rb_vels.linear + ws.joint_velocity.linear;
-            let new_ang = parent_ws.rb_vels.angular + ws.joint_velocity.angular;
+            // Read self fields needed for the shift correction without
+            // materialising the whole struct.
+            let (self_local_to_world, self_shift23) = {
+                let ws_ref = ws_slice.at(k_usize);
+                (ws_ref.local_to_world, ws_ref.shift23)
+            };
 
             let lmp = local_mprops_slice.read(k_usize);
-            let world_com = ws.local_to_world * lmp.com;
-            let parent_world_com = parent_ws.local_to_world * parent_lmp.com;
+            let world_com = self_local_to_world * lmp.com;
+            let parent_world_com = parent_world_com_pose * parent_lmp.com;
             let shift = world_com - parent_world_com;
 
-            new_lin += gcross_av(parent_ws.rb_vels.angular, shift);
-            new_lin += gcross_av(ws.joint_velocity.angular, ws.shift23);
+            let mut new_lin = parent_rb_lin + joint_velocity.linear;
+            let new_ang = parent_rb_ang + joint_velocity.angular;
+            new_lin += gcross_av(parent_rb_ang, shift);
+            new_lin += gcross_av(joint_velocity.angular, self_shift23);
 
-            ws.rb_vels = Velocity::new(new_lin, new_ang);
-        }
+            (joint_velocity, Velocity::new(new_lin, new_ang))
+        };
 
-        ws_slice.write(k_usize, ws);
+        // Field-targeted writes: avoid the round-trip of the full ~240 B struct.
+        let link_mut = ws_slice.at_mut(k_usize);
+        link_mut.joint_velocity = joint_velocity;
+        link_mut.rb_vels = rb_vels;
     }
 }

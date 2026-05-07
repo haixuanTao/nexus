@@ -23,9 +23,12 @@ use khal::re_exports::wgpu;
 use nexus_testbed3d::SimulationState;
 use nexus_testbed3d::rbd::GpuBackend;
 use nexus_testbed3d::rbd::backend::SimulationBackend;
+use nexus_testbed3d::rbd::BatchEnvironment;
+use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
 use rapier3d::prelude::*;
+use std::collections::HashMap;
 
-fn build_scene(num_links: usize) -> SimulationState {
+fn build_one_batch(num_links: usize) -> BatchEnvironment {
     let mut bodies = RigidBodySet::new();
     let mut colliders = ColliderSet::new();
     let impulse_joints = ImpulseJointSet::new();
@@ -60,7 +63,21 @@ fn build_scene(num_links: usize) -> SimulationState {
         parent_handle = handle;
     }
 
-    SimulationState::single_with_multibody(bodies, colliders, impulse_joints, multibody_joints)
+    BatchEnvironment {
+        bodies,
+        colliders,
+        impulse_joints,
+        multibody_joints,
+        sim_params: GpuSimParams::default(),
+        visuals: HashMap::new(),
+    }
+}
+
+fn build_scene(num_links: usize, num_batches: usize) -> SimulationState {
+    let environments = (0..num_batches.max(1))
+        .map(|_| build_one_batch(num_links))
+        .collect();
+    SimulationState { environments }
 }
 
 struct Sample {
@@ -95,6 +112,17 @@ async fn bench_backend(
     n_warmup: usize,
     n_iters: usize,
 ) -> Sample {
+    bench_backend_inner(label, backend, state, n_warmup, n_iters, true).await
+}
+
+async fn bench_backend_inner(
+    label: &'static str,
+    backend: &KhalGpuBackend,
+    state: &SimulationState,
+    n_warmup: usize,
+    n_iters: usize,
+    print_passes: bool,
+) -> Sample {
     let mut phys = GpuBackend::try_new(backend, state)
         .await
         .unwrap_or_else(|e| panic!("{label} backend init failed: {e}"));
@@ -120,13 +148,19 @@ async fn bench_backend(
     // Print the top per-pass GPU timings from the last iteration (so the
     // user can see which kernel still dominates after warmup). The CPU
     // backend reports an empty list — guard with `is_empty()`.
-    if let Some(stats) = last_stats {
-        if !stats.gpu_pass_times.is_empty() {
-            let mut passes = stats.gpu_pass_times.clone();
-            passes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            println!("    top passes ({} total, {:.3} ms):", passes.len(), stats.gpu_total_time);
-            for (label, ms) in passes.iter().take(8) {
-                println!("      {:>9.3} ms  {}", ms, label);
+    if print_passes {
+        if let Some(stats) = last_stats {
+            if !stats.gpu_pass_times.is_empty() {
+                let mut passes = stats.gpu_pass_times.clone();
+                passes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                println!(
+                    "    top passes ({} total, {:.3} ms):",
+                    passes.len(),
+                    stats.gpu_total_time
+                );
+                for (l, ms) in passes.iter().take(8) {
+                    println!("      {:>9.3} ms  {}", ms, l);
+                }
             }
         }
     }
@@ -146,30 +180,35 @@ async fn bench_backend(
     }
 }
 
-async fn run(num_links: usize, n_warmup: usize, n_iters: usize) {
+async fn webgpu_backend() -> KhalGpuBackend {
+    // The pendulum scene's narrow-phase shader needs more storage buffers
+    // and a larger workgroup-storage budget than wgpu's defaults — mirror
+    // the limits the testbed requests.
+    let limits = wgpu::Limits {
+        max_buffer_size: 1_000_000_000,
+        max_storage_buffer_binding_size: 1_000_000_000,
+        max_storage_buffers_per_shader_stage: 14,
+        max_compute_workgroup_storage_size: 19_904,
+        ..Default::default()
+    };
+    let mut webgpu = WebGpu::new(wgpu::Features::default(), limits)
+        .await
+        .expect("Failed to initialize WebGPU backend");
+    webgpu.force_buffer_copy_src = true;
+    KhalGpuBackend::WebGpu(webgpu)
+}
+
+async fn run(num_links: usize, num_batches: usize, n_warmup: usize, n_iters: usize) {
     println!(
-        "Multibody pendulum benchmark — {num_links} links, {n_warmup} warmup, {n_iters} timed steps"
+        "Multibody pendulum benchmark — {num_links} links × {num_batches} batches, \
+         {n_warmup} warmup + {n_iters} timed steps"
     );
 
-    let state = build_scene(num_links);
+    let state = build_scene(num_links, num_batches);
+    let webgpu = webgpu_backend().await;
 
-    // WebGPU backend. The pendulum scene's narrow-phase shader needs more
-    // storage buffers and a larger workgroup-storage budget than wgpu's
-    // defaults — mirror the limits the testbed requests.
     let webgpu_sample = {
-        let limits = wgpu::Limits {
-            max_buffer_size: 1_000_000_000,
-            max_storage_buffer_binding_size: 1_000_000_000,
-            max_storage_buffers_per_shader_stage: 14,
-            max_compute_workgroup_storage_size: 19_904,
-            ..Default::default()
-        };
-        let mut webgpu = WebGpu::new(wgpu::Features::default(), limits)
-            .await
-            .expect("Failed to initialize WebGPU backend");
-        webgpu.force_buffer_copy_src = true;
-        let backend = KhalGpuBackend::WebGpu(webgpu);
-        let s = bench_backend("WebGPU", &backend, &state, n_warmup, n_iters).await;
+        let s = bench_backend("WebGPU", &webgpu, &state, n_warmup, n_iters).await;
         s.print();
         s
     };
@@ -205,11 +244,73 @@ async fn run(num_links: usize, n_warmup: usize, n_iters: usize) {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let num_links = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20);
-    let n_warmup = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
-    let n_iters = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
+/// Sweep mode: hold `num_links` fixed and vary `num_batches` over a power-of-two
+/// range, reporting the crossover where GPU catches up to CPU. The headline
+/// number for "is the GPU pipeline competitive" is the smallest batch count at
+/// which the WebGPU/CPU ratio drops below `4×`.
+#[cfg(feature = "cpu")]
+async fn sweep(num_links: usize, max_batches: usize, n_warmup: usize, n_iters: usize) {
+    println!(
+        "Multibody pendulum sweep — {num_links} links, batches 1..={max_batches} (×2 each step), \
+         {n_warmup} warmup + {n_iters} timed steps each"
+    );
+    println!(
+        "{:>7}  {:>14}  {:>14}  {:>10}  {}",
+        "batches", "WebGPU avg", "CPU avg", "ratio", "verdict"
+    );
 
-    pollster::block_on(run(num_links, n_warmup, n_iters));
+    let webgpu = webgpu_backend().await;
+    let cpu = KhalGpuBackend::Cpu;
+
+    let mut bs = 1;
+    while bs <= max_batches {
+        let state = build_scene(num_links, bs);
+        let g = bench_backend_inner("WebGPU", &webgpu, &state, n_warmup, n_iters, false).await;
+        let c = bench_backend_inner("Nexus-CPU", &cpu, &state, n_warmup, n_iters, false).await;
+        let ratio = g.per_step_avg.as_secs_f64() / c.per_step_avg.as_secs_f64();
+        let verdict = if ratio < 1.0 {
+            "GPU faster"
+        } else if ratio < 4.0 {
+            "GPU within 4×"
+        } else {
+            "GPU slower"
+        };
+        println!(
+            "{:>7}  {:>14}  {:>14}  {:>9.2}×  {}",
+            bs,
+            Sample::fmt_us(g.per_step_avg),
+            Sample::fmt_us(c.per_step_avg),
+            ratio,
+            verdict,
+        );
+        bs *= 2;
+    }
+}
+
+fn main() {
+    // Args:
+    //   bench_multibody_pendulum3 [num_links] [num_batches] [num_warmup] [num_iters]
+    //   bench_multibody_pendulum3 sweep [num_links] [max_batches] [num_warmup] [num_iters]
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.get(1).map(|s| s.as_str()) == Some("sweep") {
+        #[cfg(feature = "cpu")]
+        {
+            let num_links = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20);
+            let max_batches = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(256);
+            let n_warmup = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(5);
+            let n_iters = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(30);
+            pollster::block_on(sweep(num_links, max_batches, n_warmup, n_iters));
+        }
+        #[cfg(not(feature = "cpu"))]
+        eprintln!("sweep mode requires the `cpu` feature");
+        return;
+    }
+
+    let num_links = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20);
+    let num_batches = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let n_warmup = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+    let n_iters = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(200);
+
+    pollster::block_on(run(num_links, num_batches, n_warmup, n_iters));
 }

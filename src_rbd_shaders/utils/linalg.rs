@@ -272,6 +272,57 @@ pub fn gemv_tr_spatial<const XDIM: usize>(
     }
 }
 
+/// `y := beta * y + alpha * Aᵀ · (x_lin, x_ang)` for a `SPATIAL_DIM × ndofs`
+/// jacobian split into its linear and angular blocks. The split form lets the
+/// `x` vector live in registers (a `Vec3` + `Vec3` in 3D, or `Vec2` + `f32` in
+/// 2D) instead of a `[f32; SPATIAL_DIM]` Function-storage array.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemv_tr_spatial_split(
+    buf_y: &mut [f32],
+    y_offset: usize,
+    alpha: f32,
+    buf_a: &[f32],
+    a: MatSlice,
+    x_lin: Vec3,
+    x_ang: Vec3,
+    beta: f32,
+) {
+    for c in 0..a.cols {
+        let s = buf_a.read(a.idx(0, c)) * x_lin.x
+            + buf_a.read(a.idx(1, c)) * x_lin.y
+            + buf_a.read(a.idx(2, c)) * x_lin.z
+            + buf_a.read(a.idx(3, c)) * x_ang.x
+            + buf_a.read(a.idx(4, c)) * x_ang.y
+            + buf_a.read(a.idx(5, c)) * x_ang.z;
+        let idx = y_offset + c as usize;
+        let cur = buf_y.read(idx);
+        buf_y.write(idx, beta * cur + alpha * s);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemv_tr_spatial_split(
+    buf_y: &mut [f32],
+    y_offset: usize,
+    alpha: f32,
+    buf_a: &[f32],
+    a: MatSlice,
+    x_lin: Vec2,
+    x_ang: f32,
+    beta: f32,
+) {
+    for c in 0..a.cols {
+        let s = buf_a.read(a.idx(0, c)) * x_lin.x
+            + buf_a.read(a.idx(1, c)) * x_lin.y
+            + buf_a.read(a.idx(2, c)) * x_ang;
+        let idx = y_offset + c as usize;
+        let cur = buf_y.read(idx);
+        buf_y.write(idx, beta * cur + alpha * s);
+    }
+}
+
 /// `[t]_×ᵀ`, the transpose of the cross-product matrix: `skew_tr(t) · v = v × t`.
 ///
 /// Used in the jacobian propagation so that, given `t = shift02` or `shift23`

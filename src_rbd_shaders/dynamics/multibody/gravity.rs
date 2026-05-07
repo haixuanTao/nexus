@@ -22,7 +22,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::linalg::{MatSlice, fill, gemv_tr_spatial};
+use crate::utils::linalg::{MatSlice, fill, gemv_tr_spatial_split};
 use crate::utils::{Slice, SliceMut};
 use crate::{AngVector, Vector, gcross_av};
 
@@ -87,7 +87,26 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     let g = Vec2::new(gravity[0], gravity[1]);
 
     for k in 0..num_links {
-        let mut ws = ws_slice.read(k as usize);
+        // Reference-only access to `ws`. Gather just the small fields we
+        // need; full-struct read materialises a 240 B copy in Function memory.
+        let (
+            self_joint_vel_lin,
+            self_joint_vel_ang,
+            self_shift02,
+            self_shift23,
+            self_local_to_world,
+            self_rb_ang,
+        ) = {
+            let ws = ws_slice.at(k as usize);
+            (
+                ws.joint_velocity.linear,
+                ws.joint_velocity.angular,
+                ws.shift02,
+                ws.shift23,
+                ws.local_to_world,
+                ws.rb_vels.angular,
+            )
+        };
 
         // Build kinematic acceleration `acc` (eqs 42–45).
         let mut acc_lin = Vector::ZERO;
@@ -100,31 +119,39 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
             let stat = stat_slice.read(k as usize);
             // Parent workspace is read-only here; reference avoids a 240 B copy.
             let parent_ws = ws_slice.at(stat.parent_link_id as usize);
-            let parent_acc = parent_ws.kinematic_acc;
+            let parent_acc_lin = parent_ws.kinematic_acc.linear;
+            let parent_acc_ang = parent_ws.kinematic_acc.angular;
             let parent_ang = parent_ws.rb_vels.angular;
 
-            acc_lin = parent_acc.linear;
-            acc_ang = parent_acc.angular;
+            acc_lin = parent_acc_lin;
+            acc_ang = parent_acc_ang;
 
             // 2 · parent_ω × joint_vel.linvel
-            acc_lin += gcross_av(parent_ang, ws.joint_velocity.linear) * 2.0;
+            acc_lin += gcross_av(parent_ang, self_joint_vel_lin) * 2.0;
             // parent_ω × joint_vel.angvel — vanishes in 2D (angular is scalar).
             #[cfg(feature = "dim3")]
             {
-                acc_ang += parent_ang.cross(ws.joint_velocity.angular);
+                acc_ang += parent_ang.cross(self_joint_vel_ang);
+            }
+            #[cfg(feature = "dim2")]
+            {
+                let _ = self_joint_vel_ang;
             }
             // parent_ω × (parent_ω × shift02)
-            acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, ws.shift02));
+            acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, self_shift02));
             // parent_α × shift02
-            acc_lin += gcross_av(parent_acc.angular, ws.shift02);
+            acc_lin += gcross_av(parent_acc_ang, self_shift02);
+        } else {
+            let _ = self_joint_vel_ang;
+            let _ = self_shift02;
         }
         // Self-shift: rb.ω × (rb.ω × shift23), acc.ω × shift23.
-        let rb_ang = ws.rb_vels.angular;
-        acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, ws.shift23));
-        acc_lin += gcross_av(acc_ang, ws.shift23);
+        let rb_ang = self_rb_ang;
+        acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
+        acc_lin += gcross_av(acc_ang, self_shift23);
 
-        ws.kinematic_acc = Velocity::new(acc_lin, acc_ang);
-        ws_slice.write(k as usize, ws);
+        // Field-targeted write — only `kinematic_acc` changes.
+        ws_slice.at_mut(k as usize).kinematic_acc = Velocity::new(acc_lin, acc_ang);
 
         let lmp = local_mprops_slice.read(k as usize);
         let inv_mass_x = lmp.inv_mass.x;
@@ -132,7 +159,11 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
             continue;
         }
         let mass = 1.0 / inv_mass_x;
-        let rb_inertia = link_world_inertia(&ws, &lmp);
+        // `link_world_inertia` only reads `local_to_world.rotation`.
+        // Reuse the value we already pulled out; the helper takes a
+        // workspace ref so synthesise one via `at()`.
+        let rb_inertia = link_world_inertia(ws_slice.at(k as usize), &lmp);
+        let _ = self_local_to_world;
 
         // Gyroscopic torque: `rb.ω × (I · rb.ω)` in 3D, 0 in 2D.
         #[cfg(feature = "dim3")]
@@ -153,26 +184,22 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
         let f_lin = (g - acc_lin) * mass;
         let f_ang = -gyroscopic - i_acc_ang;
 
-        // Pack `(f_lin, f_ang)` as a flat SPATIAL_DIM-vector for the gemv.
-        #[cfg(feature = "dim3")]
-        let external_forces: [f32; SPATIAL_DIM] =
-            [f_lin.x, f_lin.y, f_lin.z, f_ang.x, f_ang.y, f_ang.z];
-        #[cfg(feature = "dim2")]
-        let external_forces: [f32; SPATIAL_DIM] = [f_lin.x, f_lin.y, f_ang];
-
         let body_jacobian = MatSlice::dense(
             mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
             SPATIAL_DIM as u32,
             ndofs,
         );
 
-        gemv_tr_spatial(
+        // Split form: takes Vector + AngVector, no `[f32; SPATIAL_DIM]`
+        // Function-storage scratch.
+        gemv_tr_spatial_split(
             gen_forces,
             gen_base,
             1.0,
             body_jacobians,
             body_jacobian,
-            external_forces,
+            f_lin,
+            f_ang,
             1.0,
         );
     }

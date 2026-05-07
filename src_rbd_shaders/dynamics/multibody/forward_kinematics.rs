@@ -62,40 +62,49 @@ pub fn gpu_mb_forward_kinematics(
     // shared pose buffer for downstream consumers (FK of children, collision).
     {
         let stat = stat_slice.read(0);
-        let mut link = ws_slice.read(0);
         let root_pose = if mb.root_is_dynamic == 0 {
             poses_slice.read(stat.rb_id as usize)
         } else {
-            let pose = body_to_parent(&stat, &link);
+            // Pass the workspace fields by reference: rust-gpu's calling
+            // convention copies arrays through Function storage when passed
+            // by value, but `&[f32; N]` stays as a storage-buffer pointer.
+            let ws_ref = ws_slice.at(0);
+            let pose = body_to_parent(&stat, ws_ref.joint_rot, &ws_ref.coords);
             poses_slice.write(stat.rb_id as usize, pose);
             pose
         };
-        link.local_to_parent = root_pose;
-        link.local_to_world = root_pose;
-        ws_slice.write(0, link);
+        let link_mut = ws_slice.at_mut(0);
+        link_mut.local_to_parent = root_pose;
+        link_mut.local_to_world = root_pose;
     }
 
     for k in 1..num_links {
         let k_usize = k as usize;
         let stat = stat_slice.at(k_usize);
-        // TODO(PERF): avoid this copy?
-        let mut link = ws_slice.read(k_usize);
-        let parent_link = ws_slice.at(stat.parent_link_id as usize);
 
-        let local_to_parent = body_to_parent(&stat, &link);
-        let local_to_world = parent_link.local_to_world * local_to_parent;
-        link.local_to_parent = local_to_parent;
-        link.local_to_world = local_to_world;
+        let local_to_parent;
+        let parent_to_world;
+        {
+            let ws_ref = ws_slice.at(k_usize);
+            let parent_ref = ws_slice.at(stat.parent_link_id as usize);
+            parent_to_world = parent_ref.local_to_world;
+            local_to_parent = body_to_parent(&stat, ws_ref.joint_rot, &ws_ref.coords);
+        }
+        let local_to_world = parent_to_world * local_to_parent;
 
         let parent_lmp = local_mprops_slice.read(stat.parent_link_id as usize);
         let lmp = local_mprops_slice.read(k_usize);
         let world_com = local_to_world * lmp.com; // c3 in Rapier
-        let parent_com_world = parent_link.local_to_world * parent_lmp.com; // c2 in Rapier
+        let parent_com_world = parent_to_world * parent_lmp.com; // c2 in Rapier
         let child_anchor_world = local_to_world * stat.data.local_frame_b.translation; // c0 in Rapier
-        link.shift02 = child_anchor_world - parent_com_world;
-        link.shift23 = world_com - child_anchor_world;
+        let shift02 = child_anchor_world - parent_com_world;
+        let shift23 = world_com - child_anchor_world;
 
-        ws_slice.write(k_usize, link);
+        let link_mut = ws_slice.at_mut(k_usize);
+        link_mut.local_to_parent = local_to_parent;
+        link_mut.local_to_world = local_to_world;
+        link_mut.shift02 = shift02;
+        link_mut.shift23 = shift23;
         poses_slice.write(stat.rb_id as usize, local_to_world);
     }
 }

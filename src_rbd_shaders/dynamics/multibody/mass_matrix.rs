@@ -28,7 +28,7 @@ use crate::{ANG_DIM, DIM};
 #[cfg(feature = "dim3")]
 use crate::rotation_to_matrix;
 
-use super::jacobian::joint_jacobian;
+use super::jacobian::joint_jacobian_column;
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 
 /// World-space inertia for this link.
@@ -407,19 +407,11 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
             }
 
             // Joint jacobian contribution to Coriolis (skipped for kinematic joints).
+            // Computes the joint jacobian column-by-column in registers — no
+            // `[f32; SPATIAL_DIM * SPATIAL_DIM]` Function-storage scratch.
             if stat.kinematic == 0 {
-                let mut tmp = [0.0f32; SPATIAL_DIM * SPATIAL_DIM];
-                let tmp_view = MatSlice::dense(0, SPATIAL_DIM as u32, SPATIAL_DIM as u32);
-                let joint_j = tmp_view.columns(0, stat.ndofs);
-                joint_jacobian(
-                    &stat,
-                    parent_link.local_to_world.rotation * stat.data.local_frame_a.rotation,
-                    &mut tmp,
-                    joint_j,
-                );
-                // coriolis_v_part += 2 · parent_w · rb_joint_j_v.
-                // coriolis_w_part += parent_w · rb_joint_j_w (3D only — angular block
-                // collapses to a scalar in 2D).
+                let transform_rot =
+                    parent_link.local_to_world.rotation * stat.data.local_frame_a.rotation;
                 let coriolis_v_part = coriolis_v_i.columns(stat.assembly_id, stat.ndofs);
                 let coriolis_w_part = coriolis_w_i.columns(stat.assembly_id, stat.ndofs);
 
@@ -427,16 +419,7 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                 {
                     let parent_w_skew = crate::utils::linalg::skew(parent_w);
                     for c in 0..stat.ndofs {
-                        let jv = Vec3::new(
-                            tmp[tmp_view.idx(0, c)],
-                            tmp[tmp_view.idx(1, c)],
-                            tmp[tmp_view.idx(2, c)],
-                        );
-                        let jw = Vec3::new(
-                            tmp[tmp_view.idx(3, c)],
-                            tmp[tmp_view.idx(4, c)],
-                            tmp[tmp_view.idx(5, c)],
-                        );
+                        let (jv, jw) = joint_jacobian_column(&stat, transform_rot, c);
                         let pv = parent_w_skew * jv;
                         let pw = parent_w_skew * jw;
                         let iv0 = coriolis_v_part.idx(0, c);
@@ -458,12 +441,11 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                     // 2D: rb_joint_j_v = (jv_x, jv_y), parent_w is a scalar ω.
                     // [ω]_× · v = (-ω·v.y, ω·v.x).
                     for c in 0..stat.ndofs {
-                        let jvx = tmp[tmp_view.idx(0, c)];
-                        let jvy = tmp[tmp_view.idx(1, c)];
+                        let (jv, _) = joint_jacobian_column(&stat, transform_rot, c);
                         let iv0 = coriolis_v_part.idx(0, c);
                         let iv1 = coriolis_v_part.idx(1, c);
-                        coriolis_v.write(iv0, coriolis_v.read(iv0) + 2.0 * (-parent_w * jvy));
-                        coriolis_v.write(iv1, coriolis_v.read(iv1) + 2.0 * (parent_w * jvx));
+                        coriolis_v.write(iv0, coriolis_v.read(iv0) + 2.0 * (-parent_w * jv.y));
+                        coriolis_v.write(iv1, coriolis_v.read(iv1) + 2.0 * (parent_w * jv.x));
                     }
                     let _ = coriolis_w_part;
                 }

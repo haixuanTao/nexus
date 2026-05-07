@@ -114,12 +114,92 @@ pub(super) fn joint_jacobian_accumulate(
     } // TODO: num_ang == 2
 }
 
+/// Computes column `c` (`0 ≤ c < stat.ndofs`) of this joint's body jacobian as
+/// the pair `(linear_part, angular_part)`, in registers. Avoids the `[f32; 36]`
+/// Function-storage scratch the Coriolis assembly used to need.
+///
+/// In 3D, returns `(Vec3, Vec3)`. In 2D, returns `(Vec2, f32)`.
+#[cfg(feature = "dim3")]
+#[inline]
+pub(super) fn joint_jacobian_column(
+    stat: &MultibodyLinkStatic,
+    transform_rot: Rotation,
+    c: u32,
+) -> (Vector, glamx::Vec3) {
+    let locked = stat.data.locked_axes;
+    let mut curr_free = 0u32;
+
+    // Linear DOFs in axis order.
+    for i in 0..DIM {
+        if (locked & (1 << i)) == 0 {
+            if curr_free == c {
+                let axis = transform_rot * Vector::ith(i as usize, 1.0);
+                return (axis, glamx::Vec3::ZERO);
+            }
+            curr_free += 1;
+        }
+    }
+
+    // Angular DOFs.
+    let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
+    let num_ang = ANG_DIM - ang_locked.count_ones();
+    if num_ang == 1 {
+        if curr_free == c {
+            let dof_id = (!ang_locked & 0x7).trailing_zeros();
+            let axis = transform_rot * Vector::ith(dof_id as usize, 1.0);
+            return (Vector::ZERO, axis);
+        }
+    } else if num_ang == 3 {
+        // 3 angular DOFs: column c (relative to first angular slot) is column k
+        // of the world rotation matrix.
+        let local_c = c - curr_free;
+        let rotmat = rotation_to_matrix(transform_rot);
+        let axis = if local_c == 0 {
+            rotmat.x_axis
+        } else if local_c == 1 {
+            rotmat.y_axis
+        } else {
+            rotmat.z_axis
+        };
+        return (Vector::ZERO, axis);
+    }
+    (Vector::ZERO, glamx::Vec3::ZERO)
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub(super) fn joint_jacobian_column(
+    stat: &MultibodyLinkStatic,
+    transform_rot: Rotation,
+    c: u32,
+) -> (Vector, f32) {
+    let locked = stat.data.locked_axes;
+    let mut curr_free = 0u32;
+
+    for i in 0..DIM {
+        if (locked & (1 << i)) == 0 {
+            if curr_free == c {
+                let axis = transform_rot * Vector::ith(i as usize, 1.0);
+                return (axis, 0.0);
+            }
+            curr_free += 1;
+        }
+    }
+    let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
+    let num_ang = ANG_DIM - ang_locked.count_ones();
+    if num_ang == 1 && curr_free == c {
+        return (Vector::ZERO, 1.0);
+    }
+    (Vector::ZERO, 0.0)
+}
+
 /// Writes this joint's jacobian (world-frame) into the first `ndofs` columns of
 /// an inline `SPATIAL_DIM × SPATIAL_DIM` scratch `out`, mirroring rapier's
-/// `MultibodyJoint::jacobian`. Used by the Coriolis assembly which needs to
-/// re-read the joint jacobian after building it.
+/// `MultibodyJoint::jacobian`. Kept for callers that need the full table; the
+/// Coriolis path now uses `joint_jacobian_column` instead.
 ///
 /// `transform_rot` maps body-local axes (of the parent's `local_frame_a`) to world.
+#[allow(dead_code)]
 #[inline]
 pub(super) fn joint_jacobian(
     stat: &MultibodyLinkStatic,
