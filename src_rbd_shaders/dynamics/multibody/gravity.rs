@@ -98,7 +98,8 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
 
         if k != 0 {
             let stat = stat_slice.read(k as usize);
-            let parent_ws = ws_slice.read(stat.parent_link_id as usize);
+            // Parent workspace is read-only here; reference avoids a 240 B copy.
+            let parent_ws = ws_slice.at(stat.parent_link_id as usize);
             let parent_acc = parent_ws.kinematic_acc;
             let parent_ang = parent_ws.rb_vels.angular;
 

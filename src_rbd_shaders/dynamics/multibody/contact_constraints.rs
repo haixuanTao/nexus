@@ -259,8 +259,7 @@ pub fn gpu_mb_init_contact_constraints(
         };
         let free_im = if is_self { 0.0 } else { free_mp.inv_mass.x };
 
-        let link_ws_a = ws_slice.read(mb_link_id_a as usize);
-        let link_origin_a = link_ws_a.local_to_world.translation;
+        let link_origin_a = ws_slice.at(mb_link_id_a as usize).local_to_world.translation;
         let link_origin_b_default = link_origin_a;
 
         for k in 0..im.contact.len {
@@ -313,8 +312,7 @@ pub fn gpu_mb_init_contact_constraints(
             // contacts they collapse to zero because both sides are folded
             // into `J_mb` already.
             let (ang_jac_normal, ii_ang_jac_normal) = if is_self {
-                let link_ws_b = ws_slice.read(mb_link_id_b as usize);
-                let link_origin_b = link_ws_b.local_to_world.translation;
+                let link_origin_b = ws_slice.at(mb_link_id_b as usize).local_to_world.translation;
                 let _ = link_origin_b_default;
                 let shift_b = pt_world - link_origin_b;
                 let torque_b_normal = gcross(shift_b, lin_jac);
@@ -437,8 +435,7 @@ pub fn gpu_mb_init_contact_constraints(
                 );
 
                 let (ang_jac_tang, ii_ang_jac_tang) = if is_self {
-                    let link_ws_b = ws_slice.read(mb_link_id_b as usize);
-                    let link_origin_b = link_ws_b.local_to_world.translation;
+                    let link_origin_b = ws_slice.at(mb_link_id_b as usize).local_to_world.translation;
                     let shift_b = pt_world - link_origin_b;
                     let torque_b_tang = gcross(shift_b, free_tangent);
                     fill_contact_jac_row(

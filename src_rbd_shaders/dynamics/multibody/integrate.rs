@@ -107,12 +107,16 @@ pub fn gpu_mb_integrate(
     let dof_vel = Slice(dof_velocities, gen_base);
 
     // Per-link coord / joint_rot update (uses the already-corrected `dof_velocities`).
+    //
+    // Only `coords` (≤ 24 B) and `joint_rot` (16 B) are modified. We mutate them
+    // in place through `at_mut(k)` so SPIR-V emits field-targeted stores instead
+    // of a whole `MultibodyLinkWorkspace` round-trip (~240 B in 3D).
     for k in 0..num_links {
         let k_usize = k as usize;
         let stat = stat_slice.read(k_usize);
-        let mut ws = ws_slice.read(k_usize);
         let locked = stat.data.locked_axes;
         let aid = stat.assembly_id as usize;
+        let ws = ws_slice.at_mut(k_usize);
 
         // Free linear DOFs first, in axis order.
         let mut curr_free = 0u32;
@@ -159,8 +163,6 @@ pub fn gpu_mb_integrate(
             }
         }
         // num_ang == 0: no-op.
-
-        ws_slice.write(k_usize, ws);
     }
 
     // Silence dof_val unused warning — it will be used once we also support

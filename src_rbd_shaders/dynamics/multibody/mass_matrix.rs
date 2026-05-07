@@ -114,7 +114,10 @@ pub fn gpu_mb_mass_matrix(
     fill(mass_matrices, augmented_mass, 0.0);
 
     for k in 0..num_links {
-        let ws = ws_slice.read(k as usize);
+        // Reference-only access: `link_world_inertia` only reads
+        // `ws.local_to_world.rotation`, so a 240 B struct copy here would be
+        // pure waste.
+        let ws = ws_slice.at(k as usize);
         let lmp = local_mprops_slice.read(k as usize);
 
         let inv_mass_x = lmp.inv_mass.x;
@@ -122,7 +125,7 @@ pub fn gpu_mb_mass_matrix(
             continue;
         }
         let mass = 1.0 / inv_mass_x;
-        let inertia = link_world_inertia(&ws, &lmp);
+        let inertia = link_world_inertia(ws, &lmp);
 
         // body_jacobian view for this link.
         let body_jacobian = MatSlice::dense(
@@ -247,7 +250,10 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
 
     for k in 0..num_links {
         let stat = stat_slice.read(k as usize);
-        let ws = ws_slice.read(k as usize);
+        // Many fields of `ws` are read below. Going through a reference lets
+        // SPIR-V emit per-field OpLoads instead of materializing the full
+        // 240 B struct in Function storage.
+        let ws = ws_slice.at(k as usize);
         let lmp = local_mprops_slice.read(k as usize);
 
         let inv_mass_x = lmp.inv_mass.x;
@@ -265,7 +271,7 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
             continue;
         }
         let mass = 1.0 / inv_mass_x;
-        let rb_inertia = link_world_inertia(&ws, &lmp);
+        let rb_inertia = link_world_inertia(ws, &lmp);
 
         let body_jacobian = MatSlice::dense(
             mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
@@ -315,7 +321,7 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
 
         if k != 0 {
             let parent_id = stat.parent_link_id;
-            let parent_link = ws_slice.read(parent_id as usize);
+            let parent_link = ws_slice.at(parent_id as usize);
             let parent_j = MatSlice::dense(
                 mb_jac_base + (parent_id as usize) * SPATIAL_DIM * (ndofs as usize),
                 SPATIAL_DIM as u32,

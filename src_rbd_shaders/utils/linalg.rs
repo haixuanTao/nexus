@@ -163,6 +163,11 @@ pub fn axpy_mat(
 /// The spatial mass matrix is block-diagonal: a scalar `mass` on the linear rows
 /// and a 3×3 world-space `inertia` on the angular rows. `j` is `6 × ndofs`, `m`
 /// is `ndofs × ndofs`. Exploits the block structure to avoid a full 6×6 multiply.
+///
+/// Holds one column of `W·J` in registers at a time (6 floats) instead of
+/// materializing a `6 × ndofs` scratch — the latter compiles to a Function-storage
+/// SPIR-V variable that spills to private memory and dominates the runtime cost
+/// of multibody mass-matrix assembly.
 #[cfg(feature = "dim3")]
 #[inline]
 pub fn quadform_spatial(
@@ -176,41 +181,35 @@ pub fn quadform_spatial(
     beta: f32,
 ) {
     let ndofs = m.rows;
-    // W·J has the same layout as J (6 × ndofs): the first 3 rows scale by `mass`,
-    // the last 3 rows are `inertia · J_w[:, c]`. We precompute it per column to
-    // avoid redundant inertia multiplies inside the r-loop.
-    // TODO(PERF): check the shader codegen to ensure the array doesn’t get copied over and
-    //             over destroying performances.
-    let mut wj = [0.0f32; 6 * MAX_MB_DOFS];
-    let wj_view = MatSlice::dense(0, 6, ndofs);
-    for c in 0..ndofs {
-        let jv = Vec3::new(
-            buf_j.read(j.idx(0, c)),
-            buf_j.read(j.idx(1, c)),
-            buf_j.read(j.idx(2, c)),
-        );
-        let jw = Vec3::new(
-            buf_j.read(j.idx(3, c)),
-            buf_j.read(j.idx(4, c)),
-            buf_j.read(j.idx(5, c)),
-        );
-        let wjv = jv * mass;
-        let wjw = inertia.x_axis * jw.x + inertia.y_axis * jw.y + inertia.z_axis * jw.z;
-        wj[wj_view.idx(0, c)] = wjv.x;
-        wj[wj_view.idx(1, c)] = wjv.y;
-        wj[wj_view.idx(2, c)] = wjv.z;
-        wj[wj_view.idx(3, c)] = wjw.x;
-        wj[wj_view.idx(4, c)] = wjw.y;
-        wj[wj_view.idx(5, c)] = wjw.z;
-    }
-
-    // Now M += alpha * J^T * WJ.
+    // For each column `cc`, compute the matching WJ column (6 floats in registers)
+    // and accumulate `M[:, cc] += alpha · Jᵀ · wj_col + beta · M[:, cc]`.
     for cc in 0..ndofs {
+        let jvc = Vec3::new(
+            buf_j.read(j.idx(0, cc)),
+            buf_j.read(j.idx(1, cc)),
+            buf_j.read(j.idx(2, cc)),
+        );
+        let jwc = Vec3::new(
+            buf_j.read(j.idx(3, cc)),
+            buf_j.read(j.idx(4, cc)),
+            buf_j.read(j.idx(5, cc)),
+        );
+        let wjv = jvc * mass;
+        let wjw = inertia.x_axis * jwc.x + inertia.y_axis * jwc.y + inertia.z_axis * jwc.z;
+
         for rr in 0..ndofs {
-            let mut s = 0.0f32;
-            for k in 0..6u32 {
-                s += buf_j.read(j.idx(k, rr)) * wj[wj_view.idx(k, cc)];
-            }
+            let jvr = Vec3::new(
+                buf_j.read(j.idx(0, rr)),
+                buf_j.read(j.idx(1, rr)),
+                buf_j.read(j.idx(2, rr)),
+            );
+            let jwr = Vec3::new(
+                buf_j.read(j.idx(3, rr)),
+                buf_j.read(j.idx(4, rr)),
+                buf_j.read(j.idx(5, rr)),
+            );
+            let s = jvr.x * wjv.x + jvr.y * wjv.y + jvr.z * wjv.z
+                + jwr.x * wjw.x + jwr.y * wjw.y + jwr.z * wjw.z;
             let idx = m.idx(rr, cc);
             buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
         }
@@ -220,7 +219,8 @@ pub fn quadform_spatial(
 /// `m := beta * m + alpha * Jᵀ · diag(mass·I₂, inertia) · J` (2D).
 ///
 /// The spatial mass matrix is diagonal: `(mass, mass, inertia)`. `j` is
-/// `3 × ndofs`, `m` is `ndofs × ndofs`.
+/// `3 × ndofs`, `m` is `ndofs × ndofs`. Holds one column of `W·J` in registers
+/// to avoid a Function-storage scratch that spills to private memory.
 #[cfg(feature = "dim2")]
 #[inline]
 pub fn quadform_spatial(
@@ -234,20 +234,15 @@ pub fn quadform_spatial(
     beta: f32,
 ) {
     let ndofs = m.rows;
-    let mut wj = [0.0f32; 3 * MAX_MB_DOFS];
-    let wj_view = MatSlice::dense(0, 3, ndofs);
-    for c in 0..ndofs {
-        wj[wj_view.idx(0, c)] = buf_j.read(j.idx(0, c)) * mass;
-        wj[wj_view.idx(1, c)] = buf_j.read(j.idx(1, c)) * mass;
-        wj[wj_view.idx(2, c)] = buf_j.read(j.idx(2, c)) * inertia;
-    }
-
     for cc in 0..ndofs {
+        let wj0 = buf_j.read(j.idx(0, cc)) * mass;
+        let wj1 = buf_j.read(j.idx(1, cc)) * mass;
+        let wj2 = buf_j.read(j.idx(2, cc)) * inertia;
+
         for rr in 0..ndofs {
-            let mut s = 0.0f32;
-            for k in 0..3u32 {
-                s += buf_j.read(j.idx(k, rr)) * wj[wj_view.idx(k, cc)];
-            }
+            let s = buf_j.read(j.idx(0, rr)) * wj0
+                + buf_j.read(j.idx(1, rr)) * wj1
+                + buf_j.read(j.idx(2, rr)) * wj2;
             let idx = m.idx(rr, cc);
             buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
         }

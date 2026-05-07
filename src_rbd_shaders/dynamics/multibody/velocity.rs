@@ -126,7 +126,8 @@ pub fn gpu_mb_update_velocities(
             ws.rb_vels = ws.joint_velocity;
         } else {
             let parent_id = stat.parent_link_id as usize;
-            let parent_ws = ws_slice.read(parent_id);
+            // Parent workspace is read-only here; reference avoids a 240 B copy.
+            let parent_ws = ws_slice.at(parent_id);
             let parent_lmp = local_mprops_slice.read(parent_id);
             let transform_rot =
                 parent_ws.local_to_world.rotation * stat.data.local_frame_a.rotation;

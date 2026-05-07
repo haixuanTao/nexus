@@ -26,9 +26,98 @@ use crate::rotation_to_matrix;
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 
+/// Adds this joint's jacobian (world-frame) to the first `ndofs` columns of
+/// `view` inside `out`, mirroring rapier's `MultibodyJoint::jacobian`. The
+/// non-written entries (zeros in the formal joint jacobian) are skipped, so the
+/// effect is a `+=` of the joint jacobian on `view`'s columns.
+///
+/// Used by `gpu_mb_body_jacobians` to write straight into the body-jacobian
+/// buffer — no Function-storage scratch required.
+#[inline]
+pub(super) fn joint_jacobian_accumulate(
+    stat: &MultibodyLinkStatic,
+    transform_rot: Rotation,
+    out: &mut [f32],
+    view: MatSlice,
+) {
+    let locked = stat.data.locked_axes;
+    let mut curr_free_dof = 0u32;
+
+    // Linear DOFs (axis order). Only the linear rows are nonzero.
+    for i in 0..DIM {
+        if (locked & (1 << i)) == 0 {
+            let axis = transform_rot * Vector::ith(i as usize, 1.0);
+            #[cfg(feature = "dim3")]
+            {
+                let i0 = view.idx(0, curr_free_dof);
+                let i1 = view.idx(1, curr_free_dof);
+                let i2 = view.idx(2, curr_free_dof);
+                out.write(i0, out.read(i0) + axis.x);
+                out.write(i1, out.read(i1) + axis.y);
+                out.write(i2, out.read(i2) + axis.z);
+            }
+            #[cfg(feature = "dim2")]
+            {
+                let i0 = view.idx(0, curr_free_dof);
+                let i1 = view.idx(1, curr_free_dof);
+                out.write(i0, out.read(i0) + axis.x);
+                out.write(i1, out.read(i1) + axis.y);
+            }
+            curr_free_dof += 1;
+        }
+    }
+
+    // Angular DOFs.
+    let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
+    let num_ang = ANG_DIM - ang_locked.count_ones();
+    if num_ang == 1 {
+        #[cfg(feature = "dim3")]
+        {
+            let dof_id = (!ang_locked & 0x7).trailing_zeros();
+            let axis = transform_rot * Vector::ith(dof_id as usize, 1.0);
+            let i3 = view.idx(3, curr_free_dof);
+            let i4 = view.idx(4, curr_free_dof);
+            let i5 = view.idx(5, curr_free_dof);
+            out.write(i3, out.read(i3) + axis.x);
+            out.write(i4, out.read(i4) + axis.y);
+            out.write(i5, out.read(i5) + axis.z);
+        }
+        #[cfg(feature = "dim2")]
+        {
+            let i2 = view.idx(2, curr_free_dof);
+            out.write(i2, out.read(i2) + 1.0);
+        }
+    } else if num_ang == 3 {
+        #[cfg(feature = "dim3")]
+        {
+            let rotmat = rotation_to_matrix(transform_rot);
+            for k in 0..3u32 {
+                let axis = if k == 0 {
+                    rotmat.x_axis
+                } else if k == 1 {
+                    rotmat.y_axis
+                } else {
+                    rotmat.z_axis
+                };
+                let i3 = view.idx(3, curr_free_dof + k);
+                let i4 = view.idx(4, curr_free_dof + k);
+                let i5 = view.idx(5, curr_free_dof + k);
+                out.write(i3, out.read(i3) + axis.x);
+                out.write(i4, out.read(i4) + axis.y);
+                out.write(i5, out.read(i5) + axis.z);
+            }
+        }
+        #[cfg(feature = "dim2")]
+        {
+            let _ = curr_free_dof;
+        }
+    } // TODO: num_ang == 2
+}
+
 /// Writes this joint's jacobian (world-frame) into the first `ndofs` columns of
 /// an inline `SPATIAL_DIM × SPATIAL_DIM` scratch `out`, mirroring rapier's
-/// `MultibodyJoint::jacobian`.
+/// `MultibodyJoint::jacobian`. Used by the Coriolis assembly which needs to
+/// re-read the joint jacobian after building it.
 ///
 /// `transform_rot` maps body-local axes (of the parent's `local_frame_a`) to world.
 #[inline]
@@ -190,30 +279,17 @@ pub fn gpu_mb_body_jacobians(
             parent_to_world = Pose::default();
         }
 
-        // Fill the joint jacobian into a SPATIAL_DIM × SPATIAL_DIM stack scratch,
-        // then splat its first `ndofs_link` columns into link_j's
-        // `[assembly_id .. assembly_id + ndofs_link]`.
-        // TODO(PERF): double-check the generated shader to verify this array
-        //             doesn’t get copied over and over at each read/mutation.
-        let mut tmp = [0.0f32; SPATIAL_DIM * SPATIAL_DIM];
-        let tmp_view = MatSlice::dense(0, SPATIAL_DIM as u32, SPATIAL_DIM as u32);
-        let joint_j = tmp_view.columns(0, link_infos.ndofs);
-        joint_jacobian(
+        // Add the joint jacobian directly into link_j's columns
+        // `[assembly_id .. assembly_id + ndofs_link]`. The accumulating variant
+        // skips the formal-zero rows (linear-only or angular-only block), so we
+        // avoid both the stack scratch and the redundant zero-add traffic.
+        let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
+        joint_jacobian_accumulate(
             link_infos,
             parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
-            &mut tmp,
-            joint_j,
+            body_jacobians,
+            link_j_part,
         );
-        // link_j_part += joint_j  (axpy with a stack-allocated RHS; rust-gpu can't
-        // coerce `&[f32; N]` to `&[f32]`, so this is expanded inline here).
-        let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
-        for c in 0..link_infos.ndofs {
-            for r in 0..SPATIAL_DIM as u32 {
-                let idx = link_j_part.idx(r, c);
-                let cur = body_jacobians.read(idx);
-                body_jacobians.write(idx, cur + tmp[joint_j.idx(r, c)]);
-            }
-        }
 
         // link_j_v += [shift23]^T_× · link_j_w  (self-shift).
         let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);

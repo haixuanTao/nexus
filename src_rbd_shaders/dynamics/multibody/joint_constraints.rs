@@ -142,7 +142,10 @@ pub fn gpu_mb_init_joint_constraints(
     let mut slot = 0u32;
     for k in 0..num_links {
         let stat = stat_slice.read(k as usize);
-        let ws = ws_slice.read(k as usize);
+        // Access workspace via reference: only `coords[axis]` is read here, so
+        // a whole-struct copy of `MultibodyLinkWorkspace` (~240 B in 3D) would
+        // be wasted traffic for a single-field probe.
+        let ws = ws_slice.at(k as usize);
         let locked = stat.data.locked_axes;
         let limit_axes = stat.data.limit_axes & !locked;
         let motor_axes = stat.data.motor_axes & !locked;
