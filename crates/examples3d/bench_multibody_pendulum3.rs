@@ -29,6 +29,10 @@ use rapier3d::prelude::*;
 use std::collections::HashMap;
 
 fn build_one_batch(num_links: usize) -> BatchEnvironment {
+    build_one_batch_with_substeps(num_links, 4)
+}
+
+fn build_one_batch_with_substeps(num_links: usize, num_substeps: u32) -> BatchEnvironment {
     let mut bodies = RigidBodySet::new();
     let mut colliders = ColliderSet::new();
     let impulse_joints = ImpulseJointSet::new();
@@ -63,19 +67,25 @@ fn build_one_batch(num_links: usize) -> BatchEnvironment {
         parent_handle = handle;
     }
 
+    let mut sim_params = GpuSimParams::default();
+    sim_params.num_solver_iterations = num_substeps;
     BatchEnvironment {
         bodies,
         colliders,
         impulse_joints,
         multibody_joints,
-        sim_params: GpuSimParams::default(),
+        sim_params,
         visuals: HashMap::new(),
     }
 }
 
 fn build_scene(num_links: usize, num_batches: usize) -> SimulationState {
+    build_scene_with_substeps(num_links, num_batches, 4)
+}
+
+fn build_scene_with_substeps(num_links: usize, num_batches: usize, num_substeps: u32) -> SimulationState {
     let environments = (0..num_batches.max(1))
-        .map(|_| build_one_batch(num_links))
+        .map(|_| build_one_batch_with_substeps(num_links, num_substeps))
         .collect();
     SimulationState { environments }
 }
@@ -198,13 +208,19 @@ async fn webgpu_backend() -> KhalGpuBackend {
     KhalGpuBackend::WebGpu(webgpu)
 }
 
-async fn run(num_links: usize, num_batches: usize, n_warmup: usize, n_iters: usize) {
+async fn run(
+    num_links: usize,
+    num_batches: usize,
+    n_warmup: usize,
+    n_iters: usize,
+    num_substeps: u32,
+) {
     println!(
         "Multibody pendulum benchmark — {num_links} links × {num_batches} batches, \
-         {n_warmup} warmup + {n_iters} timed steps"
+         num_substeps={num_substeps}, {n_warmup} warmup + {n_iters} timed steps"
     );
 
-    let state = build_scene(num_links, num_batches);
+    let state = build_scene_with_substeps(num_links, num_batches, num_substeps);
     let webgpu = webgpu_backend().await;
 
     let webgpu_sample = {
@@ -311,6 +327,7 @@ fn main() {
     let num_batches = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
     let n_warmup = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
     let n_iters = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(200);
+    let num_substeps = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(4u32);
 
-    pollster::block_on(run(num_links, num_batches, n_warmup, n_iters));
+    pollster::block_on(run(num_links, num_batches, n_warmup, n_iters, num_substeps));
 }

@@ -11,6 +11,7 @@
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 #[cfg(feature = "dim3")]
 use glamx::{Mat3, Vec3};
@@ -19,17 +20,25 @@ use crate::dynamics::body::LocalMassProperties;
 use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::Slice;
 use crate::utils::linalg::{
-    MAX_MB_DOFS, MatSlice, copy_from, fill, gemm_inertia_lhs_cross_buf,
-    gemm_omega_skew_tr_cross_buf, gemm_skew_tr_lhs_cross_buf, gemm_tr, quadform_spatial,
+    MAX_MB_DOFS, MatSlice, copy_from, copy_from_par, fill, fill_par,
+    gemm_inertia_lhs_cross_buf, gemm_inertia_lhs_cross_buf_par,
+    gemm_omega_skew_tr_cross_buf, gemm_omega_skew_tr_cross_buf_par,
+    gemm_skew_tr_lhs_cross_buf, gemm_skew_tr_lhs_cross_buf_par, gemm_tr,
+    gemm_tr_par, quadform_spatial, quadform_spatial_par,
 };
 #[cfg(feature = "dim3")]
-use crate::utils::linalg::gemm_skew_lhs_cross_buf;
+use crate::utils::linalg::{gemm_skew_lhs_cross_buf, gemm_skew_lhs_cross_buf_par};
 use crate::{ANG_DIM, DIM};
 #[cfg(feature = "dim3")]
 use crate::rotation_to_matrix;
 
 use super::jacobian::joint_jacobian_column;
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
+
+/// Workgroup width for the parallelised mass-matrix kernel. Must match the
+/// `MB_MM_LANES` constant on the host side and the `threads(...)` attribute on
+/// `gpu_mb_mass_matrix_with_coriolis`.
+const LANES: u32 = 32;
 
 /// World-space inertia for this link.
 ///
@@ -184,10 +193,20 @@ fn scaled_copy_lin_dim(
     }
 }
 
+/// Workgroup-parallel CRBA + Coriolis assembly.
+///
+/// One workgroup of `LANES = 32` threads per `(multibody, batch)` pair. The
+/// per-link loop is sequential (parent-before-child dependency) but each
+/// inner BLAS-style operation is column-partitioned across the lanes — every
+/// lane writes to a disjoint subset of mass-matrix / coriolis columns, so
+/// there are no write races. Workgroup barriers are placed at the end of each
+/// link iteration so writes to the coriolis buffers from iteration `k` are
+/// visible to any later iteration that reads `parent_coriolis_*`.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(32, 1, 1)))]
 pub fn gpu_mb_mass_matrix_with_coriolis(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] links_workspace: &[MultibodyLinkWorkspace],
@@ -207,9 +226,15 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
     #[spirv(uniform, descriptor_set = 0, binding = 16)] coriolis_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 17)] i_coriolis_dt_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 18)] dof_batch_capacity: &u32,
+    // Dummy workgroup-shared cell — opts into the khal CPU coroutine
+    // dispatch path so workgroup barriers actually synchronise lanes on
+    // CPU. Without this, the CPU backend runs lanes sequentially with
+    // no-op barriers and per-lane writes clobber each other.
+    #[spirv(workgroup)] _cpu_marker: &mut u32,
 ) {
-    let batch_id = invocation_id.y as usize;
-    let mb_idx = invocation_id.x;
+    let batch_id = wg_id.y as usize;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
     let num_mb = num_multibodies.read(batch_id);
     if mb_idx >= num_mb {
         return;
@@ -239,35 +264,36 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
     let local_mprops_slice = Slice(links_local_mprops, first_link_global);
     let damping_slice = Slice(damping, damping_base);
 
-    // acc_augmented_mass.fill(0.0)
+    // acc_augmented_mass.fill(0.0) — parallel across columns.
     let acc_augmented_mass = MatSlice::dense(mb_mm_base, ndofs, ndofs);
-    fill(mass_matrices, acc_augmented_mass, 0.0);
+    fill_par(mass_matrices, acc_augmented_mass, 0.0, lane, LANES);
 
     // i_coriolis_dt view (SPATIAL_DIM × ndofs, fully overwritten each link).
     let i_coriolis_dt_view = MatSlice::dense(mb_icdt_base, SPATIAL_DIM as u32, ndofs);
     let i_coriolis_dt_v = i_coriolis_dt_view.fixed_rows(0, DIM);
     let i_coriolis_dt_w = i_coriolis_dt_view.fixed_rows(DIM, ANG_DIM);
 
+    // Barrier: every later phase reads `acc_augmented_mass`, so make sure all
+    // lanes have finished zeroing it.
+    workgroup_memory_barrier_with_group_sync();
+
     for k in 0..num_links {
         let stat = stat_slice.read(k as usize);
-        // Many fields of `ws` are read below. Going through a reference lets
-        // SPIR-V emit per-field OpLoads instead of materializing the full
-        // 240 B struct in Function storage.
         let ws = ws_slice.at(k as usize);
         let lmp = local_mprops_slice.read(k as usize);
 
         let inv_mass_x = lmp.inv_mass.x;
         if inv_mass_x == 0.0 {
-            // Still need to zero this link's coriolis block so children don't
-            // propagate garbage. Shared layout: each slot reserves DIM rows in
-            // both buffers (the angular block uses only the first ANG_DIM rows).
+            // Zero this link's coriolis block in parallel so children don't
+            // propagate garbage. All lanes participate uniformly.
             let coriolis_block = MatSlice::dense(
                 mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
                 DIM,
                 ndofs,
             );
-            fill(coriolis_v, coriolis_block, 0.0);
-            fill(coriolis_w, coriolis_block, 0.0);
+            fill_par(coriolis_v, coriolis_block, 0.0, lane, LANES);
+            fill_par(coriolis_w, coriolis_block, 0.0, lane, LANES);
+            workgroup_memory_barrier_with_group_sync();
             continue;
         }
         let mass = 1.0 / inv_mass_x;
@@ -293,9 +319,8 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
         #[cfg(feature = "dim2")]
         let augmented_inertia = rb_inertia;
 
-        // acc_augmented_mass.quadform(1.0, &concat_rb_mass_matrix(mass, augmented_inertia),
-        //                             body_jacobian, 1.0);
-        quadform_spatial(
+        // Mass-matrix accumulation, parallel across columns.
+        quadform_spatial_par(
             mass_matrices,
             acc_augmented_mass,
             1.0,
@@ -304,9 +329,13 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
             body_jacobians,
             body_jacobian,
             1.0,
+            lane,
+            LANES,
         );
 
-        // Coriolis matrix assembly.
+        // Coriolis matrix assembly. All ops below partition `coriolis_v_i` /
+        // `coriolis_w_i` columns by lane; the same column is owned by the
+        // same lane across all ops, so no inter-op race.
         let rb_j_w = body_jacobian.fixed_rows(DIM, ANG_DIM);
         let coriolis_v_i = MatSlice::dense(
             mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
@@ -340,12 +369,10 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
             );
             let parent_w = parent_link.rb_vels.angular;
 
-            // coriolis_v.copy_from(parent_coriolis_v); coriolis_w.copy_from(parent_coriolis_w).
-            copy_from(coriolis_v, coriolis_v_i, parent_coriolis_v);
-            copy_from(coriolis_w, coriolis_w_i, parent_coriolis_w);
+            copy_from_par(coriolis_v, coriolis_v_i, parent_coriolis_v, lane, LANES);
+            copy_from_par(coriolis_w, coriolis_w_i, parent_coriolis_w, lane, LANES);
 
-            // coriolis_v += [shift02]^T_× · parent_coriolis_w.
-            gemm_skew_tr_lhs_cross_buf(
+            gemm_skew_tr_lhs_cross_buf_par(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
@@ -353,13 +380,13 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                 coriolis_w,
                 parent_coriolis_w,
                 1.0,
+                lane,
+                LANES,
             );
 
-            // coriolis_v += dvel_cross^T · parent_j_w  with
-            //   dvel = rb.vels.angvel × shift02 + 2 · joint_velocity.linvel.
             let dvel = crate::gcross_av(ws.rb_vels.angular, ws.shift02)
                 + ws.joint_velocity.linear * 2.0;
-            gemm_skew_tr_lhs_cross_buf(
+            gemm_skew_tr_lhs_cross_buf_par(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
@@ -367,10 +394,11 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                 body_jacobians,
                 parent_j_w,
                 1.0,
+                lane,
+                LANES,
             );
 
-            // coriolis_v += [joint_vel_lin]^T_× · parent_j_w.
-            gemm_skew_tr_lhs_cross_buf(
+            gemm_skew_tr_lhs_cross_buf_par(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
@@ -378,10 +406,11 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                 body_jacobians,
                 parent_j_w,
                 1.0,
+                lane,
+                LANES,
             );
 
-            // coriolis_v += (parent_w · shift02_cross_tr) · parent_j_w.
-            gemm_omega_skew_tr_cross_buf(
+            gemm_omega_skew_tr_cross_buf_par(
                 coriolis_v,
                 coriolis_v_i,
                 1.0,
@@ -390,12 +419,13 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                 body_jacobians,
                 parent_j_w,
                 1.0,
+                lane,
+                LANES,
             );
 
-            // coriolis_w += -[joint_vel_ang]_× · parent_j_w (only contributes in 3D).
             #[cfg(feature = "dim3")]
             {
-                gemm_skew_lhs_cross_buf(
+                gemm_skew_lhs_cross_buf_par(
                     coriolis_w,
                     coriolis_w_i,
                     -1.0,
@@ -403,22 +433,34 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                     body_jacobians,
                     parent_j_w,
                     1.0,
+                    lane,
+                    LANES,
                 );
             }
 
-            // Joint jacobian contribution to Coriolis (skipped for kinematic joints).
-            // Computes the joint jacobian column-by-column in registers — no
-            // `[f32; SPATIAL_DIM * SPATIAL_DIM]` Function-storage scratch.
+            // Joint jacobian contribution to Coriolis (parallelized across
+            // the joint's free-DOF columns). Each lane c<ndofs_link handles
+            // column `assembly_id + c`. The preceding `gemm_*_par` calls
+            // wrote those columns with lane `assembly_id + c`, so without a
+            // barrier here lane 0 reads stale data at `coriolis_v[*,
+            // assembly_id]` (race). The pendulum case had zero parent
+            // contribution at the offending col so the bug was benign;
+            // prismatic / spherical joints in `joints3` clobber non-zero
+            // values.
+            workgroup_memory_barrier_with_group_sync();
             if stat.kinematic == 0 {
                 let transform_rot =
                     parent_link.local_to_world.rotation * stat.data.local_frame_a.rotation;
                 let coriolis_v_part = coriolis_v_i.columns(stat.assembly_id, stat.ndofs);
                 let coriolis_w_part = coriolis_w_i.columns(stat.assembly_id, stat.ndofs);
 
+                // stat.ndofs ≤ SPATIAL_DIM = 6 < LANES, so each lane handles
+                // at most one column.
                 #[cfg(feature = "dim3")]
                 {
                     let parent_w_skew = crate::utils::linalg::skew(parent_w);
-                    for c in 0..stat.ndofs {
+                    let c = lane;
+                    if c < stat.ndofs {
                         let (jv, jw) = joint_jacobian_column(&stat, transform_rot, c);
                         let pv = parent_w_skew * jv;
                         let pw = parent_w_skew * jw;
@@ -438,9 +480,8 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                 }
                 #[cfg(feature = "dim2")]
                 {
-                    // 2D: rb_joint_j_v = (jv_x, jv_y), parent_w is a scalar ω.
-                    // [ω]_× · v = (-ω·v.y, ω·v.x).
-                    for c in 0..stat.ndofs {
+                    let c = lane;
+                    if c < stat.ndofs {
                         let (jv, _) = joint_jacobian_column(&stat, transform_rot, c);
                         let iv0 = coriolis_v_part.idx(0, c);
                         let iv1 = coriolis_v_part.idx(1, c);
@@ -451,60 +492,75 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
                 }
             }
         } else {
-            fill(coriolis_v, coriolis_v_i, 0.0);
-            fill(coriolis_w, coriolis_w_i, 0.0);
+            fill_par(coriolis_v, coriolis_v_i, 0.0, lane, LANES);
+            fill_par(coriolis_w, coriolis_w_i, 0.0, lane, LANES);
         }
 
-        // Self-shift contribution:
-        //   coriolis_v += [shift23]^T_× · coriolis_w
-        //   coriolis_v += [ω × shift23]^T_× · rb_j_w
-        //   coriolis_v += (skew(ω) · [shift23]^T_×) · rb_j_w
-        {
-            gemm_skew_tr_lhs_cross_buf(
-                coriolis_v,
-                coriolis_v_i,
-                1.0,
-                ws.shift23,
-                coriolis_w,
-                coriolis_w_i,
-                1.0,
-            );
+        // Barrier: the self-shift block below reads coriolis_w (just written)
+        // and i_coriolis_dt is built from coriolis_v / coriolis_w too.
+        workgroup_memory_barrier_with_group_sync();
 
-            let dvel_23 = crate::gcross_av(ws.rb_vels.angular, ws.shift23);
-            gemm_skew_tr_lhs_cross_buf(
-                coriolis_v,
-                coriolis_v_i,
-                1.0,
-                dvel_23,
-                body_jacobians,
-                rb_j_w,
-                1.0,
-            );
+        // Self-shift contribution.
+        gemm_skew_tr_lhs_cross_buf_par(
+            coriolis_v,
+            coriolis_v_i,
+            1.0,
+            ws.shift23,
+            coriolis_w,
+            coriolis_w_i,
+            1.0,
+            lane,
+            LANES,
+        );
 
-            gemm_omega_skew_tr_cross_buf(
-                coriolis_v,
-                coriolis_v_i,
-                1.0,
-                ws.rb_vels.angular,
-                ws.shift23,
-                body_jacobians,
-                rb_j_w,
-                1.0,
-            );
-        }
+        let dvel_23 = crate::gcross_av(ws.rb_vels.angular, ws.shift23);
+        gemm_skew_tr_lhs_cross_buf_par(
+            coriolis_v,
+            coriolis_v_i,
+            1.0,
+            dvel_23,
+            body_jacobians,
+            rb_j_w,
+            1.0,
+            lane,
+            LANES,
+        );
+
+        gemm_omega_skew_tr_cross_buf_par(
+            coriolis_v,
+            coriolis_v_i,
+            1.0,
+            ws.rb_vels.angular,
+            ws.shift23,
+            body_jacobians,
+            rb_j_w,
+            1.0,
+            lane,
+            LANES,
+        );
+
+        // Barrier: i_coriolis_dt assembly below reads coriolis_v / coriolis_w.
+        workgroup_memory_barrier_with_group_sync();
 
         // Meld Coriolis into the mass matrix via i_coriolis_dt:
         //   i_coriolis_dt_v := dt · mass · coriolis_v
         //   i_coriolis_dt_w := dt · (rb_inertia · coriolis_w)
-        //   acc_augmented_mass += Jᵀ · i_coriolis_dt.
-        scaled_copy_lin_dim(
-            i_coriolis_dt,
-            i_coriolis_dt_v,
-            mass * dt,
-            coriolis_v,
-            coriolis_v_i,
-        );
-        gemm_inertia_lhs_cross_buf(
+        //   acc_augmented_mass += Jᵀ · i_coriolis_dt
+        // Inline scaled-copy: i_coriolis_dt_v[r, c] = (mass · dt) · coriolis_v[r, c],
+        // partitioned across columns. ndofs ≤ MAX_MB_DOFS = LANES, so an `if`
+        // guard suffices (no `while` loop — rust-gpu lowers `while` to
+        // unstructured control flow that can be silently miscompiled).
+        {
+            let scale = mass * dt;
+            let c = lane;
+            if c < ndofs {
+                for r in 0..DIM {
+                    let v = coriolis_v.read(coriolis_v_i.idx(r, c));
+                    i_coriolis_dt.write(i_coriolis_dt_v.idx(r, c), scale * v);
+                }
+            }
+        }
+        gemm_inertia_lhs_cross_buf_par(
             i_coriolis_dt,
             i_coriolis_dt_w,
             dt,
@@ -512,8 +568,14 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
             coriolis_w,
             coriolis_w_i,
             0.0,
+            lane,
+            LANES,
         );
-        gemm_tr(
+
+        // Barrier: gemm_tr below reads i_coriolis_dt that was just written.
+        workgroup_memory_barrier_with_group_sync();
+
+        gemm_tr_par(
             mass_matrices,
             acc_augmented_mass,
             1.0,
@@ -522,14 +584,22 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
             i_coriolis_dt,
             i_coriolis_dt_view,
             1.0,
+            lane,
+            LANES,
         );
+
+        // End-of-iteration barrier so the next iteration (or any later
+        // iteration that reads parent_coriolis_*) sees consistent state.
+        workgroup_memory_barrier_with_group_sync();
     }
 
-    // Per-rapier: `acc_augmented_mass[i, i] += damping[i] * dt`.
-    for i in 0..ndofs {
-        let diag_idx = acc_augmented_mass.idx(i, i);
+    // Per-rapier: `acc_augmented_mass[i, i] += damping[i] * dt` — parallel.
+    // ndofs ≤ MAX_MB_DOFS = LANES, so each lane handles at most one DOF.
+    let d = lane;
+    if d < ndofs {
+        let diag_idx = acc_augmented_mass.idx(d, d);
         let cur = mass_matrices.read(diag_idx);
-        mass_matrices.write(diag_idx, cur + damping_slice.read(i as usize) * dt);
+        mass_matrices.write(diag_idx, cur + damping_slice.read(d as usize) * dt);
     }
 
     // TODO: remove this?

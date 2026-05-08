@@ -15,16 +15,20 @@
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use parry::math::VectorExt;
 use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::Slice;
-use crate::utils::linalg::{MatSlice, copy_from, fill, gemm_skew_tr_lhs};
+use crate::utils::linalg::{MatSlice, copy_from_par, fill_par, gemm_skew_tr_lhs_par};
 use crate::{ANG_DIM, DIM, Pose, Rotation, Vector};
 #[cfg(feature = "dim3")]
 use crate::rotation_to_matrix;
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
+
+/// Workgroup width for the parallelised body-jacobian kernel.
+const LANES: u32 = 32;
 
 /// Adds this joint's jacobian (world-frame) to the first `ndofs` columns of
 /// `view` inside `out`, mirroring rapier's `MultibodyJoint::jacobian`. The
@@ -114,11 +118,110 @@ pub(super) fn joint_jacobian_accumulate(
     } // TODO: num_ang == 2
 }
 
+/// Workgroup-parallel variant of `joint_jacobian_accumulate`.
+///
+/// Mirrors the sequential algorithm exactly: every lane walks the same
+/// iteration counter `curr_free_dof`, but the inner write only fires for the
+/// lane whose ID matches `curr_free_dof`. Each free DOF column is written by
+/// exactly one lane; lanes outside `[0, total_free)` simply pass through with
+/// no writes. This is closer to sequential semantics than a "find the c-th
+/// unlocked axis" indirection and avoids subtle rust-gpu lowering bugs.
+#[inline]
+pub(super) fn joint_jacobian_accumulate_par(
+    stat: &MultibodyLinkStatic,
+    transform_rot: Rotation,
+    out: &mut [f32],
+    view: MatSlice,
+    lane: u32,
+    _lanes: u32,
+) {
+    let locked = stat.data.locked_axes;
+    let mut curr_free_dof = 0u32;
+
+    // Linear DOFs (axis order). Only the linear rows are nonzero.
+    for i in 0..DIM {
+        if (locked & (1 << i)) == 0 {
+            if lane == curr_free_dof {
+                let axis = transform_rot * Vector::ith(i as usize, 1.0);
+                #[cfg(feature = "dim3")]
+                {
+                    let i0 = view.idx(0, curr_free_dof);
+                    let i1 = view.idx(1, curr_free_dof);
+                    let i2 = view.idx(2, curr_free_dof);
+                    out.write(i0, out.read(i0) + axis.x);
+                    out.write(i1, out.read(i1) + axis.y);
+                    out.write(i2, out.read(i2) + axis.z);
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    let i0 = view.idx(0, curr_free_dof);
+                    let i1 = view.idx(1, curr_free_dof);
+                    out.write(i0, out.read(i0) + axis.x);
+                    out.write(i1, out.read(i1) + axis.y);
+                }
+            }
+            curr_free_dof += 1;
+        }
+    }
+
+    // Angular DOFs.
+    let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
+    let num_ang = ANG_DIM - ang_locked.count_ones();
+    if num_ang == 1 {
+        if lane == curr_free_dof {
+            #[cfg(feature = "dim3")]
+            {
+                let dof_id = (!ang_locked & 0x7).trailing_zeros();
+                let axis = transform_rot * Vector::ith(dof_id as usize, 1.0);
+                let i3 = view.idx(3, curr_free_dof);
+                let i4 = view.idx(4, curr_free_dof);
+                let i5 = view.idx(5, curr_free_dof);
+                out.write(i3, out.read(i3) + axis.x);
+                out.write(i4, out.read(i4) + axis.y);
+                out.write(i5, out.read(i5) + axis.z);
+            }
+            #[cfg(feature = "dim2")]
+            {
+                let i2 = view.idx(2, curr_free_dof);
+                out.write(i2, out.read(i2) + 1.0);
+            }
+        }
+    } else if num_ang == 3 {
+        #[cfg(feature = "dim3")]
+        {
+            let rotmat = rotation_to_matrix(transform_rot);
+            for k in 0..3u32 {
+                if lane == curr_free_dof + k {
+                    let axis = if k == 0 {
+                        rotmat.x_axis
+                    } else if k == 1 {
+                        rotmat.y_axis
+                    } else {
+                        rotmat.z_axis
+                    };
+                    let i3 = view.idx(3, curr_free_dof + k);
+                    let i4 = view.idx(4, curr_free_dof + k);
+                    let i5 = view.idx(5, curr_free_dof + k);
+                    out.write(i3, out.read(i3) + axis.x);
+                    out.write(i4, out.read(i4) + axis.y);
+                    out.write(i5, out.read(i5) + axis.z);
+                }
+            }
+        }
+    } // TODO: num_ang == 2
+}
+
 /// Computes column `c` (`0 ≤ c < stat.ndofs`) of this joint's body jacobian as
 /// the pair `(linear_part, angular_part)`, in registers. Avoids the `[f32; 36]`
 /// Function-storage scratch the Coriolis assembly used to need.
 ///
 /// In 3D, returns `(Vec3, Vec3)`. In 2D, returns `(Vec2, f32)`.
+///
+/// Mirrors the sequential `joint_jacobian` walk: every call walks the same
+/// iteration counter `curr_free_dof` and only assigns the result locals when
+/// `curr_free_dof == c`. Single-exit form (no early `return` inside the
+/// loop) — rust-gpu's structured control flow lowering can produce silently
+/// incorrect results for `return` statements in the middle of a `for` loop.
 #[cfg(feature = "dim3")]
 #[inline]
 pub(super) fn joint_jacobian_column(
@@ -127,16 +230,17 @@ pub(super) fn joint_jacobian_column(
     c: u32,
 ) -> (Vector, glamx::Vec3) {
     let locked = stat.data.locked_axes;
-    let mut curr_free = 0u32;
+    let mut curr_free_dof = 0u32;
+    let mut result_lin = Vector::ZERO;
+    let mut result_ang = glamx::Vec3::ZERO;
 
     // Linear DOFs in axis order.
     for i in 0..DIM {
         if (locked & (1 << i)) == 0 {
-            if curr_free == c {
-                let axis = transform_rot * Vector::ith(i as usize, 1.0);
-                return (axis, glamx::Vec3::ZERO);
+            if curr_free_dof == c {
+                result_lin = transform_rot * Vector::ith(i as usize, 1.0);
             }
-            curr_free += 1;
+            curr_free_dof += 1;
         }
     }
 
@@ -144,26 +248,26 @@ pub(super) fn joint_jacobian_column(
     let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
     let num_ang = ANG_DIM - ang_locked.count_ones();
     if num_ang == 1 {
-        if curr_free == c {
+        if curr_free_dof == c {
             let dof_id = (!ang_locked & 0x7).trailing_zeros();
-            let axis = transform_rot * Vector::ith(dof_id as usize, 1.0);
-            return (Vector::ZERO, axis);
+            result_ang = transform_rot * Vector::ith(dof_id as usize, 1.0);
         }
     } else if num_ang == 3 {
-        // 3 angular DOFs: column c (relative to first angular slot) is column k
-        // of the world rotation matrix.
-        let local_c = c - curr_free;
         let rotmat = rotation_to_matrix(transform_rot);
-        let axis = if local_c == 0 {
-            rotmat.x_axis
-        } else if local_c == 1 {
-            rotmat.y_axis
-        } else {
-            rotmat.z_axis
-        };
-        return (Vector::ZERO, axis);
+        for k in 0..3u32 {
+            if curr_free_dof + k == c {
+                result_ang = if k == 0 {
+                    rotmat.x_axis
+                } else if k == 1 {
+                    rotmat.y_axis
+                } else {
+                    rotmat.z_axis
+                };
+            }
+        }
     }
-    (Vector::ZERO, glamx::Vec3::ZERO)
+
+    (result_lin, result_ang)
 }
 
 #[cfg(feature = "dim2")]
@@ -174,23 +278,24 @@ pub(super) fn joint_jacobian_column(
     c: u32,
 ) -> (Vector, f32) {
     let locked = stat.data.locked_axes;
-    let mut curr_free = 0u32;
+    let mut curr_free_dof = 0u32;
+    let mut result_lin = Vector::ZERO;
+    let mut result_ang = 0.0f32;
 
     for i in 0..DIM {
         if (locked & (1 << i)) == 0 {
-            if curr_free == c {
-                let axis = transform_rot * Vector::ith(i as usize, 1.0);
-                return (axis, 0.0);
+            if curr_free_dof == c {
+                result_lin = transform_rot * Vector::ith(i as usize, 1.0);
             }
-            curr_free += 1;
+            curr_free_dof += 1;
         }
     }
     let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
     let num_ang = ANG_DIM - ang_locked.count_ones();
-    if num_ang == 1 && curr_free == c {
-        return (Vector::ZERO, 1.0);
+    if num_ang == 1 && curr_free_dof == c {
+        result_ang = 1.0;
     }
-    (Vector::ZERO, 0.0)
+    (result_lin, result_ang)
 }
 
 /// Writes this joint's jacobian (world-frame) into the first `ndofs` columns of
@@ -287,13 +392,26 @@ pub(super) fn joint_jacobian(
     } // TODO: num_ang == 2
 }
 
-/// Build per-link body jacobians. Mirrors rapier's `Multibody::update_body_jacobians`
-/// nearly line-for-line, using `MatSlice` views + BLAS-style primitives in place of
-/// nalgebra's matrix API.
+/// Build per-link body jacobians.
+///
+/// One workgroup of `LANES = 32` threads per `(multibody, batch)` pair. The
+/// link loop is sequential (parent's jacobian must be written before its
+/// child reads it), but each link's per-column work is partitioned across
+/// lanes. Workgroup barriers at the end of each iteration ensure the parent's
+/// jacobian writes are visible before children read them.
+///
+/// The `_cpu_marker` is a dummy `#[spirv(workgroup)]` parameter that makes
+/// the khal CPU bindgen treat this as a shared-memory kernel and dispatch
+/// each workgroup's lanes through the corosensei coroutine pool — only that
+/// path implements proper barrier semantics on CPU. Without it the CPU
+/// backend runs lanes sequentially (full kernel per lane, barriers as
+/// no-ops), and lane 1's `copy_from_par` overwrites the joint contribution
+/// that lane 0 already wrote.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(32, 1, 1)))]
 pub fn gpu_mb_body_jacobians(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] links_workspace: &[MultibodyLinkWorkspace],
@@ -302,9 +420,11 @@ pub fn gpu_mb_body_jacobians(
     #[spirv(uniform, descriptor_set = 0, binding = 5)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 6)] links_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 7)] jacobians_batch_capacity: &u32,
+    #[spirv(workgroup)] _cpu_marker: &mut u32,
 ) {
-    let batch_id = invocation_id.y as usize;
-    let mb_idx = invocation_id.x;
+    let batch_id = wg_id.y as usize;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
     let num_mb = num_multibodies.read(batch_id);
     if mb_idx >= num_mb {
         return;
@@ -347,32 +467,66 @@ pub fn gpu_mb_body_jacobians(
             let parent_link = ws_slice.at(link_infos.parent_link_id as usize);
             parent_to_world = parent_link.local_to_world;
 
-            // link_j := parent_j
-            copy_from(body_jacobians, link_j, parent_j);
-
-            // link_j_v += [shift02]^T_× · parent_j_w
+            // link_j := parent_j (parallel column-wise).
+            copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
+            // link_j_v += [shift02]^T_× · parent_j_w (parallel column-wise).
             let link_j_v = link_j.fixed_rows(0, DIM);
             let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
-            gemm_skew_tr_lhs(body_jacobians, link_j_v, 1.0, link.shift02, parent_j_w, 1.0);
+            gemm_skew_tr_lhs_par(
+                body_jacobians,
+                link_j_v,
+                1.0,
+                link.shift02,
+                parent_j_w,
+                1.0,
+                lane,
+                LANES,
+            );
         } else {
-            fill(body_jacobians, link_j, 0.0);
+            fill_par(body_jacobians, link_j, 0.0, lane, LANES);
             parent_to_world = Pose::default();
         }
 
+        // Barrier: the joint-jacobian accumulation below has lane c=0 (and
+        // c=1, c=2, …) read+write `link_j[*, assembly_id+c]`, but those
+        // columns were written by lane `assembly_id+c` in `copy_from_par` /
+        // `gemm_skew_tr_lhs_par`. Without this barrier, lane 0 races against
+        // lane `assembly_id` and may read stale data — the bug is benign on
+        // a revolute pendulum (parent_j[*, assembly_id] = 0 anyway) but
+        // clobbers prismatic / spherical chains where the parent jacobian
+        // has non-zero linear/angular content at that column.
+        workgroup_memory_barrier_with_group_sync();
+
         // Add the joint jacobian directly into link_j's columns
-        // `[assembly_id .. assembly_id + ndofs_link]`. The accumulating variant
-        // skips the formal-zero rows (linear-only or angular-only block), so we
-        // avoid both the stack scratch and the redundant zero-add traffic.
+        // `[assembly_id .. assembly_id + ndofs_link]`. Each lane handles a
+        // subset of `0..ndofs_link`, so writes are non-overlapping.
         let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
-        joint_jacobian_accumulate(
+        joint_jacobian_accumulate_par(
             link_infos,
             parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
             body_jacobians,
             link_j_part,
+            lane,
+            LANES,
         );
 
-        // link_j_v += [shift23]^T_× · link_j_w  (self-shift).
+        // link_j_v += [shift23]^T_× · link_j_w  (self-shift, parallel
+        // column-wise). Reads link_j_w which was just populated above —
+        // barrier needed first.
+        workgroup_memory_barrier_with_group_sync();
         let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
-        gemm_skew_tr_lhs(body_jacobians, link_j_v, 1.0, link.shift23, link_j_w, 1.0);
+        gemm_skew_tr_lhs_par(
+            body_jacobians,
+            link_j_v,
+            1.0,
+            link.shift23,
+            link_j_w,
+            1.0,
+            lane,
+            LANES,
+        );
+        // End-of-iteration barrier so children see the completed link_j.
+        workgroup_memory_barrier_with_group_sync();
     }
+
 }

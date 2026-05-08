@@ -13,6 +13,7 @@
 use glamx::Vec2;
 use glamx::{Mat3, Vec3};
 use khal_std::index::MaybeIndexUnchecked;
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use crate::DIM;
 
@@ -767,3 +768,465 @@ pub fn lu_solve_in_place(
         );
     }
 }
+
+//
+// Workgroup-parallel variants. Mirror the sequential primitives above but
+// partition each iteration's work across `lanes` lanes of a SIMT workgroup.
+// All control flow is uniform (every lane runs the same outer loops); the
+// barriers are placed so every lane reaches them, preventing deadlocks.
+//
+// Conventions:
+// - `lane` is `local_invocation_id.x` in the calling kernel; `0 ≤ lane < lanes`.
+// - `lanes` is the workgroup width along x (e.g. `32` for the LU + mass-matrix
+//   kernels).
+// - Pivot/scratch broadcasts go through a `&mut u32` parameter that the kernel
+//   declares with `#[spirv(workgroup)]`; we write from lane 0, barrier, then
+//   read from every lane.
+//
+
+/// Same-buffer parallel variant of [`gemm_skew_tr_lhs`] (b and c are disjoint
+/// views into the same flat buffer).
+///
+/// Each lane handles at most one column: `cols ≤ MAX_MB_DOFS = 32 = lanes`,
+/// so an `if` guard suffices and we avoid `while` loops (rust-gpu lowers `for`
+/// loops to structured SPIR-V cleanly, but `while` loops can produce
+/// unstructured control flow that is silently miscompiled).
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_skew_tr_lhs_par(
+    buf: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let a = skew_tr(t);
+    let j = lane;
+    if j < c.cols {
+        let bx = buf.read(b.idx(0, j));
+        let by = buf.read(b.idx(1, j));
+        let bz = buf.read(b.idx(2, j));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf.write(i0, beta * buf.read(i0) + alpha * p.x);
+        buf.write(i1, beta * buf.read(i1) + alpha * p.y);
+        buf.write(i2, beta * buf.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_skew_tr_lhs_par(
+    buf: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec2,
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let j = lane;
+    if j < c.cols {
+        let bw = buf.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        buf.write(i0, beta * buf.read(i0) + alpha * (t.y * bw));
+        buf.write(i1, beta * buf.read(i1) + alpha * (-t.x * bw));
+    }
+}
+
+/// `m := val` — parallel across columns.
+#[inline]
+pub fn fill_par(buf: &mut [f32], m: MatSlice, val: f32, lane: u32, _lanes: u32) {
+    let c = lane;
+    if c < m.cols {
+        for r in 0..m.rows {
+            buf.write(m.idx(r, c), val);
+        }
+    }
+}
+
+/// `dst := src` — parallel across columns.
+#[inline]
+pub fn copy_from_par(
+    buf: &mut [f32],
+    dst: MatSlice,
+    src: MatSlice,
+    lane: u32,
+    _lanes: u32,
+) {
+    let c = lane;
+    if c < dst.cols {
+        for r in 0..dst.rows {
+            let v = buf.read(src.idx(r, c));
+            buf.write(dst.idx(r, c), v);
+        }
+    }
+}
+
+/// Parallel `quadform_spatial` — each lane owns one column `cc = lane`
+/// (cols ≤ MAX_MB_DOFS = lanes), so writes to `M[*, cc]` are race-free
+/// without further synchronisation.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn quadform_spatial_par(
+    buf_m: &mut [f32],
+    m: MatSlice,
+    alpha: f32,
+    mass: f32,
+    inertia: Mat3,
+    buf_j: &[f32],
+    j: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let ndofs = m.rows;
+    let cc = lane;
+    if cc < ndofs {
+        let jvc = Vec3::new(
+            buf_j.read(j.idx(0, cc)),
+            buf_j.read(j.idx(1, cc)),
+            buf_j.read(j.idx(2, cc)),
+        );
+        let jwc = Vec3::new(
+            buf_j.read(j.idx(3, cc)),
+            buf_j.read(j.idx(4, cc)),
+            buf_j.read(j.idx(5, cc)),
+        );
+        let wjv = jvc * mass;
+        let wjw = inertia.x_axis * jwc.x + inertia.y_axis * jwc.y + inertia.z_axis * jwc.z;
+
+        for rr in 0..ndofs {
+            let jvr = Vec3::new(
+                buf_j.read(j.idx(0, rr)),
+                buf_j.read(j.idx(1, rr)),
+                buf_j.read(j.idx(2, rr)),
+            );
+            let jwr = Vec3::new(
+                buf_j.read(j.idx(3, rr)),
+                buf_j.read(j.idx(4, rr)),
+                buf_j.read(j.idx(5, rr)),
+            );
+            let s = jvr.x * wjv.x + jvr.y * wjv.y + jvr.z * wjv.z
+                + jwr.x * wjw.x + jwr.y * wjw.y + jwr.z * wjw.z;
+            let idx = m.idx(rr, cc);
+            buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
+        }
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn quadform_spatial_par(
+    buf_m: &mut [f32],
+    m: MatSlice,
+    alpha: f32,
+    mass: f32,
+    inertia: f32,
+    buf_j: &[f32],
+    j: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let ndofs = m.rows;
+    let cc = lane;
+    if cc < ndofs {
+        let wj0 = buf_j.read(j.idx(0, cc)) * mass;
+        let wj1 = buf_j.read(j.idx(1, cc)) * mass;
+        let wj2 = buf_j.read(j.idx(2, cc)) * inertia;
+
+        for rr in 0..ndofs {
+            let s = buf_j.read(j.idx(0, rr)) * wj0
+                + buf_j.read(j.idx(1, rr)) * wj1
+                + buf_j.read(j.idx(2, rr)) * wj2;
+            let idx = m.idx(rr, cc);
+            buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
+        }
+    }
+}
+
+/// Parallel `gemm_tr`: `C := beta·C + alpha·Aᵀ·B` partitioned across columns of `C`.
+#[inline]
+pub fn gemm_tr_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    buf_a: &[f32],
+    a: MatSlice,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let kmax = a.rows;
+    let j = lane;
+    if j < c.cols {
+        for i in 0..c.rows {
+            let mut s = 0.0f32;
+            for kk in 0..kmax {
+                s += buf_a.read(a.idx(kk, i)) * buf_b.read(b.idx(kk, j));
+            }
+            let idx = c.idx(i, j);
+            let cur = buf_c.read(idx);
+            buf_c.write(idx, beta * cur + alpha * s);
+        }
+    }
+}
+
+/// Parallel variant of [`gemm_skew_tr_lhs_cross_buf`].
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_skew_tr_lhs_cross_buf_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let a = skew_tr(t);
+    let j = lane;
+    if j < c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_skew_tr_lhs_cross_buf_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec2,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let j = lane;
+    if j < c.cols {
+        let bw = buf_b.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (t.y * bw));
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * (-t.x * bw));
+    }
+}
+
+/// Parallel variant of [`gemm_skew_lhs_cross_buf`].
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_skew_lhs_cross_buf_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let a = skew(t);
+    let j = lane;
+    if j < c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+/// Parallel variant of [`gemm_inertia_lhs_cross_buf`].
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_inertia_lhs_cross_buf_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    inertia: Mat3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let j = lane;
+    if j < c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = inertia.x_axis * bx + inertia.y_axis * by + inertia.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_inertia_lhs_cross_buf_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    inertia: f32,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let j = lane;
+    if j < c.cols {
+        let bw = buf_b.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (inertia * bw));
+    }
+}
+
+/// Parallel variant of [`gemm_omega_skew_tr_cross_buf`].
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_omega_skew_tr_cross_buf_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    parent_w: Vec3,
+    shift: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let combined = skew(parent_w) * skew_tr(shift);
+    let j = lane;
+    if j < c.cols {
+        let bx = buf_b.read(b.idx(0, j));
+        let by = buf_b.read(b.idx(1, j));
+        let bz = buf_b.read(b.idx(2, j));
+        let p = combined.x_axis * bx + combined.y_axis * by + combined.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_omega_skew_tr_cross_buf_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    parent_w: f32,
+    shift: Vec2,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let j = lane;
+    if j < c.cols {
+        let bw = buf_b.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (parent_w * shift.x * bw));
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * (parent_w * shift.y * bw));
+    }
+}
+
+/// Parallel `Aᵀ·(x_lin,x_ang)` for the gravity kernel.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemv_tr_spatial_split_par(
+    buf_y: &mut [f32],
+    y_offset: usize,
+    alpha: f32,
+    buf_a: &[f32],
+    a: MatSlice,
+    x_lin: Vec3,
+    x_ang: Vec3,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let c = lane;
+    if c < a.cols {
+        let s = buf_a.read(a.idx(0, c)) * x_lin.x
+            + buf_a.read(a.idx(1, c)) * x_lin.y
+            + buf_a.read(a.idx(2, c)) * x_lin.z
+            + buf_a.read(a.idx(3, c)) * x_ang.x
+            + buf_a.read(a.idx(4, c)) * x_ang.y
+            + buf_a.read(a.idx(5, c)) * x_ang.z;
+        let idx = y_offset + c as usize;
+        let cur = buf_y.read(idx);
+        buf_y.write(idx, beta * cur + alpha * s);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemv_tr_spatial_split_par(
+    buf_y: &mut [f32],
+    y_offset: usize,
+    alpha: f32,
+    buf_a: &[f32],
+    a: MatSlice,
+    x_lin: Vec2,
+    x_ang: f32,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let c = lane;
+    if c < a.cols {
+        let s = buf_a.read(a.idx(0, c)) * x_lin.x
+            + buf_a.read(a.idx(1, c)) * x_lin.y
+            + buf_a.read(a.idx(2, c)) * x_ang;
+        let idx = y_offset + c as usize;
+        let cur = buf_y.read(idx);
+        buf_y.write(idx, beta * cur + alpha * s);
+    }
+}
+
+// Note: parallel `lu_decompose_par` / `lu_solve_in_place_par` variants were
+// explored (Genesis-style tiled Cholesky, 32 lanes cooperating per multibody)
+// but for the typical multibody sizes (≤ 32 DOFs) the per-pivot barrier
+// overhead dominates on the CPU backend and the GPU win is marginal because
+// the trailing-update block is small. The kernels in
+// `super::dynamics::multibody::lu` use the sequential primitives instead.

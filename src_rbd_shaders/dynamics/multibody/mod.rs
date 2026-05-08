@@ -32,9 +32,11 @@
 //! workgroup per multibody. Links are independent across multibodies so the
 //! batch × multibody grid parallelises fine.
 
+mod compute_dynamics_pre;
 mod contact_constraints;
 mod forward_kinematics;
 mod gravity;
+mod gravity_and_lu;
 mod impulse_joint_constraints;
 mod integrate;
 mod jacobian;
@@ -45,9 +47,11 @@ mod types;
 mod utils;
 mod velocity;
 
+pub use compute_dynamics_pre::*;
 pub use contact_constraints::*;
 pub use forward_kinematics::*;
 pub use gravity::*;
+pub use gravity_and_lu::*;
 pub use impulse_joint_constraints::*;
 pub use integrate::*;
 pub use jacobian::*;
