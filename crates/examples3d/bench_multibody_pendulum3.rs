@@ -15,7 +15,7 @@
 //!
 //! Defaults: 20 links, 10 warmup steps, 200 timed steps.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
@@ -143,12 +143,15 @@ async fn bench_backend_inner(
         let _ = phys.step(None).await;
     }
 
+    // Measure `total_simulation_time_without_readback` instead of wall-clocking
+    // the whole `phys.step()` — the post-step `auto_resize_buffers` + pose
+    // readback + timestamp readback each add a CPU-GPU round trip whose latency
+    // is dominated by driver/OS scheduler jitter, not by the pipeline itself.
     let mut samples = Vec::with_capacity(n_iters);
     let mut last_stats = None;
     for i in 0..n_iters {
-        let t0 = Instant::now();
         let stats = phys.step(None).await;
-        samples.push(t0.elapsed());
+        samples.push(stats.total_simulation_time_without_readback);
         if i == n_iters - 1 {
             last_stats = Some(stats);
         }
