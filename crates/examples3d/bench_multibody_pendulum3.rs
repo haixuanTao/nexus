@@ -195,8 +195,8 @@ async fn webgpu_backend() -> KhalGpuBackend {
     // and a larger workgroup-storage budget than wgpu's defaults — mirror
     // the limits the testbed requests.
     let limits = wgpu::Limits {
-        max_buffer_size: 1_000_000_000,
-        max_storage_buffer_binding_size: 1_000_000_000,
+        max_buffer_size: 1_200_000_000,
+        max_storage_buffer_binding_size: 1_200_000_000,
         max_storage_buffers_per_shader_stage: 14,
         max_compute_workgroup_storage_size: 19_904,
         ..Default::default()

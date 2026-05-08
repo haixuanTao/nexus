@@ -100,7 +100,10 @@ pub fn gpu_narrow_phase_shape_shape(
     let mut pfm_pairs = SliceMut(pfm_pairs, contacts_start);
     let contacts_len = contacts_len.at_mut(batch_id);
     let pfm_pairs_len = pfm_pairs_len.at_mut(batch_id);
-    let len = collision_pairs_len.read(batch_id);
+
+    // NOTE: `collision_pairs_len` might be greater than `contacts_batch_apacity` if the
+    //       narrow-phase found more pairs than the buffer can contain.
+    let len = collision_pairs_len.read(batch_id).min(contacts_batch_capacity as u32);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let pair = collision_pairs.read(i as usize);

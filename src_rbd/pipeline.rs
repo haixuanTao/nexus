@@ -55,6 +55,8 @@ pub struct RunStats {
     pub coloring_iterations: u32,
     /// Time spent on the fallback coloring method (if the primary method failed).
     pub coloring_fallback_time: Duration,
+    /// Total simulation time not including GPU-to-CPU readbacks.
+    pub total_simulation_time_without_readback: Duration,
     /// Total simulation time including GPU-to-CPU readbacks.
     pub total_simulation_time_with_readback: Duration,
     /// Per-pass GPU timestamp durations (label, milliseconds).
@@ -65,8 +67,13 @@ pub struct RunStats {
 
 impl RunStats {
     /// Returns the total simulation time in milliseconds.
-    pub fn total_simulation_time_ms(&self) -> f32 {
+    pub fn total_simulation_time_with_readback_ms(&self) -> f32 {
         self.total_simulation_time_with_readback.as_secs_f32() * 1000.0
+    }
+
+    /// Returns the total simulation time in milliseconds.
+    pub fn total_simulation_time_without_readback_ms(&self) -> f32 {
+        self.total_simulation_time_without_readback.as_secs_f32() * 1000.0
     }
 }
 
@@ -118,7 +125,6 @@ pub struct GpuPhysicsState {
     collision_groups: Tensor<crate::rapier::geometry::InteractionGroups>,
     collision_pairs: Tensor<[u32; 2]>,
     collision_pairs_len: Tensor<u32>,
-    #[allow(dead_code)]
     collision_pairs_len_staging: Tensor<u32>,
     collision_pairs_indirect: Tensor<[u32; 3]>,
     collision_pairs_batch_capacity: Tensor<u32>,
@@ -161,6 +167,8 @@ pub struct GpuPhysicsState {
     #[allow(dead_code)]
     body_group: Tensor<u32>,
     prefix_sum_workspace: PrefixSumWorkspace,
+    /// Maximum number of constraint colors the solver will iterate.
+    max_colors: u32,
 }
 
 #[cfg(feature = "from_rapier")]
@@ -709,7 +717,22 @@ impl GpuPhysicsState {
             new_body_constraint_ids,
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
+            max_colors: 8,
         }
+    }
+}
+
+impl GpuPhysicsState {
+    /// Sets the maximum number of constraint colors used by the per-step
+    /// graph coloring + Gauss-Seidel solver loop. Lower values cap solver
+    /// time at the cost of dropping over-budget constraints.
+    pub fn set_max_colors(&mut self, max_colors: u32) {
+        self.max_colors = max_colors.max(1);
+    }
+
+    /// Returns the configured max color count.
+    pub fn max_colors(&self) -> u32 {
+        self.max_colors
     }
 }
 
@@ -817,12 +840,7 @@ impl GpuPhysicsPipeline {
         let mut stats = RunStats::default();
         let t_phase1 = web_time::Instant::now();
 
-        // Phase 0: Multibody once-per-visible-step setup (3D only).
-        //
-        // Builds the mass matrix and LU factor and computes the initial
-        // generalized acceleration `a`. Per-substep multibody work
-        // (`apply_substep`) is interleaved with the rigid-body substep loop in
-        // Phase 4 below, just like rapier's `velocity_solver`.
+        // Phase 0: Multibody once-per-visible-step setup (3D only for now).
         #[cfg(feature = "dim3")]
         {
             if !state.multibodies.is_empty() {
@@ -842,11 +860,12 @@ impl GpuPhysicsPipeline {
                     .init_step(&mut pass, &mut state.multibodies, &mut args)
                     .unwrap();
                 drop(pass);
+                drop(args);
                 backend.submit(encoder).unwrap();
             }
         }
 
-        // Phase 1: Update mass properties, build LBVH, and find collision pairs
+        // Phase 1: Update mass properties, build LBVH, and find collision pairs.
         {
             let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("update-mprops", timestamps.as_deref_mut());
@@ -866,10 +885,7 @@ impl GpuPhysicsPipeline {
                 )
                 .unwrap();
 
-            // Refresh `collider_world_poses = body_poses * collider_local_poses`
-            // before any broad-phase, narrow-phase or contact-to-constraint
-            // work. The substep loop only mutates `solver_body_poses`, so this
-            // is the only sync we need per step (no longer once per substep).
+            // Update collider world-space poses from their parent rigid-body poses.
             self.sync_collider_poses
                 .dispatch(
                     &mut pass,
@@ -885,7 +901,7 @@ impl GpuPhysicsPipeline {
 
             drop(pass);
 
-            // Build LBVH and find collision pairs (uses collider world poses).
+            // Build LBVH and find collision pairs.
             self.lbvh
                 .update_tree(
                     backend,
@@ -942,84 +958,11 @@ impl GpuPhysicsPipeline {
             backend.submit(encoder).unwrap();
         }
 
-        // Read back collision pair counts (requires CPU-GPU sync)
-        let collision_pair_counts: Vec<u32> = backend
-            .slow_read_vec(state.collision_pairs_len.buffer())
-            .await
-            .unwrap();
-        let num_collision_pairs = collision_pair_counts.iter().copied().max().unwrap_or(0);
         stats.start_to_pairs_count_time = t_phase1.elapsed();
 
-        // Per-batch capacity for collision pairs and contacts.
-        let per_batch_capacity = state.collision_pairs.len() as u32 / state.num_batches;
-
-        // Resize buffers if needed
-        if num_collision_pairs >= per_batch_capacity {
-            let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
-            let desired_len = num_collision_pairs.next_power_of_two();
-            let nb = state.num_batches;
-
-            state.collision_pairs =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.collision_pairs_batch_capacity = Tensor::scalar(
-                backend,
-                desired_len,
-                BufferUsages::STORAGE | BufferUsages::UNIFORM,
-            )
-            .unwrap();
-            state.contacts_batch_capacity = Tensor::scalar(
-                backend,
-                desired_len,
-                BufferUsages::STORAGE | BufferUsages::UNIFORM,
-            )
-            .unwrap();
-
-            state.contacts = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.pfm_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.old_constraints =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.old_constraint_builders =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.old_body_constraint_ids =
-                Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
-            state.new_constraints =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.new_constraint_builders =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.new_body_constraint_ids =
-                Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
-            state.constraints_colors =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.colored = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-            state.constraints_rands =
-                Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-
-            // Re-run find_pairs with resized buffers
-            let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass(
-                "broad-phase-find-pairs (after resize)",
-                timestamps.as_deref_mut(),
-            );
-            self.lbvh
-                .find_pairs(
-                    &mut pass,
-                    &mut state.lbvh,
-                    state.body_poses.len() as u32,
-                    state.num_batches,
-                    &state.num_shapes,
-                    &state.colliders_batch_capacity,
-                    &state.collision_pairs_batch_capacity,
-                    &mut state.collision_pairs,
-                    &mut state.collision_pairs_len,
-                    &mut state.collision_pairs_indirect,
-                    &state.collision_groups,
-                )
-                .unwrap();
-            drop(pass);
-            backend.submit(encoder).unwrap();
-        }
-
-        // Phase 2: Narrow phase and solver preparation
+        // Phase 2a: Narrow phase. Split out from solver-prep + coloring
+        // so its CPU encoding overlaps with Phase 1's GPU work and its
+        // own GPU work overlaps with Phase 2b's CPU encoding.
         {
             let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("narrow-phase", timestamps.as_deref_mut());
@@ -1047,6 +990,14 @@ impl GpuPhysicsPipeline {
                 .unwrap();
 
             drop(pass);
+            backend.submit(encoder).unwrap();
+        }
+
+        // Phase 2b: solver-prep + warmstart + bounded coloring. Separate
+        // submit from narrow-phase to enable CPU/GPU overlap with the
+        // upcoming Phase 3 solver substep loop.
+        {
+            let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("solver-prep", timestamps.as_deref_mut());
 
             // Solver preparation - create args here to avoid borrow conflicts
@@ -1108,41 +1059,6 @@ impl GpuPhysicsPipeline {
                 .transfer_warmstart_impulses(&mut pass, warmstart_args)
                 .unwrap();
 
-            drop(pass);
-            backend.submit(encoder).unwrap();
-        }
-
-        // Graph coloring
-        let coloring_args = ColoringArgs {
-            contacts_len_indirect: &state.contacts_indirect,
-            body_constraint_counts: &state.new_constraints_counts,
-            body_constraint_ids: &state.new_body_constraint_ids,
-            constraints: &state.new_constraints,
-            constraints_colors: &mut state.constraints_colors,
-            constraints_rands: &mut state.constraints_rands,
-            curr_color: &mut state.curr_color,
-            uncolored: &mut state.uncolored,
-            uncolored_staging: &state.uncolored_staging,
-            contacts_len: &state.contacts_len,
-            colored: &mut state.colored,
-            contacts_batch_capacity: &state.contacts_batch_capacity,
-            colliders_batch_capacity: &state.colliders_batch_capacity,
-            body_group: &state.body_group,
-        };
-
-        let num_colors = if let Some(colors) = self
-            .coloring
-            .dispatch_topo_gc(
-                backend,
-                coloring_args,
-                &mut stats,
-                timestamps.as_deref_mut(),
-            )
-            .await
-        {
-            colors
-        } else {
-            // Rebuild coloring_args for luby fallback
             let coloring_args = ColoringArgs {
                 contacts_len_indirect: &state.contacts_indirect,
                 body_constraint_counts: &state.new_constraints_counts,
@@ -1160,11 +1076,18 @@ impl GpuPhysicsPipeline {
                 body_group: &state.body_group,
             };
             self.coloring
-                .dispatch_luby(backend, coloring_args, &mut stats)
-                .await
-        };
+                .dispatch_topo_gc_bounded(&mut pass, coloring_args, state.max_colors)
+                .unwrap();
 
-        stats.num_colors = num_colors;
+            // `+1` because solver iterates 1..=max_colors (color 0 is unassigned).
+            let num_colors = state.max_colors + 1;
+            stats.num_colors = num_colors;
+
+            drop(pass);
+            backend.submit(encoder).unwrap();
+        }
+
+        let num_colors = stats.num_colors;
 
         // Create solver_args for solve phase (after coloring is complete)
         let solver_args = SolverArgs {
@@ -1234,11 +1157,10 @@ impl GpuPhysicsPipeline {
             if let Some(ts) = &timestamps {
                 ts.resolve(&mut encoder);
             }
-
             backend.submit(encoder).unwrap();
         }
 
-        // Swap buffers for warmstarting next frame
+        // Swap buffers for warm-starting next frame
         std::mem::swap(&mut state.old_constraints, &mut state.new_constraints);
         std::mem::swap(
             &mut state.old_constraint_builders,
@@ -1254,6 +1176,78 @@ impl GpuPhysicsPipeline {
         );
 
         stats
+    }
+
+    pub async fn auto_resize_buffers(&self, backend: &GpuBackend, state: &mut GpuPhysicsState) {
+        let mut encoder = backend.begin_encoding();
+        encoder.copy_buffer_to_buffer(state.collision_pairs_len.buffer(), 0, state.collision_pairs_len_staging.buffer_mut(), 0, 1).unwrap();
+        encoder.copy_buffer_to_buffer(state.uncolored.buffer(), 0, state.uncolored_staging.buffer_mut(), 0, 1).unwrap();
+        backend.submit(encoder).unwrap();
+
+        let mut collision_pairs_len = [0u32];
+        let mut coloring_converged = [0u32];
+        backend.read_buffer(state.collision_pairs_len_staging.buffer(), &mut collision_pairs_len).await.unwrap();
+        backend.read_buffer(state.uncolored_staging.buffer(), &mut coloring_converged).await.unwrap();
+
+        if coloring_converged[0] == 0 {
+            state.max_colors += 5;
+        }
+
+        // Lazy resize: grow collision-pair / contact / constraint buffers
+        // based on the *previous* frame's max pair count.
+        // This can create a one-frame delay where a bunch of contacts are ignored for a frame
+        // if their count exceed the allocated buffer’s size for contacts. But this delay allows
+        // us to avoid a gpu-cpu sync in the middle of the physics pipeline.
+        {
+            let per_batch_capacity = state.collision_pairs.len() as u32 / state.num_batches;
+            // Add a 25% slack so we resize once for a band of nearby
+            // overflows instead of bouncing on each new pair.
+            let needed = collision_pairs_len[0].saturating_add(
+                collision_pairs_len[0] / 4,
+            );
+            if needed >= per_batch_capacity {
+                let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+                let desired_len = needed.next_power_of_two().max(per_batch_capacity);
+                let nb = state.num_batches;
+
+                state.collision_pairs =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.collision_pairs_batch_capacity = Tensor::scalar(
+                    backend,
+                    desired_len,
+                    BufferUsages::STORAGE | BufferUsages::UNIFORM,
+                )
+                    .unwrap();
+                state.contacts_batch_capacity = Tensor::scalar(
+                    backend,
+                    desired_len,
+                    BufferUsages::STORAGE | BufferUsages::UNIFORM,
+                )
+                    .unwrap();
+                state.contacts =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.pfm_pairs =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.old_constraints =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.old_constraint_builders =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.old_body_constraint_ids =
+                    Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
+                state.new_constraints =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.new_constraint_builders =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.new_body_constraint_ids =
+                    Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
+                state.constraints_colors =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.colored =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.constraints_rands =
+                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+            }
+        }
     }
 }
 

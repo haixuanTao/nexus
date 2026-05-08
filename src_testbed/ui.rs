@@ -563,14 +563,16 @@ fn rbd_performance(
     ui.add_space(4.0);
 
     // Timing.
-    let total_ms = run_stats.total_simulation_time_ms();
-    let fps = if total_ms > 0.0 {
-        (1000.0f32 / total_ms).round()
+    let total_ms_with_readback = run_stats.total_simulation_time_with_readback_ms();
+    let total_ms_without_readback = run_stats.total_simulation_time_without_readback_ms();
+    let total_readback_time = total_ms_with_readback - total_ms_without_readback;
+    let fps = if total_ms_with_readback > 0.0 {
+        (1000.0f32 / total_ms_with_readback).round()
     } else {
         0.0
     };
 
-    ui.label(RichText::new(format!("Total: {:.2}ms - {:.0} FPS", total_ms, fps)).strong());
+    ui.label(RichText::new(format!("Total: {:.2}ms (+ readback: {:.2}ms) - {:.0} FPS", total_ms_without_readback, total_readback_time, fps)).strong());
     ui.add_space(4.0);
 
     if !matches!(backend_type, BackendType::Rapier) {

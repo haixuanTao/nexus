@@ -200,8 +200,8 @@ impl Testbed {
 
     async fn init_webgpu(&mut self) -> Option<KhalGpuBackend> {
         let limits = Limits {
-            max_buffer_size: 1_000_000_000,
-            max_storage_buffer_binding_size: 1_000_000_000,
+            max_buffer_size: 1_200_000_000,
+            max_storage_buffer_binding_size: 1_200_000_000,
             #[cfg(target_arch = "wasm32")]
             max_storage_buffers_per_shader_stage: 10,
             #[cfg(not(target_arch = "wasm32"))]

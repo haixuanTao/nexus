@@ -52,7 +52,8 @@ fn build() -> SimulationState {
         let x = (i as f32 + 1.0) * link_len;
         let rigid_body = RigidBodyBuilder::dynamic().translation(Vec3::new(x, 0.0, 0.0));
         let handle = bodies.insert(rigid_body);
-        let collider = ColliderBuilder::cuboid(link_len * 0.5, rad, rad);
+        let collider = ColliderBuilder::cuboid(link_len * 0.5, rad, rad)
+            .collision_groups(InteractionGroups::none());
         colliders.insert_with_parent(collider, handle, &mut bodies);
 
         // Revolute joint about X: anchor on parent is at its bottom

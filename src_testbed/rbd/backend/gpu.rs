@@ -168,6 +168,10 @@ impl SimulationBackend for GpuBackend {
             .await;
 
         // Read back poses (synchronizes with the GPU when using WebGPU backend).
+        gpu.synchronize().unwrap();
+        run_stats.total_simulation_time_without_readback = t0.elapsed();
+
+        self.pipeline.auto_resize_buffers(gpu, &mut self.state).await;
         Self::read_poses_into(gpu, &self.state, &mut self.poses_cache).await;
 
         // Read timestamp results.

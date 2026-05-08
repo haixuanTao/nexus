@@ -252,6 +252,25 @@ impl GpuColoring {
         num_colors
     }
 
+    /// Runs a fixed number of iterations of the topo-gc coloring.
+    pub fn dispatch_topo_gc_bounded<'a>(
+        &self,
+        pass: &mut GpuPass,
+        mut args: ColoringArgs<'a>,
+        max_colors: u32,
+    ) -> Result<(), GpuBackendError> {
+        // Reset coloring state.
+        self.dispatch_reset_topo_gc(pass, &mut args)?;
+        for _ in 0..max_colors {
+            self.reset_completion_flag_topo_gc
+                .call(pass, 1u32, args.uncolored)?;
+            self.dispatch_step_topo_gc(pass, &mut args)?;
+            self.dispatch_fix_conflicts_topo_gc(pass, &mut args)?;
+        }
+
+        Ok(())
+    }
+
     /// Executes the TOPO-GC (Topological Graph Coloring) algorithm.
     ///
     /// Returns `Some(num_colors)` (1-indexed) on success, or `None` if convergence
