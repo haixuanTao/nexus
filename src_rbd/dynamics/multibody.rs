@@ -1265,8 +1265,6 @@ impl GpuMultibodySolver {
             )?;
 
             let bj_dispatch = [mb.multibodies_per_batch * MB_BJ_LANES, mb.num_batches, 1];
-            // body_jacobians reads links_workspace written by FK.
-            pass.memory_barrier();
             self.body_jacobians.call(
                 pass,
                 bj_dispatch,
@@ -1280,8 +1278,6 @@ impl GpuMultibodySolver {
                 &mb.jacobians_batch_capacity,
             )?;
 
-            // update_velocities reads body_jacobians + writes links_workspace.
-            pass.memory_barrier();
             self.update_velocities.call(
                 pass,
                 dispatch,
@@ -1296,8 +1292,6 @@ impl GpuMultibodySolver {
                 &mb.dof_batch_capacity,
             )?;
 
-            // mass_matrix reads body_jacobians + links_workspace.
-            pass.memory_barrier();
             self.mass_matrix.call(
                 pass,
                 dispatch,
@@ -1322,8 +1316,6 @@ impl GpuMultibodySolver {
         // a single dispatch. Replaces the previous 2-dispatch chain
         // (apply_gravity_with_coriolis → lu_factor_and_solve) — drops one
         // WebGPU dispatch per `compute_dynamics` call.
-        // Reads mass_matrices / body_jacobians / links_workspace just written.
-        pass.memory_barrier();
         let grav_lu_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
         self.gravity_and_lu.call(
             pass,
@@ -1346,7 +1338,6 @@ impl GpuMultibodySolver {
             &mb.mass_matrix_batch_capacity,
             &mb.dof_batch_capacity,
         )?;
-        pass.memory_barrier();
 
         Ok(())
     }
@@ -1423,8 +1414,6 @@ impl GpuMultibodySolver {
         // Both are no-ops when no multibody declared limit/motor axes — skip
         // the dispatches entirely (they count against WebGPU dispatch overhead).
         if mb.has_joint_constraints {
-            // init_joint_constraints reads dof_velocities just updated.
-            pass.memory_barrier();
             self.init_joint_constraints.call(
                 pass,
                 dispatch,
@@ -1445,8 +1434,6 @@ impl GpuMultibodySolver {
                 &mb.joint_constraint_columns_batch_capacity,
             )?;
 
-            // solve_joint_constraints reads joint_constraints/columns just built.
-            pass.memory_barrier();
             self.solve_joint_constraints.call(
                 pass,
                 dispatch,
@@ -1465,8 +1452,6 @@ impl GpuMultibodySolver {
         // 3b. Build + finalize + solve contact constraints (normal-only, free
         //     body × multibody pairs only). Mirrors rapier's interleaved
         //     "generic constraint" sweep order.
-        // init_contact_constraints reads dof_velocities updated above.
-        pass.memory_barrier();
         self.init_contact_constraints.call(
             pass,
             dispatch,
@@ -1497,9 +1482,6 @@ impl GpuMultibodySolver {
             &mb.contacts_batch_capacity_for_mb,
         )?;
 
-        // finalize_contact_constraints reads contact_constraints / jacs / count
-        // written by init_contact_constraints.
-        pass.memory_barrier();
         self.finalize_contact_constraints.call(
             pass,
             dispatch,
@@ -1518,8 +1500,6 @@ impl GpuMultibodySolver {
             &mb.contact_constraint_columns_batch_capacity,
         )?;
 
-        // solve_contact_constraints reads contact_constraint_columns just written.
-        pass.memory_barrier();
         self.solve_contact_constraints.call(
             pass,
             dispatch,
@@ -1542,9 +1522,6 @@ impl GpuMultibodySolver {
         //     constraints. Mirrors rapier's `JointGenericExternalConstraintBuilder::update`
         //     plus a PGS sweep WITH bias.
         if mb.mb_imp_joints_per_batch > 0 {
-            // update_impulse_joint_constraints reads dof_velocities / solver_vels
-            // mutated by solve_contact_constraints above.
-            pass.memory_barrier();
             let imp_dispatch = [mb.mb_imp_joints_per_batch, mb.num_batches, 1];
             self.update_impulse_joint_constraints.call(
                 pass,
@@ -1575,8 +1552,6 @@ impl GpuMultibodySolver {
                 &mb.dof_batch_capacity,
                 args.colliders_batch_capacity,
             )?;
-            // Solve reads constraints just rebuilt above.
-            pass.memory_barrier();
             // Solve sweep is single-workgroup, threads(1) — see kernel doc.
             self.solve_impulse_joint_constraints.call(
                 pass,
@@ -1601,8 +1576,6 @@ impl GpuMultibodySolver {
         }
 
         // 4. Integrate positions with the corrected `v`.
-        // Reads dof_velocities mutated by all the constraint solvers above.
-        pass.memory_barrier();
         self.integrate.call(
             pass,
             dispatch,
@@ -1622,14 +1595,11 @@ impl GpuMultibodySolver {
         //    changed so M and τ are stale. Skipped on the last substep (rapier
         //    skips it too: `if !is_last_substep`).
         if !is_last_substep {
-            // compute_dynamics reads coords/dof_velocities just mutated.
-            pass.memory_barrier();
             self.compute_dynamics(pass, mb, args)?;
         }
 
         // 6. Stabilization: strip positional bias from each constraint's `rhs`.
         if mb.has_joint_constraints {
-            pass.memory_barrier();
             self.remove_joint_constraint_bias.call(
                 pass,
                 dispatch,
@@ -1640,7 +1610,6 @@ impl GpuMultibodySolver {
                 &mb.joint_constraints_batch_capacity,
             )?;
         }
-        pass.memory_barrier();
         self.remove_contact_constraint_bias.call(
             pass,
             dispatch,
@@ -1651,7 +1620,6 @@ impl GpuMultibodySolver {
             &mb.contact_constraints_batch_capacity,
         )?;
         if mb.mb_imp_joints_per_batch > 0 {
-            pass.memory_barrier();
             let imp_dispatch = [mb.mb_imp_joints_per_batch, mb.num_batches, 1];
             self.remove_impulse_joint_constraint_bias.call(
                 pass,
@@ -1667,7 +1635,6 @@ impl GpuMultibodySolver {
         // 7. Final PGS sweep WITHOUT bias — settles velocity to pure-zero
         //    along constrained DOFs, eliminating the rebound that drives jitter.
         if mb.has_joint_constraints {
-            pass.memory_barrier();
             self.solve_joint_constraints.call(
                 pass,
                 dispatch,
@@ -1682,7 +1649,6 @@ impl GpuMultibodySolver {
                 &mb.joint_constraint_columns_batch_capacity,
             )?;
         }
-        pass.memory_barrier();
         self.solve_contact_constraints.call(
             pass,
             dispatch,
@@ -1701,7 +1667,6 @@ impl GpuMultibodySolver {
             args.colliders_batch_capacity,
         )?;
         if mb.mb_imp_joints_per_batch > 0 {
-            pass.memory_barrier();
             // Final stabilization sweep WITHOUT bias.
             self.solve_impulse_joint_constraints.call(
                 pass,
@@ -1785,8 +1750,6 @@ impl GpuMultibodySolver {
                 args.colliders_batch_capacity,
             )?;
             let bj_dispatch = [mb.multibodies_per_batch * MB_BJ_LANES, mb.num_batches, 1];
-            // body_jacobians reads links_workspace written by FK.
-            pass.memory_barrier();
             self.body_jacobians.call(
                 pass,
                 bj_dispatch,
@@ -1799,8 +1762,6 @@ impl GpuMultibodySolver {
                 &mb.links_batch_capacity,
                 &mb.jacobians_batch_capacity,
             )?;
-            // update_velocities reads body_jacobians.
-            pass.memory_barrier();
             self.update_velocities.call(
                 pass,
                 dispatch,
@@ -1814,8 +1775,6 @@ impl GpuMultibodySolver {
                 &mb.links_batch_capacity,
                 &mb.dof_batch_capacity,
             )?;
-            // mass_matrix reads body_jacobians + links_workspace.
-            pass.memory_barrier();
             self.mass_matrix.call(
                 pass,
                 dispatch,
@@ -1836,9 +1795,7 @@ impl GpuMultibodySolver {
             )?;
         }
 
-        // Fused gravity + LU factor + LU solve. Reads mass_matrices /
-        // body_jacobians / links_workspace just written.
-        pass.memory_barrier();
+        // Fused gravity + LU factor + LU solve.
         let grav_lu_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
         self.gravity_and_lu.call(
             pass,

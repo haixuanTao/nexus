@@ -48,8 +48,6 @@ impl GpuNarrowPhase {
         self.reset_narrow_phase
             .call(pass, [1u32, num_batches, 1], contacts_len, pfm_pairs_len)?;
 
-        // narrow_phase reads contacts_len/pfm_pairs_len just zeroed.
-        pass.memory_barrier();
         self.narrow_phase.call(
             pass,
             collision_pairs_indirect,
@@ -67,13 +65,8 @@ impl GpuNarrowPhase {
             indices,
         )?;
 
-        // init_pfm_pfm_indirect_args reads pfm_pairs_len atomic counter.
-        pass.memory_barrier();
         self.init_pfm_pfm_indirect_args
             .call(pass, 1u32, pfm_pairs_len, pfm_pairs_indirect)?;
-
-        // narrow_phase_pfm_pfm reads the indirect args + pfm_pairs.
-        pass.memory_barrier();
         self.narrow_phase_pfm_pfm.call(
             pass,
             &*pfm_pairs_indirect,
@@ -85,12 +78,8 @@ impl GpuNarrowPhase {
             vertices,
             indices,
         )?;
-
-        // init_contacts_indirect_args reads contacts_len atomic counter.
-        pass.memory_barrier();
         self.init_contacts_indirect_args
             .call(pass, 1u32, contacts_len, contacts_indirect)?;
-        pass.memory_barrier();
 
         Ok(())
     }

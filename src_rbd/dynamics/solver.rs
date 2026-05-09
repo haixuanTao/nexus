@@ -169,7 +169,6 @@ impl GpuSolver {
             args.colliders_len,
             args.colliders_batch_capacity,
         )?;
-        pass.memory_barrier();
 
         // Seed `solver_body_poses` from `body_poses`: rapier's
         // `SolverBodies::copy_from`. After this, only the COM-centered solver
@@ -186,9 +185,6 @@ impl GpuSolver {
             args.colliders_batch_capacity,
         )?;
 
-        // Reads `solver_body_poses` written above and the zeroed
-        // `body_constraint_counts` from `cleanup`.
-        pass.memory_barrier();
         self.init_constraints.call(
             pass,
             args.contacts_len_indirect,
@@ -207,8 +203,6 @@ impl GpuSolver {
             args.colliders_batch_capacity,
         )?;
 
-        // Prefix sum reads body_constraint_counts written by init_constraints.
-        pass.memory_barrier();
         args.prefix_sum.launch(
             backend,
             pass,
@@ -217,8 +211,6 @@ impl GpuSolver {
             args.num_batches,
         )?;
 
-        // sort_constraints reads body_constraint_counts (now prefix-summed).
-        pass.memory_barrier();
         self.sort_constraints.call(
             pass,
             args.contacts_len_indirect,
@@ -270,9 +262,6 @@ impl GpuSolver {
             args.colliders_batch_capacity,
         )?;
 
-        // joint_solver.init reads solver_vels_inc / mprops written above
-        // (or other state shared with init_solver_vels_inc on Metal).
-        pass.memory_barrier();
         joint_solver.init(pass, &mut joint_args)?;
 
         for substep_id in 0..num_substeps {
@@ -305,8 +294,6 @@ impl GpuSolver {
             /*
              * Apply solver velocities increments.
              */
-            // Reads solver_vels_inc written by init_solver_vels_inc / multibody.
-            pass.memory_barrier();
             self.apply_solver_vels_inc.call(
                 pass,
                 [args.num_colliders, args.num_batches, 1],
@@ -319,10 +306,6 @@ impl GpuSolver {
             /*
              * Update nonlinear terms.
              */
-            // Reads constraints / contacts (built in `prepare`); independent
-            // of apply_solver_vels_inc but the next read-after-write across
-            // dispatches needs serialization on Metal.
-            pass.memory_barrier();
             self.update_constraints.call(
                 pass,
                 args.contacts_len_indirect,
@@ -335,18 +318,13 @@ impl GpuSolver {
                 args.colliders_batch_capacity,
             )?;
 
-            // joint_solver.update reads constraints just rebuilt above.
-            pass.memory_barrier();
             joint_solver.update(pass, &mut joint_args, args.solver_body_poses)?;
 
             /*
              * Warmstart.
              */
-            // Reads constraints / curr_color updated above.
-            pass.memory_barrier();
             self.reset_color.call(pass, 1u32, args.curr_color)?;
             for _ in 0..args.num_colors {
-                pass.memory_barrier();
                 self.warmstart.call(
                     pass,
                     args.contacts_len_indirect,
@@ -358,19 +336,15 @@ impl GpuSolver {
                     args.contacts_batch_capacity,
                     args.colliders_batch_capacity,
                 )?;
-                pass.memory_barrier();
                 self.inc_color.call(pass, 1u32, args.curr_color)?
             }
 
             /*
              * Solve with bias.
              */
-            pass.memory_barrier();
             joint_solver.solve(pass, &mut joint_args, args.solver_vels, true)?;
-            pass.memory_barrier();
             self.reset_color.call(pass, 1u32, args.curr_color)?;
             for _ in 0..args.num_colors {
-                pass.memory_barrier();
                 self.step_gauss_seidel.call(
                     pass,
                     args.contacts_len_indirect,
@@ -382,14 +356,12 @@ impl GpuSolver {
                     args.contacts_batch_capacity,
                     args.colliders_batch_capacity,
                 )?;
-                pass.memory_barrier();
                 self.inc_color.call(pass, 1u32, args.curr_color)?
             }
 
             /*
              * Integrate positions only.
              */
-            pass.memory_barrier();
             self.integrate_linearized.call(
                 pass,
                 [args.num_colliders, args.num_batches, 1],
@@ -404,10 +376,8 @@ impl GpuSolver {
             /*
              * Solve WITHOUT bias.
              */
-            pass.memory_barrier();
             joint_solver.solve(pass, &mut joint_args, args.solver_vels, false)?;
 
-            pass.memory_barrier();
             self.remove_cfm_and_bias_kernel.call(
                 pass,
                 args.contacts_len_indirect,
@@ -416,10 +386,8 @@ impl GpuSolver {
                 args.contacts_batch_capacity,
             )?;
 
-            pass.memory_barrier();
             self.reset_color.call(pass, 1u32, args.curr_color)?;
             for _ in 0..args.num_colors {
-                pass.memory_barrier();
                 self.step_gauss_seidel.call(
                     pass,
                     args.contacts_len_indirect,
@@ -431,7 +399,6 @@ impl GpuSolver {
                     args.contacts_batch_capacity,
                     args.colliders_batch_capacity,
                 )?;
-                pass.memory_barrier();
                 self.inc_color.call(pass, 1u32, args.curr_color)?
             }
         }
@@ -440,7 +407,6 @@ impl GpuSolver {
          * Writeback body velocities and convert COM-centered solver poses
          * back to body-origin poses.
          */
-        pass.memory_barrier();
         self.finalize.call(
             pass,
             [args.num_colliders, args.num_batches, 1],

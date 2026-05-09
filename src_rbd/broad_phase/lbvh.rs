@@ -159,7 +159,6 @@ impl Lbvh {
             num_shapes,
             colliders_batch_capacity,
         )?;
-        pass.memory_barrier();
         drop(pass);
 
         let mut pass = encoder.begin_pass("lbvh-compute-morton", timestamps.as_deref_mut());
@@ -172,7 +171,6 @@ impl Lbvh {
             num_shapes,
             colliders_batch_capacity,
         )?;
-        pass.memory_barrier();
         drop(pass);
 
         let mut pass = encoder.begin_pass("lbvh-sort-dispatch", timestamps.as_deref_mut());
@@ -199,7 +197,6 @@ impl Lbvh {
             num_shapes,
             colliders_batch_capacity,
         )?;
-        pass.memory_barrier();
         drop(pass);
 
         let mut pass = encoder.begin_pass("lbvh-refit_leaves", timestamps.as_deref_mut());
@@ -214,7 +211,6 @@ impl Lbvh {
             colliders_batch_capacity,
             vertex_buffers,
         )?;
-        pass.memory_barrier();
         drop(pass);
 
         let mut pass = encoder.begin_pass("lbvh-refit-internal", timestamps.as_deref_mut());
@@ -225,7 +221,6 @@ impl Lbvh {
             num_shapes,
             colliders_batch_capacity,
         )?;
-        pass.memory_barrier();
         drop(pass);
 
         Ok(())
@@ -256,9 +251,6 @@ impl Lbvh {
             [1u32, num_batches, 1],
             collision_pairs_len,
         )?;
-        // find_collision_pairs reads collision_pairs_len (as atomic counter)
-        // immediately after reset_collision_pairs zeroed it.
-        pass.memory_barrier();
         self.shaders.find_collision_pairs.call(
             pass,
             [colliders_per_batch, num_batches, 1],
@@ -270,16 +262,12 @@ impl Lbvh {
             collision_pairs_batch_capacity,
             collision_groups,
         )?;
-        // lbvh_init_indirect_args reads the final atomic counter written
-        // by find_collision_pairs to populate collision_pairs_indirect.
-        pass.memory_barrier();
         self.shaders.lbvh_init_indirect_args.call(
             pass,
             1u32,
             collision_pairs_len,
             collision_pairs_indirect,
         )?;
-        pass.memory_barrier();
         Ok(())
     }
 }

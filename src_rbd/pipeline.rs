@@ -885,12 +885,6 @@ impl GpuPhysicsPipeline {
                 )
                 .unwrap();
 
-            // mprops_update writes mprops; sync_collider_poses doesn't read
-            // mprops, but both touch many of the same per-collider buffers —
-            // the wgpu backend serializes them implicitly, so we mirror that
-            // on Metal (no-op on wgpu).
-            pass.memory_barrier();
-
             // Update collider world-space poses from their parent rigid-body poses.
             self.sync_collider_poses
                 .dispatch(
@@ -1047,11 +1041,6 @@ impl GpuPhysicsPipeline {
                 )
                 .unwrap();
 
-            // `prepare` writes new_constraints, new_constraint_builders,
-            // body_constraint_counts, body_constraint_ids; the warmstart
-            // step below reads those, so insert a buffer-scope barrier.
-            pass.memory_barrier();
-
             // Warmstart
             let warmstart_args = WarmstartArgs {
                 contacts_len: &state.contacts_len,
@@ -1069,10 +1058,6 @@ impl GpuPhysicsPipeline {
             self.warmstart
                 .transfer_warmstart_impulses(&mut pass, warmstart_args)
                 .unwrap();
-
-            // `transfer_warmstart_impulses` writes new_constraints; coloring
-            // reads them. Barrier so coloring sees up-to-date impulses.
-            pass.memory_barrier();
 
             let coloring_args = ColoringArgs {
                 contacts_len_indirect: &state.contacts_indirect,
