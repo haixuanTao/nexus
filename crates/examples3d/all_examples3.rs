@@ -36,6 +36,7 @@ struct CliOptions {
     command: Command,
     cpu: bool,
     cuda: bool,
+    metal: bool,
     run: bool,
 }
 
@@ -50,6 +51,7 @@ fn parse_command_line() -> CliOptions {
     let mut command = Command::RunAll;
     let mut cpu = false;
     let mut cuda = false;
+    let mut metal = false;
     let mut run = false;
 
     while let Some(arg) = args.next() {
@@ -58,6 +60,7 @@ fn parse_command_line() -> CliOptions {
             "--list" => command = Command::List,
             "--cpu" => cpu = true,
             "--cuda" => cuda = true,
+            "--metal" => metal = true,
             "--run" => run = true,
             _ => {}
         }
@@ -67,6 +70,7 @@ fn parse_command_line() -> CliOptions {
         command,
         cpu,
         cuda,
+        metal,
         run,
     }
 }
@@ -124,6 +128,10 @@ pub async fn main() {
         #[cfg(feature = "cuda")]
         if opts.cuda {
             t = t.with_backend(nexus_testbed3d::BackendType::Cuda);
+        }
+        #[cfg(feature = "metal")]
+        if opts.metal {
+            t = t.with_backend(nexus_testbed3d::BackendType::Metal);
         }
         if opts.run {
             t = t.with_running();

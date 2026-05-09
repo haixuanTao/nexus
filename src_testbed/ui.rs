@@ -420,6 +420,16 @@ fn backend_selector(
         new_backend = Some(BackendType::Cuda);
     }
 
+    #[cfg(feature = "metal")]
+    if ui
+        .radio(effective == BackendType::Metal, "Metal (nexus)")
+        .on_hover_text("GPU-accelerated physics with nexus via native Metal")
+        .clicked()
+        && effective != BackendType::Metal
+    {
+        new_backend = Some(BackendType::Metal);
+    }
+
     #[cfg(feature = "cpu")]
     if ui
         .radio(effective == BackendType::Cpu, "CPU (nexus)")

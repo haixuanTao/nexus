@@ -58,6 +58,7 @@ impl GpuPrefixSum {
             &mut workspace.stages[0].buffer,
             &workspace.batch_stride_tensors[0],
         )?;
+        pass.memory_barrier();
 
         for i in 0..workspace.num_stages - 1 {
             let ngroups = workspace.per_batch_ngroups[i + 1];
@@ -74,6 +75,7 @@ impl GpuPrefixSum {
                 &mut aux_stage.buffer,
                 batch_stride_tensor,
             )?;
+            pass.memory_barrier();
         }
 
         if workspace.num_stages > 2 {
@@ -92,6 +94,7 @@ impl GpuPrefixSum {
                     &aux_stage.buffer,
                     batch_stride_tensor,
                 )?;
+                pass.memory_barrier();
             }
         }
 
@@ -103,6 +106,7 @@ impl GpuPrefixSum {
                 &workspace.stages[0].buffer,
                 &workspace.batch_stride_tensors[0],
             )?;
+            pass.memory_barrier();
         }
 
         Ok(())

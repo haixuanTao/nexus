@@ -379,7 +379,9 @@ impl GpuJointSolver {
             &args.joints.num_joints,
             &args.joints.joints_batch_capacity,
             args.colliders_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 
     /// Updates the non-linear terms of the joint constraints.
@@ -404,7 +406,9 @@ impl GpuJointSolver {
             args.sim_params,
             &args.joints.joints_batch_capacity,
             args.colliders_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 
     /// Apply a single Projected-Gauss-Seidel step for solving joints.
@@ -427,12 +431,17 @@ impl GpuJointSolver {
                 &args.joints.num_joints,
                 &args.joints.joints_batch_capacity,
             )?;
+            // reset_joint_color reads/writes curr_color after constraints
+            // were just modified.
+            pass.memory_barrier();
         }
 
         self.reset_joint_color
             .call(pass, 1u32, &mut args.joints.curr_color)?;
 
         for _ in 0..args.joints.num_colors {
+            // solve_joint_constraints reads curr_color, writes solver_vels.
+            pass.memory_barrier();
             // TODO PERF: figure out a way to dispatch a number of threads that fits
             //            more tightly the size of the current color.
             self.solve_joint_constraints.call(
@@ -446,8 +455,10 @@ impl GpuJointSolver {
                 args.colliders_batch_capacity,
                 &args.joints.color_groups_batch_capacity,
             )?;
+            // inc_joint_color reads/writes curr_color.
+            pass.memory_barrier();
             self.inc_joint_color
-                .call(pass, 1u32, &mut args.joints.curr_color)?
+                .call(pass, 1u32, &mut args.joints.curr_color)?;
         }
 
         Ok(())

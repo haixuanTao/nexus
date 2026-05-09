@@ -254,6 +254,7 @@ impl RadixSort {
             &mut workspace.num_wgs,
             &mut workspace.num_reduce_wgs,
         )?;
+        pass.memory_barrier();
 
         if workspace.output_keys_pong.len() < input_keys.len() {
             workspace.output_keys_pong =
@@ -311,6 +312,7 @@ impl RadixSort {
                     $src,
                     &mut workspace.count_buf,
                 )?;
+                pass.memory_barrier();
 
                 self.reduce.call(
                     pass,
@@ -320,9 +322,11 @@ impl RadixSort {
                     &workspace.count_buf,
                     &mut workspace.reduced_buf,
                 )?;
+                pass.memory_barrier();
 
                 self.scan
                     .call(pass, [1u32, 1, 1], n_sort, &mut workspace.reduced_buf)?;
+                pass.memory_barrier();
 
                 self.scan_add.call(
                     pass,
@@ -332,6 +336,7 @@ impl RadixSort {
                     &workspace.reduced_buf,
                     &mut workspace.count_buf,
                 )?;
+                pass.memory_barrier();
 
                 self.scatter.call(
                     pass,
@@ -346,6 +351,7 @@ impl RadixSort {
                     &workspace.batch_ids,
                     &mut workspace.batch_ids_pong,
                 )?;
+                pass.memory_barrier();
             };
         }
 
@@ -468,6 +474,7 @@ impl RadixSort {
             output_values,
             &mut workspace.batch_ids,
         )?;
+        pass.memory_barrier();
         let mut cur_keys = output_keys;
         let mut next_keys = &mut workspace.output_keys_pong;
         let mut cur_vals = output_values;
@@ -481,6 +488,7 @@ impl RadixSort {
             &mut workspace.num_wgs,
             &mut workspace.num_reduce_wgs,
         )?;
+        pass.memory_barrier();
 
         // Run all sort passes with 3-stream ping-pong.
         // Stream mapping changes between key passes and batch_id passes:
@@ -504,6 +512,7 @@ impl RadixSort {
                     cur_keys,
                     &mut workspace.count_buf,
                 )?;
+                pass.memory_barrier();
                 self.reduce.call(
                     pass,
                     &workspace.num_reduce_wgs,
@@ -512,8 +521,10 @@ impl RadixSort {
                     &workspace.count_buf,
                     &mut workspace.reduced_buf,
                 )?;
+                pass.memory_barrier();
                 self.scan
                     .call(pass, [1u32, 1, 1], n_sort_flat, &mut workspace.reduced_buf)?;
+                pass.memory_barrier();
                 self.scan_add.call(
                     pass,
                     &workspace.num_reduce_wgs,
@@ -522,6 +533,7 @@ impl RadixSort {
                     &workspace.reduced_buf,
                     &mut workspace.count_buf,
                 )?;
+                pass.memory_barrier();
                 self.scatter.call(
                     pass,
                     &workspace.num_wgs,
@@ -535,6 +547,7 @@ impl RadixSort {
                     cur_aux,
                     next_aux,
                 )?;
+                pass.memory_barrier();
             } else {
                 // Batch_id pass: digit extraction from batch_ids.
                 // Remap: src=batch_ids, values=keys, aux=vals.
@@ -546,6 +559,7 @@ impl RadixSort {
                     cur_aux,
                     &mut workspace.count_buf,
                 )?;
+                pass.memory_barrier();
                 self.reduce.call(
                     pass,
                     &workspace.num_reduce_wgs,
@@ -554,8 +568,10 @@ impl RadixSort {
                     &workspace.count_buf,
                     &mut workspace.reduced_buf,
                 )?;
+                pass.memory_barrier();
                 self.scan
                     .call(pass, [1u32, 1, 1], n_sort_flat, &mut workspace.reduced_buf)?;
+                pass.memory_barrier();
                 self.scan_add.call(
                     pass,
                     &workspace.num_reduce_wgs,
@@ -564,6 +580,7 @@ impl RadixSort {
                     &workspace.reduced_buf,
                     &mut workspace.count_buf,
                 )?;
+                pass.memory_barrier();
                 // scatter(src=bids, values=keys, aux=vals,
                 //         out=next_bids, out_values=next_keys, out_aux=next_vals)
                 self.scatter.call(
@@ -579,6 +596,7 @@ impl RadixSort {
                     cur_vals,
                     next_vals,
                 )?;
+                pass.memory_barrier();
             }
 
             std::mem::swap(&mut cur_keys, &mut next_keys);

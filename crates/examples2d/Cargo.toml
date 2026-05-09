@@ -9,6 +9,7 @@ default = []
 cpu = ["nexus_testbed2d/cpu"]
 cpu-parallel = ["cpu", "nexus_testbed2d/cpu-parallel"]
 cuda = ["nexus_testbed2d/cuda"]
+metal = ["nexus_testbed2d/metal"]
 
 [dependencies]
 glamx = { version = "0.2", default-features = false }

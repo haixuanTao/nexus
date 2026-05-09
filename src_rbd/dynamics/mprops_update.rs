@@ -35,7 +35,9 @@ impl GpuMpropsUpdate {
             body_poses,
             num_shapes,
             colliders_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 }
 
@@ -73,6 +75,8 @@ impl GpuSyncColliderPosesShader {
             collider_world_poses,
             num_shapes,
             colliders_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 }

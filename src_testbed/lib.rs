@@ -240,6 +240,20 @@ impl Testbed {
         }
     }
 
+    #[cfg(feature = "metal")]
+    fn init_metal(&mut self) -> Option<KhalGpuBackend> {
+        match khal::backend::metal::Metal::new() {
+            Ok(metal) => Some(KhalGpuBackend::Metal(metal)),
+            Err(e) => {
+                self.gpu_init_error = Some(format!(
+                    "Metal backend not available, initialization failed:\n\"{:?}\"\n",
+                    e
+                ));
+                None
+            }
+        }
+    }
+
     pub fn with_running(mut self) -> Self {
         self.run_state = RunState::Running;
         self
@@ -282,16 +296,26 @@ impl Testbed {
             None
         };
 
+        #[cfg(feature = "metal")]
+        let mut metal: Option<KhalGpuBackend> = if matches!(self.backend_type, BackendType::Metal) {
+            self.init_metal()
+        } else {
+            None
+        };
+
         /// Returns the active GPU backend based on the given backend type.
         fn pick_gpu<'a>(
             backend_type: BackendType,
             webgpu: &'a Option<KhalGpuBackend>,
             #[cfg(feature = "cuda")] cuda: &'a Option<KhalGpuBackend>,
+            #[cfg(feature = "metal")] metal: &'a Option<KhalGpuBackend>,
         ) -> Option<&'a KhalGpuBackend> {
             match backend_type {
                 BackendType::Gpu => webgpu.as_ref(),
                 #[cfg(feature = "cuda")]
                 BackendType::Cuda => cuda.as_ref(),
+                #[cfg(feature = "metal")]
+                BackendType::Metal => metal.as_ref(),
                 _ => None,
             }
         }
@@ -328,6 +352,8 @@ impl Testbed {
                         &webgpu,
                         #[cfg(feature = "cuda")]
                         &cuda,
+                        #[cfg(feature = "metal")]
+                        &metal,
                     )
                 },
                 &mut scene2d,
@@ -385,6 +411,10 @@ impl Testbed {
                         BackendType::Cuda if cuda.is_none() => {
                             cuda = self.init_cuda();
                         }
+                        #[cfg(feature = "metal")]
+                        BackendType::Metal if metal.is_none() => {
+                            metal = self.init_metal();
+                        }
                         _ => {}
                     }
                 }
@@ -431,6 +461,8 @@ impl Testbed {
                                 &webgpu,
                                 #[cfg(feature = "cuda")]
                                 &cuda,
+                                #[cfg(feature = "metal")]
+                                &metal,
                             )
                         },
                         &mut scene2d,
@@ -453,6 +485,8 @@ impl Testbed {
                         &webgpu,
                         #[cfg(feature = "cuda")]
                         &cuda,
+                        #[cfg(feature = "metal")]
+                        &metal,
                     )
                 },
                 &mut active_demo,

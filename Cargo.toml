@@ -45,7 +45,7 @@ crunchy = "0.2.4"
 
 [workspace.lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("dim2", "dim3", "from_rapier", "cpu", "cuda"))',
+    'cfg(feature, values("dim2", "dim3", "from_rapier", "cpu", "cuda", "metal"))',
 ] }
 
 [patch.crates-io]
@@ -53,6 +53,8 @@ khal = { path = "../khal/crates/khal" }
 khal-derive = { path = "../khal/crates/khal-derive" }
 khal-std = { path = "../khal/crates/khal-std" }
 khal-builder = { path = "../khal/crates/khal-builder" }
+vortx = { path = "../vortx" }
+vortx-shaders = { path = "../vortx/vortx-shaders" }
 
 #glamx = { git = "https://github.com/dimforge/glamx", branch = "bytemuck"}
 #parry2d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}

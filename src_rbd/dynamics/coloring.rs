@@ -113,7 +113,9 @@ impl GpuColoring {
             args.constraints_rands,
             args.contacts_len,
             args.contacts_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 
     /// Dispatches the step_graph_coloring_luby kernel.
@@ -136,7 +138,9 @@ impl GpuColoring {
             args.contacts_len,
             args.contacts_batch_capacity,
             args.colliders_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 
     /// Dispatches the reset_topo_gc kernel.
@@ -152,7 +156,9 @@ impl GpuColoring {
             args.colored,
             args.contacts_len,
             args.contacts_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 
     /// Dispatches the step_graph_coloring_topo_gc kernel.
@@ -174,7 +180,9 @@ impl GpuColoring {
             args.body_group,
             args.contacts_batch_capacity,
             args.colliders_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 
     /// Dispatches the fix_conflicts_topo_gc kernel.
@@ -196,7 +204,9 @@ impl GpuColoring {
             args.body_group,
             args.contacts_batch_capacity,
             args.colliders_batch_capacity,
-        )
+        )?;
+        pass.memory_barrier();
+        Ok(())
     }
 
     /// Executes Luby's randomized graph coloring algorithm.
@@ -262,9 +272,16 @@ impl GpuColoring {
         // Reset coloring state.
         self.dispatch_reset_topo_gc(pass, &mut args)?;
         for _ in 0..max_colors {
+            // reset_completion_flag reads/writes uncolored after the previous
+            // step / fix_conflicts iteration may have written it.
+            pass.memory_barrier();
             self.reset_completion_flag_topo_gc
                 .call(pass, 1u32, args.uncolored)?;
+            // step_topo_gc reads uncolored just zeroed.
+            pass.memory_barrier();
             self.dispatch_step_topo_gc(pass, &mut args)?;
+            // fix_conflicts reads constraints_colors written by step.
+            pass.memory_barrier();
             self.dispatch_fix_conflicts_topo_gc(pass, &mut args)?;
         }
 

@@ -173,6 +173,26 @@ pub async fn setup_physics(
                 }
             }
         }
+        #[cfg(feature = "metal")]
+        BackendType::Metal => {
+            let gpu = gpu.expect("Metal device initialization failed");
+
+            if let Some(pipeline) = cached_pipeline.take() {
+                let gpu_backend = GpuBackend::with_pipeline(gpu, pipeline, phys).await;
+                PhysicsBackend::Gpu(gpu_backend)
+            } else {
+                match GpuBackend::try_new(gpu, phys).await {
+                    Ok(gpu_backend) => PhysicsBackend::Gpu(gpu_backend),
+                    Err(e) => {
+                        *gpu_error = Some(format!(
+                            "Metal backend initialization failed: {}. Using CPU backend.",
+                            e
+                        ));
+                        PhysicsBackend::Cpu(CpuBackend::new(phys))
+                    }
+                }
+            }
+        }
         BackendType::Rapier => PhysicsBackend::Cpu(CpuBackend::new(phys)),
     };
 

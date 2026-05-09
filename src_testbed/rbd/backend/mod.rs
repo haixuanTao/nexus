@@ -20,6 +20,9 @@ pub enum BackendType {
     /// GPU-accelerated physics using nexus + CUDA.
     #[cfg(feature = "cuda")]
     Cuda,
+    /// GPU-accelerated physics using nexus + native Metal (macOS only).
+    #[cfg(feature = "metal")]
+    Metal,
 }
 
 /// Trait for physics simulation backends (CPU or GPU)
