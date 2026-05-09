@@ -28,6 +28,7 @@ use crate::shaders::dynamics::{
     GpuMbApplyGravityWithCoriolis, GpuMbBodyJacobians, GpuMbFinalizeContactConstraints,
     GpuMbForwardKinematics, GpuMbInitContactConstraints, GpuMbInitJointConstraints, GpuMbIntegrate,
     GpuMbComputeDynamicsPre, GpuMbGravityAndLu, GpuMbIntegrateVelocities, GpuMbLuDecompose,
+    GpuMbComputeDynamicsWithoutCoriolisPre,
     GpuMbLuFactorAndSolve, GpuMbLuSolve, GpuMbMassMatrix,
     GpuMbMassMatrixWithCoriolis, GpuMbRemoveContactConstraintBias,
     GpuMbRemoveImpulseJointConstraintBias, GpuMbRemoveJointConstraintBias,
@@ -678,7 +679,7 @@ impl GpuMultibodySet {
             mass_matrix_entries_per_batch: mm_cap,
             coriolis_entries_per_batch: cor_cap,
             i_coriolis_dt_entries_per_batch: icdt_cap,
-            implicit_coriolis: true,
+            implicit_coriolis: false,
             has_joint_constraints: all_infos.iter().any(|info| info.max_constraints > 0),
 
             num_multibodies: Tensor::vector(backend, &all_num_mb, usage_u).unwrap(),
@@ -1158,6 +1159,7 @@ pub struct GpuMultibodySolver {
     lu_factor_and_solve: GpuMbLuFactorAndSolve,
     gravity_and_lu: GpuMbGravityAndLu,
     compute_dynamics_pre: GpuMbComputeDynamicsPre,
+    compute_dynamics_without_coriolis_pre: GpuMbComputeDynamicsWithoutCoriolisPre,
     init_joint_constraints: GpuMbInitJointConstraints,
     solve_joint_constraints: GpuMbSolveJointConstraints,
     remove_joint_constraint_bias: GpuMbRemoveJointConstraintBias,
@@ -1250,57 +1252,17 @@ impl GpuMultibodySolver {
                 args.colliders_batch_capacity,
             )?;
         } else {
-            self.forward_kinematics.call(
+            self.compute_dynamics_without_coriolis_pre.call(
                 pass,
-                dispatch,
+                pre_dispatch,
                 &mb.multibody_info,
-                &mut mb.links_static,
+                &mb.links_static,
                 &mut mb.links_workspace,
+                &mb.links_mprops,
                 args.poses,
-                &mb.links_mprops,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
-                &mb.links_batch_capacity,
-                args.colliders_batch_capacity,
-            )?;
-
-            let bj_dispatch = [mb.multibodies_per_batch * MB_BJ_LANES, mb.num_batches, 1];
-            self.body_jacobians.call(
-                pass,
-                bj_dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mb.links_workspace,
                 &mut mb.body_jacobians,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
-                &mb.links_batch_capacity,
-                &mb.jacobians_batch_capacity,
-            )?;
-
-            self.update_velocities.call(
-                pass,
-                dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mut mb.links_workspace,
-                &mb.links_mprops,
-                &mb.dof_velocities,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
-                &mb.links_batch_capacity,
-                &mb.dof_batch_capacity,
-            )?;
-
-            self.mass_matrix.call(
-                pass,
-                dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mb.links_workspace,
-                &mb.links_mprops,
-                &mb.body_jacobians,
                 &mut mb.mass_matrices,
+                &mb.dof_velocities,
                 &mb.damping,
                 &mb.num_multibodies,
                 &mb.dt,
@@ -1309,6 +1271,7 @@ impl GpuMultibodySolver {
                 &mb.jacobians_batch_capacity,
                 &mb.mass_matrix_batch_capacity,
                 &mb.dof_batch_capacity,
+                args.colliders_batch_capacity,
             )?;
         }
 
@@ -1736,54 +1699,17 @@ impl GpuMultibodySolver {
                 args.colliders_batch_capacity,
             )?;
         } else {
-            self.forward_kinematics.call(
+            self.compute_dynamics_without_coriolis_pre.call(
                 pass,
-                dispatch,
+                pre_dispatch,
                 &mb.multibody_info,
-                &mut mb.links_static,
+                &mb.links_static,
                 &mut mb.links_workspace,
+                &mb.links_mprops,
                 args.poses,
-                &mb.links_mprops,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
-                &mb.links_batch_capacity,
-                args.colliders_batch_capacity,
-            )?;
-            let bj_dispatch = [mb.multibodies_per_batch * MB_BJ_LANES, mb.num_batches, 1];
-            self.body_jacobians.call(
-                pass,
-                bj_dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mb.links_workspace,
                 &mut mb.body_jacobians,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
-                &mb.links_batch_capacity,
-                &mb.jacobians_batch_capacity,
-            )?;
-            self.update_velocities.call(
-                pass,
-                dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mut mb.links_workspace,
-                &mb.links_mprops,
-                &mb.dof_velocities,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
-                &mb.links_batch_capacity,
-                &mb.dof_batch_capacity,
-            )?;
-            self.mass_matrix.call(
-                pass,
-                dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mb.links_workspace,
-                &mb.links_mprops,
-                &mb.body_jacobians,
                 &mut mb.mass_matrices,
+                &mb.dof_velocities,
                 &mb.damping,
                 &mb.num_multibodies,
                 &mb.dt,
@@ -1792,6 +1718,7 @@ impl GpuMultibodySolver {
                 &mb.jacobians_batch_capacity,
                 &mb.mass_matrix_batch_capacity,
                 &mb.dof_batch_capacity,
+                args.colliders_batch_capacity,
             )?;
         }
 

@@ -93,7 +93,7 @@ impl SimParams {
     /// This is the default configuration, equivalent to [`SimParams::default()`].
     pub fn tgs_soft() -> Self {
         Self {
-            dt: 1.0 / 60.0,
+            dt: 1.0 / 60.0 / 10.0,
             contact_natural_frequency: 30.0,
             contact_damping_ratio: 5.0,
             joint_natural_frequency: 1.0e6,

@@ -53,6 +53,7 @@ use super::utils::body_to_parent;
 
 const LANES: u32 = 32;
 
+// TODO: refactor into multiple functions (but single kernel) to share between the coriolis and non-coriolis versions.
 /// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
 #[spirv_bindgen]
 #[spirv(compute(threads(32, 1, 1)))]
@@ -583,6 +584,292 @@ pub fn gpu_mb_compute_dynamics_pre(
             body_jacobian,
             i_coriolis_dt,
             i_coriolis_dt_view,
+            1.0,
+            lane,
+            LANES,
+        );
+
+        workgroup_memory_barrier_with_group_sync();
+    }
+
+    // Damping diagonal: M[i, i] += damping[i] * dt — parallel.
+    let d = lane;
+    if d < ndofs {
+        let diag_idx = acc_augmented_mass.idx(d, d);
+        let cur = mass_matrices.read(diag_idx);
+        mass_matrices.write(diag_idx, cur + damping_slice.read(d as usize) * dt);
+    }
+
+    let _ = MAX_MB_DOFS;
+}
+
+
+/// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
+#[spirv_bindgen]
+#[spirv(compute(threads(32, 1, 1)))]
+pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &mut [MultibodyLinkWorkspace],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_velocities: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] damping: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] dt_buf: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] multibodies_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 12)] links_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 13)] jacobians_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 14)] mass_matrix_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 15)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 16)] colliders_batch_capacity: &u32,
+    // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
+    // path (for parity with the original kernels that needed it). Cheap on
+    // GPU — unused.
+    #[spirv(workgroup)] _cpu_marker: &mut u32,
+) {
+    let batch_id = wg_id.y as usize;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
+    let num_mb = num_multibodies.read(batch_id);
+    if mb_idx >= num_mb {
+        return;
+    }
+
+    let dt = dt_buf.read(0);
+
+    let mb_start = batch_id * *multibodies_batch_capacity as usize;
+    let links_start = batch_id * *links_batch_capacity as usize;
+    let jac_start = batch_id * *jacobians_batch_capacity as usize;
+    let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
+    let dof_start = batch_id * *dof_batch_capacity as usize;
+    let coll_start = batch_id * *colliders_batch_capacity as usize;
+
+    let mb = multibody_info.read(mb_start + mb_idx as usize);
+    let num_links = mb.num_links;
+    let ndofs = mb.ndofs;
+    let first_link_global = links_start + mb.first_link as usize;
+    let mb_jac_base = jac_start + mb.jacobian_offset as usize;
+    let mb_mm_base = mm_start + mb.mass_matrix_offset as usize;
+    let damping_base = dof_start + mb.first_dof as usize;
+    let gen_base = damping_base;
+
+    let stat_slice = Slice(links_static, first_link_global);
+    let mut ws_slice = SliceMut(links_workspace, first_link_global);
+    let local_mprops_slice = Slice(links_local_mprops, first_link_global);
+    let mut poses_slice = SliceMut(poses, coll_start);
+    let damping_slice = Slice(damping, damping_base);
+    let vel_slice = Slice(dof_velocities, gen_base);
+
+    // ============== Phase 1: Forward Kinematics ==============
+    // Sequential parent-before-child link walk; lane 0 only, others idle at
+    // the trailing barrier.
+    if lane == 0 {
+        // Root pose.
+        let stat0 = stat_slice.read(0);
+        let root_pose = if mb.root_is_dynamic == 0 {
+            poses_slice.read(stat0.rb_id as usize)
+        } else {
+            let ws_ref = ws_slice.at(0);
+            let pose = body_to_parent(&stat0, ws_ref.joint_rot, &ws_ref.coords);
+            poses_slice.write(stat0.rb_id as usize, pose);
+            pose
+        };
+        let link0 = ws_slice.at_mut(0);
+        link0.local_to_parent = root_pose;
+        link0.local_to_world = root_pose;
+
+        for k in 1..num_links {
+            let k_usize = k as usize;
+            let stat = stat_slice.at(k_usize);
+            let local_to_parent;
+            let parent_to_world;
+            {
+                let ws_ref = ws_slice.at(k_usize);
+                let parent_ref = ws_slice.at(stat.parent_link_id as usize);
+                parent_to_world = parent_ref.local_to_world;
+                local_to_parent = body_to_parent(&stat, ws_ref.joint_rot, &ws_ref.coords);
+            }
+            let local_to_world = parent_to_world * local_to_parent;
+
+            let parent_lmp = local_mprops_slice.read(stat.parent_link_id as usize);
+            let lmp = local_mprops_slice.read(k_usize);
+            let world_com = local_to_world * lmp.com;
+            let parent_com_world = parent_to_world * parent_lmp.com;
+            let child_anchor_world = local_to_world * stat.data.local_frame_b.translation;
+            let shift02 = child_anchor_world - parent_com_world;
+            let shift23 = world_com - child_anchor_world;
+
+            let link_mut = ws_slice.at_mut(k_usize);
+            link_mut.local_to_parent = local_to_parent;
+            link_mut.local_to_world = local_to_world;
+            link_mut.shift02 = shift02;
+            link_mut.shift23 = shift23;
+            poses_slice.write(stat.rb_id as usize, local_to_world);
+        }
+    }
+    workgroup_memory_barrier_with_group_sync();
+
+    // ============== Phase 2: Body Jacobians ==============
+    for k in 0..num_links {
+        let link_infos = stat_slice.at(k as usize);
+        let link = ws_slice.at(k as usize);
+
+        let link_j = MatSlice::dense(
+            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+            SPATIAL_DIM as u32,
+            ndofs,
+        );
+
+        let parent_to_world;
+        if k != 0 {
+            let parent_j = MatSlice::dense(
+                mb_jac_base
+                    + (link_infos.parent_link_id as usize)
+                    * SPATIAL_DIM
+                    * (ndofs as usize),
+                SPATIAL_DIM as u32,
+                ndofs,
+            );
+            let parent_link = ws_slice.at(link_infos.parent_link_id as usize);
+            parent_to_world = parent_link.local_to_world;
+
+            copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
+            let link_j_v = link_j.fixed_rows(0, DIM);
+            let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
+            gemm_skew_tr_lhs_par(
+                body_jacobians,
+                link_j_v,
+                1.0,
+                link.shift02,
+                parent_j_w,
+                1.0,
+                lane,
+                LANES,
+            );
+        } else {
+            fill_par(body_jacobians, link_j, 0.0, lane, LANES);
+            parent_to_world = Pose::default();
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+
+        let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
+        joint_jacobian_accumulate_par(
+            link_infos,
+            parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
+            body_jacobians,
+            link_j_part,
+            lane,
+            LANES,
+        );
+
+        workgroup_memory_barrier_with_group_sync();
+        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+        gemm_skew_tr_lhs_par(
+            body_jacobians,
+            link_j_v,
+            1.0,
+            link.shift23,
+            link_j_w,
+            1.0,
+            lane,
+            LANES,
+        );
+        workgroup_memory_barrier_with_group_sync();
+    }
+
+    // ============== Phase 3: Velocity Propagation ==============
+    if lane == 0 {
+        for k in 0..num_links {
+            let k_usize = k as usize;
+            let stat = stat_slice.read(k_usize);
+
+            let (jv_local_lin, jv_local_ang) =
+                jacobian_mul_coordinates(stat.data.locked_axes, stat.assembly_id, &vel_slice);
+
+            let (joint_velocity, rb_vels) = if k == 0 {
+                let jv = Velocity::new(jv_local_lin, jv_local_ang);
+                (jv, jv)
+            } else {
+                let parent_id = stat.parent_link_id as usize;
+                let parent_ws = ws_slice.at(parent_id);
+                let parent_to_world_rot = parent_ws.local_to_world.rotation;
+                let parent_world_com_pose = parent_ws.local_to_world;
+                let parent_rb_lin = parent_ws.rb_vels.linear;
+                let parent_rb_ang = parent_ws.rb_vels.angular;
+
+                let parent_lmp = local_mprops_slice.read(parent_id);
+                let transform_rot = parent_to_world_rot * stat.data.local_frame_a.rotation;
+
+                #[cfg(feature = "dim3")]
+                let joint_velocity = Velocity::new(
+                    transform_rot * jv_local_lin,
+                    transform_rot * jv_local_ang,
+                );
+                #[cfg(feature = "dim2")]
+                let joint_velocity = Velocity::new(transform_rot * jv_local_lin, jv_local_ang);
+
+                let (self_local_to_world, self_shift23) = {
+                    let ws_ref = ws_slice.at(k_usize);
+                    (ws_ref.local_to_world, ws_ref.shift23)
+                };
+
+                let lmp = local_mprops_slice.read(k_usize);
+                let world_com = self_local_to_world * lmp.com;
+                let parent_world_com = parent_world_com_pose * parent_lmp.com;
+                let shift = world_com - parent_world_com;
+
+                let mut new_lin = parent_rb_lin + joint_velocity.linear;
+                let new_ang = parent_rb_ang + joint_velocity.angular;
+                new_lin += gcross_av(parent_rb_ang, shift);
+                new_lin += gcross_av(joint_velocity.angular, self_shift23);
+
+                (joint_velocity, Velocity::new(new_lin, new_ang))
+            };
+
+            let link_mut = ws_slice.at_mut(k_usize);
+            link_mut.joint_velocity = joint_velocity;
+            link_mut.rb_vels = rb_vels;
+        }
+    }
+    workgroup_memory_barrier_with_group_sync();
+
+    // ============== Phase 4: CRBA ==============
+    let acc_augmented_mass = MatSlice::dense(mb_mm_base, ndofs, ndofs);
+    fill_par(mass_matrices, acc_augmented_mass, 0.0, lane, LANES);
+    workgroup_memory_barrier_with_group_sync();
+
+    for k in 0..num_links {
+        let ws = ws_slice.at(k as usize);
+        let lmp = local_mprops_slice.read(k as usize);
+
+        let inv_mass_x = lmp.inv_mass.x;
+        if inv_mass_x == 0.0 {
+            continue;
+        }
+        let mass = 1.0 / inv_mass_x;
+        let inertia = link_world_inertia(ws, &lmp);
+
+        let body_jacobian = MatSlice::dense(
+            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+            SPATIAL_DIM as u32,
+            ndofs,
+        );
+
+        quadform_spatial_par(
+            mass_matrices,
+            acc_augmented_mass,
+            1.0,
+            mass,
+            inertia,
+            body_jacobians,
+            body_jacobian,
             1.0,
             lane,
             LANES,
