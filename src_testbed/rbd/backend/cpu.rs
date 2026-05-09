@@ -64,8 +64,8 @@ impl CpuBackend {
             shapes_cache.push(co.shared_shape().clone());
         }
 
-        #[allow(unused_mut)] // mut not needed in 2D but needed in 3d.
         let mut params = IntegrationParameters::default();
+        params.dt = env.sim_params.dt;
         Self {
             pipeline: PhysicsPipeline::new(),
             integration_parameters: params,

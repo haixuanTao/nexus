@@ -87,7 +87,7 @@ fn build_scene_with_substeps(num_links: usize, num_batches: usize, num_substeps:
     let environments = (0..num_batches.max(1))
         .map(|_| build_one_batch_with_substeps(num_links, num_substeps))
         .collect();
-    SimulationState { environments }
+    SimulationState::from_environments(environments)
 }
 
 struct Sample {

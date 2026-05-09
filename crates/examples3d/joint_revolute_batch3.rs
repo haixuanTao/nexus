@@ -85,6 +85,6 @@ fn build() -> SimulationState {
     /*
      * Set up the testbed.
      */
-    SimulationState { environments }
+    SimulationState::from_environments(environments)
     // testbed.look_at(point![478.0, 83.0, 228.0], point![134.0, 83.0, -116.0]);
 }

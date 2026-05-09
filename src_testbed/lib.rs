@@ -144,6 +144,10 @@ enum ActiveDemo {
         tick: Option<RbdTick>,
         /// Total elapsed simulated time, accumulated across non-paused steps.
         sim_time: f64,
+        /// Per-step timestep length, copied from the demo's `sim_params.dt`.
+        dt: f32,
+        /// Number of physics steps run per render frame.
+        num_steps_per_frame: u32,
     },
     Mpm {
         stage: MpmStage<GpuParticleModel>,
@@ -525,6 +529,8 @@ impl Testbed {
         match &self.builders[self.selected_demo] {
             DemoBuilder::Rbd(_, builder, tick_factory, _) => {
                 let phys = builder();
+                let dt = phys.environments[0].sim_params.dt;
+                let num_steps_per_frame = phys.num_steps_per_frame.max(1);
                 let physics = setup_physics(
                     gpu,
                     &phys,
@@ -540,6 +546,8 @@ impl Testbed {
                     render_ctx,
                     tick,
                     sim_time: 0.0,
+                    dt,
+                    num_steps_per_frame,
                 }
             }
             DemoBuilder::Mpm(_, _, _) => {
@@ -641,15 +649,17 @@ impl Testbed {
                 render_ctx,
                 tick,
                 sim_time,
+                dt,
+                num_steps_per_frame,
             } => {
                 if self.run_state != RunState::Paused {
-                    if let Some(tick_fn) = tick.as_mut() {
-                        tick_fn(&mut physics.backend, *sim_time);
+                    for _ in 0..*num_steps_per_frame {
+                        if let Some(tick_fn) = tick.as_mut() {
+                            tick_fn(&mut physics.backend, *sim_time);
+                        }
+                        self.run_stats = physics.backend.step(gpu).await;
+                        *sim_time += *dt as f64;
                     }
-                    self.run_stats = physics.backend.step(gpu).await;
-                    // Advance the demo's sim-time counter using the same
-                    // fixed-dt assumption everyone in the testbed uses.
-                    *sim_time += 1.0 / 60.0;
                 }
                 update_instances(render_ctx, &physics.backend);
             }

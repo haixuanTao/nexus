@@ -48,9 +48,18 @@ pub struct BatchEnvironment {
 
 pub struct SimulationState {
     pub environments: Vec<BatchEnvironment>,
+    /// Number of physics steps run per render frame (default: `1`).
+    pub num_steps_per_frame: u32,
 }
 
 impl SimulationState {
+    pub fn from_environments(environments: Vec<BatchEnvironment>) -> Self {
+        Self {
+            environments,
+            num_steps_per_frame: 1,
+        }
+    }
+
     pub fn single(
         bodies: RigidBodySet,
         colliders: ColliderSet,
@@ -81,16 +90,28 @@ impl SimulationState {
         multibody_joints: MultibodyJointSet,
         visuals: HashMap<ColliderHandle, VisualShape>,
     ) -> Self {
-        Self {
-            environments: vec![BatchEnvironment {
-                bodies,
-                colliders,
-                impulse_joints,
-                multibody_joints,
-                sim_params: GpuSimParams::default(),
-                visuals,
-            }],
+        Self::from_environments(vec![BatchEnvironment {
+            bodies,
+            colliders,
+            impulse_joints,
+            multibody_joints,
+            sim_params: GpuSimParams::default(),
+            visuals,
+        }])
+    }
+
+    /// Sets `sim_params.dt` on every environment to `dt`.
+    pub fn with_dt(mut self, dt: f32) -> Self {
+        for env in &mut self.environments {
+            env.sim_params.dt = dt;
         }
+        self
+    }
+
+    /// Sets the number of physics steps run between two renders.
+    pub fn with_num_steps_per_frame(mut self, num_steps_per_frame: u32) -> Self {
+        self.num_steps_per_frame = num_steps_per_frame;
+        self
     }
 }
 

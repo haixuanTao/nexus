@@ -101,6 +101,6 @@ fn build() -> SimulationState {
     /*
      * Set up the testbed.
      */
-    SimulationState { environments }
+    SimulationState::from_environments(environments)
     // testbed.look_at(point![100.0, 100.0, 100.0], Point::origin());
 }

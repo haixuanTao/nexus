@@ -1557,7 +1557,11 @@ impl GpuMultibodySolver {
         // 5. Recompute `a` for the next substep — orientations / positions just
         //    changed so M and τ are stale. Skipped on the last substep (rapier
         //    skips it too: `if !is_last_substep`).
-        if !is_last_substep {
+        // NOTE: we also only update the mass matrix a single time if running without
+        //       `implicit_coriolis`. This further improves performances as that’s the main
+        //       purpose of disabling the implicit handling of coriolis forces (and makes it
+        //       closer to Mujoco/Genesis).
+        if !is_last_substep && mb.implicit_coriolis {
             self.compute_dynamics(pass, mb, args)?;
         }
 
