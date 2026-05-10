@@ -84,7 +84,7 @@ pub fn gpu_mb_init_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] joint_constraint_columns: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dt_buf: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 9)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 10)] links_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 11)] mass_matrix_batch_capacity: &u32,
@@ -98,7 +98,7 @@ pub fn gpu_mb_init_joint_constraints(
     if mb_idx >= num_mb {
         return;
     }
-    let dt = dt_buf.read(0);
+    let dt = *dt_uniform;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let links_start = batch_id * *links_batch_capacity as usize;
@@ -502,7 +502,7 @@ pub fn gpu_mb_solve_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_velocities: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 5)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 6)] dof_batch_capacity: &u32,
@@ -541,7 +541,7 @@ pub fn gpu_mb_solve_joint_constraints(
         }
 
         // J · v for J = e_{dof_id} is just v[dof_id].
-        let v_d = dof_velocities.read(v_base + cons.dof_id as usize);
+        let v_d = dof_state.read(v_base + cons.dof_id as usize);
         let rhs_total = v_d + cons.rhs;
         let raw_imp = cons.impulse + cons.inv_lhs * (rhs_total - cons.cfm_gain * cons.impulse);
         let mut new_imp = raw_imp;
@@ -558,9 +558,9 @@ pub fn gpu_mb_solve_joint_constraints(
         // v -= delta · column   (column = M⁻¹ · e_d).
         for i in 0..ndofs {
             let v_idx = v_base + i as usize;
-            let cur = dof_velocities.read(v_idx);
+            let cur = dof_state.read(v_idx);
             let col = joint_constraint_columns.read(col_base + (s as usize) * dofs_stride + i as usize);
-            dof_velocities.write(v_idx, cur - delta * col);
+            dof_state.write(v_idx, cur - delta * col);
         }
     }
 }

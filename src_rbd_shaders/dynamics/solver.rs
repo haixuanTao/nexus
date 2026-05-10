@@ -61,13 +61,12 @@ pub fn gpu_solver_init_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &[IndexedManifold],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     constraints: &mut [TwoBodyConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     constraint_builders: &mut [TwoBodyConstraintBuilder],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_constraint_counts: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_group: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] body_constraint_counts: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_group: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] collider_world_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] solver_body_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] vels: &[Velocity],
@@ -91,11 +90,20 @@ pub fn gpu_solver_init_constraints(
     let solver_body_poses = Slice(solver_body_poses, colliders_start);
     let vels = Slice(vels, colliders_start);
     let mprops = Slice(mprops, colliders_start);
-    let len = contacts_len.read(batch_id);
+    // Iterating to `cap` (instead of `contacts_len[batch]`) lets us drop the
+    // `contacts_len` storage binding to fit WebGPU's 10-storage-per-stage
+    // limit. Empty / unused contact slots have `contact.len == 0` and are
+    // skipped — narrow-phase zero-initialises the buffer so the sentinel is
+    // reliable.
+    let cap = *contacts_batch_capacity;
 
-    for i in StepRng::new(invocation_id.x..len, num_threads) {
+    for i in StepRng::new(invocation_id.x..cap, num_threads) {
+        let im = contacts.at(i as usize);
+        if im.contact.len == 0 {
+            continue;
+        }
         contact_to_constraint(
-            contacts.at(i as usize),
+            im,
             &mprops,
             &collider_world_poses,
             &solver_body_poses,
@@ -105,8 +113,8 @@ pub fn gpu_solver_init_constraints(
             constraint_builders.at_mut(i as usize),
         );
 
-        let body1 = contacts.at(i as usize).colliders.x;
-        let body2 = contacts.at(i as usize).colliders.y;
+        let body1 = im.colliders.x;
+        let body2 = im.colliders.y;
         let group1 = body_group.read(body1 as usize);
         let group2 = body_group.read(body2 as usize);
 

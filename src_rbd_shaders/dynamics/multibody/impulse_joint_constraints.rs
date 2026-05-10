@@ -1149,8 +1149,7 @@ pub fn gpu_mb_update_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     constraints: &mut [MbImpulseJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] jacobians: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_joints: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dt_buf: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] dt_uniform: &f32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] links_workspace: &[MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] body_jacobians: &[f32],
@@ -1158,9 +1157,9 @@ pub fn gpu_mb_update_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] lu_pivots: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 5)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 6)] mprops: &[WorldMassProperties],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] joints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] jacobians_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] joints_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] constraints_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] jacobians_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 7)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 8)] links_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 9)] body_jacobians_batch_capacity: &u32,
@@ -1170,11 +1169,11 @@ pub fn gpu_mb_update_impulse_joint_constraints(
 ) {
     let num_threads = num_workgroups.x * 64;
     let batch_id = invocation_id.y as usize;
-    let len = num_joints.read(batch_id);
-    if invocation_id.x >= len {
+    let cap = *joints_batch_capacity;
+    if invocation_id.x >= cap {
         return;
     }
-    let dt = dt_buf.read(0);
+    let dt = *dt_uniform;
 
     let joints_start = batch_id * *joints_batch_capacity as usize;
     let cons_start = batch_id * *constraints_batch_capacity as usize;
@@ -1188,30 +1187,38 @@ pub fn gpu_mb_update_impulse_joint_constraints(
 
     // Loop chunked across `num_threads` so a single workgroup row processes
     // all joints in a batch (matches `gpu_init_joint_constraints` style).
+    // Iterating to `cap` instead of `len` lets us drop the per-batch
+    // `num_joints` storage binding — the host pads unused builder slots
+    // with `side_a_kind == SIDE_KIND_FIXED && side_b_kind == SIDE_KIND_FIXED`
+    // which we use as the inactive-slot sentinel below.
     let mut i = invocation_id.x;
-    while i < len {
+    while i < cap {
         let builder = builders.read(joints_start + i as usize);
-        update_one_joint(
-            &builder,
-            constraints,
-            cons_start,
-            jacobians,
-            jac_buf_start,
-            multibody_info,
-            mb_start,
-            links_workspace,
-            links_start,
-            body_jacobians,
-            body_jac_start,
-            mass_matrices,
-            mm_start,
-            lu_pivots,
-            dof_start,
-            poses,
-            colliders_start,
-            mprops,
-            dt,
-        );
+        let is_dummy =
+            builder.side_a_kind == SIDE_KIND_FIXED && builder.side_b_kind == SIDE_KIND_FIXED;
+        if !is_dummy {
+            update_one_joint(
+                &builder,
+                constraints,
+                cons_start,
+                jacobians,
+                jac_buf_start,
+                multibody_info,
+                mb_start,
+                links_workspace,
+                links_start,
+                body_jacobians,
+                body_jac_start,
+                mass_matrices,
+                mm_start,
+                lu_pivots,
+                dof_start,
+                poses,
+                colliders_start,
+                mprops,
+                dt,
+            );
+        }
         i += num_threads;
     }
 }
@@ -1631,7 +1638,7 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] jacobians: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_joints: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] dof_velocities: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] solver_vels: &mut [Velocity],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] joints_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 5)] constraints_batch_capacity: &u32,
@@ -1679,7 +1686,7 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
                 c.ndofs_a,
                 c.side_a_id,
                 jacobians,
-                dof_velocities,
+                dof_state,
                 dof_base_a,
                 solver_vels,
                 colliders_start,
@@ -1690,7 +1697,7 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
                 c.ndofs_b,
                 c.side_b_id,
                 jacobians,
-                dof_velocities,
+                dof_state,
                 dof_base_b,
                 solver_vels,
                 colliders_start,
@@ -1714,7 +1721,7 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
                 1.0,
                 delta,
                 jacobians,
-                dof_velocities,
+                dof_state,
                 dof_base_a,
                 solver_vels,
                 colliders_start,
@@ -1727,7 +1734,7 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
                 -1.0,
                 delta,
                 jacobians,
-                dof_velocities,
+                dof_state,
                 dof_base_b,
                 solver_vels,
                 colliders_start,

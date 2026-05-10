@@ -1065,6 +1065,57 @@ pub fn gemm_skew_lhs_cross_buf_par(
     }
 }
 
+/// Same-buffer variant of [`gemm_inertia_lhs_cross_buf_par`] — `b` and `c`
+/// are disjoint views of the same flat buffer. Used after packing the
+/// per-multibody Coriolis and `i_coriolis_dt` scratch into one storage buffer
+/// to fit shaders under the WebGPU storage-binding limit.
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn gemm_inertia_lhs_par(
+    buf: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    inertia: Mat3,
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let j = lane;
+    if j < c.cols {
+        let bx = buf.read(b.idx(0, j));
+        let by = buf.read(b.idx(1, j));
+        let bz = buf.read(b.idx(2, j));
+        let p = inertia.x_axis * bx + inertia.y_axis * by + inertia.z_axis * bz;
+        let i0 = c.idx(0, j);
+        let i1 = c.idx(1, j);
+        let i2 = c.idx(2, j);
+        buf.write(i0, beta * buf.read(i0) + alpha * p.x);
+        buf.write(i1, beta * buf.read(i1) + alpha * p.y);
+        buf.write(i2, beta * buf.read(i2) + alpha * p.z);
+    }
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+pub fn gemm_inertia_lhs_par(
+    buf: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    inertia: f32,
+    b: MatSlice,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let j = lane;
+    if j < c.cols {
+        let bw = buf.read(b.idx(0, j));
+        let i0 = c.idx(0, j);
+        buf.write(i0, beta * buf.read(i0) + alpha * (inertia * bw));
+    }
+}
+
 /// Parallel variant of [`gemm_inertia_lhs_cross_buf`].
 #[cfg(feature = "dim3")]
 #[inline]

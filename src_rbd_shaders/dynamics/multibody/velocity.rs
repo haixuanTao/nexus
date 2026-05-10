@@ -85,7 +85,7 @@ pub fn gpu_mb_update_velocities(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] links_local_mprops: &[LocalMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_velocities: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_state: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 6)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 7)] links_batch_capacity: &u32,
@@ -110,7 +110,7 @@ pub fn gpu_mb_update_velocities(
     let stat_slice = Slice(links_static, first_link_global);
     let mut ws_slice = SliceMut(links_workspace, first_link_global);
     let local_mprops_slice = Slice(links_local_mprops, first_link_global);
-    let vel_slice = Slice(dof_velocities, gen_base);
+    let vel_slice = Slice(dof_state, gen_base);
 
     for k in 0..num_links {
         let k_usize = k as usize;

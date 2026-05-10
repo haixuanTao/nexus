@@ -38,7 +38,7 @@ use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::{Slice, SliceMut};
 use crate::utils::linalg::{
-    MAX_MB_DOFS, MatSlice, copy_from_par, fill_par, gemm_inertia_lhs_cross_buf_par,
+    MAX_MB_DOFS, MatSlice, copy_from_par, fill_par, gemm_inertia_lhs_par,
     gemm_omega_skew_tr_cross_buf_par, gemm_skew_tr_lhs_cross_buf_par, gemm_skew_tr_lhs_par,
     gemm_tr_par, quadform_spatial_par,
 };
@@ -68,21 +68,21 @@ pub fn gpu_mb_compute_dynamics_pre(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] coriolis_v: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] coriolis_w: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] i_coriolis_dt: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] dof_velocities: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] damping: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 12)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 13)] dt_buf: &[f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 14)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 15)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 16)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 17)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 18)] coriolis_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 19)] i_coriolis_dt_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 20)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 21)] colliders_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] coriolis_packed: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] multibodies_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 12)] links_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 13)] jacobians_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 14)] mass_matrix_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 15)] coriolis_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 16)] i_coriolis_dt_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 17)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 18)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 19)] coriolis_w_section_offset: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 20)] i_coriolis_dt_section_offset: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 21)] dof_damping_section_offset: &u32,
     // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
@@ -96,7 +96,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         return;
     }
 
-    let dt = dt_buf.read(0);
+    let dt = *dt_uniform;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let links_start = batch_id * *links_batch_capacity as usize;
@@ -107,6 +107,11 @@ pub fn gpu_mb_compute_dynamics_pre(
     let dof_start = batch_id * *dof_batch_capacity as usize;
     let coll_start = batch_id * *colliders_batch_capacity as usize;
 
+    // Section offsets within the packed buffers.
+    let cor_w_off = *coriolis_w_section_offset as usize;
+    let cor_icdt_off = *i_coriolis_dt_section_offset as usize;
+    let damp_off = *dof_damping_section_offset as usize;
+
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let num_links = mb.num_links;
     let ndofs = mb.ndofs;
@@ -114,7 +119,8 @@ pub fn gpu_mb_compute_dynamics_pre(
     let mb_jac_base = jac_start + mb.jacobian_offset as usize;
     let mb_mm_base = mm_start + mb.mass_matrix_offset as usize;
     let mb_cor_base = cor_start + mb.coriolis_offset as usize;
-    let mb_icdt_base = icdt_start + mb.i_coriolis_dt_offset as usize;
+    let mb_cor_w_base = cor_w_off + mb_cor_base;
+    let mb_icdt_base = cor_icdt_off + icdt_start + mb.i_coriolis_dt_offset as usize;
     let damping_base = dof_start + mb.first_dof as usize;
     let gen_base = damping_base;
 
@@ -122,8 +128,8 @@ pub fn gpu_mb_compute_dynamics_pre(
     let mut ws_slice = SliceMut(links_workspace, first_link_global);
     let local_mprops_slice = Slice(links_local_mprops, first_link_global);
     let mut poses_slice = SliceMut(poses, coll_start);
-    let damping_slice = Slice(damping, damping_base);
-    let vel_slice = Slice(dof_velocities, gen_base);
+    let damping_slice = Slice(dof_state, damp_off + damping_base);
+    let vel_slice = Slice(dof_state, gen_base);
 
     // ============== Phase 1: Forward Kinematics ==============
     // Sequential parent-before-child link walk; lane 0 only, others idle at
@@ -315,15 +321,30 @@ pub fn gpu_mb_compute_dynamics_pre(
         let lmp = local_mprops_slice.read(k as usize);
 
         let inv_mass_x = lmp.inv_mass.x;
-        if inv_mass_x == 0.0 {
+        let is_zero_mass = inv_mass_x == 0.0;
+        if is_zero_mass {
             let coriolis_block = MatSlice::dense(
                 mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
                 DIM,
                 ndofs,
             );
-            fill_par(coriolis_v, coriolis_block, 0.0, lane, LANES);
-            fill_par(coriolis_w, coriolis_block, 0.0, lane, LANES);
-            workgroup_memory_barrier_with_group_sync();
+            fill_par(coriolis_packed, coriolis_block, 0.0, lane, LANES);
+            fill_par(
+                coriolis_packed,
+                MatSlice::dense(
+                    mb_cor_w_base + (k as usize) * (DIM as usize) * (ndofs as usize),
+                    DIM,
+                    ndofs,
+                ),
+                0.0,
+                lane,
+                LANES,
+            );
+        }
+        // Uniform barrier so subsequent parent-coriolis reads see consistent
+        // state — WebGPU forbids a barrier inside divergent control flow.
+        workgroup_memory_barrier_with_group_sync();
+        if is_zero_mass {
             continue;
         }
         let mass = 1.0 / inv_mass_x;
@@ -367,7 +388,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             ndofs,
         );
         let coriolis_w_i = MatSlice::dense(
-            mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
+            mb_cor_w_base + (k as usize) * (DIM as usize) * (ndofs as usize),
             ANG_DIM,
             ndofs,
         );
@@ -387,21 +408,20 @@ pub fn gpu_mb_compute_dynamics_pre(
                 ndofs,
             );
             let parent_coriolis_w = MatSlice::dense(
-                mb_cor_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
+                mb_cor_w_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
                 ANG_DIM,
                 ndofs,
             );
             let parent_w = parent_link.rb_vels.angular;
 
-            copy_from_par(coriolis_v, coriolis_v_i, parent_coriolis_v, lane, LANES);
-            copy_from_par(coriolis_w, coriolis_w_i, parent_coriolis_w, lane, LANES);
+            copy_from_par(coriolis_packed, coriolis_v_i, parent_coriolis_v, lane, LANES);
+            copy_from_par(coriolis_packed, coriolis_w_i, parent_coriolis_w, lane, LANES);
 
-            gemm_skew_tr_lhs_cross_buf_par(
-                coriolis_v,
+            gemm_skew_tr_lhs_par(
+                coriolis_packed,
                 coriolis_v_i,
                 1.0,
                 ws.shift02,
-                coriolis_w,
                 parent_coriolis_w,
                 1.0,
                 lane,
@@ -411,7 +431,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             let dvel = crate::gcross_av(ws.rb_vels.angular, ws.shift02)
                 + ws.joint_velocity.linear * 2.0;
             gemm_skew_tr_lhs_cross_buf_par(
-                coriolis_v,
+                coriolis_packed,
                 coriolis_v_i,
                 1.0,
                 dvel,
@@ -423,7 +443,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             );
 
             gemm_skew_tr_lhs_cross_buf_par(
-                coriolis_v,
+                coriolis_packed,
                 coriolis_v_i,
                 1.0,
                 ws.joint_velocity.linear,
@@ -435,7 +455,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             );
 
             gemm_omega_skew_tr_cross_buf_par(
-                coriolis_v,
+                coriolis_packed,
                 coriolis_v_i,
                 1.0,
                 parent_w,
@@ -450,7 +470,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             #[cfg(feature = "dim3")]
             {
                 gemm_skew_lhs_cross_buf_par(
-                    coriolis_w,
+                    coriolis_packed,
                     coriolis_w_i,
                     -1.0,
                     ws.joint_velocity.angular,
@@ -480,15 +500,15 @@ pub fn gpu_mb_compute_dynamics_pre(
                         let iv0 = coriolis_v_part.idx(0, c);
                         let iv1 = coriolis_v_part.idx(1, c);
                         let iv2 = coriolis_v_part.idx(2, c);
-                        coriolis_v.write(iv0, coriolis_v.read(iv0) + 2.0 * pv.x);
-                        coriolis_v.write(iv1, coriolis_v.read(iv1) + 2.0 * pv.y);
-                        coriolis_v.write(iv2, coriolis_v.read(iv2) + 2.0 * pv.z);
+                        coriolis_packed.write(iv0, coriolis_packed.read(iv0) + 2.0 * pv.x);
+                        coriolis_packed.write(iv1, coriolis_packed.read(iv1) + 2.0 * pv.y);
+                        coriolis_packed.write(iv2, coriolis_packed.read(iv2) + 2.0 * pv.z);
                         let iw0 = coriolis_w_part.idx(0, c);
                         let iw1 = coriolis_w_part.idx(1, c);
                         let iw2 = coriolis_w_part.idx(2, c);
-                        coriolis_w.write(iw0, coriolis_w.read(iw0) + pw.x);
-                        coriolis_w.write(iw1, coriolis_w.read(iw1) + pw.y);
-                        coriolis_w.write(iw2, coriolis_w.read(iw2) + pw.z);
+                        coriolis_packed.write(iw0, coriolis_packed.read(iw0) + pw.x);
+                        coriolis_packed.write(iw1, coriolis_packed.read(iw1) + pw.y);
+                        coriolis_packed.write(iw2, coriolis_packed.read(iw2) + pw.z);
                     }
                 }
                 #[cfg(feature = "dim2")]
@@ -498,25 +518,24 @@ pub fn gpu_mb_compute_dynamics_pre(
                         let (jv, _) = joint_jacobian_column(&stat, transform_rot, c);
                         let iv0 = coriolis_v_part.idx(0, c);
                         let iv1 = coriolis_v_part.idx(1, c);
-                        coriolis_v.write(iv0, coriolis_v.read(iv0) + 2.0 * (-parent_w * jv.y));
-                        coriolis_v.write(iv1, coriolis_v.read(iv1) + 2.0 * (parent_w * jv.x));
+                        coriolis_packed.write(iv0, coriolis_packed.read(iv0) + 2.0 * (-parent_w * jv.y));
+                        coriolis_packed.write(iv1, coriolis_packed.read(iv1) + 2.0 * (parent_w * jv.x));
                     }
                     let _ = coriolis_w_part;
                 }
             }
         } else {
-            fill_par(coriolis_v, coriolis_v_i, 0.0, lane, LANES);
-            fill_par(coriolis_w, coriolis_w_i, 0.0, lane, LANES);
+            fill_par(coriolis_packed, coriolis_v_i, 0.0, lane, LANES);
+            fill_par(coriolis_packed, coriolis_w_i, 0.0, lane, LANES);
         }
 
         workgroup_memory_barrier_with_group_sync();
 
-        gemm_skew_tr_lhs_cross_buf_par(
-            coriolis_v,
+        gemm_skew_tr_lhs_par(
+            coriolis_packed,
             coriolis_v_i,
             1.0,
             ws.shift23,
-            coriolis_w,
             coriolis_w_i,
             1.0,
             lane,
@@ -525,7 +544,7 @@ pub fn gpu_mb_compute_dynamics_pre(
 
         let dvel_23 = crate::gcross_av(ws.rb_vels.angular, ws.shift23);
         gemm_skew_tr_lhs_cross_buf_par(
-            coriolis_v,
+            coriolis_packed,
             coriolis_v_i,
             1.0,
             dvel_23,
@@ -537,7 +556,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         );
 
         gemm_omega_skew_tr_cross_buf_par(
-            coriolis_v,
+            coriolis_packed,
             coriolis_v_i,
             1.0,
             ws.rb_vels.angular,
@@ -557,17 +576,16 @@ pub fn gpu_mb_compute_dynamics_pre(
             let c = lane;
             if c < ndofs {
                 for r in 0..DIM {
-                    let v = coriolis_v.read(coriolis_v_i.idx(r, c));
-                    i_coriolis_dt.write(i_coriolis_dt_v.idx(r, c), scale * v);
+                    let v = coriolis_packed.read(coriolis_v_i.idx(r, c));
+                    coriolis_packed.write(i_coriolis_dt_v.idx(r, c), scale * v);
                 }
             }
         }
-        gemm_inertia_lhs_cross_buf_par(
-            i_coriolis_dt,
+        gemm_inertia_lhs_par(
+            coriolis_packed,
             i_coriolis_dt_w,
             dt,
             rb_inertia,
-            coriolis_w,
             coriolis_w_i,
             0.0,
             lane,
@@ -582,7 +600,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             1.0,
             body_jacobians,
             body_jacobian,
-            i_coriolis_dt,
+            coriolis_packed,
             i_coriolis_dt_view,
             1.0,
             lane,
@@ -618,16 +636,16 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_velocities: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] damping: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] dt_buf: &[f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 13)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 14)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 15)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 16)] colliders_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] multibodies_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] links_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 12)] jacobians_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 13)] mass_matrix_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 14)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 15)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 16)] dof_damping_section_offset: &u32,
     // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
@@ -641,7 +659,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         return;
     }
 
-    let dt = dt_buf.read(0);
+    let dt = *dt_uniform;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let links_start = batch_id * *links_batch_capacity as usize;
@@ -659,12 +677,14 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     let damping_base = dof_start + mb.first_dof as usize;
     let gen_base = damping_base;
 
+    let damp_off = *dof_damping_section_offset as usize;
+
     let stat_slice = Slice(links_static, first_link_global);
     let mut ws_slice = SliceMut(links_workspace, first_link_global);
     let local_mprops_slice = Slice(links_local_mprops, first_link_global);
     let mut poses_slice = SliceMut(poses, coll_start);
-    let damping_slice = Slice(damping, damping_base);
-    let vel_slice = Slice(dof_velocities, gen_base);
+    let damping_slice = Slice(dof_state, damp_off + damping_base);
+    let vel_slice = Slice(dof_state, gen_base);
 
     // ============== Phase 1: Forward Kinematics ==============
     // Sequential parent-before-child link walk; lane 0 only, others idle at

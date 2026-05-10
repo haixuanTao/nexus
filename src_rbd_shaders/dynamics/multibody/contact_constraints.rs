@@ -145,43 +145,34 @@ fn fill_contact_jac_row(
 pub fn gpu_mb_init_contact_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] links_workspace: &[MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] body_jacobians: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_to_link: &[[u32; 2]],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contact_constraints: &mut [MultibodyContactConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contact_constraint_jacs: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] contact_constraint_count: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] dt_buf: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_jacobians: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_to_link: &[[u32; 2]],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contact_constraint_count: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 13)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 14)] contact_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 15)] contact_constraint_columns_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] multibodies_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] jacobians_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] contact_constraints_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] contact_constraint_columns_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 4)] contacts_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 5)] colliders_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 1, binding = 6)] body_to_link_batch_capacity: &u32,
 ) {
     let batch_id = invocation_id.y as usize;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
-    let dt = dt_buf.read(0);
+    let dt = *dt_uniform;
     let inv_dt = if dt != 0.0 { 1.0 / dt } else { 0.0 };
     let erp_inv_dt = inv_dt;
     let allowed_lin_err = 0.001f32;
     let max_corr_velocity = 10.0f32;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let links_start = batch_id * *links_batch_capacity as usize;
     let jac_start = batch_id * *jacobians_batch_capacity as usize;
     let cons_start = batch_id * *contact_constraints_batch_capacity as usize;
     let col_start = batch_id * *contact_constraint_columns_batch_capacity as usize;
@@ -189,6 +180,9 @@ pub fn gpu_mb_init_contact_constraints(
     let colliders_start = batch_id * *colliders_batch_capacity as usize;
     let b2l_start = batch_id * *body_to_link_batch_capacity as usize;
 
+    // Per-multibody early-out: padding multibody slots have `ndofs == 0`,
+    // which we use here as the sentinel (replaces the `num_multibodies`
+    // storage binding the kernel used to read).
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let ndofs = mb.ndofs;
     if ndofs == 0 {
@@ -203,9 +197,6 @@ pub fn gpu_mb_init_contact_constraints(
     let dofs_stride = *dof_batch_capacity as usize;
     let col_base =
         col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
-
-    let ws_slice = Slice(links_workspace, links_start + mb.first_link as usize);
-    let _ = links_static;
 
     let n_contacts = contacts_len.read(batch_id);
     let mut count = 0u32;
@@ -248,6 +239,7 @@ pub fn gpu_mb_init_contact_constraints(
         }
 
         let pose1 = poses.read(colliders_start + id1 as usize);
+        let pose2 = poses.read(colliders_start + id2 as usize);
         let world_normal = pose1.rotation * im.contact.normal_a;
         let lin_jac = if is_self || mb_on_1 { world_normal } else { -world_normal };
         let mb_normal = -lin_jac;
@@ -259,7 +251,18 @@ pub fn gpu_mb_init_contact_constraints(
         };
         let free_im = if is_self { 0.0 } else { free_mp.inv_mass.x };
 
-        let link_origin_a = ws_slice.at(mb_link_id_a as usize).local_to_world.translation;
+        // Multibody-link origins come from the collider poses buffer instead
+        // of `links_workspace` (which we no longer bind in this kernel — see
+        // binding-count cap discussion). For each link, the body that holds
+        // it has the same world pose as the link itself (the FK pass writes
+        // both). `mb_link_id_a` always corresponds to body `id1` when
+        // `mb_on_1 || is_self`, and to `id2` otherwise. `mb_link_id_b` is
+        // only used in the self-contact case where it corresponds to `id2`.
+        let link_origin_a = if is_self || mb_on_1 {
+            pose1.translation
+        } else {
+            pose2.translation
+        };
         let link_origin_b_default = link_origin_a;
 
         for k in 0..im.contact.len {
@@ -312,7 +315,10 @@ pub fn gpu_mb_init_contact_constraints(
             // contacts they collapse to zero because both sides are folded
             // into `J_mb` already.
             let (ang_jac_normal, ii_ang_jac_normal) = if is_self {
-                let link_origin_b = ws_slice.at(mb_link_id_b as usize).local_to_world.translation;
+                // Self-contact: B-side link is the collider at `id2`, so its
+                // world pose is `pose2` (already loaded). Avoids a
+                // `links_workspace` binding.
+                let link_origin_b = pose2.translation;
                 let _ = link_origin_b_default;
                 let shift_b = pt_world - link_origin_b;
                 let torque_b_normal = gcross(shift_b, lin_jac);
@@ -435,7 +441,7 @@ pub fn gpu_mb_init_contact_constraints(
                 );
 
                 let (ang_jac_tang, ii_ang_jac_tang) = if is_self {
-                    let link_origin_b = ws_slice.at(mb_link_id_b as usize).local_to_world.translation;
+                    let link_origin_b = pose2.translation;
                     let shift_b = pt_world - link_origin_b;
                     let torque_b_tang = gcross(shift_b, free_tangent);
                     fill_contact_jac_row(
@@ -625,7 +631,7 @@ pub fn gpu_mb_solve_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contact_constraint_jacs: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contact_constraint_columns: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_count: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] dof_velocities: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] multibodies_batch_capacity: &u32,
@@ -671,7 +677,7 @@ pub fn gpu_mb_solve_contact_constraints(
         let mut j_dot_v = 0.0f32;
         for i in 0..ndofs {
             let j = contact_constraint_jacs.read(col_offset + i as usize);
-            let v = dof_velocities.read(v_base + i as usize);
+            let v = dof_state.read(v_base + i as usize);
             j_dot_v += j * v;
         }
         let free = if is_self {
@@ -717,9 +723,9 @@ pub fn gpu_mb_solve_contact_constraints(
         if delta != 0.0 {
             for i in 0..ndofs {
                 let v_idx = v_base + i as usize;
-                let cur = dof_velocities.read(v_idx);
+                let cur = dof_state.read(v_idx);
                 let col = contact_constraint_columns.read(col_offset + i as usize);
-                dof_velocities.write(v_idx, cur + delta * col);
+                dof_state.write(v_idx, cur + delta * col);
             }
             if !is_self {
                 let mut new_free = free;

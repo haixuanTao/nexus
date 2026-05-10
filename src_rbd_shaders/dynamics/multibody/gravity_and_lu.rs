@@ -14,7 +14,7 @@ use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
-use glamx::{Vec2, Vec3};
+use glamx::{Vec2, Vec3, Vec4};
 
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
@@ -53,15 +53,15 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] gen_forces: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] lu_pivots: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_velocities: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] damping: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] gravity: &[f32; 3],
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 13)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 14)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 15)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 16)] dof_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] gravity: &Vec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] multibodies_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 12)] links_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 13)] jacobians_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 14)] mass_matrix_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 15)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 16)] dof_damping_section_offset: &u32,
     // Mass-matrix tile in shared memory.
     #[spirv(workgroup)] mat: &mut [f32; (MAX_MB_DOFS * MAX_MB_DOFS) as usize],
     // RHS / solution vector.
@@ -96,11 +96,12 @@ pub fn gpu_mb_gravity_and_lu(
     let piv_offset = gen_base;
     let rhs_offset = gen_base;
 
+    let damp_off = *dof_damping_section_offset as usize;
     let stat_slice = Slice(links_static, first_link_global);
     let mut ws_slice = SliceMut(links_workspace, first_link_global);
     let local_mprops_slice = Slice(links_local_mprops, first_link_global);
-    let vel_slice = Slice(dof_velocities, gen_base);
-    let damping_slice = Slice(damping, gen_base);
+    let vel_slice = Slice(dof_state, gen_base);
+    let damping_slice = Slice(dof_state, damp_off + gen_base);
 
     // ---- Phase 1: zero the generalized-force vector (parallel across DOFs). ----
     let accelerations = MatSlice::dense(gen_base, ndofs, 1);
@@ -110,9 +111,9 @@ pub fn gpu_mb_gravity_and_lu(
     let _ = stat_slice;
 
     #[cfg(feature = "dim3")]
-    let g = Vec3::new(gravity[0], gravity[1], gravity[2]);
+    let g = Vec3::new(gravity.x, gravity.y, gravity.z);
     #[cfg(feature = "dim2")]
-    let g = Vec2::new(gravity[0], gravity[1]);
+    let g = Vec2::new(gravity.x, gravity.y);
 
     // ---- Phase 2: per-link gravity / Coriolis-force assembly. ----
     for k in 0..num_links {

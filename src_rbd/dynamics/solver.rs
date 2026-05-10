@@ -189,7 +189,6 @@ impl GpuSolver {
             pass,
             args.contacts_len_indirect,
             args.contacts,
-            args.contacts_len,
             args.constraints,
             args.constraint_builders,
             args.body_constraint_counts,

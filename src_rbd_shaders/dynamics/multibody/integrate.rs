@@ -38,10 +38,10 @@ use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 pub fn gpu_mb_integrate_velocities(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] dof_velocities: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] gen_accelerations: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dt_buf: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 5)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 6)] dof_batch_capacity: &u32,
 ) {
@@ -51,14 +51,14 @@ pub fn gpu_mb_integrate_velocities(
     if mb_idx >= num_mb {
         return;
     }
-    let dt = dt_buf.read(0);
+    let dt = *dt_uniform;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let dof_start = batch_id * *dof_batch_capacity as usize;
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let gen_base = dof_start + mb.first_dof as usize;
 
-    let mut dof_vel = SliceMut(dof_velocities, gen_base);
+    let mut dof_vel = SliceMut(dof_state, gen_base);
     let acc = Slice(gen_accelerations, gen_base);
 
     for d in 0..mb.ndofs {
@@ -77,9 +77,9 @@ pub fn gpu_mb_integrate(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_values: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_velocities: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_state: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dt_buf: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 7)] multibodies_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 8)] links_batch_capacity: &u32,
     #[spirv(uniform, descriptor_set = 0, binding = 9)] dof_batch_capacity: &u32,
@@ -90,7 +90,7 @@ pub fn gpu_mb_integrate(
     if mb_idx >= num_mb {
         return;
     }
-    let dt = dt_buf.read(0);
+    let dt = *dt_uniform;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let links_start = batch_id * *links_batch_capacity as usize;
@@ -104,7 +104,7 @@ pub fn gpu_mb_integrate(
     let stat_slice = Slice(links_static, first_link_global);
     let mut ws_slice = SliceMut(links_workspace, first_link_global);
     let dof_val = SliceMut(dof_values, gen_base);
-    let dof_vel = Slice(dof_velocities, gen_base);
+    let dof_vel = Slice(dof_state, gen_base);
 
     // Per-link coord / joint_rot update (uses the already-corrected `dof_velocities`).
     //

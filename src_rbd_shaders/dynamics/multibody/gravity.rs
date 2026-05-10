@@ -15,7 +15,7 @@
 //! Finally, `τ -= damping ⊙ velocities`, matching
 //!   `self.accelerations.cmpy(-1.0, &self.damping, &self.velocities, 1.0)`.
 
-use glamx::{Vec2, Vec3};
+use glamx::{Vec2, Vec3, Vec4};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
@@ -48,16 +48,14 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] links_local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] gen_forces: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_velocities: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] damping: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
-    // TODO: this is only worth keepign as a storage buffer (instead of an uniform)
-    //       if we can have different gravity per batch.
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] gravity: &[f32; 3],
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 13)] dof_batch_capacity: &u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] gravity: &Vec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] multibodies_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] links_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] jacobians_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 12)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 13)] dof_damping_section_offset: &u32,
     // Dummy workgroup-shared cell — opts into the khal CPU coroutine
     // dispatch path so workgroup barriers actually synchronise lanes on
     // CPU. (See body-jacobian / mass-matrix kernels for the same hack.)
@@ -84,10 +82,11 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     let gen_base = dof_start + mb.first_dof as usize;
 
     let stat_slice = Slice(links_static, first_link_global);
+    let damp_off = *dof_damping_section_offset as usize;
     let mut ws_slice = SliceMut(links_workspace, first_link_global);
     let local_mprops_slice = Slice(links_local_mprops, first_link_global);
-    let vel_slice = Slice(dof_velocities, gen_base);
-    let damping_slice = Slice(damping, gen_base);
+    let vel_slice = Slice(dof_state, gen_base);
+    let damping_slice = Slice(dof_state, damp_off + gen_base);
 
     // accelerations.fill(0.0) for this multibody — parallel.
     let accelerations = MatSlice::dense(gen_base, ndofs, 1);
@@ -97,9 +96,9 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     let _ = stat_slice; // not currently used; kept for future kinematic-DOF gating.
 
     #[cfg(feature = "dim3")]
-    let g = Vec3::new(gravity[0], gravity[1], gravity[2]);
+    let g = Vec3::new(gravity.x, gravity.y, gravity.z);
     #[cfg(feature = "dim2")]
-    let g = Vec2::new(gravity[0], gravity[1]);
+    let g = Vec2::new(gravity.x, gravity.y);
 
     for k in 0..num_links {
         // Reference-only access to `ws`. Gather just the small fields we
