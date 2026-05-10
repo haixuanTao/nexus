@@ -91,10 +91,13 @@ pub fn gpu_mb_compute_dynamics_pre(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `num_links == 0` and `ndofs == 0` so all
+    // per-link / per-DOF loops below iterate zero times. No early-return —
+    // WGSL's naga frontend can't prove a storage-loaded comparison is
+    // uniform across the workgroup, so any subsequent `workgroupBarrier()`
+    // would be flagged "called from non-uniform control flow". See
+    // `gpu_mb_lu_decompose` for the rationale.
+    let _ = num_multibodies;
 
     let dt = *dt_uniform;
 
@@ -181,71 +184,84 @@ pub fn gpu_mb_compute_dynamics_pre(
     workgroup_memory_barrier_with_group_sync();
 
     // ============== Phase 2: Body Jacobians ==============
-    for k in 0..num_links {
-        let link_infos = stat_slice.at(k as usize);
-        let link = ws_slice.at(k as usize);
-
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `mb.num_links` as the upper bound.
+    for k in 0..MAX_MB_DOFS as u32 {
+        let mut parent_to_world = Pose::default();
         let link_j = MatSlice::dense(
             mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
             SPATIAL_DIM as u32,
             ndofs,
         );
 
-        let parent_to_world;
-        if k != 0 {
-            let parent_j = MatSlice::dense(
-                mb_jac_base
-                    + (link_infos.parent_link_id as usize)
+
+        if k < num_links {
+            let link_infos = stat_slice.at(k as usize);
+            let link = ws_slice.at(k as usize);
+
+            if k != 0 {
+                let parent_j = MatSlice::dense(
+                    mb_jac_base
+                        + (link_infos.parent_link_id as usize)
                         * SPATIAL_DIM
                         * (ndofs as usize),
-                SPATIAL_DIM as u32,
-                ndofs,
-            );
-            let parent_link = ws_slice.at(link_infos.parent_link_id as usize);
-            parent_to_world = parent_link.local_to_world;
+                    SPATIAL_DIM as u32,
+                    ndofs,
+                );
+                let parent_link = ws_slice.at(link_infos.parent_link_id as usize);
+                parent_to_world = parent_link.local_to_world;
 
-            copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
-            let link_j_v = link_j.fixed_rows(0, DIM);
-            let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
-            gemm_skew_tr_lhs_par(
-                body_jacobians,
-                link_j_v,
-                1.0,
-                link.shift02,
-                parent_j_w,
-                1.0,
-                lane,
-                LANES,
-            );
-        } else {
-            fill_par(body_jacobians, link_j, 0.0, lane, LANES);
-            parent_to_world = Pose::default();
+                copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
+                let link_j_v = link_j.fixed_rows(0, DIM);
+                let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
+                gemm_skew_tr_lhs_par(
+                    body_jacobians,
+                    link_j_v,
+                    1.0,
+                    link.shift02,
+                    parent_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+            } else {
+                fill_par(body_jacobians, link_j, 0.0, lane, LANES);
+                parent_to_world = Pose::default();
+            }
         }
 
         workgroup_memory_barrier_with_group_sync();
 
-        let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
-        joint_jacobian_accumulate_par(
-            link_infos,
-            parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
-            body_jacobians,
-            link_j_part,
-            lane,
-            LANES,
-        );
+        if k < num_links {
+            let link_infos = stat_slice.at(k as usize);
+            let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
+            joint_jacobian_accumulate_par(
+                link_infos,
+                parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
+                body_jacobians,
+                link_j_part,
+                lane,
+                LANES,
+            );
+        }
 
         workgroup_memory_barrier_with_group_sync();
-        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
-        gemm_skew_tr_lhs_par(
-            body_jacobians,
-            link_j_v,
-            1.0,
-            link.shift23,
-            link_j_w,
-            1.0,
-            lane,
-            LANES,
-        );
+
+        if k < num_links {
+            let link = ws_slice.at(k as usize);
+            let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+            gemm_skew_tr_lhs_par(
+                body_jacobians,
+                link_j_v,
+                1.0,
+                link.shift23,
+                link_j_w,
+                1.0,
+                lane,
+                LANES,
+            );
+        }
+
         workgroup_memory_barrier_with_group_sync();
     }
 
@@ -315,73 +331,43 @@ pub fn gpu_mb_compute_dynamics_pre(
 
     workgroup_memory_barrier_with_group_sync();
 
-    for k in 0..num_links {
-        let stat = stat_slice.read(k as usize);
-        let ws = ws_slice.at(k as usize);
-        let lmp = local_mprops_slice.read(k as usize);
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `mb.num_links` as the upper bound.
+    for k in 0..MAX_MB_DOFS as u32 {
+        let loop_is_active = k < num_links;
+        let mut inv_mass_x = 0.0;
+        let mut mass = 0.0;
 
-        let inv_mass_x = lmp.inv_mass.x;
-        let is_zero_mass = inv_mass_x == 0.0;
-        if is_zero_mass {
-            let coriolis_block = MatSlice::dense(
-                mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
-                DIM,
-                ndofs,
-            );
-            fill_par(coriolis_packed, coriolis_block, 0.0, lane, LANES);
-            fill_par(
-                coriolis_packed,
-                MatSlice::dense(
-                    mb_cor_w_base + (k as usize) * (DIM as usize) * (ndofs as usize),
+        if loop_is_active {
+            let lmp = local_mprops_slice.read(k as usize);
+
+            inv_mass_x = lmp.inv_mass.x;
+
+            if inv_mass_x == 0.0 {
+                let coriolis_block = MatSlice::dense(
+                    mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
                     DIM,
                     ndofs,
-                ),
-                0.0,
-                lane,
-                LANES,
-            );
+                );
+                fill_par(coriolis_packed, coriolis_block, 0.0, lane, LANES);
+                fill_par(
+                    coriolis_packed,
+                    MatSlice::dense(
+                        mb_cor_w_base + (k as usize) * (DIM as usize) * (ndofs as usize),
+                        DIM,
+                        ndofs,
+                    ),
+                    0.0,
+                    lane,
+                    LANES,
+                );
+            }
         }
         // Uniform barrier so subsequent parent-coriolis reads see consistent
         // state — WebGPU forbids a barrier inside divergent control flow.
         workgroup_memory_barrier_with_group_sync();
-        if is_zero_mass {
-            continue;
-        }
-        let mass = 1.0 / inv_mass_x;
-        let rb_inertia = link_world_inertia(ws, &lmp);
 
-        let body_jacobian = MatSlice::dense(
-            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
-            SPATIAL_DIM as u32,
-            ndofs,
-        );
-
-        #[cfg(feature = "dim3")]
-        let augmented_inertia = {
-            let angvel = ws.rb_vels.angular;
-            let w_skew = crate::utils::linalg::skew(angvel);
-            let i_omega = rb_inertia * angvel;
-            let i_omega_skew = crate::utils::linalg::skew(i_omega);
-            let gyro_mat = w_skew * rb_inertia - i_omega_skew;
-            rb_inertia + gyro_mat * dt
-        };
-        #[cfg(feature = "dim2")]
-        let augmented_inertia = rb_inertia;
-
-        quadform_spatial_par(
-            mass_matrices,
-            acc_augmented_mass,
-            1.0,
-            mass,
-            augmented_inertia,
-            body_jacobians,
-            body_jacobian,
-            1.0,
-            lane,
-            LANES,
-        );
-
-        let rb_j_w = body_jacobian.fixed_rows(DIM, ANG_DIM);
+        let loop_is_active = k < num_links && inv_mass_x != 0.0;
         let coriolis_v_i = MatSlice::dense(
             mb_cor_base + (k as usize) * (DIM as usize) * (ndofs as usize),
             DIM,
@@ -392,63 +378,215 @@ pub fn gpu_mb_compute_dynamics_pre(
             ANG_DIM,
             ndofs,
         );
+        let body_jacobian = MatSlice::dense(
+            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+            SPATIAL_DIM as u32,
+            ndofs,
+        );
+        let rb_j_w = body_jacobian.fixed_rows(DIM, ANG_DIM);
+        let mut rb_inertia = Default::default();
 
-        if k != 0 {
-            let parent_id = stat.parent_link_id;
-            let parent_link = ws_slice.at(parent_id as usize);
-            let parent_j = MatSlice::dense(
-                mb_jac_base + (parent_id as usize) * SPATIAL_DIM * (ndofs as usize),
-                SPATIAL_DIM as u32,
-                ndofs,
-            );
-            let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
-            let parent_coriolis_v = MatSlice::dense(
-                mb_cor_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
-                DIM,
-                ndofs,
-            );
-            let parent_coriolis_w = MatSlice::dense(
-                mb_cor_w_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
-                ANG_DIM,
-                ndofs,
-            );
-            let parent_w = parent_link.rb_vels.angular;
+        if loop_is_active {
+            let ws = ws_slice.at(k as usize);
+            let lmp = local_mprops_slice.read(k as usize);
+            mass = 1.0 / inv_mass_x;
+            rb_inertia = link_world_inertia(ws, &lmp);
 
-            copy_from_par(coriolis_packed, coriolis_v_i, parent_coriolis_v, lane, LANES);
-            copy_from_par(coriolis_packed, coriolis_w_i, parent_coriolis_w, lane, LANES);
+            #[cfg(feature = "dim3")]
+            let augmented_inertia = {
+                let angvel = ws.rb_vels.angular;
+                let w_skew = crate::utils::linalg::skew(angvel);
+                let i_omega = rb_inertia * angvel;
+                let i_omega_skew = crate::utils::linalg::skew(i_omega);
+                let gyro_mat = w_skew * rb_inertia - i_omega_skew;
+                rb_inertia + gyro_mat * dt
+            };
+            #[cfg(feature = "dim2")]
+            let augmented_inertia = rb_inertia;
 
+            quadform_spatial_par(
+                mass_matrices,
+                acc_augmented_mass,
+                1.0,
+                mass,
+                augmented_inertia,
+                body_jacobians,
+                body_jacobian,
+                1.0,
+                lane,
+                LANES,
+            );
+
+            if k != 0 {
+                let stat = stat_slice.read(k as usize);
+                let parent_id = stat.parent_link_id;
+                let parent_link = ws_slice.at(parent_id as usize);
+                let parent_j = MatSlice::dense(
+                    mb_jac_base + (parent_id as usize) * SPATIAL_DIM * (ndofs as usize),
+                    SPATIAL_DIM as u32,
+                    ndofs,
+                );
+                let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
+                let parent_coriolis_v = MatSlice::dense(
+                    mb_cor_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
+                    DIM,
+                    ndofs,
+                );
+                let parent_coriolis_w = MatSlice::dense(
+                    mb_cor_w_base + (parent_id as usize) * (DIM as usize) * (ndofs as usize),
+                    ANG_DIM,
+                    ndofs,
+                );
+                let parent_w = parent_link.rb_vels.angular;
+
+                copy_from_par(coriolis_packed, coriolis_v_i, parent_coriolis_v, lane, LANES);
+                copy_from_par(coriolis_packed, coriolis_w_i, parent_coriolis_w, lane, LANES);
+
+                gemm_skew_tr_lhs_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    ws.shift02,
+                    parent_coriolis_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+
+                let dvel = crate::gcross_av(ws.rb_vels.angular, ws.shift02)
+                    + ws.joint_velocity.linear * 2.0;
+                gemm_skew_tr_lhs_cross_buf_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    dvel,
+                    body_jacobians,
+                    parent_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+
+                gemm_skew_tr_lhs_cross_buf_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    ws.joint_velocity.linear,
+                    body_jacobians,
+                    parent_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+
+                gemm_omega_skew_tr_cross_buf_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    parent_w,
+                    ws.shift02,
+                    body_jacobians,
+                    parent_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+
+                #[cfg(feature = "dim3")]
+                {
+                    gemm_skew_lhs_cross_buf_par(
+                        coriolis_packed,
+                        coriolis_w_i,
+                        -1.0,
+                        ws.joint_velocity.angular,
+                        body_jacobians,
+                        parent_j_w,
+                        1.0,
+                        lane,
+                        LANES,
+                    );
+                }
+            }
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+
+        if loop_is_active {
+            if k != 0 {
+                let stat = stat_slice.read(k as usize);
+                let parent_id = stat.parent_link_id;
+                let parent_link = ws_slice.at(parent_id as usize);
+
+                if stat.kinematic == 0 {
+                    let transform_rot =
+                        parent_link.local_to_world.rotation * stat.data.local_frame_a.rotation;
+                    let coriolis_v_part = coriolis_v_i.columns(stat.assembly_id, stat.ndofs);
+                    let coriolis_w_part = coriolis_w_i.columns(stat.assembly_id, stat.ndofs);
+
+                    #[cfg(feature = "dim3")]
+                    {
+                        let parent_w_skew = crate::utils::linalg::skew(parent_link.rb_vels.angular);
+                        let c = lane;
+                        if c < stat.ndofs {
+                            let (jv, jw) = joint_jacobian_column(&stat, transform_rot, c);
+                            let pv = parent_w_skew * jv;
+                            let pw = parent_w_skew * jw;
+                            let iv0 = coriolis_v_part.idx(0, c);
+                            let iv1 = coriolis_v_part.idx(1, c);
+                            let iv2 = coriolis_v_part.idx(2, c);
+                            coriolis_packed.write(iv0, coriolis_packed.read(iv0) + 2.0 * pv.x);
+                            coriolis_packed.write(iv1, coriolis_packed.read(iv1) + 2.0 * pv.y);
+                            coriolis_packed.write(iv2, coriolis_packed.read(iv2) + 2.0 * pv.z);
+                            let iw0 = coriolis_w_part.idx(0, c);
+                            let iw1 = coriolis_w_part.idx(1, c);
+                            let iw2 = coriolis_w_part.idx(2, c);
+                            coriolis_packed.write(iw0, coriolis_packed.read(iw0) + pw.x);
+                            coriolis_packed.write(iw1, coriolis_packed.read(iw1) + pw.y);
+                            coriolis_packed.write(iw2, coriolis_packed.read(iw2) + pw.z);
+                        }
+                    }
+                    #[cfg(feature = "dim2")]
+                    {
+                        let c = lane;
+                        if c < stat.ndofs {
+                            let (jv, _) = joint_jacobian_column(&stat, transform_rot, c);
+                            let iv0 = coriolis_v_part.idx(0, c);
+                            let iv1 = coriolis_v_part.idx(1, c);
+                            coriolis_packed.write(iv0, coriolis_packed.read(iv0) + 2.0 * (-parent_w * jv.y));
+                            coriolis_packed.write(iv1, coriolis_packed.read(iv1) + 2.0 * (parent_w * jv.x));
+                        }
+                        let _ = coriolis_w_part;
+                    }
+                }
+            } else {
+                fill_par(coriolis_packed, coriolis_v_i, 0.0, lane, LANES);
+                fill_par(coriolis_packed, coriolis_w_i, 0.0, lane, LANES);
+            }
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+
+        if loop_is_active {
+            let ws = ws_slice.at(k as usize);
             gemm_skew_tr_lhs_par(
                 coriolis_packed,
                 coriolis_v_i,
                 1.0,
-                ws.shift02,
-                parent_coriolis_w,
+                ws.shift23,
+                coriolis_w_i,
                 1.0,
                 lane,
                 LANES,
             );
 
-            let dvel = crate::gcross_av(ws.rb_vels.angular, ws.shift02)
-                + ws.joint_velocity.linear * 2.0;
+            let dvel_23 = crate::gcross_av(ws.rb_vels.angular, ws.shift23);
             gemm_skew_tr_lhs_cross_buf_par(
                 coriolis_packed,
                 coriolis_v_i,
                 1.0,
-                dvel,
+                dvel_23,
                 body_jacobians,
-                parent_j_w,
-                1.0,
-                lane,
-                LANES,
-            );
-
-            gemm_skew_tr_lhs_cross_buf_par(
-                coriolis_packed,
-                coriolis_v_i,
-                1.0,
-                ws.joint_velocity.linear,
-                body_jacobians,
-                parent_j_w,
+                rb_j_w,
                 1.0,
                 lane,
                 LANES,
@@ -458,154 +596,58 @@ pub fn gpu_mb_compute_dynamics_pre(
                 coriolis_packed,
                 coriolis_v_i,
                 1.0,
-                parent_w,
-                ws.shift02,
+                ws.rb_vels.angular,
+                ws.shift23,
                 body_jacobians,
-                parent_j_w,
+                rb_j_w,
                 1.0,
                 lane,
                 LANES,
             );
+        }
 
-            #[cfg(feature = "dim3")]
+        workgroup_memory_barrier_with_group_sync();
+
+        if loop_is_active {
+            // i_coriolis_dt assembly: dt · (mass·coriolis_v, I·coriolis_w).
             {
-                gemm_skew_lhs_cross_buf_par(
-                    coriolis_packed,
-                    coriolis_w_i,
-                    -1.0,
-                    ws.joint_velocity.angular,
-                    body_jacobians,
-                    parent_j_w,
-                    1.0,
-                    lane,
-                    LANES,
-                );
-            }
-
-            workgroup_memory_barrier_with_group_sync();
-            if stat.kinematic == 0 {
-                let transform_rot =
-                    parent_link.local_to_world.rotation * stat.data.local_frame_a.rotation;
-                let coriolis_v_part = coriolis_v_i.columns(stat.assembly_id, stat.ndofs);
-                let coriolis_w_part = coriolis_w_i.columns(stat.assembly_id, stat.ndofs);
-
-                #[cfg(feature = "dim3")]
-                {
-                    let parent_w_skew = crate::utils::linalg::skew(parent_w);
-                    let c = lane;
-                    if c < stat.ndofs {
-                        let (jv, jw) = joint_jacobian_column(&stat, transform_rot, c);
-                        let pv = parent_w_skew * jv;
-                        let pw = parent_w_skew * jw;
-                        let iv0 = coriolis_v_part.idx(0, c);
-                        let iv1 = coriolis_v_part.idx(1, c);
-                        let iv2 = coriolis_v_part.idx(2, c);
-                        coriolis_packed.write(iv0, coriolis_packed.read(iv0) + 2.0 * pv.x);
-                        coriolis_packed.write(iv1, coriolis_packed.read(iv1) + 2.0 * pv.y);
-                        coriolis_packed.write(iv2, coriolis_packed.read(iv2) + 2.0 * pv.z);
-                        let iw0 = coriolis_w_part.idx(0, c);
-                        let iw1 = coriolis_w_part.idx(1, c);
-                        let iw2 = coriolis_w_part.idx(2, c);
-                        coriolis_packed.write(iw0, coriolis_packed.read(iw0) + pw.x);
-                        coriolis_packed.write(iw1, coriolis_packed.read(iw1) + pw.y);
-                        coriolis_packed.write(iw2, coriolis_packed.read(iw2) + pw.z);
+                let scale = mass * dt;
+                let c = lane;
+                if c < ndofs {
+                    for r in 0..DIM {
+                        let v = coriolis_packed.read(coriolis_v_i.idx(r, c));
+                        coriolis_packed.write(i_coriolis_dt_v.idx(r, c), scale * v);
                     }
                 }
-                #[cfg(feature = "dim2")]
-                {
-                    let c = lane;
-                    if c < stat.ndofs {
-                        let (jv, _) = joint_jacobian_column(&stat, transform_rot, c);
-                        let iv0 = coriolis_v_part.idx(0, c);
-                        let iv1 = coriolis_v_part.idx(1, c);
-                        coriolis_packed.write(iv0, coriolis_packed.read(iv0) + 2.0 * (-parent_w * jv.y));
-                        coriolis_packed.write(iv1, coriolis_packed.read(iv1) + 2.0 * (parent_w * jv.x));
-                    }
-                    let _ = coriolis_w_part;
-                }
             }
-        } else {
-            fill_par(coriolis_packed, coriolis_v_i, 0.0, lane, LANES);
-            fill_par(coriolis_packed, coriolis_w_i, 0.0, lane, LANES);
+            gemm_inertia_lhs_par(
+                coriolis_packed,
+                i_coriolis_dt_w,
+                dt,
+                rb_inertia,
+                coriolis_w_i,
+                0.0,
+                lane,
+                LANES,
+            );
         }
 
         workgroup_memory_barrier_with_group_sync();
 
-        gemm_skew_tr_lhs_par(
-            coriolis_packed,
-            coriolis_v_i,
-            1.0,
-            ws.shift23,
-            coriolis_w_i,
-            1.0,
-            lane,
-            LANES,
-        );
-
-        let dvel_23 = crate::gcross_av(ws.rb_vels.angular, ws.shift23);
-        gemm_skew_tr_lhs_cross_buf_par(
-            coriolis_packed,
-            coriolis_v_i,
-            1.0,
-            dvel_23,
-            body_jacobians,
-            rb_j_w,
-            1.0,
-            lane,
-            LANES,
-        );
-
-        gemm_omega_skew_tr_cross_buf_par(
-            coriolis_packed,
-            coriolis_v_i,
-            1.0,
-            ws.rb_vels.angular,
-            ws.shift23,
-            body_jacobians,
-            rb_j_w,
-            1.0,
-            lane,
-            LANES,
-        );
-
-        workgroup_memory_barrier_with_group_sync();
-
-        // i_coriolis_dt assembly: dt · (mass·coriolis_v, I·coriolis_w).
-        {
-            let scale = mass * dt;
-            let c = lane;
-            if c < ndofs {
-                for r in 0..DIM {
-                    let v = coriolis_packed.read(coriolis_v_i.idx(r, c));
-                    coriolis_packed.write(i_coriolis_dt_v.idx(r, c), scale * v);
-                }
-            }
+        if loop_is_active {
+            gemm_tr_par(
+                mass_matrices,
+                acc_augmented_mass,
+                1.0,
+                body_jacobians,
+                body_jacobian,
+                coriolis_packed,
+                i_coriolis_dt_view,
+                1.0,
+                lane,
+                LANES,
+            );
         }
-        gemm_inertia_lhs_par(
-            coriolis_packed,
-            i_coriolis_dt_w,
-            dt,
-            rb_inertia,
-            coriolis_w_i,
-            0.0,
-            lane,
-            LANES,
-        );
-
-        workgroup_memory_barrier_with_group_sync();
-
-        gemm_tr_par(
-            mass_matrices,
-            acc_augmented_mass,
-            1.0,
-            body_jacobians,
-            body_jacobian,
-            coriolis_packed,
-            i_coriolis_dt_view,
-            1.0,
-            lane,
-            LANES,
-        );
 
         workgroup_memory_barrier_with_group_sync();
     }
@@ -617,8 +659,6 @@ pub fn gpu_mb_compute_dynamics_pre(
         let cur = mass_matrices.read(diag_idx);
         mass_matrices.write(diag_idx, cur + damping_slice.read(d as usize) * dt);
     }
-
-    let _ = MAX_MB_DOFS;
 }
 
 
@@ -654,10 +694,10 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // No early-return on out-of-range `mb_idx` — see `gpu_mb_lu_decompose`
+    // for the WGSL uniformity rationale. Dummy multibody slots have zero
+    // links / DOFs, so all per-link loops below iterate zero times.
+    let _ = num_multibodies;
 
     let dt = *dt_uniform;
 

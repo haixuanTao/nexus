@@ -136,10 +136,15 @@ pub fn gpu_mb_lu_decompose(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `ndofs == 0`, so the per-link loops below
+    // naturally iterate zero times. We deliberately DO NOT early-return for
+    // out-of-range `mb_idx` or zero-DOF multibodies: WGSL's naga frontend
+    // can't prove that a storage-loaded comparison is uniform across the
+    // workgroup, and any subsequent `workgroupBarrier()` would then be
+    // flagged as "called from non-uniform control flow". Keeping the kernel
+    // body branch-free at the top level means barriers stay uniform; dummy
+    // workgroups do a few empty loops and exit cleanly.
+    let _ = num_multibodies;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
@@ -147,9 +152,6 @@ pub fn gpu_mb_lu_decompose(
 
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let n = mb.ndofs;
-    if n == 0 {
-        return;
-    }
     let m = MatSlice::dense(mm_start + mb.mass_matrix_offset as usize, n, n);
     let piv_offset = dof_start + mb.first_dof as usize;
 
@@ -299,10 +301,10 @@ pub fn gpu_mb_lu_solve(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `ndofs == 0` so the per-link loops below
+    // iterate zero times — no early-return, see `gpu_mb_lu_decompose` for
+    // the WGSL uniformity rationale.
+    let _ = num_multibodies;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
@@ -310,9 +312,6 @@ pub fn gpu_mb_lu_solve(
 
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let n = mb.ndofs;
-    if n == 0 {
-        return;
-    }
     let m = MatSlice::dense(mm_start + mb.mass_matrix_offset as usize, n, n);
     let piv_offset = dof_start + mb.first_dof as usize;
     let rhs_offset = piv_offset;
@@ -365,10 +364,10 @@ pub fn gpu_mb_lu_factor_and_solve(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `ndofs == 0` so the per-link loops below
+    // iterate zero times — no early-return, see `gpu_mb_lu_decompose` for
+    // the WGSL uniformity rationale.
+    let _ = num_multibodies;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
@@ -376,9 +375,6 @@ pub fn gpu_mb_lu_factor_and_solve(
 
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let n = mb.ndofs;
-    if n == 0 {
-        return;
-    }
     let m = MatSlice::dense(mm_start + mb.mass_matrix_offset as usize, n, n);
     let piv_offset = dof_start + mb.first_dof as usize;
     let rhs_offset = piv_offset;

@@ -700,7 +700,7 @@ impl GpuMultibodySet {
             mass_matrix_entries_per_batch: mm_cap,
             coriolis_entries_per_batch: cor_cap,
             i_coriolis_dt_entries_per_batch: icdt_cap,
-            implicit_coriolis: false,
+            implicit_coriolis: true,
             has_joint_constraints: all_infos.iter().any(|info| info.max_constraints > 0),
 
             num_multibodies: Tensor::vector(backend, &all_num_mb, usage_u).unwrap(),

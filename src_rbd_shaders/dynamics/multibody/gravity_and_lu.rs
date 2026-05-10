@@ -75,10 +75,13 @@ pub fn gpu_mb_gravity_and_lu(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `num_links == 0` and `ndofs == 0` so all
+    // per-link / per-DOF loops below iterate zero times. No early-return —
+    // WGSL's naga frontend can't prove a storage-loaded comparison is
+    // uniform across the workgroup, so any subsequent `workgroupBarrier()`
+    // would be flagged "called from non-uniform control flow". See
+    // `gpu_mb_lu_decompose` for the rationale.
+    let _ = num_multibodies;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let links_start = batch_id * *links_batch_capacity as usize;
@@ -239,9 +242,11 @@ pub fn gpu_mb_gravity_and_lu(
     workgroup_memory_barrier_with_group_sync();
 
     // ---- Phase 3: load M into shared memory, factor in place. ----
-    if ndofs == 0 {
-        return;
-    }
+    // No early-return on `ndofs == 0`: the loops/conditionals below already
+    // guard with `lane < ndofs`, and `lu_factor_in_shared` /
+    // `lu_triangular_solve_in_place` iterate zero times for `ndofs == 0`.
+    // Dropping the early-return keeps barriers in uniform control flow per
+    // WGSL's naga uniformity rules.
     let m_view = MatSlice::dense(mb_mm_base, ndofs, ndofs);
     if lane < ndofs {
         for r in 0..ndofs {

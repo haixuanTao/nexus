@@ -238,10 +238,14 @@ pub fn gpu_mb_mass_matrix_with_coriolis(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `num_links == 0` and `ndofs == 0` so the
+    // per-link loops below iterate zero times. We deliberately DO NOT
+    // early-return on out-of-range `mb_idx`: WGSL's naga frontend can't
+    // prove a storage-loaded comparison is uniform across the workgroup, so
+    // every subsequent `workgroupBarrier()` would be flagged "called from
+    // non-uniform control flow". See `gpu_mb_lu_decompose` for the full
+    // rationale.
+    let _ = num_multibodies;
     let dt = *dt_uniform;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;

@@ -20,7 +20,7 @@ use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use parry::math::VectorExt;
 use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::Slice;
-use crate::utils::linalg::{MatSlice, copy_from_par, fill_par, gemm_skew_tr_lhs_par};
+use crate::utils::linalg::{MatSlice, copy_from_par, fill_par, gemm_skew_tr_lhs_par, MAX_MB_DOFS};
 use crate::{ANG_DIM, DIM, Pose, Rotation, Vector};
 #[cfg(feature = "dim3")]
 use crate::rotation_to_matrix;
@@ -425,10 +425,14 @@ pub fn gpu_mb_body_jacobians(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `num_links == 0` so the per-link loop
+    // below iterates zero times. We deliberately DO NOT early-return on
+    // out-of-range `mb_idx`: WGSL's naga frontend can't prove that a
+    // storage-loaded comparison is uniform across the workgroup, and any
+    // subsequent `workgroupBarrier()` would then be flagged as "called from
+    // non-uniform control flow". Letting all workgroups run keeps barriers
+    // in uniform top-level control flow.
+    let _ = num_multibodies;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let links_start = batch_id * *links_batch_capacity as usize;
@@ -443,10 +447,10 @@ pub fn gpu_mb_body_jacobians(
     let stat_slice = Slice(links_static, first_link_global);
     let ws_slice = Slice(links_workspace, first_link_global);
 
-    for k in 0..num_links {
-        let link_infos = stat_slice.at(k as usize);
-        let link = ws_slice.at(k as usize);
-
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `mb.num_links` as the upper bound.
+    for k in 0..MAX_MB_DOFS as u32 {
+        let mut parent_to_world= Pose::default();
         // View for this link's body jacobian (SPATIAL_DIM × ndofs, dense).
         let link_j = MatSlice::dense(
             mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
@@ -454,77 +458,85 @@ pub fn gpu_mb_body_jacobians(
             ndofs,
         );
 
-        let parent_to_world;
-        if k != 0 {
-            let parent_j = MatSlice::dense(
-                mb_jac_base
-                    + (link_infos.parent_link_id as usize)
+        if k < mb.num_links {
+            let link_infos = stat_slice.at(k as usize);
+            let link = ws_slice.at(k as usize);
+
+            if k != 0 {
+                let parent_j = MatSlice::dense(
+                    mb_jac_base
+                        + (link_infos.parent_link_id as usize)
                         * SPATIAL_DIM
                         * (ndofs as usize),
-                SPATIAL_DIM as u32,
-                ndofs,
-            );
-            let parent_link = ws_slice.at(link_infos.parent_link_id as usize);
-            parent_to_world = parent_link.local_to_world;
+                    SPATIAL_DIM as u32,
+                    ndofs,
+                );
+                let parent_link = ws_slice.at(link_infos.parent_link_id as usize);
+                parent_to_world = parent_link.local_to_world;
 
-            // link_j := parent_j (parallel column-wise).
-            copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
-            // link_j_v += [shift02]^T_× · parent_j_w (parallel column-wise).
-            let link_j_v = link_j.fixed_rows(0, DIM);
-            let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
-            gemm_skew_tr_lhs_par(
-                body_jacobians,
-                link_j_v,
-                1.0,
-                link.shift02,
-                parent_j_w,
-                1.0,
-                lane,
-                LANES,
-            );
-        } else {
-            fill_par(body_jacobians, link_j, 0.0, lane, LANES);
-            parent_to_world = Pose::default();
+                // link_j := parent_j (parallel column-wise).
+                copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
+                // link_j_v += [shift02]^T_× · parent_j_w (parallel column-wise).
+                let link_j_v = link_j.fixed_rows(0, DIM);
+                let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
+                gemm_skew_tr_lhs_par(
+                    body_jacobians,
+                    link_j_v,
+                    1.0,
+                    link.shift02,
+                    parent_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+            } else {
+                fill_par(body_jacobians, link_j, 0.0, lane, LANES);
+            }
         }
 
         // Barrier: the joint-jacobian accumulation below has lane c=0 (and
         // c=1, c=2, …) read+write `link_j[*, assembly_id+c]`, but those
         // columns were written by lane `assembly_id+c` in `copy_from_par` /
         // `gemm_skew_tr_lhs_par`. Without this barrier, lane 0 races against
-        // lane `assembly_id` and may read stale data — the bug is benign on
-        // a revolute pendulum (parent_j[*, assembly_id] = 0 anyway) but
-        // clobbers prismatic / spherical chains where the parent jacobian
-        // has non-zero linear/angular content at that column.
+        // lane `assembly_id` and may read stale data.
         workgroup_memory_barrier_with_group_sync();
 
-        // Add the joint jacobian directly into link_j's columns
-        // `[assembly_id .. assembly_id + ndofs_link]`. Each lane handles a
-        // subset of `0..ndofs_link`, so writes are non-overlapping.
-        let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
-        joint_jacobian_accumulate_par(
-            link_infos,
-            parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
-            body_jacobians,
-            link_j_part,
-            lane,
-            LANES,
-        );
+        if k < mb.num_links {
+            // Add the joint jacobian directly into link_j's columns
+            // `[assembly_id .. assembly_id + ndofs_link]`. Each lane handles a
+            // subset of `0..ndofs_link`, so writes are non-overlapping.
+            let link_infos = stat_slice.at(k as usize);
+            let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
+            joint_jacobian_accumulate_par(
+                link_infos,
+                parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
+                body_jacobians,
+                link_j_part,
+                lane,
+                LANES,
+            );
+        }
 
         // link_j_v += [shift23]^T_× · link_j_w  (self-shift, parallel
         // column-wise). Reads link_j_w which was just populated above —
         // barrier needed first.
         workgroup_memory_barrier_with_group_sync();
-        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
-        gemm_skew_tr_lhs_par(
-            body_jacobians,
-            link_j_v,
-            1.0,
-            link.shift23,
-            link_j_w,
-            1.0,
-            lane,
-            LANES,
-        );
+
+        if k < mb.num_links {
+            let link = ws_slice.at(k as usize);
+            let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+            gemm_skew_tr_lhs_par(
+                body_jacobians,
+                link_j_v,
+                1.0,
+                link.shift23,
+                link_j_w,
+                1.0,
+                lane,
+                LANES,
+            );
+        }
+
         // End-of-iteration barrier so children see the completed link_j.
         workgroup_memory_barrier_with_group_sync();
     }

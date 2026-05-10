@@ -64,10 +64,12 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     let batch_id = wg_id.y as usize;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
+    // Padding multibody slots have `num_links == 0` so the per-link loop
+    // below iterates zero times. No early-return — WGSL's naga frontend
+    // can't prove a storage-loaded comparison is uniform across the
+    // workgroup (so any subsequent `workgroupBarrier()` would be flagged).
+    // See `gpu_mb_lu_decompose` for the full rationale.
+    let _ = num_multibodies;
 
     let mb_start = batch_id * *multibodies_batch_capacity as usize;
     let links_start = batch_id * *links_batch_capacity as usize;
