@@ -25,15 +25,14 @@ use crate::shaders::utils::linalg::MAX_MB_DOFS;
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
-    GpuMbApplyGravityWithCoriolis, GpuMbBodyJacobians, GpuMbFinalizeContactConstraints,
-    GpuMbForwardKinematics, GpuMbInitContactConstraints, GpuMbInitJointConstraints, GpuMbIntegrate,
-    GpuMbComputeDynamicsPre, GpuMbGravityAndLu, GpuMbIntegrateVelocities, GpuMbLuDecompose,
+    GpuMbFinalizeContactConstraints,
+    GpuMbInitContactConstraints, GpuMbInitJointConstraints, GpuMbIntegrate,
+    GpuMbComputeDynamicsPre, GpuMbGravityAndLu, GpuMbIntegrateVelocities,
     GpuMbComputeDynamicsWithoutCoriolisPre,
-    GpuMbLuFactorAndSolve, GpuMbLuSolve, GpuMbMassMatrix,
-    GpuMbMassMatrixWithCoriolis, GpuMbRemoveContactConstraintBias,
+    GpuMbRemoveContactConstraintBias,
     GpuMbRemoveImpulseJointConstraintBias, GpuMbRemoveJointConstraintBias,
     GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints, GpuMbSolveJointConstraints,
-    GpuMbUpdateImpulseJointConstraints, GpuMbUpdateVelocities, LocalMassProperties,
+    GpuMbUpdateImpulseJointConstraints, LocalMassProperties,
     MAX_AXIS_CONSTRAINTS, MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder,
     MbImpulseJointConstraint,
     MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic,
@@ -1190,15 +1189,6 @@ fn make_workspace_init() -> MultibodyLinkWorkspace {
 /// GPU shader bundle for multibody dynamics.
 #[derive(Shader)]
 pub struct GpuMultibodySolver {
-    forward_kinematics: GpuMbForwardKinematics,
-    body_jacobians: GpuMbBodyJacobians,
-    update_velocities: GpuMbUpdateVelocities,
-    mass_matrix: GpuMbMassMatrix,
-    mass_matrix_with_coriolis: GpuMbMassMatrixWithCoriolis,
-    apply_gravity_with_coriolis: GpuMbApplyGravityWithCoriolis,
-    lu_decompose: GpuMbLuDecompose,
-    lu_solve: GpuMbLuSolve,
-    lu_factor_and_solve: GpuMbLuFactorAndSolve,
     gravity_and_lu: GpuMbGravityAndLu,
     compute_dynamics_pre: GpuMbComputeDynamicsPre,
     compute_dynamics_without_coriolis_pre: GpuMbComputeDynamicsWithoutCoriolisPre,
