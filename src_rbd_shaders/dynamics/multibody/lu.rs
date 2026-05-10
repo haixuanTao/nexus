@@ -54,8 +54,11 @@ pub(super) fn lu_factor_in_shared(
     pivot_row_shared: &mut u32,
     inv_akk_shared: &mut f32,
 ) {
-    for k in 0..n {
-        if lane == 0 {
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `n` as the upper bound.
+    for k in 0..MAX_DOFS_U32 {
+        let active = k < n;
+        if active && lane == 0 {
             let mut pivot_row = k;
             let mut pivot_val = {
                 let v = mat.read(sm_idx(k, k));
@@ -75,7 +78,7 @@ pub(super) fn lu_factor_in_shared(
         workgroup_memory_barrier_with_group_sync();
         let pivot_row = *pivot_row_shared;
 
-        if pivot_row != k && lane < n {
+        if active && pivot_row != k && lane < n {
             let c = lane;
             let a = mat.read(sm_idx(k, c));
             let b = mat.read(sm_idx(pivot_row, c));
@@ -84,27 +87,31 @@ pub(super) fn lu_factor_in_shared(
         }
         workgroup_memory_barrier_with_group_sync();
 
-        if lane == 0 {
+        if active && lane == 0 {
             let akk = mat.read(sm_idx(k, k));
             *inv_akk_shared = if akk != 0.0 { 1.0 / akk } else { 0.0 };
         }
         workgroup_memory_barrier_with_group_sync();
         let inv_akk = *inv_akk_shared;
 
-        let r = k + 1 + lane;
-        if r < n {
-            let v = mat.read(sm_idx(r, k)) * inv_akk;
-            mat.write(sm_idx(r, k), v);
+        if active {
+            let r = k + 1 + lane;
+            if r < n {
+                let v = mat.read(sm_idx(r, k)) * inv_akk;
+                mat.write(sm_idx(r, k), v);
+            }
         }
         workgroup_memory_barrier_with_group_sync();
 
-        let j = k + 1 + lane;
-        if j < n {
-            let akj = mat.read(sm_idx(k, j));
-            for r in (k + 1)..n {
-                let lik = mat.read(sm_idx(r, k));
-                let v = mat.read(sm_idx(r, j)) - lik * akj;
-                mat.write(sm_idx(r, j), v);
+        if active {
+            let j = k + 1 + lane;
+            if j < n {
+                let akj = mat.read(sm_idx(k, j));
+                for r in (k + 1)..n {
+                    let lik = mat.read(sm_idx(r, k));
+                    let v = mat.read(sm_idx(r, j)) - lik * akj;
+                    mat.write(sm_idx(r, j), v);
+                }
             }
         }
         workgroup_memory_barrier_with_group_sync();
@@ -195,8 +202,11 @@ pub(super) fn lu_triangular_solve_in_place(
     x: &mut [f32; MAX_MB_DOFS],
     partial: &mut [f32; LANES as usize],
 ) {
-    for i in 0..n {
-        let s = if lane < i {
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `n` as the upper bound.
+    for i in 0..MAX_DOFS_U32 {
+        let active = i < n;
+        let s = if active && lane < i {
             mat.read(sm_idx(i, lane)) * x.read(lane as usize)
         } else {
             0.0f32
@@ -211,16 +221,21 @@ pub(super) fn lu_triangular_solve_in_place(
             }
             workgroup_memory_barrier_with_group_sync();
         }
-        if lane == 0 {
+        if active && lane == 0 {
             let cur = x.read(i as usize);
             x.write(i as usize, cur - partial.read(0));
         }
         workgroup_memory_barrier_with_group_sync();
     }
 
-    for step in 0..n {
-        let i = n - 1 - step;
-        let s = if lane > i && lane < n {
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `n` as the upper bound.
+    for step in 0..MAX_DOFS_U32 {
+        let active = step < n;
+        // For dummy iterations (step >= n), `i` is not meaningful — guard
+        // every use of it behind `active`.
+        let i = if active { n - 1 - step } else { 0 };
+        let s = if active && lane > i && lane < n {
             mat.read(sm_idx(i, lane)) * x.read(lane as usize)
         } else {
             0.0f32
@@ -235,7 +250,7 @@ pub(super) fn lu_triangular_solve_in_place(
             }
             workgroup_memory_barrier_with_group_sync();
         }
-        if lane == 0 {
+        if active && lane == 0 {
             let u = mat.read(sm_idx(i, i));
             let cur = x.read(i as usize) - partial.read(0);
             x.write(i as usize, if u != 0.0 { cur / u } else { 0.0 });

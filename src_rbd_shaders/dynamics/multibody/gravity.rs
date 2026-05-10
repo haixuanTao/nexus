@@ -23,7 +23,7 @@ use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::linalg::{MatSlice, fill_par, gemv_tr_spatial_split_par};
+use crate::utils::linalg::{MAX_MB_DOFS, MatSlice, fill_par, gemv_tr_spatial_split_par};
 use crate::utils::{Slice, SliceMut};
 use crate::{AngVector, Vector, gcross_av};
 
@@ -102,131 +102,122 @@ pub fn gpu_mb_apply_gravity_with_coriolis(
     #[cfg(feature = "dim2")]
     let g = Vec2::new(gravity.x, gravity.y);
 
-    for k in 0..num_links {
-        // Reference-only access to `ws`. Gather just the small fields we
-        // need; full-struct read materialises a 240 B copy in Function memory.
-        let (
-            self_joint_vel_lin,
-            self_joint_vel_ang,
-            self_shift02,
-            self_shift23,
-            self_local_to_world,
-            self_rb_ang,
-        ) = {
-            let ws = ws_slice.at(k as usize);
-            (
-                ws.joint_velocity.linear,
-                ws.joint_velocity.angular,
-                ws.shift02,
-                ws.shift23,
-                ws.local_to_world,
-                ws.rb_vels.angular,
-            )
-        };
-
-        // Build kinematic acceleration `acc` (eqs 42–45).
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `num_links` as the upper bound.
+    for k in 0..MAX_MB_DOFS as u32 {
+        let active = k < num_links;
         let mut acc_lin = Vector::ZERO;
         #[cfg(feature = "dim3")]
         let mut acc_ang: AngVector = AngVector::ZERO;
         #[cfg(feature = "dim2")]
         let mut acc_ang: AngVector = 0.0;
 
-        if k != 0 {
-            let stat = stat_slice.read(k as usize);
-            // Parent workspace is read-only here; reference avoids a 240 B copy.
-            let parent_ws = ws_slice.at(stat.parent_link_id as usize);
-            let parent_acc_lin = parent_ws.kinematic_acc.linear;
-            let parent_acc_ang = parent_ws.kinematic_acc.angular;
-            let parent_ang = parent_ws.rb_vels.angular;
+        if active {
+            // Reference-only access to `ws`. Gather just the small fields we
+            // need; full-struct read materialises a 240 B copy in Function memory.
+            let (
+                self_joint_vel_lin,
+                self_joint_vel_ang,
+                self_shift02,
+                self_shift23,
+                _self_local_to_world,
+                self_rb_ang,
+            ) = {
+                let ws = ws_slice.at(k as usize);
+                (
+                    ws.joint_velocity.linear,
+                    ws.joint_velocity.angular,
+                    ws.shift02,
+                    ws.shift23,
+                    ws.local_to_world,
+                    ws.rb_vels.angular,
+                )
+            };
 
-            acc_lin = parent_acc_lin;
-            acc_ang = parent_acc_ang;
+            if k != 0 {
+                let stat = stat_slice.read(k as usize);
+                let parent_ws = ws_slice.at(stat.parent_link_id as usize);
+                let parent_acc_lin = parent_ws.kinematic_acc.linear;
+                let parent_acc_ang = parent_ws.kinematic_acc.angular;
+                let parent_ang = parent_ws.rb_vels.angular;
 
-            // 2 · parent_ω × joint_vel.linvel
-            acc_lin += gcross_av(parent_ang, self_joint_vel_lin) * 2.0;
-            // parent_ω × joint_vel.angvel — vanishes in 2D (angular is scalar).
-            #[cfg(feature = "dim3")]
-            {
-                acc_ang += parent_ang.cross(self_joint_vel_ang);
-            }
-            #[cfg(feature = "dim2")]
-            {
+                acc_lin = parent_acc_lin;
+                acc_ang = parent_acc_ang;
+
+                acc_lin += gcross_av(parent_ang, self_joint_vel_lin) * 2.0;
+                #[cfg(feature = "dim3")]
+                {
+                    acc_ang += parent_ang.cross(self_joint_vel_ang);
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    let _ = self_joint_vel_ang;
+                }
+                acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, self_shift02));
+                acc_lin += gcross_av(parent_acc_ang, self_shift02);
+            } else {
                 let _ = self_joint_vel_ang;
+                let _ = self_shift02;
             }
-            // parent_ω × (parent_ω × shift02)
-            acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, self_shift02));
-            // parent_α × shift02
-            acc_lin += gcross_av(parent_acc_ang, self_shift02);
-        } else {
-            let _ = self_joint_vel_ang;
-            let _ = self_shift02;
-        }
-        // Self-shift: rb.ω × (rb.ω × shift23), acc.ω × shift23.
-        let rb_ang = self_rb_ang;
-        acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
-        acc_lin += gcross_av(acc_ang, self_shift23);
+            let rb_ang = self_rb_ang;
+            acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
+            acc_lin += gcross_av(acc_ang, self_shift23);
 
-        // Field-targeted write — only `kinematic_acc` changes. Lane 0 alone
-        // does the scalar write; barrier so other lanes (this iteration's
-        // gemv read isn't affected, but children's reads in the next
-        // iterations need to see this) observe the update.
-        if lane == 0 {
-            ws_slice.at_mut(k as usize).kinematic_acc = Velocity::new(acc_lin, acc_ang);
+            // Lane 0 publishes the kinematic acceleration so children read
+            // it in subsequent iterations.
+            if lane == 0 {
+                ws_slice.at_mut(k as usize).kinematic_acc = Velocity::new(acc_lin, acc_ang);
+            }
         }
+
+        // Top-level barrier so it's reached uniformly by every lane on every
+        // outer iteration — children rely on this in the next iteration.
         workgroup_memory_barrier_with_group_sync();
 
-        let lmp = local_mprops_slice.read(k as usize);
-        let inv_mass_x = lmp.inv_mass.x;
-        if inv_mass_x == 0.0 {
-            continue;
+        if active {
+            let rb_ang = ws_slice.at(k as usize).rb_vels.angular;
+            let lmp = local_mprops_slice.read(k as usize);
+            let inv_mass_x = lmp.inv_mass.x;
+            if inv_mass_x != 0.0 {
+                let mass = 1.0 / inv_mass_x;
+                let rb_inertia = link_world_inertia(ws_slice.at(k as usize), &lmp);
+
+                #[cfg(feature = "dim3")]
+                let gyroscopic = {
+                    let i_omega = rb_inertia * rb_ang;
+                    rb_ang.cross(i_omega)
+                };
+                #[cfg(feature = "dim2")]
+                let gyroscopic: AngVector = 0.0;
+
+                let i_acc_ang = rb_inertia * acc_ang;
+
+                #[cfg(feature = "dim3")]
+                let f_lin = (g - acc_lin) * mass;
+                #[cfg(feature = "dim2")]
+                let f_lin = (g - acc_lin) * mass;
+                let f_ang = -gyroscopic - i_acc_ang;
+
+                let body_jacobian = MatSlice::dense(
+                    mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+                    SPATIAL_DIM as u32,
+                    ndofs,
+                );
+
+                gemv_tr_spatial_split_par(
+                    gen_forces,
+                    gen_base,
+                    1.0,
+                    body_jacobians,
+                    body_jacobian,
+                    f_lin,
+                    f_ang,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+            }
         }
-        let mass = 1.0 / inv_mass_x;
-        // `link_world_inertia` only reads `local_to_world.rotation`.
-        // Reuse the value we already pulled out; the helper takes a
-        // workspace ref so synthesise one via `at()`.
-        let rb_inertia = link_world_inertia(ws_slice.at(k as usize), &lmp);
-        let _ = self_local_to_world;
-
-        // Gyroscopic torque: `rb.ω × (I · rb.ω)` in 3D, 0 in 2D.
-        #[cfg(feature = "dim3")]
-        let gyroscopic = {
-            let i_omega = rb_inertia * rb_ang;
-            rb_ang.cross(i_omega)
-        };
-        #[cfg(feature = "dim2")]
-        let gyroscopic: AngVector = 0.0;
-
-        // I · acc.angvel — Mat3·Vec3 in 3D, scalar·scalar in 2D.
-        let i_acc_ang = rb_inertia * acc_ang;
-
-        // f_ext_lin = m·g - m·acc_lin.
-        #[cfg(feature = "dim3")]
-        let f_lin = (g - acc_lin) * mass;
-        #[cfg(feature = "dim2")]
-        let f_lin = (g - acc_lin) * mass;
-        let f_ang = -gyroscopic - i_acc_ang;
-
-        let body_jacobian = MatSlice::dense(
-            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
-            SPATIAL_DIM as u32,
-            ndofs,
-        );
-
-        // Parallel scatter: each lane handles a subset of DOFs. Lane(d)
-        // owns column d for all links, so the cross-link += accumulation is
-        // race-free.
-        gemv_tr_spatial_split_par(
-            gen_forces,
-            gen_base,
-            1.0,
-            body_jacobians,
-            body_jacobian,
-            f_lin,
-            f_ang,
-            1.0,
-            lane,
-            LANES,
-        );
     }
 
     // `accelerations.cmpy(-1.0, &damping, &velocities, 1.0)` — parallel.

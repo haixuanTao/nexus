@@ -119,109 +119,118 @@ pub fn gpu_mb_gravity_and_lu(
     let g = Vec2::new(gravity.x, gravity.y);
 
     // ---- Phase 2: per-link gravity / Coriolis-force assembly. ----
-    for k in 0..num_links {
-        let (
-            self_joint_vel_lin,
-            self_joint_vel_ang,
-            self_shift02,
-            self_shift23,
-            self_local_to_world,
-            self_rb_ang,
-        ) = {
-            let ws = ws_slice.at(k as usize);
-            (
-                ws.joint_velocity.linear,
-                ws.joint_velocity.angular,
-                ws.shift02,
-                ws.shift23,
-                ws.local_to_world,
-                ws.rb_vels.angular,
-            )
-        };
-
+    // NOTE: fixed number of iterations for uniform control flow.
+    // TODO(PERF): on non-web platforms we could just use `num_links` as the upper bound.
+    for k in 0..MAX_MB_DOFS as u32 {
+        let active = k < num_links;
         let mut acc_lin = Vector::ZERO;
         #[cfg(feature = "dim3")]
         let mut acc_ang: AngVector = AngVector::ZERO;
         #[cfg(feature = "dim2")]
         let mut acc_ang: AngVector = 0.0;
 
-        if k != 0 {
-            let stat = stat_slice.read(k as usize);
-            let parent_ws = ws_slice.at(stat.parent_link_id as usize);
-            let parent_acc_lin = parent_ws.kinematic_acc.linear;
-            let parent_acc_ang = parent_ws.kinematic_acc.angular;
-            let parent_ang = parent_ws.rb_vels.angular;
+        if active {
+            let (
+                self_joint_vel_lin,
+                self_joint_vel_ang,
+                self_shift02,
+                self_shift23,
+                _self_local_to_world,
+                self_rb_ang,
+            ) = {
+                let ws = ws_slice.at(k as usize);
+                (
+                    ws.joint_velocity.linear,
+                    ws.joint_velocity.angular,
+                    ws.shift02,
+                    ws.shift23,
+                    ws.local_to_world,
+                    ws.rb_vels.angular,
+                )
+            };
 
-            acc_lin = parent_acc_lin;
-            acc_ang = parent_acc_ang;
+            if k != 0 {
+                let stat = stat_slice.read(k as usize);
+                let parent_ws = ws_slice.at(stat.parent_link_id as usize);
+                let parent_acc_lin = parent_ws.kinematic_acc.linear;
+                let parent_acc_ang = parent_ws.kinematic_acc.angular;
+                let parent_ang = parent_ws.rb_vels.angular;
 
-            acc_lin += gcross_av(parent_ang, self_joint_vel_lin) * 2.0;
-            #[cfg(feature = "dim3")]
-            {
-                acc_ang += parent_ang.cross(self_joint_vel_ang);
-            }
-            #[cfg(feature = "dim2")]
-            {
+                acc_lin = parent_acc_lin;
+                acc_ang = parent_acc_ang;
+
+                acc_lin += gcross_av(parent_ang, self_joint_vel_lin) * 2.0;
+                #[cfg(feature = "dim3")]
+                {
+                    acc_ang += parent_ang.cross(self_joint_vel_ang);
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    let _ = self_joint_vel_ang;
+                }
+                acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, self_shift02));
+                acc_lin += gcross_av(parent_acc_ang, self_shift02);
+            } else {
                 let _ = self_joint_vel_ang;
+                let _ = self_shift02;
             }
-            acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, self_shift02));
-            acc_lin += gcross_av(parent_acc_ang, self_shift02);
-        } else {
-            let _ = self_joint_vel_ang;
-            let _ = self_shift02;
-        }
-        let rb_ang = self_rb_ang;
-        acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
-        acc_lin += gcross_av(acc_ang, self_shift23);
+            let rb_ang = self_rb_ang;
+            acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
+            acc_lin += gcross_av(acc_ang, self_shift23);
 
-        if lane == 0 {
-            ws_slice.at_mut(k as usize).kinematic_acc = Velocity::new(acc_lin, acc_ang);
+            if lane == 0 {
+                ws_slice.at_mut(k as usize).kinematic_acc = Velocity::new(acc_lin, acc_ang);
+            }
         }
+
+        // Top-level barrier: reached uniformly by every lane on every outer
+        // iteration so children see the just-published `kinematic_acc`.
         workgroup_memory_barrier_with_group_sync();
 
-        let lmp = local_mprops_slice.read(k as usize);
-        let inv_mass_x = lmp.inv_mass.x;
-        if inv_mass_x == 0.0 {
-            continue;
+        if active {
+            let rb_ang = ws_slice.at(k as usize).rb_vels.angular;
+            let lmp = local_mprops_slice.read(k as usize);
+            let inv_mass_x = lmp.inv_mass.x;
+            if inv_mass_x != 0.0 {
+                let mass = 1.0 / inv_mass_x;
+                let rb_inertia = link_world_inertia(ws_slice.at(k as usize), &lmp);
+
+                #[cfg(feature = "dim3")]
+                let gyroscopic = {
+                    let i_omega = rb_inertia * rb_ang;
+                    rb_ang.cross(i_omega)
+                };
+                #[cfg(feature = "dim2")]
+                let gyroscopic: AngVector = 0.0;
+
+                let i_acc_ang = rb_inertia * acc_ang;
+
+                #[cfg(feature = "dim3")]
+                let f_lin = (g - acc_lin) * mass;
+                #[cfg(feature = "dim2")]
+                let f_lin = (g - acc_lin) * mass;
+                let f_ang = -gyroscopic - i_acc_ang;
+
+                let body_jacobian = MatSlice::dense(
+                    mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+                    SPATIAL_DIM as u32,
+                    ndofs,
+                );
+
+                gemv_tr_spatial_split_par(
+                    gen_forces,
+                    gen_base,
+                    1.0,
+                    body_jacobians,
+                    body_jacobian,
+                    f_lin,
+                    f_ang,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+            }
         }
-        let mass = 1.0 / inv_mass_x;
-        let rb_inertia = link_world_inertia(ws_slice.at(k as usize), &lmp);
-        let _ = self_local_to_world;
-
-        #[cfg(feature = "dim3")]
-        let gyroscopic = {
-            let i_omega = rb_inertia * rb_ang;
-            rb_ang.cross(i_omega)
-        };
-        #[cfg(feature = "dim2")]
-        let gyroscopic: AngVector = 0.0;
-
-        let i_acc_ang = rb_inertia * acc_ang;
-
-        #[cfg(feature = "dim3")]
-        let f_lin = (g - acc_lin) * mass;
-        #[cfg(feature = "dim2")]
-        let f_lin = (g - acc_lin) * mass;
-        let f_ang = -gyroscopic - i_acc_ang;
-
-        let body_jacobian = MatSlice::dense(
-            mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
-            SPATIAL_DIM as u32,
-            ndofs,
-        );
-
-        gemv_tr_spatial_split_par(
-            gen_forces,
-            gen_base,
-            1.0,
-            body_jacobians,
-            body_jacobian,
-            f_lin,
-            f_ang,
-            1.0,
-            lane,
-            LANES,
-        );
     }
 
     // Damping subtraction is handled at solve time via the LU rhs (we still
