@@ -56,6 +56,7 @@ impl<'a, T: Copy> SliceMut<'a, T> {
 
 impl<T: Copy> Index<usize> for Slice<'_, T> {
     type Output = T;
+    #[inline(always)]
     fn index(&self, i: usize) -> &T {
         self.0.at(self.1 + i)
     }
@@ -63,12 +64,14 @@ impl<T: Copy> Index<usize> for Slice<'_, T> {
 
 impl<T: Copy> Index<usize> for SliceMut<'_, T> {
     type Output = T;
+    #[inline(always)]
     fn index(&self, i: usize) -> &T {
         self.0.at(self.1 + i)
     }
 }
 
 impl<T: Copy> IndexMut<usize> for SliceMut<'_, T> {
+    #[inline(always)]
     fn index_mut(&mut self, i: usize) -> &mut T {
         self.0.at_mut(self.1 + i)
     }

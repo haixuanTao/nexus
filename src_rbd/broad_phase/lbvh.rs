@@ -143,7 +143,7 @@ impl Lbvh {
         vertex_buffers: &Tensor<PaddedVector>,
         shapes: &Tensor<Shape>,
         num_shapes: &Tensor<u32>,
-        colliders_batch_capacity: &Tensor<u32>,
+        batch_indices: &Tensor<crate::shaders::utils::BatchIndices>,
         mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Result<(), GpuBackendError> {
         state.resize_buffers(backend, colliders_len, num_batches);
@@ -157,7 +157,7 @@ impl Lbvh {
             poses,
             &mut state.domain_aabb,
             num_shapes,
-            colliders_batch_capacity,
+            batch_indices,
         )?;
         drop(pass);
 
@@ -169,7 +169,7 @@ impl Lbvh {
             &state.domain_aabb,
             &mut state.unsorted_morton_keys,
             num_shapes,
-            colliders_batch_capacity,
+            batch_indices,
         )?;
         drop(pass);
 
@@ -195,7 +195,7 @@ impl Lbvh {
             &state.sorted_morton_keys,
             &mut state.tree,
             num_shapes,
-            colliders_batch_capacity,
+            batch_indices,
         )?;
         drop(pass);
 
@@ -208,7 +208,7 @@ impl Lbvh {
             &state.sorted_colliders,
             &mut state.tree,
             num_shapes,
-            colliders_batch_capacity,
+            batch_indices,
             vertex_buffers,
         )?;
         drop(pass);
@@ -219,7 +219,7 @@ impl Lbvh {
             [1u32, num_batches, 1],
             &mut state.tree,
             num_shapes,
-            colliders_batch_capacity,
+            batch_indices,
         )?;
         drop(pass);
 
@@ -237,8 +237,7 @@ impl Lbvh {
         colliders_len: u32,
         num_batches: u32,
         num_shapes: &Tensor<u32>,
-        colliders_batch_capacity: &Tensor<u32>,
-        collision_pairs_batch_capacity: &Tensor<u32>,
+        batch_indices: &Tensor<crate::shaders::utils::BatchIndices>,
         collision_pairs: &mut Tensor<[u32; 2]>,
         collision_pairs_len: &mut Tensor<u32>,
         collision_pairs_indirect: &mut Tensor<[u32; 3]>,
@@ -258,8 +257,7 @@ impl Lbvh {
             collision_pairs,
             collision_pairs_len,
             num_shapes,
-            colliders_batch_capacity,
-            collision_pairs_batch_capacity,
+            batch_indices,
             collision_groups,
         )?;
         self.shaders.lbvh_init_indirect_args.call(

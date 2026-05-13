@@ -33,7 +33,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 use crate::dynamics::body::{Velocity, WorldMassProperties};
 use crate::dynamics::joint::SPATIAL_DIM;
 use crate::queries::IndexedManifold;
-use crate::utils::Slice;
+use crate::utils::BatchIndices;
 use crate::utils::linalg::{MatSlice, lu_solve_in_place};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot};
 
@@ -155,16 +155,9 @@ pub fn gpu_mb_init_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] contact_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] contact_constraint_columns_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 4)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 5)] colliders_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 6)] body_to_link_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
     let dt = *dt_uniform;
     let inv_dt = if dt != 0.0 { 1.0 / dt } else { 0.0 };
@@ -172,13 +165,12 @@ pub fn gpu_mb_init_contact_constraints(
     let allowed_lin_err = 0.001f32;
     let max_corr_velocity = 10.0f32;
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let jac_start = batch_id * *jacobians_batch_capacity as usize;
-    let cons_start = batch_id * *contact_constraints_batch_capacity as usize;
-    let col_start = batch_id * *contact_constraint_columns_batch_capacity as usize;
-    let contacts_start = batch_id * *contacts_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
-    let b2l_start = batch_id * *body_to_link_batch_capacity as usize;
+    let mb_start = batch_ids.mb_start(batch_id);
+    let cons_start = batch_ids.mb_contact_constraints_start(batch_id);
+    let col_start = batch_ids.mb_contact_constraint_columns_start(batch_id);
+    let colliders_start = batch_ids.coll_start(batch_id);
+    // `body_to_link` is laid out with stride = colliders_batch_capacity.
+    let b2l_start = colliders_start;
 
     // Per-multibody early-out: padding multibody slots have `ndofs == 0`,
     // which we use here as the sentinel (replaces the `num_multibodies`
@@ -189,23 +181,24 @@ pub fn gpu_mb_init_contact_constraints(
         contact_constraint_count.write(mb_start + mb_idx as usize, 0);
         return;
     }
-    let mb_jac_base = jac_start + mb.jacobian_offset as usize;
+    let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
     let cons_base = cons_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize);
     // Each constraint slot reserves `dof_batch_capacity` floats in the
     // column buffer (matches the allocation in `from_rapier` and avoids any
     // overlap between multibodies of differing `ndofs`).
-    let dofs_stride = *dof_batch_capacity as usize;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
     let col_base =
         col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
 
-    let n_contacts = contacts_len.read(batch_id);
+    let contacts_slice = batch_ids.contact_batch(batch_id, contacts);
+    let n_contacts = contacts_len.read(batch_id as usize);
     let mut count = 0u32;
 
     for ci in 0..n_contacts {
         if count >= MAX_MB_CONTACTS_PER_MB {
             break;
         }
-        let im = contacts.read(contacts_start + ci as usize);
+        let im = contacts_slice[ci as usize];
         let id1 = im.colliders.x;
         let id2 = im.colliders.y;
 
@@ -541,34 +534,28 @@ pub fn gpu_mb_finalize_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contact_constraint_columns: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contact_constraint_count: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] contact_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] contact_constraint_columns_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-    let cons_start = batch_id * *contact_constraints_batch_capacity as usize;
-    let col_start = batch_id * *contact_constraint_columns_batch_capacity as usize;
+    let mb_start = batch_ids.mb_start(batch_id);
+    let cons_start = batch_ids.mb_contact_constraints_start(batch_id);
+    let col_start = batch_ids.mb_contact_constraint_columns_start(batch_id);
 
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let ndofs = mb.ndofs;
     if ndofs == 0 {
         return;
     }
-    let mb_mm_base = mm_start + mb.mass_matrix_offset as usize;
-    let piv_offset = dof_start + mb.first_dof as usize;
+    let mb_mm_base = batch_ids.mm_start(batch_id) + mb.mass_matrix_offset as usize;
+    let piv_offset = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
     let cons_base = cons_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize);
-    let dofs_stride = *dof_batch_capacity as usize;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
     let col_base =
         col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
 
@@ -629,33 +616,28 @@ pub fn gpu_mb_solve_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] contact_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] contact_constraint_columns_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-    let cons_start = batch_id * *contact_constraints_batch_capacity as usize;
-    let col_start = batch_id * *contact_constraint_columns_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let mb_start = batch_ids.mb_start(batch_id);
+    let cons_start = batch_ids.mb_contact_constraints_start(batch_id);
+    let col_start = batch_ids.mb_contact_constraint_columns_start(batch_id);
+    let colliders_start = batch_ids.coll_start(batch_id);
 
     let mb = multibody_info.read(mb_start + mb_idx as usize);
     let ndofs = mb.ndofs;
     if ndofs == 0 {
         return;
     }
-    let v_base = dof_start + mb.first_dof as usize;
+    let v_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
     let cons_base = cons_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize);
-    let dofs_stride = *dof_batch_capacity as usize;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
     let col_base =
         col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
 
@@ -739,18 +721,17 @@ pub fn gpu_mb_remove_contact_constraint_bias(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contact_constraints: &mut [MultibodyContactConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contact_constraint_count: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] contact_constraints_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let cons_start = batch_id * *contact_constraints_batch_capacity as usize;
+    let mb_start = batch_ids.mb_start(batch_id);
+    let cons_start = batch_ids.mb_contact_constraints_start(batch_id);
     let cons_base = cons_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize);
     let count = contact_constraint_count.read(mb_start + mb_idx as usize);
 

@@ -18,7 +18,7 @@ use glamx::{Vec2, Vec3, Vec4};
 
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::{Slice, SliceMut};
+use crate::utils::{BatchIndices, Slice};
 use crate::utils::linalg::{MAX_MB_DOFS, MatSlice, fill_par, gemv_tr_spatial_split_par};
 use crate::{AngVector, Vector, gcross_av};
 
@@ -56,12 +56,7 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 10)] gravity: &Vec4,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 13)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 14)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 15)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 16)] dof_damping_section_offset: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] batch_ids: &BatchIndices,
     // Mass-matrix tile in shared memory.
     #[spirv(workgroup)] mat: &mut [f32; (MAX_MB_DOFS * MAX_MB_DOFS) as usize],
     // RHS / solution vector.
@@ -72,7 +67,7 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(workgroup)] pivot_row_shared: &mut u32,
     #[spirv(workgroup)] inv_akk_shared: &mut f32,
 ) {
-    let batch_id = wg_id.y as usize;
+    let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
     let lane = lid.x;
     // Padding multibody slots have `num_links == 0` and `ndofs == 0` so all
@@ -83,28 +78,29 @@ pub fn gpu_mb_gravity_and_lu(
     // `gpu_mb_lu_decompose` for the rationale.
     let _ = num_multibodies;
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let links_start = batch_id * *links_batch_capacity as usize;
-    let jac_start = batch_id * *jacobians_batch_capacity as usize;
-    let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
+    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
     let num_links = mb.num_links;
     let ndofs = mb.ndofs;
-    let first_link_global = links_start + mb.first_link as usize;
-    let mb_jac_base = jac_start + mb.jacobian_offset as usize;
-    let gen_base = dof_start + mb.first_dof as usize;
-    let mb_mm_base = mm_start + mb.mass_matrix_offset as usize;
+    let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
+    let gen_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+    let mb_mm_base = batch_ids.mm_start(batch_id) + mb.mass_matrix_offset as usize;
     let piv_offset = gen_base;
     let rhs_offset = gen_base;
 
-    let damp_off = *dof_damping_section_offset as usize;
-    let stat_slice = Slice(links_static, first_link_global);
-    let mut ws_slice = SliceMut(links_workspace, first_link_global);
-    let local_mprops_slice = Slice(links_local_mprops, first_link_global);
+    let stat_slice = batch_ids
+        .mb_links_batch(batch_id, links_static)
+        .offset(mb.first_link as usize);
+    let mut ws_slice = batch_ids
+        .mb_links_batch_mut(batch_id, links_workspace)
+        .offset(mb.first_link as usize);
+    let local_mprops_slice = batch_ids
+        .mb_links_batch(batch_id, links_local_mprops)
+        .offset(mb.first_link as usize);
     let vel_slice = Slice(dof_state, gen_base);
-    let damping_slice = Slice(dof_state, damp_off + gen_base);
+    let damping_slice = Slice(
+        dof_state,
+        batch_ids.dof_damping_section_offset as usize + gen_base,
+    );
 
     // ---- Phase 1: zero the generalized-force vector (parallel across DOFs). ----
     let accelerations = MatSlice::dense(gen_base, ndofs, 1);
@@ -138,7 +134,7 @@ pub fn gpu_mb_gravity_and_lu(
                 _self_local_to_world,
                 self_rb_ang,
             ) = {
-                let ws = ws_slice.at(k as usize);
+                let ws = &ws_slice[k as usize];
                 (
                     ws.joint_velocity.linear,
                     ws.joint_velocity.angular,
@@ -150,8 +146,8 @@ pub fn gpu_mb_gravity_and_lu(
             };
 
             if k != 0 {
-                let stat = stat_slice.read(k as usize);
-                let parent_ws = ws_slice.at(stat.parent_link_id as usize);
+                let stat = stat_slice[k as usize];
+                let parent_ws = &ws_slice[stat.parent_link_id as usize];
                 let parent_acc_lin = parent_ws.kinematic_acc.linear;
                 let parent_acc_ang = parent_ws.kinematic_acc.angular;
                 let parent_ang = parent_ws.rb_vels.angular;
@@ -179,7 +175,7 @@ pub fn gpu_mb_gravity_and_lu(
             acc_lin += gcross_av(acc_ang, self_shift23);
 
             if lane == 0 {
-                ws_slice.at_mut(k as usize).kinematic_acc = Velocity::new(acc_lin, acc_ang);
+                ws_slice[k as usize].kinematic_acc = Velocity::new(acc_lin, acc_ang);
             }
         }
 
@@ -188,12 +184,12 @@ pub fn gpu_mb_gravity_and_lu(
         workgroup_memory_barrier_with_group_sync();
 
         if active {
-            let rb_ang = ws_slice.at(k as usize).rb_vels.angular;
-            let lmp = local_mprops_slice.read(k as usize);
+            let rb_ang = ws_slice[k as usize].rb_vels.angular;
+            let lmp = local_mprops_slice[k as usize];
             let inv_mass_x = lmp.inv_mass.x;
             if inv_mass_x != 0.0 {
                 let mass = 1.0 / inv_mass_x;
-                let rb_inertia = link_world_inertia(ws_slice.at(k as usize), &lmp);
+                let rb_inertia = link_world_inertia(&ws_slice[k as usize], &lmp);
 
                 #[cfg(feature = "dim3")]
                 let gyroscopic = {
@@ -245,7 +241,7 @@ pub fn gpu_mb_gravity_and_lu(
         let cur = gen_forces.read(idx);
         gen_forces.write(
             idx,
-            cur - damping_slice.read(i as usize) * vel_slice.read(i as usize),
+            cur - damping_slice[i as usize] * vel_slice[i as usize],
         );
     }
     workgroup_memory_barrier_with_group_sync();

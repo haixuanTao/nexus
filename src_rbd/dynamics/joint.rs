@@ -325,6 +325,17 @@ impl GpuImpulseJointSet {
     pub fn len(&self) -> usize {
         self.len as usize
     }
+
+    /// Per-batch capacity (max joints across batches). Stride for
+    /// `joints`, `builders`, `constraints` buffers.
+    pub fn joints_per_batch(&self) -> u32 {
+        self.len
+    }
+
+    /// Number of color groups (also the per-batch stride of `color_groups`).
+    pub fn num_colors(&self) -> u32 {
+        self.num_colors
+    }
 }
 
 /// GPU shader for joint constraint solving.
@@ -354,8 +365,8 @@ pub struct JointSolverArgs<'a> {
     pub mprops: &'a Tensor<WorldMassProperties>,
     /// Local-space mass properties.
     pub local_mprops: &'a Tensor<LocalMassProperties>,
-    /// Maximum colliders per batch (stride between batches in body buffers).
-    pub colliders_batch_capacity: &'a Tensor<u32>,
+    /// Shared per-batch capacity / section-offset uniform.
+    pub batch_indices: &'a Tensor<crate::shaders::utils::BatchIndices>,
 }
 
 impl GpuJointSolver {
@@ -377,8 +388,7 @@ impl GpuJointSolver {
             &mut args.joints.constraints,
             args.local_mprops,
             &args.joints.num_joints,
-            &args.joints.joints_batch_capacity,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
         Ok(())
     }
@@ -403,8 +413,7 @@ impl GpuJointSolver {
             args.mprops,
             &args.joints.num_joints,
             args.sim_params,
-            &args.joints.joints_batch_capacity,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
         Ok(())
     }
@@ -427,7 +436,7 @@ impl GpuJointSolver {
                 [args.joints.len, args.num_batches, 1],
                 &mut args.joints.constraints,
                 &args.joints.num_joints,
-                &args.joints.joints_batch_capacity,
+                args.batch_indices,
             )?;
         }
 
@@ -444,9 +453,7 @@ impl GpuJointSolver {
                 solver_vels,
                 &args.joints.color_groups,
                 &args.joints.curr_color,
-                &args.joints.joints_batch_capacity,
-                args.colliders_batch_capacity,
-                &args.joints.color_groups_batch_capacity,
+                args.batch_indices,
             )?;
             self.inc_joint_color
                 .call(pass, 1u32, &mut args.joints.curr_color)?;

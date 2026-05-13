@@ -15,7 +15,7 @@ use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::{sync::atomic_add_u32, iter::StepRng};
 
-use crate::utils::{Slice, SliceMut};
+use crate::utils::{BatchIndices, Slice, SliceMut};
 use glamx::UVec2;
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -81,36 +81,32 @@ pub fn gpu_narrow_phase_shape_shape(
     // NOTE: we assume that max_pfm_pairs == contacts_batch_capacity
     //       And we assume all batch dimensions are given the same buffer allocation sizes
     //       (i.e. the same `contacts_batch_capacity`).
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] indices: &[u32],
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let batch_id = invocation_id.y as usize;
-    let contacts_batch_capacity = *contacts_batch_capacity as usize;
-    let colliders_batch_capacity = *colliders_batch_capacity as usize;
-    let contacts_start = batch_id * contacts_batch_capacity;
-    let colliders_start = batch_id * colliders_batch_capacity;
+    let batch_id = invocation_id.y;
+    let contacts_batch_capacity = batch_ids.contacts_batch_capacity as usize;
 
-    let collision_pairs = Slice(collision_pairs, contacts_start);
-    let poses = Slice(poses, colliders_start);
-    let shapes = Slice(shapes, colliders_start);
-    let mut contacts = SliceMut(contacts, contacts_start);
-    let mut pfm_pairs = SliceMut(pfm_pairs, contacts_start);
-    let contacts_len = contacts_len.at_mut(batch_id);
-    let pfm_pairs_len = pfm_pairs_len.at_mut(batch_id);
+    let collision_pairs = batch_ids.contact_batch(batch_id, collision_pairs);
+    let poses = batch_ids.coll_batch(batch_id, poses);
+    let shapes = batch_ids.coll_batch(batch_id, shapes);
+    let mut contacts = batch_ids.contact_batch_mut(batch_id, contacts);
+    let mut pfm_pairs = batch_ids.contact_batch_mut(batch_id, pfm_pairs);
+    let contacts_len = contacts_len.at_mut(batch_id as usize);
+    let pfm_pairs_len = pfm_pairs_len.at_mut(batch_id as usize);
 
     // NOTE: `collision_pairs_len` might be greater than `contacts_batch_apacity` if the
     //       narrow-phase found more pairs than the buffer can contain.
-    let len = collision_pairs_len.read(batch_id).min(contacts_batch_capacity as u32);
+    let len = collision_pairs_len.read(batch_id as usize).min(contacts_batch_capacity as u32);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
-        let pair = collision_pairs.read(i as usize);
-        let pose1 = poses.read(pair.read(0) as usize);
-        let pose2 = poses.read(pair.read(1) as usize);
-        let shape1 = shapes.at(pair.read(0) as usize);
-        let shape2 = shapes.at(pair.read(1) as usize);
+        let pair = collision_pairs[i as usize];
+        let pose1 = poses[pair.read(0) as usize];
+        let pose2 = poses[pair.read(1) as usize];
+        let shape1 = &shapes[pair.read(0) as usize];
+        let shape2 = &shapes[pair.read(1) as usize];
         let shape_ty1 = shape1.shape_type();
         let shape_ty2 = shape2.shape_type();
         let mut manifold = ContactManifold::default();
@@ -257,15 +253,12 @@ pub fn gpu_narrow_phase_shape_shape(
             //       the contact. It’s up to the caller to resize the buffer
             //       and re-run the narrow-phase.
             if target_contact_index < contacts_batch_capacity {
-                contacts.write(
-                    target_contact_index,
-                    IndexedManifold {
-                        contact: manifold,
-                        colliders: UVec2::new(pair.read(0), pair.read(1)),
-                        #[cfg(feature = "dim3")]
-                        padding: [0; _],
-                    },
-                );
+                contacts[target_contact_index] = IndexedManifold {
+                    contact: manifold,
+                    colliders: UVec2::new(pair.read(0), pair.read(1)),
+                    #[cfg(feature = "dim3")]
+                    padding: [0; _],
+                };
             }
         }
     }
@@ -453,24 +446,23 @@ pub fn gpu_narrow_phase_pfm_pfm(
     // NOTE: we assume that max_pfm_pairs == contacts_batch_capacity
     //       And we assume all batch dimensions are given the same buffer allocation sizes
     //       (i.e. the same `contacts_batch_capacity`).
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] vertices: &[PaddedVector],
     #[allow(unused_variables)]
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     indices: &[u32],
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let batch_id = invocation_id.y as usize;
-    let contacts_batch_capacity = *contacts_batch_capacity as usize;
-    let start_id = batch_id * contacts_batch_capacity;
+    let batch_id = invocation_id.y;
+    let contacts_batch_capacity = batch_ids.contacts_batch_capacity as usize;
 
-    let mut contacts = SliceMut(contacts, start_id);
-    let pfm_pairs = Slice(pfm_pairs, start_id);
-    let contacts_len = contacts_len.at_mut(batch_id);
-    let pfm_pairs_len = pfm_pairs_len.read(batch_id);
+    let mut contacts = batch_ids.contact_batch_mut(batch_id, contacts);
+    let pfm_pairs = batch_ids.contact_batch(batch_id, pfm_pairs);
+    let contacts_len = contacts_len.at_mut(batch_id as usize);
+    let pfm_pairs_len = pfm_pairs_len.read(batch_id as usize);
 
     for i in StepRng::new(invocation_id.x..pfm_pairs_len, num_threads) {
-        let pair = pfm_pairs.read(i as usize);
+        let pair = pfm_pairs[i as usize];
         let manifold = pfm_pfm(
             pair.pose12,
             &pair.shape1,
@@ -490,15 +482,12 @@ pub fn gpu_narrow_phase_pfm_pfm(
             //       the contact. It’s up to the caller to resize the buffer
             //       and re-run the narrow-phase.
             if target_contact_index < contacts_batch_capacity {
-                contacts.write(
-                    target_contact_index,
-                    IndexedManifold {
-                        contact: manifold,
-                        colliders: pair.colliders,
-                        #[cfg(feature = "dim3")]
-                        padding: [0; _],
-                    },
-                );
+                contacts[target_contact_index] = IndexedManifold {
+                    contact: manifold,
+                    colliders: pair.colliders,
+                    #[cfg(feature = "dim3")]
+                    padding: [0; _],
+                };
             }
         }
     }

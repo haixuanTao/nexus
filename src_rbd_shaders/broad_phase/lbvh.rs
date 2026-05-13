@@ -20,7 +20,7 @@
 
 use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
-use crate::utils::{Slice, SliceMut, div_ceil};
+use crate::utils::{BatchIndices, Slice, SliceMut, div_ceil};
 use crate::{PaddedVector, Pose, Vector};
 use khal_std::sync::{atomic_add_u32, control_barrier, workgroup_memory_barrier_with_group_sync};
 use khal_std::glamx::UVec3;
@@ -124,7 +124,7 @@ pub fn gpu_lbvh_compute_domain(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] domain_aabb: &mut [Aabb],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
     #[spirv(workgroup)] workspace_mins: &mut [Vector; 128],
     #[spirv(workgroup)] workspace_maxs: &mut [Vector; 128],
 ) {
@@ -132,7 +132,7 @@ pub fn gpu_lbvh_compute_domain(
     let thread_id = global_id.x;
     *workspace_mins.at_mut(thread_id as usize) = Vector::splat(1.0e20);
     *workspace_maxs.at_mut(thread_id as usize) = Vector::splat(-1.0e20);
-    let colliders_start = *colliders_batch_capacity * batch_id;
+    let colliders_start = batch_ids.coll_start(batch_id) as u32;
     let colliders_end = colliders_start + colliders_len.read(batch_id as usize);
 
     for i in StepRng::new(
@@ -184,7 +184,7 @@ pub fn gpu_lbvh_compute_morton(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] domain_aabb: &[Aabb],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] morton_keys: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     // NOTE: for simplicity we compute the morton key of the collider position instead of
     //       the collider shape's AABB center. We might want to revisit that in the future
@@ -192,7 +192,7 @@ pub fn gpu_lbvh_compute_morton(
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let domain_aabb = domain_aabb.read(batch_id as usize);
-    let colliders_start = *colliders_batch_capacity * batch_id;
+    let colliders_start = batch_ids.coll_start(batch_id) as u32;
     let colliders_end = colliders_start + colliders_len.read(batch_id as usize);
 
     for i in StepRng::new(
@@ -218,11 +218,11 @@ pub fn gpu_lbvh_build(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] morton_keys: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] tree: &mut [LbvhNode],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
-    let colliders_start = *colliders_batch_capacity * batch_id;
+    let colliders_start = batch_ids.coll_start(batch_id) as u32;
     let num_bodies = colliders_len.read(batch_id as usize);
     let num_internal_nodes = num_bodies - 1;
     let first_leaf_id = num_internal_nodes;
@@ -323,7 +323,7 @@ pub fn gpu_lbvh_refit_leaves(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sorted_colliders: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] tree: &mut [LbvhNode],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
@@ -331,20 +331,20 @@ pub fn gpu_lbvh_refit_leaves(
     // Bottom-up refit. Leaf index starts at `num_colliders`.
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
-    let colliders_start = *colliders_batch_capacity * batch_id;
+    let colliders_start = batch_ids.coll_start(batch_id) as u32;
     let num_colliders = colliders_len.read(batch_id as usize);
     let first_leaf_id = num_colliders - 1;
 
-    let poses = Slice(poses, colliders_start as usize);
-    let shapes = Slice(shapes, colliders_start as usize);
-    let sorted_colliders = Slice(sorted_colliders, colliders_start as usize);
+    let poses = batch_ids.coll_batch(batch_id, poses);
+    let shapes = batch_ids.coll_batch(batch_id, shapes);
+    let sorted_colliders = batch_ids.coll_batch(batch_id, sorted_colliders);
     let mut tree = SliceMut(tree, root_id(colliders_start) as usize);
 
     for i in StepRng::new(invocation_id.x..num_colliders, num_threads) {
         let curr_leaf_id = first_leaf_id + i;
-        let leaf_collider = sorted_colliders.read(i as usize);
-        let leaf_pose = poses.read(leaf_collider as usize);
-        let leaf_shape = shapes.at(leaf_collider as usize);
+        let leaf_collider = sorted_colliders[i as usize];
+        let leaf_pose = poses[leaf_collider as usize];
+        let leaf_shape = &shapes[leaf_collider as usize];
 
         tree.at_mut(curr_leaf_id as usize).aabb = leaf_shape.compute_aabb(leaf_pose, vertices);
         tree.at_mut(curr_leaf_id as usize).left = leaf_collider;
@@ -360,14 +360,14 @@ pub fn gpu_lbvh_refit_internal(
     #[spirv(workgroup_id)] workgroup_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] tree: &mut [LbvhNode],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
     //            workgroup.
     // Bottom-up refit. Leaf index starts at `num_colliders`.
     let num_threads = 256u32;
     let batch_id = workgroup_id.y;
-    let colliders_start = *colliders_batch_capacity * batch_id;
+    let colliders_start = batch_ids.coll_start(batch_id) as u32;
     let num_bodies = colliders_len.read(batch_id as usize);
     let first_leaf_id = num_bodies - 1;
 
@@ -377,7 +377,7 @@ pub fn gpu_lbvh_refit_internal(
     // NOTE: we calculate the interation count based on `colliders_batch_capacity` instead of
     //       `num_bodies` since the latter is non-uniform because it originates from a storage
     //       buffer.
-    let num_iterations = colliders_batch_capacity.div_ceil(num_threads);
+    let num_iterations = batch_ids.colliders_batch_capacity.div_ceil(num_threads);
 
     // NOTE: using unchecked indexing (via MaybeIndexUnchecked) because otherwise the bounds
     //        checking inserted by rustgpu breaks the shader when targeting some NVidia graphics
@@ -451,7 +451,7 @@ pub fn gpu_lbvh_refit(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sorted_colliders: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] tree: &mut [LbvhNode],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
@@ -459,20 +459,20 @@ pub fn gpu_lbvh_refit(
     // Bottom-up refit. Leaf index starts at `num_colliders`.
     let batch_id = invocation_id.y;
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let colliders_start = *colliders_batch_capacity * batch_id;
+    let colliders_start = batch_ids.coll_start(batch_id) as u32;
     let num_bodies = colliders_len.read(batch_id as usize);
     let first_leaf_id = num_bodies - 1;
 
-    let poses = Slice(poses, colliders_start as usize);
-    let shapes = Slice(shapes, colliders_start as usize);
-    let sorted_colliders = Slice(sorted_colliders, colliders_start as usize);
+    let poses = batch_ids.coll_batch(batch_id, poses);
+    let shapes = batch_ids.coll_batch(batch_id, shapes);
+    let sorted_colliders = batch_ids.coll_batch(batch_id, sorted_colliders);
     let mut tree = SliceMut(tree, root_id(colliders_start) as usize);
 
     for i in StepRng::new(invocation_id.x..num_bodies, num_threads) {
         let curr_leaf_id = first_leaf_id + i;
-        let leaf_collider = sorted_colliders.read(i as usize);
-        let leaf_pose = poses.read(leaf_collider as usize);
-        let leaf_shape = shapes.at(leaf_collider as usize);
+        let leaf_collider = sorted_colliders[i as usize];
+        let leaf_pose = poses[leaf_collider as usize];
+        let leaf_shape = &shapes[leaf_collider as usize];
 
         tree.at_mut(curr_leaf_id as usize).aabb = leaf_shape.compute_aabb(leaf_pose, vertices);
         tree.at_mut(curr_leaf_id as usize).left = leaf_collider;
@@ -521,33 +521,25 @@ pub fn gpu_lbvh_find_collision_pairs(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] collision_pairs: &mut [[u32; 2]],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_pairs_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] colliders_batch_capacity: &u32,
-    // NOTE: since all batch dimensions are supposed to simulate variations of the same scene,
-    //       having all of them share the same `collision_pairs_batch_capacity` sounds not too wasteful.
-    //       This also simplifies this kernel significantly since we know easily at what index
-    //       in `collision_pairs` a given batch should start.
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] collision_pairs_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
     // Per-collider groups, used to authorize
     // (or skip) a collision pair before it ever reaches the narrow phase.
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     collision_groups: &[InteractionGroups],
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
-    let colliders_start = *colliders_batch_capacity * batch_id;
+    let colliders_start = batch_ids.coll_start(batch_id) as u32;
     let num_bodies = colliders_len.read(batch_id as usize);
     let first_leaf_id = num_bodies - 1;
 
-    let mut collision_pairs = SliceMut(
-        collision_pairs,
-        (batch_id * *collision_pairs_batch_capacity) as usize,
-    );
+    let mut collision_pairs = batch_ids.collision_pairs_batch_mut(batch_id, collision_pairs);
     let tree = Slice(tree, root_id(colliders_start) as usize);
-    let collision_groups = Slice(collision_groups, colliders_start as usize);
+    let collision_groups = batch_ids.coll_batch(batch_id, collision_groups);
 
     for leaf_i in StepRng::new(invocation_id.x..num_bodies, num_threads) {
         let i = tree.at((first_leaf_id + leaf_i) as usize).left;
-        let groups_i = collision_groups.read(i as usize);
+        let groups_i = collision_groups[i as usize];
         let mut aabb1 = tree.at((first_leaf_id + leaf_i) as usize).aabb;
         let prediction = 2.0e-3; // TODO: should be configurable.
         let dilation = Vector::splat(prediction);
@@ -567,7 +559,7 @@ pub fn gpu_lbvh_find_collision_pairs(
             if curr_id >= first_leaf_id {
                 // We reached a leaf, register a collision pair.
                 let j = node.left;
-                let groups_j = collision_groups.read(j as usize);
+                let groups_j = collision_groups[j as usize];
 
                 // Skip pairs whose collision groups don't authorize an interaction.
                 // We use the strict `And` test even if either side is configured as
@@ -584,8 +576,8 @@ pub fn gpu_lbvh_find_collision_pairs(
                 // NOTE: if the index is out-of-bounds (meaning the `collision_pairs` isn't
                 //       big enough), don't write. But keep traversing so we get the exact count we need
                 //       for reallocating the buffers.
-                if target_pair_index < *collision_pairs_batch_capacity {
-                    collision_pairs.write(target_pair_index as usize, [i, j]);
+                if target_pair_index < batch_ids.collision_pairs_batch_capacity {
+                    collision_pairs[target_pair_index as usize] = [i, j];
                 }
             } else {
                 let left = node.left;

@@ -41,8 +41,7 @@ impl GpuNarrowPhase {
         pfm_pairs: &mut Tensor<NarrowPhasePfmPair>,
         pfm_pairs_len: &mut Tensor<u32>,
         pfm_pairs_indirect: &mut Tensor<[u32; 3]>,
-        contacts_batch_capacity: &Tensor<u32>,
-        colliders_batch_capacity: &Tensor<u32>,
+        batch_indices: &Tensor<crate::shaders::utils::BatchIndices>,
     ) -> Result<(), GpuBackendError> {
         let num_batches = contacts_len.len() as u32;
         self.reset_narrow_phase
@@ -59,8 +58,7 @@ impl GpuNarrowPhase {
             contacts_len,
             pfm_pairs,
             pfm_pairs_len,
-            contacts_batch_capacity,
-            colliders_batch_capacity,
+            batch_indices,
             vertices,
             indices,
         )?;
@@ -74,7 +72,7 @@ impl GpuNarrowPhase {
             contacts_len,
             pfm_pairs,
             pfm_pairs_len,
-            contacts_batch_capacity,
+            batch_indices,
             vertices,
             indices,
         )?;

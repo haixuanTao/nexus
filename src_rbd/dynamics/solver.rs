@@ -1,3 +1,4 @@
+
 //! GPU-parallel constraint solver using graph coloring.
 //!
 //! This module implements a constraint-based physics solver that runs entirely on the GPU.
@@ -139,14 +140,15 @@ pub struct SolverArgs<'a> {
     pub curr_color: &'a mut Tensor<u32>,
     /// Prefix sum shader for building constraint ranges.
     pub prefix_sum: &'a GpuPrefixSum,
-    /// Maximum contacts per batch (stride between batches in contact buffers).
-    pub contacts_batch_capacity: &'a Tensor<u32>,
-    /// Maximum colliders per batch (stride between batches in body buffers).
-    pub colliders_batch_capacity: &'a Tensor<u32>,
     /// Number of solver iterations (max across all environments).
     pub num_solver_iterations: u32,
     /// Per-body graph-coloring group id (multibody-aware).
     pub body_group: &'a Tensor<u32>,
+    /// Shared per-batch capacity / section-offset uniform — see
+    /// [`crate::shaders::utils::BatchIndices`]. Consumed by the (refactored)
+    /// multibody kernels via [`MultibodySolverArgs::batch_indices`]; the RBD
+    /// constraint-solver kernels will migrate to it next.
+    pub batch_indices: &'a Tensor<crate::shaders::utils::BatchIndices>,
 }
 
 impl GpuSolver {
@@ -167,7 +169,7 @@ impl GpuSolver {
             args.vels,
             args.mprops,
             args.colliders_len,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
 
         // Seed `solver_body_poses` from `body_poses`: rapier's
@@ -182,7 +184,7 @@ impl GpuSolver {
             args.local_mprops,
             args.solver_body_poses,
             args.colliders_len,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
 
         self.init_constraints.call(
@@ -198,8 +200,7 @@ impl GpuSolver {
             args.vels,
             args.mprops,
             args.sim_params,
-            args.contacts_batch_capacity,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
 
         args.prefix_sum.launch(
@@ -219,8 +220,7 @@ impl GpuSolver {
             args.contacts_len,
             args.body_constraint_ids,
             args.body_group,
-            args.contacts_batch_capacity,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
 
         Ok(())
@@ -258,7 +258,7 @@ impl GpuSolver {
             args.mprops,
             args.colliders_len,
             args.sim_params,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
 
         joint_solver.init(pass, &mut joint_args)?;
@@ -280,12 +280,11 @@ impl GpuSolver {
                 let mut mb_args = MultibodySolverArgs {
                     poses: &mut *args.solver_body_poses,
                     collider_world_poses: args.collider_world_poses,
-                    colliders_batch_capacity: args.colliders_batch_capacity,
                     mprops: args.mprops,
                     contacts: args.contacts,
                     contacts_len: args.contacts_len,
-                    contacts_batch_capacity: args.contacts_batch_capacity,
                     solver_vels: &mut *args.solver_vels,
+                    batch_indices: args.batch_indices,
                 };
                 solver.apply_substep(pass, state, &mut mb_args, _is_last_substep)?;
             }
@@ -299,7 +298,7 @@ impl GpuSolver {
                 args.solver_vels,
                 args.solver_vels_inc,
                 args.colliders_len,
-                args.colliders_batch_capacity,
+                args.batch_indices,
             )?;
 
             /*
@@ -313,8 +312,7 @@ impl GpuSolver {
                 args.contacts_len,
                 args.solver_body_poses,
                 args.sim_params,
-                args.contacts_batch_capacity,
-                args.colliders_batch_capacity,
+                args.batch_indices,
             )?;
 
             joint_solver.update(pass, &mut joint_args, args.solver_body_poses)?;
@@ -332,8 +330,7 @@ impl GpuSolver {
                     args.constraints_colors,
                     args.contacts_len,
                     args.curr_color,
-                    args.contacts_batch_capacity,
-                    args.colliders_batch_capacity,
+                    args.batch_indices,
                 )?;
                 self.inc_color.call(pass, 1u32, args.curr_color)?
             }
@@ -352,8 +349,7 @@ impl GpuSolver {
                     args.constraints_colors,
                     args.contacts_len,
                     args.curr_color,
-                    args.contacts_batch_capacity,
-                    args.colliders_batch_capacity,
+                    args.batch_indices,
                 )?;
                 self.inc_color.call(pass, 1u32, args.curr_color)?
             }
@@ -368,7 +364,7 @@ impl GpuSolver {
                 args.solver_vels,
                 args.colliders_len,
                 args.sim_params,
-                args.colliders_batch_capacity,
+                args.batch_indices,
             )?;
 
 
@@ -382,7 +378,7 @@ impl GpuSolver {
                 args.contacts_len_indirect,
                 args.constraints,
                 args.contacts_len,
-                args.contacts_batch_capacity,
+                args.batch_indices,
             )?;
 
             self.reset_color.call(pass, 1u32, args.curr_color)?;
@@ -395,8 +391,7 @@ impl GpuSolver {
                     args.constraints_colors,
                     args.contacts_len,
                     args.curr_color,
-                    args.contacts_batch_capacity,
-                    args.colliders_batch_capacity,
+                    args.batch_indices,
                 )?;
                 self.inc_color.call(pass, 1u32, args.curr_color)?
             }
@@ -415,7 +410,7 @@ impl GpuSolver {
             args.solver_body_poses,
             args.local_mprops,
             args.colliders_len,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
 
         Ok(())

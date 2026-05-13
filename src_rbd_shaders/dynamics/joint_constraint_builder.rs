@@ -339,8 +339,8 @@ pub fn solve_joint_constraint(
     constraint: &mut JointConstraint,
     solver_vels: &mut SliceMut<Velocity>,
 ) {
-    let mut solver_vel1 = solver_vels.read(constraint.solver_vel_a as usize);
-    let mut solver_vel2 = solver_vels.read(constraint.solver_vel_b as usize);
+    let mut solver_vel1 = solver_vels[constraint.solver_vel_a as usize];
+    let mut solver_vel2 = solver_vels[constraint.solver_vel_b as usize];
 
     for i in 0..(constraint.len as usize) {
         let element = constraint.elements.at_mut(i);
@@ -363,8 +363,8 @@ pub fn solve_joint_constraint(
         solver_vel2.angular -= element.ii_ang_jac_b * delta_impulse;
     }
 
-    solver_vels.write(constraint.solver_vel_a as usize, solver_vel1);
-    solver_vels.write(constraint.solver_vel_b as usize, solver_vel2);
+    solver_vels[constraint.solver_vel_a as usize] = solver_vel1;
+    solver_vels[constraint.solver_vel_b as usize] = solver_vel2;
 }
 
 /// Creates a linear limit constraint element.
@@ -704,10 +704,10 @@ pub fn update_constraint(
     let joint = &builder.joint;
     let body1 = builder.body1;
     let body2 = builder.body2;
-    let pose1 = poses.read(body1 as usize);
-    let pose2 = poses.read(body2 as usize);
-    let mprops1 = mprops.at(body1 as usize);
-    let mprops2 = mprops.at(body2 as usize);
+    let pose1 = poses[body1 as usize];
+    let pose2 = poses[body2 as usize];
+    let mprops1 = &mprops[body1 as usize];
+    let mprops2 = &mprops[body2 as usize];
 
     // `joint.local_frame_a/b` were already shifted into solver-body
     // (COM-centered) space at `gpu_init_joint_constraints` time, and

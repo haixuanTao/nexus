@@ -14,6 +14,7 @@ use crate::dynamics::{GpuMultibodySet, GpuMultibodySolver};
 use crate::math::{Pose, Vector};
 use crate::queries::GpuIndexedContact;
 use crate::shaders::PaddedVector;
+use crate::shaders::utils::BatchIndices;
 use crate::shaders::broad_phase::{LbvhNode, NarrowPhasePfmPair};
 use crate::shaders::dynamics::{
     LocalMassProperties as GpuLocalMassProperties, SimParams as GpuSimParams, TwoBodyConstraint,
@@ -130,6 +131,16 @@ pub struct GpuPhysicsState {
     collision_pairs_batch_capacity: Tensor<u32>,
     contacts_batch_capacity: Tensor<u32>,
     colliders_batch_capacity: Tensor<u32>,
+    /// CPU-side mirrors of the dynamic batch capacities above. Kept in sync
+    /// with the `*_batch_capacity` tensors so [`Self::batch_indices`] can be
+    /// rebuilt whenever any of them grows.
+    contacts_per_batch_cpu: u32,
+    collision_pairs_per_batch_cpu: u32,
+    /// Single uniform aggregating every per-batch capacity and packed-buffer
+    /// section offset consumed by the compute kernels (multibody and RBD
+    /// sides). Rebuilt by [`Self::rebuild_batch_indices`] whenever any of its
+    /// constituent caps changes (e.g. when the contacts buffer grows).
+    batch_indices: Tensor<BatchIndices>,
     pfm_pairs: Tensor<NarrowPhasePfmPair>,
     pfm_pairs_len: Tensor<u32>,
     pfm_pairs_indirect: Tensor<[u32; 3]>,
@@ -625,6 +636,23 @@ impl GpuPhysicsState {
             BufferUsages::STORAGE
         };
 
+        let contacts_per_batch_cpu = DEFAULT_CONTACT_COUNTS;
+        let collision_pairs_per_batch_cpu = DEFAULT_CONTACT_COUNTS;
+        let mut bi = BatchIndices::default();
+        bi.colliders_batch_capacity = num_colliders_per_batch as u32;
+        bi.collision_pairs_batch_capacity = collision_pairs_per_batch_cpu;
+        bi.contacts_batch_capacity = contacts_per_batch_cpu;
+        bi.impulse_joints_batch_capacity = joints.joints_per_batch();
+        bi.color_groups_batch_capacity = joints.num_colors();
+        #[cfg(feature = "dim3")]
+        multibodies.fill_batch_indices(&mut bi);
+        let batch_indices = Tensor::scalar(
+            backend,
+            bi,
+            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        )
+        .unwrap();
+
         Self {
             num_batches,
             num_colliders_per_batch: num_colliders_per_batch as u32,
@@ -677,6 +705,9 @@ impl GpuPhysicsState {
             collision_pairs_batch_capacity,
             contacts_batch_capacity,
             colliders_batch_capacity,
+            contacts_per_batch_cpu,
+            collision_pairs_per_batch_cpu,
+            batch_indices,
             contacts,
             contacts_len,
             contacts_indirect,
@@ -723,6 +754,34 @@ impl GpuPhysicsState {
 }
 
 impl GpuPhysicsState {
+    /// Re-upload the shared `BatchIndices` uniform after any of its
+    /// constituent per-batch capacities has changed (e.g. after the contacts
+    /// buffer grows in [`Self::auto_resize_buffers`], or after multibody
+    /// impulse-joint capacities are updated via
+    /// [`GpuMultibodySet::set_impulse_joints`]). Call whenever a cap edit
+    /// happens that any kernel reads via its `batch_ids` uniform.
+    fn rebuild_batch_indices(&mut self, backend: &GpuBackend) {
+        let mut bi = BatchIndices::default();
+        bi.colliders_batch_capacity = self.num_colliders_per_batch;
+        bi.collision_pairs_batch_capacity = self.collision_pairs_per_batch_cpu;
+        bi.contacts_batch_capacity = self.contacts_per_batch_cpu;
+        bi.impulse_joints_batch_capacity = self.joints.joints_per_batch();
+        bi.color_groups_batch_capacity = self.joints.num_colors();
+        #[cfg(feature = "dim3")]
+        self.multibodies.fill_batch_indices(&mut bi);
+        self.batch_indices = Tensor::scalar(
+            backend,
+            bi,
+            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        )
+        .unwrap();
+    }
+
+    /// Shared per-batch index uniform — see [`Self::rebuild_batch_indices`].
+    pub fn batch_indices(&self) -> &Tensor<BatchIndices> {
+        &self.batch_indices
+    }
+
     /// Sets the maximum number of constraint colors used by the per-step
     /// graph coloring + Gauss-Seidel solver loop. Lower values cap solver
     /// time at the cost of dropping over-budget constraints.
@@ -849,12 +908,11 @@ impl GpuPhysicsPipeline {
                 let mut args = crate::dynamics::MultibodySolverArgs {
                     poses: &mut state.body_poses,
                     collider_world_poses: &state.collider_world_poses,
-                    colliders_batch_capacity: &state.colliders_batch_capacity,
                     mprops: &state.mprops,
                     contacts: &state.contacts,
                     contacts_len: &state.contacts_len,
-                    contacts_batch_capacity: &state.contacts_batch_capacity,
                     solver_vels: &mut state.solver_vels,
+                    batch_indices: &state.batch_indices,
                 };
                 self.multibody_solver
                     .init_step(&mut pass, &mut state.multibodies, &mut args)
@@ -879,7 +937,7 @@ impl GpuPhysicsPipeline {
                     &state.local_mprops,
                     &state.body_poses,
                     &state.num_shapes,
-                    &state.colliders_batch_capacity,
+                    &state.batch_indices,
                     state.num_colliders_per_batch,
                     state.num_batches,
                 )
@@ -893,7 +951,7 @@ impl GpuPhysicsPipeline {
                     &state.collider_local_poses,
                     &mut state.collider_world_poses,
                     &state.num_shapes,
-                    &state.colliders_batch_capacity,
+                    &state.batch_indices,
                     state.num_colliders_per_batch,
                     state.num_batches,
                 )
@@ -913,7 +971,7 @@ impl GpuPhysicsPipeline {
                     &state.vertex_buffers,
                     &state.shapes,
                     &state.num_shapes,
-                    &state.colliders_batch_capacity,
+                    &state.batch_indices,
                     timestamps.as_deref_mut(),
                 )
                 .unwrap();
@@ -945,8 +1003,7 @@ impl GpuPhysicsPipeline {
                     state.body_poses.len() as u32,
                     state.num_batches,
                     &state.num_shapes,
-                    &state.colliders_batch_capacity,
-                    &state.collision_pairs_batch_capacity,
+                    &state.batch_indices,
                     &mut state.collision_pairs,
                     &mut state.collision_pairs_len,
                     &mut state.collision_pairs_indirect,
@@ -984,8 +1041,7 @@ impl GpuPhysicsPipeline {
                     &mut state.pfm_pairs,
                     &mut state.pfm_pairs_len,
                     &mut state.pfm_pairs_indirect,
-                    &state.contacts_batch_capacity,
-                    &state.colliders_batch_capacity,
+                    &state.batch_indices,
                 )
                 .unwrap();
 
@@ -1025,12 +1081,11 @@ impl GpuPhysicsPipeline {
                 curr_color: &mut state.curr_color,
                 prefix_sum: &self.prefix_sum,
                 num_colors: 0,
-                contacts_batch_capacity: &state.contacts_batch_capacity,
-                colliders_batch_capacity: &state.colliders_batch_capacity,
                 num_batches: state.num_batches,
                 num_colliders: state.num_colliders_per_batch,
                 num_solver_iterations: state.num_solver_iterations,
                 body_group: &state.body_group,
+                batch_indices: &state.batch_indices,
             };
             self.solver
                 .prepare(
@@ -1051,8 +1106,7 @@ impl GpuPhysicsPipeline {
                 new_constraints: &mut state.new_constraints,
                 new_constraint_builders: &state.new_constraint_builders,
                 contacts_len_indirect: &state.contacts_indirect,
-                contacts_batch_capacity: &state.contacts_batch_capacity,
-                colliders_batch_capacity: &state.colliders_batch_capacity,
+                batch_indices: &state.batch_indices,
             };
 
             self.warmstart
@@ -1071,8 +1125,7 @@ impl GpuPhysicsPipeline {
                 uncolored_staging: &state.uncolored_staging,
                 contacts_len: &state.contacts_len,
                 colored: &mut state.colored,
-                contacts_batch_capacity: &state.contacts_batch_capacity,
-                colliders_batch_capacity: &state.colliders_batch_capacity,
+                batch_indices: &state.batch_indices,
                 body_group: &state.body_group,
             };
             self.coloring
@@ -1114,12 +1167,11 @@ impl GpuPhysicsPipeline {
             curr_color: &mut state.curr_color,
             prefix_sum: &self.prefix_sum,
             num_colors,
-            contacts_batch_capacity: &state.contacts_batch_capacity,
-            colliders_batch_capacity: &state.colliders_batch_capacity,
             num_batches: state.num_batches,
             num_colliders: state.num_colliders_per_batch,
             num_solver_iterations: state.num_solver_iterations,
             body_group: &state.body_group,
+            batch_indices: &state.batch_indices,
         };
 
         // Phase 3: Solve constraints
@@ -1129,7 +1181,7 @@ impl GpuPhysicsPipeline {
             mprops: &state.mprops,
             local_mprops: &state.local_mprops,
             joints: &mut state.joints,
-            colliders_batch_capacity: &state.colliders_batch_capacity,
+            batch_indices: &state.batch_indices,
         };
 
         {
@@ -1246,6 +1298,10 @@ impl GpuPhysicsPipeline {
                     Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
                 state.constraints_rands =
                     Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+
+                state.collision_pairs_per_batch_cpu = desired_len;
+                state.contacts_per_batch_cpu = desired_len;
+                state.rebuild_batch_indices(backend);
             }
         }
     }

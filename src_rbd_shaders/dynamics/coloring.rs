@@ -10,7 +10,7 @@ use khal_std::{
     iter::StepRng,
 };
 
-use crate::utils::{Slice, SliceMut};
+use crate::utils::{BatchIndices, Slice, SliceMut};
 use khal_std::index::MaybeIndexUnchecked;
 
 use super::constraint::TwoBodyConstraint;
@@ -56,22 +56,21 @@ pub fn gpu_reset_luby(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] constraints_colors: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] constraints_rands: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
-    let contacts_start = batch_id * *contacts_batch_capacity as usize;
-    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
-    let mut constraints_rands = SliceMut(constraints_rands, contacts_start);
-    let len = contacts_len.read(batch_id);
+    let batch_id = invocation_id.y;
+    let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
+    let mut constraints_rands = batch_ids.contact_batch_mut(batch_id, constraints_rands);
+    let len = contacts_len.read(batch_id as usize);
 
     let i = invocation_id.x;
 
     if i < len {
         let idx = i as usize;
         // Mark as uncolored
-        constraints_colors.write(idx, MAX_U32);
+        constraints_colors[idx] = MAX_U32;
         // Assign random weight
-        constraints_rands.write(idx, hash(i));
+        constraints_rands[idx] = hash(i);
     }
 }
 
@@ -96,48 +95,45 @@ pub fn gpu_step_graph_coloring_luby(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] body_group: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 7)] curr_color: &u32,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let batch_id = invocation_id.y as usize;
-    let contacts_start = batch_id * *contacts_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
-    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+    let batch_id = invocation_id.y;
+    let bci_start = batch_id as usize * 2 * batch_ids.contacts_batch_capacity as usize;
 
-    let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
+    let body_constraint_counts = batch_ids.coll_batch(batch_id, body_constraint_counts);
     let body_constraint_ids = Slice(body_constraint_ids, bci_start);
-    let body_group = Slice(body_group, colliders_start);
-    let constraints = Slice(constraints, contacts_start);
-    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
-    let constraints_rands = Slice(constraints_rands, contacts_start);
+    let body_group = batch_ids.coll_batch(batch_id, body_group);
+    let constraints = batch_ids.contact_batch(batch_id, constraints);
+    let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
+    let constraints_rands = batch_ids.contact_batch(batch_id, constraints_rands);
 
-    let len = contacts_len.read(batch_id);
+    let len = contacts_len.read(batch_id as usize);
     let color = *curr_color;
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;
 
-        if constraints_colors.read(i) == MAX_U32 {
+        if constraints_colors[i] == MAX_U32 {
             // This constraint doesn't have a color yet.
-            let rand_i = constraints_rands.read(i);
+            let rand_i = constraints_rands[i];
             // Map raw body ids to graph-coloring GROUP ids (multibody-aware).
-            let body_a = body_group.read(constraints.at(i).solver_body_a as usize);
-            let body_b = body_group.read(constraints.at(i).solver_body_b as usize);
+            let body_a = body_group[constraints[i].solver_body_a as usize];
+            let body_b = body_group[constraints[i].solver_body_b as usize];
 
             let first_constraint_id_a = if body_a != 0 {
-                body_constraint_counts.read(body_a as usize - 1) as usize
+                body_constraint_counts[body_a as usize - 1] as usize
             } else {
                 0
             };
-            let last_constraint_id_a = body_constraint_counts.read(body_a as usize) as usize;
+            let last_constraint_id_a = body_constraint_counts[body_a as usize] as usize;
 
             let first_constraint_id_b = if body_b != 0 {
-                body_constraint_counts.read(body_b as usize - 1) as usize
+                body_constraint_counts[body_b as usize - 1] as usize
             } else {
                 0
             };
-            let last_constraint_id_b = body_constraint_counts.read(body_b as usize) as usize;
+            let last_constraint_id_b = body_constraint_counts[body_b as usize] as usize;
 
             let mut is_greatest = true;
 
@@ -146,9 +142,9 @@ pub fn gpu_step_graph_coloring_luby(
                 if !is_greatest {
                     break;
                 }
-                let constraint_j = body_constraint_ids.read(j);
-                let rand_j = constraints_rands.read(constraint_j as usize);
-                let color_j = constraints_colors.read(constraint_j as usize);
+                let constraint_j = body_constraint_ids[j];
+                let rand_j = constraints_rands[constraint_j as usize];
+                let color_j = constraints_colors[constraint_j as usize];
                 // NOTE: there is a very rare case both constraints got assigned the same random number.
                 //       in that case, we define the "greatest" comparison based on the constraint's array index.
                 // NOTE: the equality in i >= j is important here to account for the fact we will iterate
@@ -164,9 +160,9 @@ pub fn gpu_step_graph_coloring_luby(
                 if !is_greatest {
                     break;
                 }
-                let cid = body_constraint_ids.read(j);
-                let rand_j = constraints_rands.read(cid as usize);
-                let color_j = constraints_colors.read(cid as usize);
+                let cid = body_constraint_ids[j];
+                let rand_j = constraints_rands[cid as usize];
+                let color_j = constraints_colors[cid as usize];
                 // NOTE: there is a very rare case both constraints got assigned the same random number.
                 //       in that case, we define the "greatest" comparison based on the constraint's array index.
                 // NOTE: the equality in i >= j is important here to account for the fact we will iterate
@@ -178,7 +174,7 @@ pub fn gpu_step_graph_coloring_luby(
             }
 
             if is_greatest {
-                constraints_colors.write(i, color);
+                constraints_colors[i] = color;
             } else {
                 // Still uncolored
                 atomic_add_u32(uncolored, 1);
@@ -226,21 +222,20 @@ pub fn gpu_reset_topo_gc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] constraints_colors: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] colored: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] contacts_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
-    let contacts_start = batch_id * *contacts_batch_capacity as usize;
-    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
-    let mut colored = SliceMut(colored, contacts_start);
-    let len = contacts_len.read(batch_id);
+    let batch_id = invocation_id.y;
+    let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
+    let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
+    let len = contacts_len.read(batch_id as usize);
 
     let i = invocation_id.x;
 
     if i < len {
         let idx = i as usize;
         // Color 0 is reserved for "uncolored" state
-        constraints_colors.write(idx, 0);
-        colored.write(idx, 0);
+        constraints_colors[idx] = 0;
+        colored[idx] = 0;
     }
 }
 
@@ -287,57 +282,54 @@ pub fn gpu_step_graph_coloring_topo_gc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colors: &mut u32,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_group: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let batch_id = invocation_id.y as usize;
-    let contacts_start = batch_id * *contacts_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
-    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+    let batch_id = invocation_id.y;
+    let bci_start = batch_id as usize * 2 * batch_ids.contacts_batch_capacity as usize;
 
-    let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
+    let body_constraint_counts = batch_ids.coll_batch(batch_id, body_constraint_counts);
     let body_constraint_ids = Slice(body_constraint_ids, bci_start);
-    let body_group = Slice(body_group, colliders_start);
-    let constraints = Slice(constraints, contacts_start);
-    let mut constraints_colors = SliceMut(constraints_colors, contacts_start);
-    let mut colored = SliceMut(colored, contacts_start);
+    let body_group = batch_ids.coll_batch(batch_id, body_group);
+    let constraints = batch_ids.contact_batch(batch_id, constraints);
+    let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
+    let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
 
-    let len = contacts_len.read(batch_id);
+    let len = contacts_len.read(batch_id as usize);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;
 
-        if colored.read(i) == 0 {
+        if colored[i] == 0 {
             // This constraint doesn't have a color yet.
             // NOTE: generates up to 63 colors.
             // Note that we always mark the color 0 as occupied (cf. paper using i > 0).
             let mut color_mask = (1u32, 0u32);
 
             // Map raw body ids to graph-coloring GROUP ids (multibody-aware).
-            let body_a = body_group.read(constraints.at(i).solver_body_a as usize);
-            let body_b = body_group.read(constraints.at(i).solver_body_b as usize);
+            let body_a = body_group[constraints[i].solver_body_a as usize];
+            let body_b = body_group[constraints[i].solver_body_b as usize];
 
             let first_constraint_id_a = if body_a != 0 {
-                body_constraint_counts.read(body_a as usize - 1) as usize
+                body_constraint_counts[body_a as usize - 1] as usize
             } else {
                 0
             };
-            let last_constraint_id_a = body_constraint_counts.read(body_a as usize) as usize;
+            let last_constraint_id_a = body_constraint_counts[body_a as usize] as usize;
 
             let first_constraint_id_b = if body_b != 0 {
-                body_constraint_counts.read(body_b as usize - 1) as usize
+                body_constraint_counts[body_b as usize - 1] as usize
             } else {
                 0
             };
-            let last_constraint_id_b = body_constraint_counts.read(body_b as usize) as usize;
+            let last_constraint_id_b = body_constraint_counts[body_b as usize] as usize;
 
             // Traverse all constraints from body A.
             for j in first_constraint_id_a..last_constraint_id_a {
-                let constraint_j = body_constraint_ids.read(j);
+                let constraint_j = body_constraint_ids[j];
 
                 if constraint_j != constraint_i {
-                    let color_j = constraints_colors.read(constraint_j as usize);
+                    let color_j = constraints_colors[constraint_j as usize];
                     if color_j < 32 {
                         color_mask.0 |= 1u32 << color_j;
                     } else {
@@ -348,10 +340,10 @@ pub fn gpu_step_graph_coloring_topo_gc(
 
             // Traverse all constraints from body B.
             for j in first_constraint_id_b..last_constraint_id_b {
-                let constraint_j = body_constraint_ids.read(j);
+                let constraint_j = body_constraint_ids[j];
 
                 if constraint_j != constraint_i {
-                    let color_j = constraints_colors.read(constraint_j as usize);
+                    let color_j = constraints_colors[constraint_j as usize];
                     if color_j < 32 {
                         color_mask.0 |= 1u32 << color_j;
                     } else {
@@ -361,8 +353,8 @@ pub fn gpu_step_graph_coloring_topo_gc(
             }
 
             let my_color = (!color_mask.0).trailing_zeros() + (!color_mask.1).trailing_zeros();
-            constraints_colors.write(i, my_color);
-            colored.write(i, 1);
+            constraints_colors[i] = my_color;
+            colored[i] = 1;
             // We are not finished coloring. 0 indicates the algorithm must continue.
             *num_colors = 0;
         }
@@ -383,27 +375,24 @@ pub fn gpu_fix_conflicts_topo_gc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colors: &mut u32,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_group: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let batch_id = invocation_id.y as usize;
-    let contacts_start = batch_id * *contacts_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
-    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+    let batch_id = invocation_id.y;
+    let bci_start = batch_id as usize * 2 * batch_ids.contacts_batch_capacity as usize;
 
-    let body_constraint_counts = Slice(body_constraint_counts, colliders_start);
+    let body_constraint_counts = batch_ids.coll_batch(batch_id, body_constraint_counts);
     let body_constraint_ids = Slice(body_constraint_ids, bci_start);
-    let body_group = Slice(body_group, colliders_start);
-    let constraints = Slice(constraints, contacts_start);
-    let constraints_colors = Slice(constraints_colors, contacts_start);
-    let mut colored = SliceMut(colored, contacts_start);
+    let body_group = batch_ids.coll_batch(batch_id, body_group);
+    let constraints = batch_ids.contact_batch(batch_id, constraints);
+    let constraints_colors = batch_ids.contact_batch(batch_id, constraints_colors);
+    let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
 
-    let len = contacts_len.read(batch_id);
+    let len = contacts_len.read(batch_id as usize);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;
-        let color_i = constraints_colors.read(i);
+        let color_i = constraints_colors[i];
 
         // NOTE: this `num_colors` read doesn't need to be atomic. Any non-zero value is indicative of a finished
         //       algorithm.
@@ -417,45 +406,45 @@ pub fn gpu_fix_conflicts_topo_gc(
             atomic_max_u32(num_colors, color_i);
         } else {
             // Map raw body ids to graph-coloring GROUP ids (multibody-aware).
-            let body_a = body_group.read(constraints.at(i).solver_body_a as usize);
-            let body_b = body_group.read(constraints.at(i).solver_body_b as usize);
+            let body_a = body_group[constraints[i].solver_body_a as usize];
+            let body_b = body_group[constraints[i].solver_body_b as usize];
 
             let first_constraint_id_a = if body_a != 0 {
-                body_constraint_counts.read(body_a as usize - 1) as usize
+                body_constraint_counts[body_a as usize - 1] as usize
             } else {
                 0
             };
-            let last_constraint_id_a = body_constraint_counts.read(body_a as usize) as usize;
+            let last_constraint_id_a = body_constraint_counts[body_a as usize] as usize;
 
             let first_constraint_id_b = if body_b != 0 {
-                body_constraint_counts.read(body_b as usize - 1) as usize
+                body_constraint_counts[body_b as usize - 1] as usize
             } else {
                 0
             };
-            let last_constraint_id_b = body_constraint_counts.read(body_b as usize) as usize;
+            let last_constraint_id_b = body_constraint_counts[body_b as usize] as usize;
 
             // Traverse all constraints from body A.
             for j in first_constraint_id_a..last_constraint_id_a {
-                let constraint_j = body_constraint_ids.read(j);
+                let constraint_j = body_constraint_ids[j];
 
                 if constraint_j != constraint_i {
-                    let color_j = constraints_colors.read(constraint_j as usize);
+                    let color_j = constraints_colors[constraint_j as usize];
                     if color_i == color_j && constraint_i < constraint_j {
                         // Found a conflict, uncolor this node.
-                        colored.write(i, 0);
+                        colored[i] = 0;
                     }
                 }
             }
 
             // Traverse all constraints from body B.
             for j in first_constraint_id_b..last_constraint_id_b {
-                let constraint_j = body_constraint_ids.read(j);
+                let constraint_j = body_constraint_ids[j];
 
                 if constraint_j != constraint_i {
-                    let color_j = constraints_colors.read(constraint_j as usize);
+                    let color_j = constraints_colors[constraint_j as usize];
                     if color_i == color_j && constraint_i < constraint_j {
                         // Found a conflict, uncolor this node.
-                        colored.write(i, 0);
+                        colored[i] = 0;
                     }
                 }
             }

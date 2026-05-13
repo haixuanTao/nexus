@@ -19,7 +19,7 @@ use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use parry::math::VectorExt;
-use crate::utils::{Slice, SliceMut};
+use crate::utils::{BatchIndices, Slice, SliceMut};
 use crate::{ANG_DIM, DIM};
 #[cfg(feature = "dim2")]
 use crate::rotation_from_angle;
@@ -42,29 +42,25 @@ pub fn gpu_mb_integrate_velocities(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] gen_accelerations: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
     let dt = *dt_uniform;
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
-    let gen_base = dof_start + mb.first_dof as usize;
+    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let gen_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
 
     let mut dof_vel = SliceMut(dof_state, gen_base);
     let acc = Slice(gen_accelerations, gen_base);
 
     for d in 0..mb.ndofs {
         let di = d as usize;
-        let cur = dof_vel.read(di);
-        dof_vel.write(di, cur + acc.read(di) * dt);
+        dof_vel[di] = dof_vel[di] + acc[di] * dt;
     }
 }
 
@@ -80,49 +76,46 @@ pub fn gpu_mb_integrate(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_state: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] dof_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
     let dt = *dt_uniform;
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let links_start = batch_id * *links_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
+    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
     let num_links = mb.num_links;
-    let first_link_global = links_start + mb.first_link as usize;
-    let gen_base = dof_start + mb.first_dof as usize;
+    let gen_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
 
-    let stat_slice = Slice(links_static, first_link_global);
-    let mut ws_slice = SliceMut(links_workspace, first_link_global);
+    let stat_slice = batch_ids
+        .mb_links_batch(batch_id, links_static)
+        .offset(mb.first_link as usize);
+    let mut ws_slice = batch_ids
+        .mb_links_batch_mut(batch_id, links_workspace)
+        .offset(mb.first_link as usize);
     let dof_val = SliceMut(dof_values, gen_base);
     let dof_vel = Slice(dof_state, gen_base);
 
     // Per-link coord / joint_rot update (uses the already-corrected `dof_velocities`).
     //
     // Only `coords` (≤ 24 B) and `joint_rot` (16 B) are modified. We mutate them
-    // in place through `at_mut(k)` so SPIR-V emits field-targeted stores instead
-    // of a whole `MultibodyLinkWorkspace` round-trip (~240 B in 3D).
+    // in place through `&mut ws_slice[k]` so SPIR-V emits field-targeted stores
+    // instead of a whole `MultibodyLinkWorkspace` round-trip (~240 B in 3D).
     for k in 0..num_links {
         let k_usize = k as usize;
-        let stat = stat_slice.read(k_usize);
+        let stat = stat_slice[k_usize];
         let locked = stat.data.locked_axes;
         let aid = stat.assembly_id as usize;
-        let ws = ws_slice.at_mut(k_usize);
+        let ws = &mut ws_slice[k_usize];
 
         // Free linear DOFs first, in axis order.
         let mut curr_free = 0u32;
         for i in 0..DIM {
             if (locked & (1 << i)) == 0 {
-                let v = dof_vel.read(aid + curr_free as usize);
+                let v = dof_vel[aid + curr_free as usize];
                 *ws.coords.at_mut(i as usize) += v * dt;
                 curr_free += 1;
             }
@@ -135,7 +128,7 @@ pub fn gpu_mb_integrate(
             #[cfg(feature = "dim3")]
             {
                 let dof_id = (!ang_locked & 0x7).trailing_zeros();
-                let v = dof_vel.read(aid + curr_free as usize);
+                let v = dof_vel[aid + curr_free as usize];
                 let idx = 3 + dof_id;
                 let new = ws.coords.read(idx as usize) + v * dt;
                 ws.coords.write(idx as usize, new);
@@ -143,7 +136,7 @@ pub fn gpu_mb_integrate(
             }
             #[cfg(feature = "dim2")]
             {
-                let v = dof_vel.read(aid + curr_free as usize);
+                let v = dof_vel[aid + curr_free as usize];
                 let new = ws.coords.read(DIM as usize) + v * dt;
                 ws.coords.write(DIM as usize, new);
                 ws.joint_rot = rotation_from_angle(new);
@@ -151,9 +144,9 @@ pub fn gpu_mb_integrate(
         } else if num_ang == 3 {
             #[cfg(feature = "dim3")]
             {
-                let vx = dof_vel.read(aid + curr_free as usize);
-                let vy = dof_vel.read(aid + (curr_free + 1) as usize);
-                let vz = dof_vel.read(aid + (curr_free + 2) as usize);
+                let vx = dof_vel[aid + curr_free as usize];
+                let vy = dof_vel[aid + (curr_free + 1) as usize];
+                let vz = dof_vel[aid + (curr_free + 2) as usize];
                 let ang = Vector::new(vx, vy, vz);
                 let disp = rotation_from_scaled_axis(ang * dt);
                 ws.joint_rot = rotation_renormalize_fast(disp * ws.joint_rot);

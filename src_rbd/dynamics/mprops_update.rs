@@ -3,6 +3,7 @@
 use crate::math::Pose;
 use crate::shaders::dynamics::{GpuSyncColliderPoses, GpuUpdateMprops};
 use crate::shaders::dynamics::{LocalMassProperties, WorldMassProperties};
+use crate::shaders::utils::BatchIndices;
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
 use vortx::tensor::Tensor;
@@ -23,7 +24,7 @@ impl GpuMpropsUpdate {
         local_mprops: &Tensor<LocalMassProperties>,
         body_poses: &Tensor<Pose>,
         num_shapes: &Tensor<u32>,
-        colliders_batch_capacity: &Tensor<u32>,
+        batch_indices: &Tensor<BatchIndices>,
         num_bodies: u32,
         num_batches: u32,
     ) -> Result<(), GpuBackendError> {
@@ -34,7 +35,7 @@ impl GpuMpropsUpdate {
             local_mprops,
             body_poses,
             num_shapes,
-            colliders_batch_capacity,
+            batch_indices,
         )?;
         Ok(())
     }
@@ -62,7 +63,7 @@ impl GpuSyncColliderPosesShader {
         collider_local_poses: &Tensor<Pose>,
         collider_world_poses: &mut Tensor<Pose>,
         num_shapes: &Tensor<u32>,
-        colliders_batch_capacity: &Tensor<u32>,
+        batch_indices: &Tensor<BatchIndices>,
         num_bodies: u32,
         num_batches: u32,
     ) -> Result<(), GpuBackendError> {
@@ -73,7 +74,7 @@ impl GpuSyncColliderPosesShader {
             collider_local_poses,
             collider_world_poses,
             num_shapes,
-            colliders_batch_capacity,
+            batch_indices,
         )?;
         Ok(())
     }

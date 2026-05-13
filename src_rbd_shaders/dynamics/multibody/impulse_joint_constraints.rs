@@ -39,7 +39,7 @@ use crate::dynamics::joint::{
     motor_params,
 };
 use crate::utils::linalg::{MatSlice, lu_solve_in_place};
-use crate::utils::{Slice, SliceMut};
+use crate::utils::BatchIndices;
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot, rotation_to_matrix};
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
@@ -1157,33 +1157,25 @@ pub fn gpu_mb_update_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] lu_pivots: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 5)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 6)] mprops: &[WorldMassProperties],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] joints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 7)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 8)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 9)] body_jacobians_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 10)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 11)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 12)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * 64;
-    let batch_id = invocation_id.y as usize;
-    let cap = *joints_batch_capacity;
+    let batch_id = invocation_id.y;
+    let cap = batch_ids.mb_imp_joints_batch_capacity;
     if invocation_id.x >= cap {
         return;
     }
     let dt = *dt_uniform;
 
-    let joints_start = batch_id * *joints_batch_capacity as usize;
-    let cons_start = batch_id * *constraints_batch_capacity as usize;
-    let jac_buf_start = batch_id * *jacobians_batch_capacity as usize;
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let links_start = batch_id * *links_batch_capacity as usize;
-    let body_jac_start = batch_id * *body_jacobians_batch_capacity as usize;
-    let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let joints_start = batch_ids.mb_imp_joints_start(batch_id);
+    let cons_start = batch_ids.mb_imp_joint_constraints_start(batch_id);
+    let jac_buf_start = batch_ids.mb_imp_joint_jacobians_start(batch_id);
+    let mb_start = batch_ids.mb_start(batch_id);
+    let links_start = batch_ids.links_start(batch_id);
+    let body_jac_start = batch_ids.jac_start(batch_id);
+    let mm_start = batch_ids.mm_start(batch_id);
+    let dof_start = batch_ids.dof_start(batch_id);
+    let colliders_start = batch_ids.coll_start(batch_id);
 
     // Loop chunked across `num_threads` so a single workgroup row processes
     // all joints in a batch (matches `gpu_init_joint_constraints` style).
@@ -1640,20 +1632,16 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] solver_vels: &mut [Velocity],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] joints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 3)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 4)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 1, binding = 5)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
-    let len = num_joints.read(batch_id);
+    let batch_id = invocation_id.y;
+    let len = num_joints.read(batch_id as usize);
 
-    let joints_start = batch_id * *joints_batch_capacity as usize;
-    let cons_start = batch_id * *constraints_batch_capacity as usize;
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let joints_start = batch_ids.mb_imp_joints_start(batch_id);
+    let cons_start = batch_ids.mb_imp_joint_constraints_start(batch_id);
+    let mb_start = batch_ids.mb_start(batch_id);
+    let dof_start = batch_ids.dof_start(batch_id);
+    let colliders_start = batch_ids.coll_start(batch_id);
 
     for i in 0..len {
         let builder = builders.read(joints_start + i as usize);
@@ -1754,14 +1742,13 @@ pub fn gpu_mb_remove_impulse_joint_constraint_bias(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     constraints: &mut [MbImpulseJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_joints: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] joints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] constraints_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * 64;
-    let batch_id = invocation_id.y as usize;
-    let len = num_joints.read(batch_id);
-    let joints_start = batch_id * *joints_batch_capacity as usize;
-    let cons_start = batch_id * *constraints_batch_capacity as usize;
+    let batch_id = invocation_id.y;
+    let len = num_joints.read(batch_id as usize);
+    let joints_start = batch_ids.mb_imp_joints_start(batch_id);
+    let cons_start = batch_ids.mb_imp_joint_constraints_start(batch_id);
     let mut i = invocation_id.x;
     while i < len {
         let builder = builders.read(joints_start + i as usize);

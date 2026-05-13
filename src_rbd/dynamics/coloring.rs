@@ -89,10 +89,8 @@ pub struct ColoringArgs<'a> {
     pub contacts_len: &'a Tensor<u32>,
     /// Buffer tracking which constraints are colored.
     pub colored: &'a mut Tensor<u32>,
-    /// Maximum contacts per batch (stride between batches in contact buffers).
-    pub contacts_batch_capacity: &'a Tensor<u32>,
-    /// Maximum colliders per batch (stride between batches in body buffers).
-    pub colliders_batch_capacity: &'a Tensor<u32>,
+    /// Shared per-batch capacity / section-offset uniform.
+    pub batch_indices: &'a Tensor<crate::shaders::utils::BatchIndices>,
     /// Per-body graph-coloring group id (multibody-aware): contacts touching
     /// different bodies of the same multibody share a group and never share
     /// a color. For free bodies, `body_group[i] = i`.
@@ -112,7 +110,7 @@ impl GpuColoring {
             args.constraints_colors,
             args.constraints_rands,
             args.contacts_len,
-            args.contacts_batch_capacity,
+            args.batch_indices,
         )?;
         Ok(())
     }
@@ -135,8 +133,7 @@ impl GpuColoring {
             args.body_group,
             args.curr_color,
             args.contacts_len,
-            args.contacts_batch_capacity,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
         Ok(())
     }
@@ -153,7 +150,7 @@ impl GpuColoring {
             args.constraints_colors,
             args.colored,
             args.contacts_len,
-            args.contacts_batch_capacity,
+            args.batch_indices,
         )?;
         Ok(())
     }
@@ -175,8 +172,7 @@ impl GpuColoring {
             args.uncolored,
             args.contacts_len,
             args.body_group,
-            args.contacts_batch_capacity,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
         Ok(())
     }
@@ -198,8 +194,7 @@ impl GpuColoring {
             args.uncolored,
             args.contacts_len,
             args.body_group,
-            args.contacts_batch_capacity,
-            args.colliders_batch_capacity,
+            args.batch_indices,
         )?;
         Ok(())
     }

@@ -44,8 +44,8 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
     }
 
     if !app_state.restarting {
-        app_state.min_num_substeps = 10;
-        app_state.max_num_substeps = 10;
+        app_state.min_num_substeps = 20;
+        app_state.max_num_substeps = 20;
         app_state.gravity_factor = 1.0;
     };
 

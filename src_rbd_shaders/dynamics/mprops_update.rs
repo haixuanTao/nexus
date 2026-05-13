@@ -10,7 +10,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 use crate::Pose;
 
 use super::body::{LocalMassProperties, WorldMassProperties};
-use crate::utils::{Slice, SliceMut};
+use crate::utils::BatchIndices;
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -25,21 +25,20 @@ pub fn gpu_update_mprops(
     local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let batch_id = invocation_id.y as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
+    let batch_id = invocation_id.y;
 
-    let num_colliders = num_colliders.read(batch_id);
-    let mut mprops = SliceMut(mprops, colliders_start);
-    let local_mprops = Slice(local_mprops, colliders_start);
-    let poses = Slice(poses, colliders_start);
+    let num_colliders = num_colliders.read(batch_id as usize);
+    let mut mprops = batch_ids.coll_batch_mut(batch_id, mprops);
+    let local_mprops = batch_ids.coll_batch(batch_id, local_mprops);
+    let poses = batch_ids.coll_batch(batch_id, poses);
 
     for i in StepRng::new(invocation_id.x..num_colliders, num_threads) {
         let idx = i as usize;
-        let new_mprops = local_mprops.at(idx).to_world(poses.at(idx));
-        mprops.write(idx, new_mprops);
+        let new_mprops = local_mprops[idx].to_world(&poses[idx]);
+        mprops[idx] = new_mprops;
     }
 }
 
@@ -61,22 +60,18 @@ pub fn gpu_sync_collider_poses(
     collider_local_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collider_world_poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
-    let batch_id = invocation_id.y as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
-    let num_colliders = num_colliders.read(batch_id);
+    let batch_id = invocation_id.y;
+    let num_colliders = num_colliders.read(batch_id as usize);
 
-    let body_poses = Slice(body_poses, colliders_start);
-    let collider_local_poses = Slice(collider_local_poses, colliders_start);
-    let mut collider_world_poses = SliceMut(collider_world_poses, colliders_start);
+    let body_poses = batch_ids.coll_batch(batch_id, body_poses);
+    let collider_local_poses = batch_ids.coll_batch(batch_id, collider_local_poses);
+    let mut collider_world_poses = batch_ids.coll_batch_mut(batch_id, collider_world_poses);
 
     for i in StepRng::new(invocation_id.x..num_colliders, num_threads) {
         let idx = i as usize;
-        collider_world_poses.write(
-            idx,
-            body_poses.read(idx) * collider_local_poses.read(idx),
-        );
+        collider_world_poses[idx] = body_poses[idx] * collider_local_poses[idx];
     }
 }

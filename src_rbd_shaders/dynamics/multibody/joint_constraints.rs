@@ -22,7 +22,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::DIM;
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::Slice;
+use crate::utils::BatchIndices;
 use crate::utils::linalg::{MatSlice, lu_solve_in_place};
 
 use super::types::{
@@ -85,51 +85,191 @@ pub fn gpu_mb_init_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] joint_constraint_columns: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 13)] joint_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 14)] joint_constraint_columns_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
-    let dt = *dt_uniform;
+    init_joint_constraints_body(
+        multibody_info,
+        links_static,
+        links_workspace,
+        mass_matrices,
+        lu_pivots,
+        joint_constraints,
+        joint_constraint_columns,
+        batch_id,
+        mb_idx,
+        *dt_uniform,
+        batch_ids,
+    );
+}
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let links_start = batch_id * *links_batch_capacity as usize;
-    let mm_start = batch_id * *mass_matrix_batch_capacity as usize;
-    let dof_start = batch_id * *dof_batch_capacity as usize;
-    let cons_start = batch_id * *joint_constraints_batch_capacity as usize;
-    let col_start = batch_id * *joint_constraint_columns_batch_capacity as usize;
+/// Replace each active constraint's `rhs` with `rhs_wo_bias`, mirroring rapier's
+/// `GenericJointConstraint::remove_bias_from_rhs`.
+///
+/// Used by the TGS-soft substep loop: bias-driven PGS happens before position
+/// integration, then `remove_bias` runs and a final PGS sweep settles velocity
+/// along constrained DOFs to zero (no rebound from positional bias).
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_mb_remove_joint_constraint_bias(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let mb_idx = invocation_id.x;
+    let num_mb = num_multibodies.read(batch_id as usize);
+    if mb_idx >= num_mb {
+        return;
+    }
 
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
+    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
+
+    for s in 0..mb.max_constraints {
+        let mut cons = joint_constraints.read(cons_base + s as usize);
+        if cons.kind == 0 {
+            continue;
+        }
+        cons.rhs = cons.rhs_wo_bias;
+        joint_constraints.write(cons_base + s as usize, cons);
+    }
+}
+
+/// PGS sweep body — shared between `gpu_mb_solve_joint_constraints` and
+/// the fused init+solve / remove-bias+solve kernels. Writes back `cons`
+/// before subtracting `delta · column` from `v`.
+#[inline]
+fn solve_joint_constraints_body(
+    multibody_info: &[MultibodyInfo],
+    joint_constraints: &mut [MultibodyJointConstraint],
+    joint_constraint_columns: &[f32],
+    dof_state: &mut [f32],
+    batch_id: u32,
+    mb_idx: u32,
+    batch_ids: &BatchIndices,
+) {
+    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let ndofs = mb.ndofs;
+    if ndofs == 0 || mb.max_constraints == 0 {
+        return;
+    }
+    let v_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+    let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
+    let col_base = batch_ids.mb_joint_constraint_columns_start(batch_id)
+        + (mb.first_constraint as usize) * dofs_stride;
+
+    for s in 0..mb.max_constraints {
+        let mut cons = joint_constraints.read(cons_base + s as usize);
+        if cons.kind == 0 {
+            continue;
+        }
+
+        let v_d = dof_state.read(v_base + cons.dof_id as usize);
+        let rhs_total = v_d + cons.rhs;
+        let raw_imp = cons.impulse + cons.inv_lhs * (rhs_total - cons.cfm_gain * cons.impulse);
+        let mut new_imp = raw_imp;
+        if new_imp < cons.impulse_lo {
+            new_imp = cons.impulse_lo;
+        }
+        if new_imp > cons.impulse_hi {
+            new_imp = cons.impulse_hi;
+        }
+        let delta = new_imp - cons.impulse;
+        cons.impulse = new_imp;
+        joint_constraints.write(cons_base + s as usize, cons);
+
+        for i in 0..ndofs {
+            let v_idx = v_base + i as usize;
+            let cur = dof_state.read(v_idx);
+            let col = joint_constraint_columns
+                .read(col_base + (s as usize) * dofs_stride + i as usize);
+            dof_state.write(v_idx, cur - delta * col);
+        }
+    }
+}
+
+/// One PGS sweep: iterates the multibody's active limit/motor constraints and
+/// updates `dof_velocities` in place. Mirrors rapier's `JointConstraint::solve_generic`
+/// for a 1-DOF jacobian.
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_mb_solve_joint_constraints(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let mb_idx = invocation_id.x;
+    let num_mb = num_multibodies.read(batch_id as usize);
+    if mb_idx >= num_mb {
+        return;
+    }
+    solve_joint_constraints_body(
+        multibody_info,
+        joint_constraints,
+        joint_constraint_columns,
+        dof_state,
+        batch_id,
+        mb_idx,
+        batch_ids,
+    );
+}
+
+/// Init body — extracted from `gpu_mb_init_joint_constraints` so the fused
+/// kernel can chain straight into a PGS sweep without a separate dispatch.
+#[inline]
+fn init_joint_constraints_body(
+    multibody_info: &[MultibodyInfo],
+    links_static: &[MultibodyLinkStatic],
+    links_workspace: &[MultibodyLinkWorkspace],
+    mass_matrices: &[f32],
+    lu_pivots: &[u32],
+    joint_constraints: &mut [MultibodyJointConstraint],
+    joint_constraint_columns: &mut [f32],
+    batch_id: u32,
+    mb_idx: u32,
+    dt: f32,
+    batch_ids: &BatchIndices,
+) {
+    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
     let num_links = mb.num_links;
     let ndofs = mb.ndofs;
     if ndofs == 0 {
         return;
     }
-    let first_link_global = links_start + mb.first_link as usize;
-    let mb_mm_base = mm_start + mb.mass_matrix_offset as usize;
-    let piv_offset = dof_start + mb.first_dof as usize;
-    let cons_base = cons_start + mb.first_constraint as usize;
+    let mb_mm_base = batch_ids.mm_start(batch_id) + mb.mass_matrix_offset as usize;
+    let piv_offset = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+    let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
     // One column of M⁻¹ per constraint slot — `dof_batch_capacity` floats
     // per slot (only the first `ndofs` of each are meaningful, but we use
     // the batch-wide max as the stride to match the host allocation
     // `cons_col_cap = cons_cap * dofs_cap` and to avoid two multibodies
     // with different ndofs stomping on each other's columns).
-    let dofs_stride = *dof_batch_capacity as usize;
-    let col_base = col_start + (mb.first_constraint as usize) * dofs_stride;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
+    let col_base = batch_ids.mb_joint_constraint_columns_start(batch_id)
+        + (mb.first_constraint as usize) * dofs_stride;
 
-    let stat_slice = Slice(links_static, first_link_global);
-    let ws_slice = Slice(links_workspace, first_link_global);
+    let stat_slice = batch_ids
+        .mb_links_batch(batch_id, links_static)
+        .offset(mb.first_link as usize);
+    let ws_slice = batch_ids
+        .mb_links_batch(batch_id, links_workspace)
+        .offset(mb.first_link as usize);
     let m = MatSlice::dense(mb_mm_base, ndofs, ndofs);
 
-    // Mark all slots as inactive; the loop below activates the live ones.
     for s in 0..mb.max_constraints {
         let mut cz: MultibodyJointConstraint = joint_constraints.read(cons_base + s as usize);
         cz.kind = 0;
@@ -141,11 +281,11 @@ pub fn gpu_mb_init_joint_constraints(
 
     let mut slot = 0u32;
     for k in 0..num_links {
-        let stat = stat_slice.read(k as usize);
+        let stat = stat_slice[k as usize];
         // Access workspace via reference: only `coords[axis]` is read here, so
         // a whole-struct copy of `MultibodyLinkWorkspace` (~240 B in 3D) would
         // be wasted traffic for a single-field probe.
-        let ws = ws_slice.at(k as usize);
+        let ws = &ws_slice[k as usize];
         let locked = stat.data.locked_axes;
         let limit_axes = stat.data.limit_axes & !locked;
         let motor_axes = stat.data.motor_axes & !locked;
@@ -454,334 +594,6 @@ fn emit_motor_constraint(
     joint_constraints.write(cons_base + slot as usize, cons);
 }
 
-/// Replace each active constraint's `rhs` with `rhs_wo_bias`, mirroring rapier's
-/// `GenericJointConstraint::remove_bias_from_rhs`.
-///
-/// Used by the TGS-soft substep loop: bias-driven PGS happens before position
-/// integration, then `remove_bias` runs and a final PGS sweep settles velocity
-/// along constrained DOFs to zero (no rebound from positional bias).
-#[spirv_bindgen]
-#[spirv(compute(threads(1)))]
-pub fn gpu_mb_remove_joint_constraint_bias(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] joint_constraints_batch_capacity: &u32,
-) {
-    let batch_id = invocation_id.y as usize;
-    let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
-
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let cons_start = batch_id * *joint_constraints_batch_capacity as usize;
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
-    let cons_base = cons_start + mb.first_constraint as usize;
-
-    for s in 0..mb.max_constraints {
-        let mut cons = joint_constraints.read(cons_base + s as usize);
-        if cons.kind == 0 {
-            continue;
-        }
-        cons.rhs = cons.rhs_wo_bias;
-        joint_constraints.write(cons_base + s as usize, cons);
-    }
-}
-
-/// PGS sweep body — shared between `gpu_mb_solve_joint_constraints` and
-/// the fused init+solve / remove-bias+solve kernels. Writes back `cons`
-/// before subtracting `delta · column` from `v`.
-#[inline]
-fn solve_joint_constraints_body(
-    multibody_info: &[MultibodyInfo],
-    joint_constraints: &mut [MultibodyJointConstraint],
-    joint_constraint_columns: &[f32],
-    dof_state: &mut [f32],
-    batch_id: usize,
-    mb_idx: u32,
-    multibodies_batch_capacity: u32,
-    dof_batch_capacity: u32,
-    joint_constraints_batch_capacity: u32,
-    joint_constraint_columns_batch_capacity: u32,
-) {
-    let mb_start = batch_id * multibodies_batch_capacity as usize;
-    let dof_start = batch_id * dof_batch_capacity as usize;
-    let cons_start = batch_id * joint_constraints_batch_capacity as usize;
-    let col_start = batch_id * joint_constraint_columns_batch_capacity as usize;
-
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
-    let ndofs = mb.ndofs;
-    if ndofs == 0 || mb.max_constraints == 0 {
-        return;
-    }
-    let v_base = dof_start + mb.first_dof as usize;
-    let cons_base = cons_start + mb.first_constraint as usize;
-    let dofs_stride = dof_batch_capacity as usize;
-    let col_base = col_start + (mb.first_constraint as usize) * dofs_stride;
-
-    for s in 0..mb.max_constraints {
-        let mut cons = joint_constraints.read(cons_base + s as usize);
-        if cons.kind == 0 {
-            continue;
-        }
-
-        let v_d = dof_state.read(v_base + cons.dof_id as usize);
-        let rhs_total = v_d + cons.rhs;
-        let raw_imp = cons.impulse + cons.inv_lhs * (rhs_total - cons.cfm_gain * cons.impulse);
-        let mut new_imp = raw_imp;
-        if new_imp < cons.impulse_lo {
-            new_imp = cons.impulse_lo;
-        }
-        if new_imp > cons.impulse_hi {
-            new_imp = cons.impulse_hi;
-        }
-        let delta = new_imp - cons.impulse;
-        cons.impulse = new_imp;
-        joint_constraints.write(cons_base + s as usize, cons);
-
-        for i in 0..ndofs {
-            let v_idx = v_base + i as usize;
-            let cur = dof_state.read(v_idx);
-            let col = joint_constraint_columns
-                .read(col_base + (s as usize) * dofs_stride + i as usize);
-            dof_state.write(v_idx, cur - delta * col);
-        }
-    }
-}
-
-/// One PGS sweep: iterates the multibody's active limit/motor constraints and
-/// updates `dof_velocities` in place. Mirrors rapier's `JointConstraint::solve_generic`
-/// for a 1-DOF jacobian.
-#[spirv_bindgen]
-#[spirv(compute(threads(1)))]
-pub fn gpu_mb_solve_joint_constraints(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] joint_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] joint_constraint_columns_batch_capacity: &u32,
-) {
-    let batch_id = invocation_id.y as usize;
-    let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
-    if mb_idx >= num_mb {
-        return;
-    }
-    solve_joint_constraints_body(
-        multibody_info,
-        joint_constraints,
-        joint_constraint_columns,
-        dof_state,
-        batch_id,
-        mb_idx,
-        *multibodies_batch_capacity,
-        *dof_batch_capacity,
-        *joint_constraints_batch_capacity,
-        *joint_constraint_columns_batch_capacity,
-    );
-}
-
-/// Init body — extracted from `gpu_mb_init_joint_constraints` so the fused
-/// kernel can chain straight into a PGS sweep without a separate dispatch.
-#[inline]
-fn init_joint_constraints_body(
-    multibody_info: &[MultibodyInfo],
-    links_static: &[MultibodyLinkStatic],
-    links_workspace: &[MultibodyLinkWorkspace],
-    mass_matrices: &[f32],
-    lu_pivots: &[u32],
-    joint_constraints: &mut [MultibodyJointConstraint],
-    joint_constraint_columns: &mut [f32],
-    batch_id: usize,
-    mb_idx: u32,
-    dt: f32,
-    multibodies_batch_capacity: u32,
-    links_batch_capacity: u32,
-    mass_matrix_batch_capacity: u32,
-    dof_batch_capacity: u32,
-    joint_constraints_batch_capacity: u32,
-    joint_constraint_columns_batch_capacity: u32,
-) {
-    let mb_start = batch_id * multibodies_batch_capacity as usize;
-    let links_start = batch_id * links_batch_capacity as usize;
-    let mm_start = batch_id * mass_matrix_batch_capacity as usize;
-    let dof_start = batch_id * dof_batch_capacity as usize;
-    let cons_start = batch_id * joint_constraints_batch_capacity as usize;
-    let col_start = batch_id * joint_constraint_columns_batch_capacity as usize;
-
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
-    let num_links = mb.num_links;
-    let ndofs = mb.ndofs;
-    if ndofs == 0 {
-        return;
-    }
-    let first_link_global = links_start + mb.first_link as usize;
-    let mb_mm_base = mm_start + mb.mass_matrix_offset as usize;
-    let piv_offset = dof_start + mb.first_dof as usize;
-    let cons_base = cons_start + mb.first_constraint as usize;
-    let dofs_stride = dof_batch_capacity as usize;
-    let col_base = col_start + (mb.first_constraint as usize) * dofs_stride;
-
-    let stat_slice = Slice(links_static, first_link_global);
-    let ws_slice = Slice(links_workspace, first_link_global);
-    let m = MatSlice::dense(mb_mm_base, ndofs, ndofs);
-
-    for s in 0..mb.max_constraints {
-        let mut cz: MultibodyJointConstraint = joint_constraints.read(cons_base + s as usize);
-        cz.kind = 0;
-        cz.impulse = 0.0;
-        joint_constraints.write(cons_base + s as usize, cz);
-    }
-
-    let inv_dt = if dt != 0.0 { 1.0 / dt } else { 0.0 };
-
-    let mut slot = 0u32;
-    for k in 0..num_links {
-        let stat = stat_slice.read(k as usize);
-        let ws = ws_slice.at(k as usize);
-        let locked = stat.data.locked_axes;
-        let limit_axes = stat.data.limit_axes & !locked;
-        let motor_axes = stat.data.motor_axes & !locked;
-        if limit_axes == 0 && motor_axes == 0 {
-            continue;
-        }
-        if stat.kinematic != 0 {
-            continue;
-        }
-
-        let mut curr_free_dof = 0u32;
-
-        for axis in 0..DIM {
-            if (locked & (1 << axis)) != 0 {
-                continue;
-            }
-            let abs_dof = stat.assembly_id + curr_free_dof;
-            let curr_pos = ws.coords.read(axis as usize);
-
-            if (motor_axes & (1 << axis)) != 0 {
-                let has_limits = (limit_axes & (1 << axis)) != 0;
-                let limit_min = stat.data.limits[axis as usize].min;
-                let limit_max = stat.data.limits[axis as usize].max;
-                emit_motor_constraint(
-                    joint_constraints,
-                    joint_constraint_columns,
-                    cons_base,
-                    col_base,
-                    dofs_stride,
-                    slot,
-                    abs_dof,
-                    ndofs,
-                    curr_pos,
-                    inv_dt,
-                    dt,
-                    &stat.data.motors[axis as usize],
-                    has_limits,
-                    limit_min,
-                    limit_max,
-                    mass_matrices,
-                    m,
-                    lu_pivots,
-                    piv_offset,
-                );
-                slot += 1;
-            }
-            if (limit_axes & (1 << axis)) != 0 {
-                emit_limit_constraint(
-                    joint_constraints,
-                    joint_constraint_columns,
-                    cons_base,
-                    col_base,
-                    dofs_stride,
-                    slot,
-                    abs_dof,
-                    ndofs,
-                    curr_pos,
-                    [
-                        stat.data.limits[axis as usize].min,
-                        stat.data.limits[axis as usize].max,
-                    ],
-                    dt,
-                    mass_matrices,
-                    m,
-                    lu_pivots,
-                    piv_offset,
-                );
-                slot += 1;
-            }
-            curr_free_dof += 1;
-        }
-
-        for axis in DIM..(SPATIAL_DIM as u32) {
-            if (locked & (1 << axis)) != 0 {
-                continue;
-            }
-            let abs_dof = stat.assembly_id + curr_free_dof;
-            let curr_pos = ws.coords.read(axis as usize);
-
-            if (limit_axes & (1 << axis)) != 0 {
-                emit_limit_constraint(
-                    joint_constraints,
-                    joint_constraint_columns,
-                    cons_base,
-                    col_base,
-                    dofs_stride,
-                    slot,
-                    abs_dof,
-                    ndofs,
-                    curr_pos,
-                    [
-                        stat.data.limits[axis as usize].min,
-                        stat.data.limits[axis as usize].max,
-                    ],
-                    dt,
-                    mass_matrices,
-                    m,
-                    lu_pivots,
-                    piv_offset,
-                );
-                slot += 1;
-            }
-            if (motor_axes & (1 << axis)) != 0 {
-                let has_limits = (limit_axes & (1 << axis)) != 0;
-                let limit_min = stat.data.limits[axis as usize].min;
-                let limit_max = stat.data.limits[axis as usize].max;
-                emit_motor_constraint(
-                    joint_constraints,
-                    joint_constraint_columns,
-                    cons_base,
-                    col_base,
-                    dofs_stride,
-                    slot,
-                    abs_dof,
-                    ndofs,
-                    curr_pos,
-                    inv_dt,
-                    dt,
-                    &stat.data.motors[axis as usize],
-                    has_limits,
-                    limit_min,
-                    limit_max,
-                    mass_matrices,
-                    m,
-                    lu_pivots,
-                    piv_offset,
-                );
-                slot += 1;
-            }
-            curr_free_dof += 1;
-        }
-    }
-}
-
 /// Fused `init + solve_with_bias` for joint limit/motor constraints. Runs the
 /// init logic (build constraints, LU back-solve to get M⁻¹·e_d columns) and
 /// immediately follows with one PGS sweep WITH bias. Replaces two threads(1)
@@ -801,16 +613,11 @@ pub fn gpu_mb_init_solve_joint_with_bias(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &mut [f32],
     #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] links_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 12)] mass_matrix_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 13)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 14)] joint_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 15)] joint_constraint_columns_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
@@ -825,12 +632,7 @@ pub fn gpu_mb_init_solve_joint_with_bias(
         batch_id,
         mb_idx,
         *dt_uniform,
-        *multibodies_batch_capacity,
-        *links_batch_capacity,
-        *mass_matrix_batch_capacity,
-        *dof_batch_capacity,
-        *joint_constraints_batch_capacity,
-        *joint_constraint_columns_batch_capacity,
+        batch_ids,
     );
     solve_joint_constraints_body(
         multibody_info,
@@ -839,10 +641,7 @@ pub fn gpu_mb_init_solve_joint_with_bias(
         dof_state,
         batch_id,
         mb_idx,
-        *multibodies_batch_capacity,
-        *dof_batch_capacity,
-        *joint_constraints_batch_capacity,
-        *joint_constraint_columns_batch_capacity,
+        batch_ids,
     );
 }
 
@@ -858,22 +657,17 @@ pub fn gpu_mb_remove_solve_joint_no_bias(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] multibodies_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] dof_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] joint_constraints_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] joint_constraint_columns_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
+    let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id);
+    let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
     }
 
-    let mb_start = batch_id * *multibodies_batch_capacity as usize;
-    let cons_start = batch_id * *joint_constraints_batch_capacity as usize;
-    let mb = multibody_info.read(mb_start + mb_idx as usize);
-    let cons_base = cons_start + mb.first_constraint as usize;
+    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
 
     // Inlined `remove_bias`: replace `rhs` with `rhs_wo_bias` for active slots.
     for s in 0..mb.max_constraints {
@@ -892,9 +686,6 @@ pub fn gpu_mb_remove_solve_joint_no_bias(
         dof_state,
         batch_id,
         mb_idx,
-        *multibodies_batch_capacity,
-        *dof_batch_capacity,
-        *joint_constraints_batch_capacity,
-        *joint_constraint_columns_batch_capacity,
+        batch_ids,
     );
 }

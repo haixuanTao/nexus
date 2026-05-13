@@ -33,7 +33,7 @@ fn jacobian_mul_coordinates(
 
     for i in 0..DIM {
         if (locked_axes & (1 << i)) == 0 {
-            let v = vel_slice.read((assembly_id + curr) as usize);
+            let v = vel_slice[(assembly_id + curr) as usize];
             lin += Vector::ith(i as usize, v);
             curr += 1;
         }
@@ -45,20 +45,20 @@ fn jacobian_mul_coordinates(
         #[cfg(feature = "dim3")]
         {
             let dof_id = (!ang_locked & 0x7).trailing_zeros();
-            let v = vel_slice.read((assembly_id + curr) as usize);
+            let v = vel_slice[(assembly_id + curr) as usize];
             ang += Vector::ith(dof_id as usize, v);
         }
         #[cfg(feature = "dim2")]
         {
-            let v = vel_slice.read((assembly_id + curr) as usize);
+            let v = vel_slice[(assembly_id + curr) as usize];
             ang += v;
         }
     } else if num_ang == 3 {
         #[cfg(feature = "dim3")]
         {
-            let vx = vel_slice.read((assembly_id + curr) as usize);
-            let vy = vel_slice.read((assembly_id + curr + 1) as usize);
-            let vz = vel_slice.read((assembly_id + curr + 2) as usize);
+            let vx = vel_slice[(assembly_id + curr) as usize];
+            let vy = vel_slice[(assembly_id + curr + 1) as usize];
+            let vz = vel_slice[(assembly_id + curr + 2) as usize];
             ang += AngVector::new(vx, vy, vz);
         }
     }

@@ -117,6 +117,7 @@ pub fn demo_builders() -> Vec<DemoBuilder> {
 
 #[kiss3d::main]
 pub async fn main() {
+    env_logger::init();
     let opts = parse_command_line();
     let builders = demo_builders();
 

@@ -144,16 +144,16 @@ pub fn contact_to_constraint(
     let id2 = indexed_contact.colliders.y;
     let contact = &indexed_contact.contact;
 
-    let mprops1 = mprops.at(id1 as usize);
-    let mprops2 = mprops.at(id2 as usize);
+    let mprops1 = &mprops[id1 as usize];
+    let mprops2 = &mprops[id2 as usize];
     // Contact features (`points_a`, `normal_a`) are stored in collider A's
     // local space, so only `cpose1` is needed to recover their world-space
     // forms; collider B's pose isn't read here.
-    let cpose1 = collider_world_poses.read(id1 as usize);
-    let spose1 = solver_body_poses.read(id1 as usize);
-    let spose2 = solver_body_poses.read(id2 as usize);
-    let vel1 = vels.at(id1 as usize);
-    let vel2 = vels.at(id2 as usize);
+    let cpose1 = collider_world_poses[id1 as usize];
+    let spose1 = solver_body_poses[id1 as usize];
+    let spose2 = solver_body_poses[id2 as usize];
+    let vel1 = &vels[id1 as usize];
+    let vel2 = &vels[id2 as usize];
 
     let force_dir1 = -(cpose1.rotation * contact.normal_a);
 
@@ -327,8 +327,8 @@ pub fn update_constraint(
     let max_corr_velocity = max_corrective_velocity(params);
     let warmstart_coeff = params.warmstart_coefficient;
 
-    let pose1 = poses.read(body1);
-    let pose2 = poses.read(body2);
+    let pose1 = poses[body1];
+    let pose2 = poses[body2];
     let num_contacts = constraint.len as usize;
 
     #[cfg(feature = "dim2")]
@@ -415,15 +415,15 @@ pub fn warmstart_body(
     solver_vel: &mut Velocity,
 ) {
     let first_constraint_id = if body_id != 0 {
-        body_constraint_counts.read(body_id as usize - 1) as usize
+        body_constraint_counts[body_id as usize - 1] as usize
     } else {
         0
     };
-    let last_constraint_id = body_constraint_counts.read(body_id as usize) as usize;
+    let last_constraint_id = body_constraint_counts[body_id as usize] as usize;
 
     for i in first_constraint_id..last_constraint_id {
-        let cid = body_constraint_ids.read(i) as usize;
-        let constraint = constraints.at(cid);
+        let cid = body_constraint_ids[i] as usize;
+        let constraint = &constraints[cid];
         let solver_body_1 = constraint.solver_body_a;
         let dir_a = constraint.dir_a;
         let im_a = constraint.im_a;

@@ -7,7 +7,7 @@ use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
-use crate::utils::{Slice, SliceMut};
+use crate::utils::{BatchIndices, Slice, SliceMut};
 use khal_std::index::MaybeIndexUnchecked;
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -28,13 +28,12 @@ pub fn gpu_transfer_warmstart_impulses(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     new_constraint_builders: &[TwoBodyConstraintBuilder],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contacts_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] contacts_batch_capacity: &u32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] colliders_batch_capacity: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y as usize;
-    let contacts_start = batch_id * *contacts_batch_capacity as usize;
-    let colliders_start = batch_id * *colliders_batch_capacity as usize;
-    let bci_start = batch_id * 2 * *contacts_batch_capacity as usize;
+    let batch_id = invocation_id.y;
+    let contacts_start = batch_ids.contacts_start(batch_id);
+    let colliders_start = batch_ids.coll_start(batch_id);
+    let bci_start = batch_id as usize * 2 * batch_ids.contacts_batch_capacity as usize;
 
     let old_body_constraint_counts = Slice(old_body_constraint_counts, colliders_start);
     let old_body_constraint_ids = Slice(old_body_constraint_ids, bci_start);
@@ -43,7 +42,7 @@ pub fn gpu_transfer_warmstart_impulses(
     let mut new_constraints = SliceMut(new_constraints, contacts_start);
     let new_constraint_builders = Slice(new_constraint_builders, contacts_start);
 
-    let len = contacts_len.read(batch_id);
+    let len = contacts_len.read(batch_id as usize);
     let cid_new = invocation_id.x;
 
     if cid_new < len {
@@ -76,25 +75,25 @@ pub fn transfer_warmstart_impulses(
     let i = cid_new as usize;
 
     // Get the two bodies involved in this new constraint
-    let body_a = new_constraints.at(i).solver_body_a;
-    let body_b = new_constraints.at(i).solver_body_b;
+    let body_a = new_constraints[i].solver_body_a;
+    let body_b = new_constraints[i].solver_body_b;
 
     // Find the range of old constraints involving body_a
     // old_body_constraint_counts is a prefix sum, so the range is [counts[i-1], counts[i])
     let first_constraint_id_a = if body_a != 0 {
-        old_body_constraint_counts.read(body_a as usize - 1) as usize
+        old_body_constraint_counts[body_a as usize - 1] as usize
     } else {
         0
     };
-    let last_constraint_id_a = old_body_constraint_counts.read(body_a as usize) as usize;
+    let last_constraint_id_a = old_body_constraint_counts[body_a as usize] as usize;
 
     // Find the range of old constraints involving body_b
     let first_constraint_id_b = if body_b != 0 {
-        old_body_constraint_counts.read(body_b as usize - 1) as usize
+        old_body_constraint_counts[body_b as usize - 1] as usize
     } else {
         0
     };
-    let last_constraint_id_b = old_body_constraint_counts.read(body_b as usize) as usize;
+    let last_constraint_id_b = old_body_constraint_counts[body_b as usize] as usize;
 
     let len_a = last_constraint_id_a - first_constraint_id_a;
     let len_b = last_constraint_id_b - first_constraint_id_b;
@@ -112,11 +111,11 @@ pub fn transfer_warmstart_impulses(
 
     // Search through old constraints for matching body pair
     for j in first_constraint_id_ref..last_constraint_id_ref {
-        let cid_old = old_body_constraint_ids.read(j) as usize;
+        let cid_old = old_body_constraint_ids[j] as usize;
 
         // Check if this old constraint involves the same body pair
-        if old_constraints.at(cid_old).solver_body_a == body_a
-            && old_constraints.at(cid_old).solver_body_b == body_b
+        if old_constraints[cid_old].solver_body_a == body_a
+            && old_constraints[cid_old].solver_body_b == body_b
         {
             // Body pair match found! Now match individual contact points.
             // We don't have feature IDs, so matching is done by proximity in local space.
@@ -126,19 +125,17 @@ pub fn transfer_warmstart_impulses(
             let sq_threshold = dist_threshold * dist_threshold;
 
             // Try to match each new contact point with old contact points
-            for k_new in 0..(new_constraints.at(i).len as usize) {
-                let pt_new_a = new_constraint_builders.at(i).infos.at(k_new).local_pt_a;
-                let pt_new_b = new_constraint_builders.at(i).infos.at(k_new).local_pt_b;
+            for k_new in 0..(new_constraints[i].len as usize) {
+                let pt_new_a = new_constraint_builders[i].infos.at(k_new).local_pt_a;
+                let pt_new_b = new_constraint_builders[i].infos.at(k_new).local_pt_b;
 
                 // Search through old contact points for a match
-                for k_old in 0..(old_constraints.at(cid_old).len as usize) {
-                    let pt_old_a = old_constraint_builders
-                        .at(cid_old)
+                for k_old in 0..(old_constraints[cid_old].len as usize) {
+                    let pt_old_a = old_constraint_builders[cid_old]
                         .infos
                         .at(k_old)
                         .local_pt_a;
-                    let pt_old_b = old_constraint_builders
-                        .at(cid_old)
+                    let pt_old_b = old_constraint_builders[cid_old]
                         .infos
                         .at(k_old)
                         .local_pt_b;
@@ -155,24 +152,20 @@ pub fn transfer_warmstart_impulses(
                         // NOTE: we sum the impulse + impulse_accumulator since the accumulator contains the
                         //       accumulated impulse for all the substeps except the last one.
                         // TODO: what if we have multiple matches? (currently uses first match)
-                        new_constraints
-                            .at_mut(i)
+                        new_constraints[i]
                             .elements
                             .at_mut(k_new)
                             .normal_part
-                            .impulse = old_constraints
-                            .at(cid_old)
+                            .impulse = old_constraints[cid_old]
                             .elements
                             .at(k_old)
                             .normal_part
                             .impulse;
-                        new_constraints
-                            .at_mut(i)
+                        new_constraints[i]
                             .elements
                             .at_mut(k_new)
                             .tangent_part
-                            .impulse = old_constraints
-                            .at(cid_old)
+                            .impulse = old_constraints[cid_old]
                             .elements
                             .at(k_old)
                             .tangent_part
