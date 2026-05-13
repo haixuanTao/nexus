@@ -66,7 +66,7 @@ vortx-shaders = { path = "../vortx/vortx-shaders" }
 #vortx-shaders = { path = "../vortx/vortx-shaders" }
 
 #glamx = { path = "../glamx" }
-#kiss3d = { path = "../kiss3d" }
+kiss3d = { path = "../kiss3d" }
 parry2d = { path = "../parry/crates/parry2d" }
 parry3d = { path = "../parry/crates/parry3d" }
 rapier2d = { path = "../rapier/crates/rapier2d" }

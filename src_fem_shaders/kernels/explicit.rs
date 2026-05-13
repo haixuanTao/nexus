@@ -66,7 +66,7 @@ pub fn read_force(buf: &[AtomicForce], vertex_idx: u32) -> Vector {
 /// Computes the elastic velocity change (dv) from each element and atomically
 /// scatters it to the shared per-vertex accumulator.
 ///
-/// This follows the Genesis approach: each element independently computes
+/// Each element independently computes
 /// dv_k = -(P * S[k]) * (dt / rho), avoiding mass-based force division.
 ///
 /// For each element:

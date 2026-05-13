@@ -18,7 +18,6 @@ pub fn builder() -> DemoBuilder {
 }
 
 fn build(backend: &GpuBackend) -> FemData {
-    // Match Genesis reference: 0.4m cube in [0.3, 0.7]^3
     let mesh = FemMesh::generate_grid([8, 8, 8], vec3(0.3, 0.3, 0.3), vec3(0.7, 0.7, 0.7));
 
     let material = FemMaterial {

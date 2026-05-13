@@ -1276,7 +1276,7 @@ pub fn gemv_tr_spatial_split_par(
 }
 
 // Note: parallel `lu_decompose_par` / `lu_solve_in_place_par` variants were
-// explored (Genesis-style tiled Cholesky, 32 lanes cooperating per multibody)
+// explored (32 lanes cooperating per multibody)
 // but for the typical multibody sizes (≤ 32 DOFs) the per-pivot barrier
 // overhead dominates on the CPU backend and the GPU win is marginal because
 // the trailing-update block is small. The kernels in

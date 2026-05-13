@@ -34,3 +34,11 @@ path = "all_examples3.rs"
 [[bin]]
 name = "bench_multibody_pendulum3"
 path = "bench_multibody_pendulum3.rs"
+
+[[bin]]
+name = "bench_urdf3"
+path = "bench_urdf3.rs"
+
+[[bin]]
+name = "bench_joints3"
+path = "bench_joints3.rs"

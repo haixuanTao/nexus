@@ -26,12 +26,12 @@ use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
     GpuMbFinalizeContactConstraints,
-    GpuMbInitContactConstraints, GpuMbInitJointConstraints, GpuMbIntegrate,
+    GpuMbInitContactConstraints, GpuMbInitSolveJointWithBias, GpuMbIntegrate,
     GpuMbComputeDynamicsPre, GpuMbGravityAndLu, GpuMbIntegrateVelocities,
     GpuMbComputeDynamicsWithoutCoriolisPre,
     GpuMbRemoveContactConstraintBias,
-    GpuMbRemoveImpulseJointConstraintBias, GpuMbRemoveJointConstraintBias,
-    GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints, GpuMbSolveJointConstraints,
+    GpuMbRemoveImpulseJointConstraintBias, GpuMbRemoveSolveJointNoBias,
+    GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
     GpuMbUpdateImpulseJointConstraints, LocalMassProperties,
     MAX_AXIS_CONSTRAINTS, MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder,
     MbImpulseJointConstraint,
@@ -1192,9 +1192,12 @@ pub struct GpuMultibodySolver {
     gravity_and_lu: GpuMbGravityAndLu,
     compute_dynamics_pre: GpuMbComputeDynamicsPre,
     compute_dynamics_without_coriolis_pre: GpuMbComputeDynamicsWithoutCoriolisPre,
-    init_joint_constraints: GpuMbInitJointConstraints,
-    solve_joint_constraints: GpuMbSolveJointConstraints,
-    remove_joint_constraint_bias: GpuMbRemoveJointConstraintBias,
+    /// Fused init + solve-with-bias for joint limit/motor constraints.
+    /// Replaces the previous (`init_joint_constraints` → `solve_joint_constraints`)
+    /// pair to drop one threads(1) dispatch per substep.
+    init_solve_joint_with_bias: GpuMbInitSolveJointWithBias,
+    /// Fused remove-bias + solve-without-bias for the stabilization sweep.
+    remove_solve_joint_no_bias: GpuMbRemoveSolveJointNoBias,
     init_contact_constraints: GpuMbInitContactConstraints,
     finalize_contact_constraints: GpuMbFinalizeContactConstraints,
     solve_contact_constraints: GpuMbSolveContactConstraints,
@@ -1404,12 +1407,11 @@ impl GpuMultibodySolver {
             &mb.dof_batch_capacity,
         )?;
 
-        // 2. Build limit / motor constraints (uses the cached LU + current coords).
-        // 3. PGS sweep WITH bias (positional correction).
-        // Both are no-ops when no multibody declared limit/motor axes — skip
-        // the dispatches entirely (they count against WebGPU dispatch overhead).
+        // 2+3. Build limit / motor constraints AND apply one PGS sweep WITH
+        // bias — fused into a single threads(1) kernel to drop a dispatch.
+        // Skipped entirely when no multibody declared limit/motor axes.
         if mb.has_joint_constraints {
-            self.init_joint_constraints.call(
+            self.init_solve_joint_with_bias.call(
                 pass,
                 dispatch,
                 &mb.multibody_info,
@@ -1420,24 +1422,11 @@ impl GpuMultibodySolver {
                 &mut mb.joint_constraints,
                 &mut mb.joint_constraint_columns,
                 &mb.num_multibodies,
+                &mut mb.dof_state,
                 &mb.dt,
                 &mb.multibodies_batch_capacity,
                 &mb.links_batch_capacity,
                 &mb.mass_matrix_batch_capacity,
-                &mb.dof_batch_capacity,
-                &mb.joint_constraints_batch_capacity,
-                &mb.joint_constraint_columns_batch_capacity,
-            )?;
-
-            self.solve_joint_constraints.call(
-                pass,
-                dispatch,
-                &mb.multibody_info,
-                &mut mb.joint_constraints,
-                &mb.joint_constraint_columns,
-                &mut mb.dof_state,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
                 &mb.dof_batch_capacity,
                 &mb.joint_constraints_batch_capacity,
                 &mb.joint_constraint_columns_batch_capacity,
@@ -1592,16 +1581,22 @@ impl GpuMultibodySolver {
             self.compute_dynamics(pass, mb, args)?;
         }
 
-        // 6. Stabilization: strip positional bias from each constraint's `rhs`.
+        // 6+7. Stabilization: fused remove-bias + final PGS sweep WITHOUT
+        // bias for joint limits/motors. Settles velocity along constrained
+        // DOFs to zero (no rebound from the positional bias).
         if mb.has_joint_constraints {
-            self.remove_joint_constraint_bias.call(
+            self.remove_solve_joint_no_bias.call(
                 pass,
                 dispatch,
                 &mb.multibody_info,
                 &mut mb.joint_constraints,
+                &mb.joint_constraint_columns,
+                &mut mb.dof_state,
                 &mb.num_multibodies,
                 &mb.multibodies_batch_capacity,
+                &mb.dof_batch_capacity,
                 &mb.joint_constraints_batch_capacity,
+                &mb.joint_constraint_columns_batch_capacity,
             )?;
         }
         self.remove_contact_constraint_bias.call(
@@ -1626,23 +1621,7 @@ impl GpuMultibodySolver {
             )?;
         }
 
-        // 7. Final PGS sweep WITHOUT bias — settles velocity to pure-zero
-        //    along constrained DOFs, eliminating the rebound that drives jitter.
-        if mb.has_joint_constraints {
-            self.solve_joint_constraints.call(
-                pass,
-                dispatch,
-                &mb.multibody_info,
-                &mut mb.joint_constraints,
-                &mb.joint_constraint_columns,
-                &mut mb.dof_state,
-                &mb.num_multibodies,
-                &mb.multibodies_batch_capacity,
-                &mb.dof_batch_capacity,
-                &mb.joint_constraints_batch_capacity,
-                &mb.joint_constraint_columns_batch_capacity,
-            )?;
-        }
+        // 7. (joint sweep WITHOUT bias was fused into `remove_solve_joint_no_bias` above.)
         self.solve_contact_constraints.call(
             pass,
             dispatch,
@@ -1699,8 +1678,7 @@ impl GpuMultibodySolver {
     ) -> Result<(), GpuBackendError> {
         let dispatch = [mb.multibodies_per_batch, mb.num_batches, 1];
 
-        // Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis
-        // mass-matrix assembly (4 dispatches → 1).
+        // Fused FK + body-jacobians + velocity propagation + Mass-matrix assembly
         let pre_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
         if mb.implicit_coriolis {
             self.compute_dynamics_pre.call(

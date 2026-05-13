@@ -39,8 +39,8 @@ use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot};
 
 use super::types::{
     CONTACT_CONSTRAINTS_PER_POINT, MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MAX_MB_CONTACTS_PER_MB,
-    MB_CONTACT_KIND_INACTIVE, MB_CONTACT_KIND_NORMAL, MB_CONTACT_KIND_TANGENT,
-    MultibodyContactConstraint, MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace,
+    MB_CONTACT_KIND_NORMAL, MB_CONTACT_KIND_TANGENT,
+    MultibodyContactConstraint, MultibodyInfo,
 };
 
 #[cfg(feature = "dim3")]
@@ -521,13 +521,8 @@ pub fn gpu_mb_init_contact_constraints(
         }
     }
 
-    // Mark surplus slots as inactive so the solve sweep skips them.
-    for s in count..MAX_MB_CONTACT_CONSTRAINTS_PER_MB {
-        let mut cz = contact_constraints.read(cons_base + s as usize);
-        cz.kind = MB_CONTACT_KIND_INACTIVE;
-        cz.impulse = 0.0;
-        contact_constraints.write(cons_base + s as usize, cz);
-    }
+    // The solve / finalize / remove-bias kernels iterate `0..count` so we
+    // don't need to mark surplus slots inactive — they're never read.
     contact_constraint_count.write(mb_start + mb_idx as usize, count);
 }
 
@@ -667,9 +662,6 @@ pub fn gpu_mb_solve_contact_constraints(
     let count = contact_constraint_count.read(mb_start + mb_idx as usize);
     for s in 0..count {
         let mut cons = contact_constraints.read(cons_base + s as usize);
-        if cons.kind == MB_CONTACT_KIND_INACTIVE {
-            continue;
-        }
         let col_offset = col_base + (s as usize) * dofs_stride;
 
         // J · u = J_mb · v_mb_dofs + J_free · v_free.
@@ -771,3 +763,4 @@ pub fn gpu_mb_remove_contact_constraint_bias(
         contact_constraints.write(cons_base + s as usize, cons);
     }
 }
+

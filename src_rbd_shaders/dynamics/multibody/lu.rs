@@ -11,7 +11,7 @@
 //! Workgroup-parallel: one workgroup of `LU_LANES = 32` threads cooperates
 //! per `(multibody, batch)` pair, holding the matrix in shared memory and
 //! partitioning each pivot step's row-swap / column-scale / trailing-update
-//! across lanes (Genesis-style tiled LU).
+//! across lanes (tiled LU).
 
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
