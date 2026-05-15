@@ -9,7 +9,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::module_inception)]
-#![allow(dead_code)]
+// #![allow(dead_code)]
 
 use core::ops::{Deref, DerefMut};
 use glamx::*;

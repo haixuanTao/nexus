@@ -321,9 +321,6 @@ pub fn gemv_tr_spatial_split(
 }
 
 /// `[t]_×ᵀ`, the transpose of the cross-product matrix: `skew_tr(t) · v = v × t`.
-///
-/// Used in the jacobian propagation so that, given `t = shift02` or `shift23`
-/// and the angular-rows block `J_w`, we have `J_v += [t]_×ᵀ · J_w`.
 #[inline]
 pub fn skew_tr(t: Vec3) -> Mat3 {
     Mat3::from_cols(

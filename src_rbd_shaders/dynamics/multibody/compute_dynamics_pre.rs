@@ -162,7 +162,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             let shift02 = child_anchor_world - parent_com_world;
             let shift23 = world_com - child_anchor_world;
 
-            let link_mut = (&mut ws_slice[k_usize]);
+            let link_mut = &mut ws_slice[k_usize];
             link_mut.local_to_parent = local_to_parent;
             link_mut.local_to_world = local_to_world;
             link_mut.shift02 = shift02;
@@ -184,8 +184,8 @@ pub fn gpu_mb_compute_dynamics_pre(
         );
 
         if k < num_links {
-            let link_infos = (&stat_slice[k as usize]);
-            let link = (&ws_slice[k as usize]);
+            let link_infos = &stat_slice[k as usize];
+            let link = &ws_slice[k as usize];
 
             if k != 0 {
                 let parent_j = MatSlice::dense(
@@ -194,7 +194,7 @@ pub fn gpu_mb_compute_dynamics_pre(
                     SPATIAL_DIM as u32,
                     ndofs,
                 );
-                let parent_link = (&ws_slice[link_infos.parent_link_id as usize]);
+                let parent_link = &ws_slice[link_infos.parent_link_id as usize];
                 parent_to_world = parent_link.local_to_world;
 
                 copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
@@ -219,7 +219,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         workgroup_memory_barrier_with_group_sync();
 
         if k < num_links {
-            let link_infos = (&stat_slice[k as usize]);
+            let link_infos = &stat_slice[k as usize];
             let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
             joint_jacobian_accumulate_par(
                 link_infos,
@@ -234,7 +234,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         workgroup_memory_barrier_with_group_sync();
 
         if k < num_links {
-            let link = (&ws_slice[k as usize]);
+            let link = &ws_slice[k as usize];
             let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
             gemm_skew_tr_lhs_par(
                 body_jacobians,
@@ -265,7 +265,7 @@ pub fn gpu_mb_compute_dynamics_pre(
                 (jv, jv)
             } else {
                 let parent_id = stat.parent_link_id as usize;
-                let parent_ws = (&ws_slice[parent_id]);
+                let parent_ws = &ws_slice[parent_id];
                 let parent_to_world_rot = parent_ws.local_to_world.rotation;
                 let parent_world_com_pose = parent_ws.local_to_world;
                 let parent_rb_lin = parent_ws.rb_vels.linear;
@@ -281,7 +281,7 @@ pub fn gpu_mb_compute_dynamics_pre(
                 let joint_velocity = Velocity::new(transform_rot * jv_local_lin, jv_local_ang);
 
                 let (self_local_to_world, self_shift23) = {
-                    let ws_ref = (&ws_slice[k_usize]);
+                    let ws_ref = &ws_slice[k_usize];
                     (ws_ref.local_to_world, ws_ref.shift23)
                 };
 
@@ -298,7 +298,7 @@ pub fn gpu_mb_compute_dynamics_pre(
                 (joint_velocity, Velocity::new(new_lin, new_ang))
             };
 
-            let link_mut = (&mut ws_slice[k_usize]);
+            let link_mut = &mut ws_slice[k_usize];
             link_mut.joint_velocity = joint_velocity;
             link_mut.rb_vels = rb_vels;
         }
@@ -371,7 +371,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         let mut rb_inertia = Default::default();
 
         if loop_is_active {
-            let ws = (&ws_slice[k as usize]);
+            let ws = &ws_slice[k as usize];
             let lmp = local_mprops_slice[k as usize];
             mass = 1.0 / inv_mass_x;
             rb_inertia = link_world_inertia(ws, &lmp);
@@ -404,7 +404,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             if k != 0 {
                 let stat = stat_slice[k as usize];
                 let parent_id = stat.parent_link_id;
-                let parent_link = (&ws_slice[parent_id as usize]);
+                let parent_link = &ws_slice[parent_id as usize];
                 let parent_j = MatSlice::dense(
                     mb_jac_base + (parent_id as usize) * SPATIAL_DIM * (ndofs as usize),
                     SPATIAL_DIM as u32,
@@ -511,7 +511,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             if k != 0 {
                 let stat = stat_slice[k as usize];
                 let parent_id = stat.parent_link_id;
-                let parent_link = (&ws_slice[parent_id as usize]);
+                let parent_link = &ws_slice[parent_id as usize];
 
                 if stat.kinematic == 0 {
                     let transform_rot =
@@ -566,7 +566,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         workgroup_memory_barrier_with_group_sync();
 
         if loop_is_active {
-            let ws = (&ws_slice[k as usize]);
+            let ws = &ws_slice[k as usize];
             gemm_skew_tr_lhs_par(
                 coriolis_packed,
                 coriolis_v_i,
@@ -759,7 +759,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
             let shift02 = child_anchor_world - parent_com_world;
             let shift23 = world_com - child_anchor_world;
 
-            let link_mut = (&mut ws_slice[k_usize]);
+            let link_mut = &mut ws_slice[k_usize];
             link_mut.local_to_parent = local_to_parent;
             link_mut.local_to_world = local_to_world;
             link_mut.shift02 = shift02;
@@ -781,8 +781,8 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         );
 
         if k < num_links {
-            let link_infos = (&stat_slice[k as usize]);
-            let link = (&ws_slice[k as usize]);
+            let link_infos = &stat_slice[k as usize];
+            let link = &ws_slice[k as usize];
 
             if k != 0 {
                 let parent_j = MatSlice::dense(
@@ -791,7 +791,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
                     SPATIAL_DIM as u32,
                     ndofs,
                 );
-                let parent_link = (&ws_slice[link_infos.parent_link_id as usize]);
+                let parent_link = &ws_slice[link_infos.parent_link_id as usize];
                 parent_to_world = parent_link.local_to_world;
 
                 copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
@@ -815,7 +815,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         workgroup_memory_barrier_with_group_sync();
 
         if k < num_links {
-            let link_infos = (&stat_slice[k as usize]);
+            let link_infos = &stat_slice[k as usize];
             let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
             joint_jacobian_accumulate_par(
                 link_infos,
@@ -830,7 +830,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         workgroup_memory_barrier_with_group_sync();
 
         if k < num_links {
-            let link = (&ws_slice[k as usize]);
+            let link = &ws_slice[k as usize];
             let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
             gemm_skew_tr_lhs_par(
                 body_jacobians,
@@ -861,7 +861,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
                 (jv, jv)
             } else {
                 let parent_id = stat.parent_link_id as usize;
-                let parent_ws = (&ws_slice[parent_id]);
+                let parent_ws = &ws_slice[parent_id];
                 let parent_to_world_rot = parent_ws.local_to_world.rotation;
                 let parent_world_com_pose = parent_ws.local_to_world;
                 let parent_rb_lin = parent_ws.rb_vels.linear;
@@ -877,7 +877,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
                 let joint_velocity = Velocity::new(transform_rot * jv_local_lin, jv_local_ang);
 
                 let (self_local_to_world, self_shift23) = {
-                    let ws_ref = (&ws_slice[k_usize]);
+                    let ws_ref = &ws_slice[k_usize];
                     (ws_ref.local_to_world, ws_ref.shift23)
                 };
 
@@ -894,7 +894,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
                 (joint_velocity, Velocity::new(new_lin, new_ang))
             };
 
-            let link_mut = (&mut ws_slice[k_usize]);
+            let link_mut = &mut ws_slice[k_usize];
             link_mut.joint_velocity = joint_velocity;
             link_mut.rb_vels = rb_vels;
         }
@@ -918,7 +918,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         }
 
         if active {
-            let ws = (&ws_slice[k as usize]);
+            let ws = &ws_slice[k as usize];
             let lmp = local_mprops_slice[k as usize];
             let mass = 1.0 / lmp.inv_mass.x;
             let inertia = link_world_inertia(ws, &lmp);

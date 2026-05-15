@@ -43,17 +43,12 @@ mod lu;
 mod mass_matrix;
 mod types;
 mod utils;
-mod velocity;
 
 pub use compute_dynamics_pre::*;
 pub use contact_constraints::*;
 pub use gravity_and_lu::*;
 pub use impulse_joint_constraints::*;
 pub use integrate::*;
-pub use jacobian::*;
 pub use joint_constraints::*;
-pub use lu::*;
-pub use mass_matrix::*;
 pub use types::*;
 pub use utils::*;
-pub use velocity::*;
