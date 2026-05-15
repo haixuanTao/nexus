@@ -18,13 +18,13 @@ use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use parry::math::VectorExt;
-use crate::utils::{BatchIndices, Slice, SliceMut};
-use crate::{ANG_DIM, DIM};
 #[cfg(feature = "dim2")]
 use crate::rotation_from_angle;
+use crate::utils::{BatchIndices, Slice, SliceMut};
+use crate::{ANG_DIM, DIM};
 #[cfg(feature = "dim3")]
 use crate::{Vector, rotation_from_scaled_axis, rotation_renormalize_fast};
+use parry::math::VectorExt;
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 
@@ -52,7 +52,9 @@ pub fn gpu_mb_integrate_velocities(
     }
     let dt = *dt_uniform;
 
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let gen_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
 
     let mut dof_vel = SliceMut(dof_state, gen_base);
@@ -69,7 +71,8 @@ pub fn gpu_mb_integrate_velocities(
 pub fn gpu_mb_integrate(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_values: &mut [f32],
@@ -86,7 +89,9 @@ pub fn gpu_mb_integrate(
     }
     let dt = *dt_uniform;
 
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let num_links = mb.num_links;
     let gen_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
 

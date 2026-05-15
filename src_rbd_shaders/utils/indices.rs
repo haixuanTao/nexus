@@ -6,10 +6,7 @@ use crate::utils::{Slice, SliceMut};
 /// Combining 30+ scalar uniforms into a single struct keeps the WebGPU
 /// uniform count under control and centralises the per-buffer slicing logic.
 #[derive(Copy, Clone, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct BatchIndices {
     /*
@@ -254,11 +251,7 @@ impl BatchIndices {
     }
 
     #[inline]
-    pub fn mb_joint_constraints_batch<'s, T>(
-        &self,
-        batch_id: u32,
-        slice: &'s [T],
-    ) -> Slice<'s, T> {
+    pub fn mb_joint_constraints_batch<'s, T>(&self, batch_id: u32, slice: &'s [T]) -> Slice<'s, T> {
         Slice(slice, self.mb_joint_constraints_start(batch_id))
     }
 

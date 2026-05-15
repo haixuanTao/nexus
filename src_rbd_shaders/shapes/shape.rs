@@ -50,10 +50,7 @@ pub const SHAPE_TYPE_TRIANGLE: u32 = 8;
 /// This is a tagged union encoded in two vec4 values. The shape type
 /// is stored in the 'a.w' component as a bitcast u32.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Shape {
     /// First vec4 containing shape-specific data and type tag in 'w' component.

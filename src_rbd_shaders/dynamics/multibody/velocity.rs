@@ -7,10 +7,10 @@ use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
-use parry::math::VectorExt;
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::utils::{Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Vector, gcross_av};
+use parry::math::VectorExt;
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 

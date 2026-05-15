@@ -582,7 +582,13 @@ fn rbd_performance(
         0.0
     };
 
-    ui.label(RichText::new(format!("Total: {:.2}ms (+ readback: {:.2}ms) - {:.0} FPS", total_ms_without_readback, total_readback_time, fps)).strong());
+    ui.label(
+        RichText::new(format!(
+            "Total: {:.2}ms (+ readback: {:.2}ms) - {:.0} FPS",
+            total_ms_without_readback, total_readback_time, fps
+        ))
+        .strong(),
+    );
     ui.add_space(4.0);
 
     if !matches!(backend_type, BackendType::Rapier) {

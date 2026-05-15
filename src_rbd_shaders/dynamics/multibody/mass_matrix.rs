@@ -18,19 +18,18 @@ use glamx::{Mat3, Vec3};
 
 use crate::dynamics::body::LocalMassProperties;
 use crate::dynamics::joint::SPATIAL_DIM;
+#[cfg(feature = "dim3")]
+use crate::rotation_to_matrix;
 use crate::utils::Slice;
 use crate::utils::linalg::{
-    MAX_MB_DOFS, MatSlice, copy_from, copy_from_par, fill, fill_par,
-    gemm_inertia_lhs_cross_buf, gemm_inertia_lhs_par,
-    gemm_omega_skew_tr_cross_buf, gemm_omega_skew_tr_cross_buf_par,
+    MAX_MB_DOFS, MatSlice, copy_from, copy_from_par, fill, fill_par, gemm_inertia_lhs_cross_buf,
+    gemm_inertia_lhs_par, gemm_omega_skew_tr_cross_buf, gemm_omega_skew_tr_cross_buf_par,
     gemm_skew_tr_lhs_cross_buf, gemm_skew_tr_lhs_cross_buf_par, gemm_skew_tr_lhs_par, gemm_tr,
     gemm_tr_par, quadform_spatial, quadform_spatial_par,
 };
 #[cfg(feature = "dim3")]
 use crate::utils::linalg::{gemm_skew_lhs_cross_buf, gemm_skew_lhs_cross_buf_par};
 use crate::{ANG_DIM, DIM};
-#[cfg(feature = "dim3")]
-use crate::rotation_to_matrix;
 
 use super::jacobian::joint_jacobian_column;
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};

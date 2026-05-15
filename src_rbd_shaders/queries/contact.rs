@@ -22,10 +22,7 @@ use crate::Vector;
 /// This structure extends ContactManifold with the collider indices,
 /// allowing the physics solver to identify which bodies are in contact.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct IndexedManifold {
     /// The contact information.

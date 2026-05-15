@@ -75,6 +75,6 @@ fn build() -> SimulationState {
     }
 
     SimulationState::single_with_multibody(bodies, colliders, impulse_joints, multibody_joints)
-        // .with_dt(1.0 / 60.0 / 10.0)
-        // .with_num_steps_per_frame(10)
+    // .with_dt(1.0 / 60.0 / 10.0)
+    // .with_num_steps_per_frame(10)
 }

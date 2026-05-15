@@ -5,11 +5,11 @@ use nexus::rbd::math::Pose;
 
 #[cfg(feature = "dim3")]
 use kiss3d::color::Color;
+use kiss3d::procedural::IndexBuffer;
 use kiss3d::scene::{SceneNode2d, SceneNode3d};
 use rapier::math::DIM;
 use rapier::parry::shape::ShapeType;
 use std::collections::HashMap;
-use kiss3d::procedural::IndexBuffer;
 #[cfg(feature = "dim2")]
 use {
     glamx::{Mat2, Vec2},
@@ -278,7 +278,7 @@ pub async fn setup_graphics(
                                 trimesh.vertices().to_vec(),
                                 None,
                                 None,
-                                Some(IndexBuffer::Unified(trimesh.indices().to_vec()))
+                                Some(IndexBuffer::Unified(trimesh.indices().to_vec())),
                             );
                             render.replicate_vertices();
                             render.recompute_normals();
@@ -303,7 +303,7 @@ pub async fn setup_graphics(
                         trimesh.vertices().to_vec(),
                         None,
                         None,
-                        Some(IndexBuffer::Unified(trimesh.indices().to_vec()))
+                        Some(IndexBuffer::Unified(trimesh.indices().to_vec())),
                     );
                     render.replicate_vertices();
                     render.recompute_normals();

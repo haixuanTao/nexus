@@ -39,7 +39,12 @@ impl MatSlice {
     /// Dense (`lead = rows`) view at `offset`.
     #[inline]
     pub fn dense(offset: usize, rows: u32, cols: u32) -> Self {
-        Self { offset, rows, cols, lead: rows }
+        Self {
+            offset,
+            rows,
+            cols,
+            lead: rows,
+        }
     }
 
     /// Flat index of element `(r, c)`.
@@ -119,14 +124,7 @@ pub fn gemm(buf: &mut [f32], c: MatSlice, alpha: f32, a: MatSlice, b: MatSlice, 
 /// `c := beta * c + alpha * A * b` where `A` is an inline 3×3 (stack) and `b`, `c`
 /// are views with `rows == 3`. Matches rapier's `link_j_v.gemm(1.0, &shift_tr, &J_w, 1.0)`.
 #[inline]
-pub fn gemm_mat3_lhs(
-    buf: &mut [f32],
-    c: MatSlice,
-    alpha: f32,
-    a: Mat3,
-    b: MatSlice,
-    beta: f32,
-) {
+pub fn gemm_mat3_lhs(buf: &mut [f32], c: MatSlice, alpha: f32, a: Mat3, b: MatSlice, beta: f32) {
     for j in 0..c.cols {
         let bx = buf.read(b.idx(0, j));
         let by = buf.read(b.idx(1, j));
@@ -143,13 +141,7 @@ pub fn gemm_mat3_lhs(
 
 /// `dst += alpha * src`. `src` lives in a separate buffer (stack scratch or another tensor).
 #[inline]
-pub fn axpy_mat(
-    buf_dst: &mut [f32],
-    dst: MatSlice,
-    alpha: f32,
-    buf_src: &[f32],
-    src: MatSlice,
-) {
+pub fn axpy_mat(buf_dst: &mut [f32], dst: MatSlice, alpha: f32, buf_src: &[f32], src: MatSlice) {
     for c in 0..dst.cols {
         for r in 0..dst.rows {
             let cur = buf_dst.read(dst.idx(r, c));
@@ -209,8 +201,12 @@ pub fn quadform_spatial(
                 buf_j.read(j.idx(4, rr)),
                 buf_j.read(j.idx(5, rr)),
             );
-            let s = jvr.x * wjv.x + jvr.y * wjv.y + jvr.z * wjv.z
-                + jwr.x * wjw.x + jwr.y * wjw.y + jwr.z * wjw.z;
+            let s = jvr.x * wjv.x
+                + jvr.y * wjv.y
+                + jvr.z * wjv.z
+                + jwr.x * wjw.x
+                + jwr.y * wjw.y
+                + jwr.z * wjw.z;
             let idx = m.idx(rr, cc);
             buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
         }
@@ -554,8 +550,14 @@ pub fn gemm_omega_skew_tr_cross_buf(
         let bw = buf_b.read(b.idx(0, j));
         let i0 = c.idx(0, j);
         let i1 = c.idx(1, j);
-        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (parent_w * shift.x * bw));
-        buf_c.write(i1, beta * buf_c.read(i1) + alpha * (parent_w * shift.y * bw));
+        buf_c.write(
+            i0,
+            beta * buf_c.read(i0) + alpha * (parent_w * shift.x * bw),
+        );
+        buf_c.write(
+            i1,
+            beta * buf_c.read(i1) + alpha * (parent_w * shift.y * bw),
+        );
     }
 }
 
@@ -563,14 +565,7 @@ pub fn gemm_omega_skew_tr_cross_buf(
 /// disjoint views into the same flat buffer).
 #[cfg(feature = "dim3")]
 #[inline]
-pub fn gemm_skew_tr_lhs(
-    buf: &mut [f32],
-    c: MatSlice,
-    alpha: f32,
-    t: Vec3,
-    b: MatSlice,
-    beta: f32,
-) {
+pub fn gemm_skew_tr_lhs(buf: &mut [f32], c: MatSlice, alpha: f32, t: Vec3, b: MatSlice, beta: f32) {
     let a = skew_tr(t);
     for j in 0..c.cols {
         let bx = buf.read(b.idx(0, j));
@@ -588,14 +583,7 @@ pub fn gemm_skew_tr_lhs(
 
 #[cfg(feature = "dim2")]
 #[inline]
-pub fn gemm_skew_tr_lhs(
-    buf: &mut [f32],
-    c: MatSlice,
-    alpha: f32,
-    t: Vec2,
-    b: MatSlice,
-    beta: f32,
-) {
+pub fn gemm_skew_tr_lhs(buf: &mut [f32], c: MatSlice, alpha: f32, t: Vec2, b: MatSlice, beta: f32) {
     for j in 0..c.cols {
         let bw = buf.read(b.idx(0, j));
         let i0 = c.idx(0, j);
@@ -762,10 +750,7 @@ pub fn lu_solve_in_place(
             s -= buf_m.read(m.idx(ii, j)) * buf_rhs.read(rhs_offset + j as usize);
         }
         let u = buf_m.read(m.idx(ii, ii));
-        buf_rhs.write(
-            rhs_offset + ii as usize,
-            if u != 0.0 { s / u } else { 0.0 },
-        );
+        buf_rhs.write(rhs_offset + ii as usize, if u != 0.0 { s / u } else { 0.0 });
     }
 }
 
@@ -859,13 +844,7 @@ pub fn fill_par(buf: &mut [f32], m: MatSlice, val: f32, lane: u32, _lanes: u32) 
 
 /// `dst := src` — parallel across columns.
 #[inline]
-pub fn copy_from_par(
-    buf: &mut [f32],
-    dst: MatSlice,
-    src: MatSlice,
-    lane: u32,
-    _lanes: u32,
-) {
+pub fn copy_from_par(buf: &mut [f32], dst: MatSlice, src: MatSlice, lane: u32, _lanes: u32) {
     // TODO(perf): memory access patern isn’t ideal for column-major matrix
     //             since `c` is the workgroup thread index.
     //             (we probably just need to switch storage to row-major to match
@@ -923,8 +902,12 @@ pub fn quadform_spatial_par(
                 buf_j.read(j.idx(4, rr)),
                 buf_j.read(j.idx(5, rr)),
             );
-            let s = jvr.x * wjv.x + jvr.y * wjv.y + jvr.z * wjv.z
-                + jwr.x * wjw.x + jwr.y * wjw.y + jwr.z * wjw.z;
+            let s = jvr.x * wjv.x
+                + jvr.y * wjv.y
+                + jvr.z * wjv.z
+                + jwr.x * wjw.x
+                + jwr.y * wjw.y
+                + jwr.z * wjw.z;
             let idx = m.idx(rr, cc);
             buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
         }
@@ -1225,8 +1208,14 @@ pub fn gemm_omega_skew_tr_cross_buf_par(
         let bw = buf_b.read(b.idx(0, j));
         let i0 = c.idx(0, j);
         let i1 = c.idx(1, j);
-        buf_c.write(i0, beta * buf_c.read(i0) + alpha * (parent_w * shift.x * bw));
-        buf_c.write(i1, beta * buf_c.read(i1) + alpha * (parent_w * shift.y * bw));
+        buf_c.write(
+            i0,
+            beta * buf_c.read(i0) + alpha * (parent_w * shift.x * bw),
+        );
+        buf_c.write(
+            i1,
+            beta * buf_c.read(i1) + alpha * (parent_w * shift.y * bw),
+        );
     }
 }
 

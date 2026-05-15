@@ -56,8 +56,7 @@ pub fn gpu_sync_collider_poses(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] body_poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
-    collider_local_poses: &[Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] collider_local_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collider_world_poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,

@@ -38,8 +38,8 @@ use crate::dynamics::joint::{
     ANG_AXES_MASK, GenericJoint, JointMotor, LIN_AXES_MASK, MotorParameters, SPATIAL_DIM,
     motor_params,
 };
-use crate::utils::linalg::{MatSlice, lu_solve_in_place};
 use crate::utils::BatchIndices;
+use crate::utils::linalg::{MatSlice, lu_solve_in_place};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot, rotation_to_matrix};
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
@@ -84,10 +84,7 @@ pub const SIDE_KIND_FIXED: u32 = 2;
 /// reads it to (re)build the joint's axis constraints in the per-batch
 /// `constraints` slab.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct MbImpulseJointBuilder {
     /// Joint description — frames already shifted into solver-body
@@ -134,10 +131,7 @@ pub struct MbImpulseJointBuilder {
 ///
 /// `kind` values: `0` = inactive / unused slot, `1` = active.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct MbImpulseJointConstraint {
     /// `0` = inactive, `1` = active.
@@ -920,8 +914,7 @@ fn limit_linear_generic(
     let dist = helper.lin_err.dot(lin_jac);
     let min_enabled = dist <= limits[0];
     let max_enabled = limits[1] <= dist;
-    let rhs_bias =
-        ((dist - limits[1]).max(0.0) - (limits[0] - dist).max(0.0)) * erp_inv_dt_val;
+    let rhs_bias = ((dist - limits[1]).max(0.0) - (limits[0] - dist).max(0.0)) * erp_inv_dt_val;
     out.rhs_wo_bias = 0.0;
     out.rhs = rhs_bias;
     out.impulse_lo = if min_enabled { -MAX_F32 } else { 0.0 };
@@ -981,7 +974,8 @@ fn limit_angular_generic(
     let s_ang = ang_err_axis(helper, limited_axis);
     let min_enabled = s_ang <= s_limits[0];
     let max_enabled = s_limits[1] <= s_ang;
-    let rhs_bias = ((s_ang - s_limits[1]).max(0.0) - (s_limits[0] - s_ang).max(0.0)) * erp_inv_dt_val;
+    let rhs_bias =
+        ((s_ang - s_limits[1]).max(0.0) - (s_limits[0] - s_ang).max(0.0)) * erp_inv_dt_val;
     out.rhs_wo_bias = 0.0;
     out.rhs = rhs_bias;
     out.impulse_lo = if min_enabled { -MAX_F32 } else { 0.0 };
@@ -1151,7 +1145,8 @@ pub fn gpu_mb_update_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] jacobians: &mut [f32],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] dt_uniform: &f32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] links_workspace: &[MultibodyLinkWorkspace],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)]
+    links_workspace: &[MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] body_jacobians: &[f32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] mass_matrices: &[f32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] lu_pivots: &[u32],
@@ -1626,7 +1621,8 @@ fn side_world_pose(
 pub fn gpu_mb_solve_impulse_joint_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] builders: &[MbImpulseJointBuilder],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] constraints: &mut [MbImpulseJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    constraints: &mut [MbImpulseJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] jacobians: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_joints: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] multibody_info: &[MultibodyInfo],
@@ -1691,9 +1687,8 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
                 colliders_start,
             );
             let dvel = c.rhs + (v2 - v1);
-            let total =
-                (c.impulse + c.inv_lhs * (dvel - c.cfm_gain * c.impulse))
-                    .clamp(c.impulse_lo, c.impulse_hi);
+            let total = (c.impulse + c.inv_lhs * (dvel - c.cfm_gain * c.impulse))
+                .clamp(c.impulse_lo, c.impulse_hi);
             let delta = total - c.impulse;
             c.impulse = total;
             constraints.write(cons_base + s as usize, c);

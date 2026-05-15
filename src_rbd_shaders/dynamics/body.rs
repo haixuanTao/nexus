@@ -159,10 +159,7 @@ impl Default for WorldMassProperties {
 
 /// An impulse (instantaneous change in momentum).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Impulse {
     /// Linear impulse component (change in linear momentum).
@@ -180,10 +177,7 @@ impl Impulse {
 
 /// A force and torque applied to a rigid body.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Force {
     /// Linear force component.
@@ -197,7 +191,6 @@ impl Force {
     pub fn new(linear: Vector, angular: AngVector) -> Self {
         Self { linear, angular }
     }
-
 
     /// Integrates forces over a timestep to compute velocity changes (explicit Euler).
     pub fn integrate(
@@ -214,15 +207,11 @@ impl Force {
             velocity.angular + acc_ang * dt,
         )
     }
-
 }
 
 /// Linear and angular velocity of a rigid body.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Velocity {
     /// Linear (translational) velocity.

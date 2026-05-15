@@ -11,8 +11,8 @@ use crate::mpm_shaders::solver::timestep_bound::{
     GpuEstimateTimestepBound, GpuResetTimestepBound, GpuTimestepBounds,
 };
 use crate::solver::{GpuParticleModelData, GpuParticles};
-use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
 use khal::Shader;
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
 use vortx::tensor::Tensor;
 
 /// GPU kernel for estimating the maximum stable timestep (best-effort, does not eliminate all divergence risk).

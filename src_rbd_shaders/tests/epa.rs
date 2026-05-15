@@ -1,6 +1,8 @@
 //! Tests for the EPA (Expanding Polytope Algorithm).
 
-use crate::queries::gjk::{Epa, INTERSECTION, closest_points, cso_point_from_shapes, VoronoiSimplex};
+use crate::queries::gjk::{
+    Epa, INTERSECTION, VoronoiSimplex, closest_points, cso_point_from_shapes,
+};
 use crate::shapes::Shape;
 use crate::{PaddedVector, Pose, Vector};
 

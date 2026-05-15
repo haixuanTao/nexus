@@ -131,14 +131,8 @@ pub fn transfer_warmstart_impulses(
 
                 // Search through old contact points for a match
                 for k_old in 0..(old_constraints[cid_old].len as usize) {
-                    let pt_old_a = old_constraint_builders[cid_old]
-                        .infos
-                        .at(k_old)
-                        .local_pt_a;
-                    let pt_old_b = old_constraint_builders[cid_old]
-                        .infos
-                        .at(k_old)
-                        .local_pt_b;
+                    let pt_old_a = old_constraint_builders[cid_old].infos.at(k_old).local_pt_a;
+                    let pt_old_b = old_constraint_builders[cid_old].infos.at(k_old).local_pt_b;
 
                     // Compute distance between contact points in local space
                     let dpt_a = pt_old_a - pt_new_a;

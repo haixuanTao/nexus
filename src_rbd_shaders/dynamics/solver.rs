@@ -6,7 +6,7 @@ use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::{AngVector, Pose, Vector};
-use khal_std::{sync::atomic_add_u32, index::MaybeIndexUnchecked, iter::StepRng};
+use khal_std::{index::MaybeIndexUnchecked, iter::StepRng, sync::atomic_add_u32};
 
 use super::body::{LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
@@ -496,7 +496,8 @@ pub fn gpu_solver_finalize(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] solver_body_poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
+    local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colliders: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 6)] batch_ids: &BatchIndices,
 ) {

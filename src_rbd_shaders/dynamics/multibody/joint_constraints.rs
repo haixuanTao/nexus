@@ -77,12 +77,16 @@ fn lu_solve_unit(
 pub fn gpu_mb_init_joint_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] links_workspace: &[MultibodyLinkWorkspace],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &[MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] mass_matrices: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] lu_pivots: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] joint_constraints: &mut [MultibodyJointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] joint_constraint_columns: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    joint_constraints: &mut [MultibodyJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    joint_constraint_columns: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
@@ -119,7 +123,8 @@ pub fn gpu_mb_init_joint_constraints(
 pub fn gpu_mb_remove_joint_constraint_bias(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
@@ -130,7 +135,9 @@ pub fn gpu_mb_remove_joint_constraint_bias(
         return;
     }
 
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
 
     for s in 0..mb.max_constraints {
@@ -156,7 +163,9 @@ fn solve_joint_constraints_body(
     mb_idx: u32,
     batch_ids: &BatchIndices,
 ) {
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let ndofs = mb.ndofs;
     if ndofs == 0 || mb.max_constraints == 0 {
         return;
@@ -190,8 +199,8 @@ fn solve_joint_constraints_body(
         for i in 0..ndofs {
             let v_idx = v_base + i as usize;
             let cur = dof_state.read(v_idx);
-            let col = joint_constraint_columns
-                .read(col_base + (s as usize) * dofs_stride + i as usize);
+            let col =
+                joint_constraint_columns.read(col_base + (s as usize) * dofs_stride + i as usize);
             dof_state.write(v_idx, cur - delta * col);
         }
     }
@@ -205,7 +214,8 @@ fn solve_joint_constraints_body(
 pub fn gpu_mb_solve_joint_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
@@ -244,7 +254,9 @@ fn init_joint_constraints_body(
     dt: f32,
     batch_ids: &BatchIndices,
 ) {
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let num_links = mb.num_links;
     let ndofs = mb.ndofs;
     if ndofs == 0 {
@@ -348,7 +360,10 @@ fn init_joint_constraints_body(
                     abs_dof,
                     ndofs,
                     curr_pos,
-                    [stat.data.limits[axis as usize].min, stat.data.limits[axis as usize].max],
+                    [
+                        stat.data.limits[axis as usize].min,
+                        stat.data.limits[axis as usize].max,
+                    ],
                     dt,
                     mass_matrices,
                     m,
@@ -379,7 +394,10 @@ fn init_joint_constraints_body(
                     abs_dof,
                     ndofs,
                     curr_pos,
-                    [stat.data.limits[axis as usize].min, stat.data.limits[axis as usize].max],
+                    [
+                        stat.data.limits[axis as usize].min,
+                        stat.data.limits[axis as usize].max,
+                    ],
                     dt,
                     mass_matrices,
                     m,
@@ -604,12 +622,16 @@ fn emit_motor_constraint(
 pub fn gpu_mb_init_solve_joint_with_bias(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] links_workspace: &[MultibodyLinkWorkspace],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &[MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] mass_matrices: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] lu_pivots: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] joint_constraints: &mut [MultibodyJointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] joint_constraint_columns: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    joint_constraints: &mut [MultibodyJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    joint_constraint_columns: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &mut [f32],
     #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
@@ -653,7 +675,8 @@ pub fn gpu_mb_init_solve_joint_with_bias(
 pub fn gpu_mb_remove_solve_joint_no_bias(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joint_constraints: &mut [MultibodyJointConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
@@ -666,7 +689,9 @@ pub fn gpu_mb_remove_solve_joint_no_bias(
         return;
     }
 
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
 
     // Inlined `remove_bias`: replace `rhs` with `rhs_wo_bias` for active slots.

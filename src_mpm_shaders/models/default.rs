@@ -25,10 +25,7 @@ pub const MODEL_SAND_NEO_HOOKEAN: u32 = 3;
 /// model parameters in a flat `[u32; 12]` (48 bytes) that is reinterpreted
 /// as the appropriate model struct.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct GpuParticleModel {
     pub tag: u32,

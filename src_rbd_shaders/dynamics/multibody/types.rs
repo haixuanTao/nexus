@@ -54,12 +54,10 @@ pub const MULTIBODY_ROOT: u32 = u32::MAX;
 ///
 /// Written once at init time.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
-pub struct MultibodyLinkStatic { // TODO: change the name to `MultibodyLink` ?
+pub struct MultibodyLinkStatic {
+    // TODO: change the name to `MultibodyLink` ?
     /// Index of the rigid body backing this link in the shared body buffers.
     pub rb_id: u32,
     /// Parent link index within the owning multibody. `MULTIBODY_ROOT` for the root.
@@ -84,10 +82,7 @@ pub struct MultibodyLinkStatic { // TODO: change the name to `MultibodyLink` ?
 
 /// Per-link workspace updated every step.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim3")]
 pub struct MultibodyLinkWorkspace {
@@ -120,10 +115,7 @@ pub struct MultibodyLinkWorkspace {
 
 /// Per-link workspace updated every step.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim2")]
 pub struct MultibodyLinkWorkspace {
@@ -162,12 +154,10 @@ pub struct MultibodyLinkWorkspace {
 ///
 /// `kind` values: 0 = inactive, 1 = limit, 2 = motor.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
-pub struct MultibodyJointConstraint { // TODO: rename to MultibodyUnitJointConstraint?
+pub struct MultibodyJointConstraint {
+    // TODO: rename to MultibodyUnitJointConstraint?
     /// Index of the constrained DOF, relative to the multibody's `first_dof`.
     pub dof_id: u32,
     /// 0 = inactive (skipped by the solver), 1 = limit, 2 = motor.
@@ -212,10 +202,7 @@ pub struct MultibodyJointConstraint { // TODO: rename to MultibodyUnitJointConst
 ///
 /// TODO: handle contact between two multibodies.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim3")]
 pub struct MultibodyContactConstraint {
@@ -276,10 +263,7 @@ pub struct MultibodyContactConstraint {
 /// 2D variant of [`MultibodyContactConstraint`] — angular jacobian collapses
 /// to a scalar.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim2")]
 pub struct MultibodyContactConstraint {
@@ -316,10 +300,7 @@ pub struct MultibodyContactConstraint {
 /// Descriptor for one multibody: where its links live, how many DOFs it has, and
 /// the offsets into the dense jacobian/mass-matrix/gen-force tensors.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct MultibodyInfo {
     /// First link index (relative to this batch's link slice).

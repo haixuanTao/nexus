@@ -17,13 +17,13 @@ use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
-use parry::math::VectorExt;
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::Slice;
-use crate::utils::linalg::{MatSlice, copy_from_par, fill_par, gemm_skew_tr_lhs_par, MAX_MB_DOFS};
-use crate::{ANG_DIM, DIM, Pose, Rotation, Vector};
 #[cfg(feature = "dim3")]
 use crate::rotation_to_matrix;
+use crate::utils::Slice;
+use crate::utils::linalg::{MAX_MB_DOFS, MatSlice, copy_from_par, fill_par, gemm_skew_tr_lhs_par};
+use crate::{ANG_DIM, DIM, Pose, Rotation, Vector};
+use parry::math::VectorExt;
 
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 

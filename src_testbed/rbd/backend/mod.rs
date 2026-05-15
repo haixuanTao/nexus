@@ -5,9 +5,9 @@ pub use cpu::CpuBackend;
 pub use gpu::GpuBackend;
 
 use khal::backend::GpuBackend as KhalGpuBackend;
-use rapier::prelude::JointAxis;
 use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::RunStats;
+use rapier::prelude::JointAxis;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BackendType {

@@ -216,10 +216,7 @@ fn gemm_mat3_lhs_matches_dense_gemm() {
     buf[c.idx(2, 1)] = -3.0;
 
     // Snapshot B and initial C.
-    let b_vals = [
-        [1.0f32, 0.0, -1.0],
-        [2.0, 1.0, 0.5],
-    ];
+    let b_vals = [[1.0f32, 0.0, -1.0], [2.0, 1.0, 0.5]];
     let c0 = [[10.0f32, 20.0, 30.0], [-1.0, -2.0, -3.0]];
 
     let alpha = 0.5f32;
@@ -336,7 +333,9 @@ fn gemm_tr_matches_reference() {
 
     let alpha = 2.0f32;
     let beta = 3.0f32;
-    gemm_tr(&mut buf_c, c_view, alpha, &buf_a, a_view, &buf_b, b_view, beta);
+    gemm_tr(
+        &mut buf_c, c_view, alpha, &buf_a, a_view, &buf_b, b_view, beta,
+    );
 
     // Reference: C[i, j] = β · C₀[i, j] + α · Σ_p A[p, i] · B[p, j].
     for i in 0..k as usize {

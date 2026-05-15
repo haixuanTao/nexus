@@ -20,10 +20,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 /// Uses integer representation to enable atomic add operations on the GPU.
 /// The `com` field stores the center of mass to reduce binding count in P2G.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct IntegerImpulse {
     /// Center of mass (stored here to reduce P2G binding count).

@@ -4,6 +4,6 @@
 
 mod epa;
 mod gjk;
-mod pfm_pfm;
 #[cfg(feature = "dim3")]
 mod linalg;
+mod pfm_pfm;

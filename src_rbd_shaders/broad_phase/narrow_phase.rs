@@ -60,8 +60,7 @@ pub fn gpu_narrow_phase_init_contacts_dispatch(
     let mut highest_contacts_len = 0;
     for i in 0..num_batches {
         // NOTE: atomic_load is needed for correctness on some platforms (see comment above `contacts_len`).
-        highest_contacts_len =
-            highest_contacts_len.max(atomic_load_u32(contacts_len.at_mut(i)));
+        highest_contacts_len = highest_contacts_len.max(atomic_load_u32(contacts_len.at_mut(i)));
     }
 
     *indirect_args.at_mut(0) = highest_contacts_len.div_ceil(WORKGROUP_SIZE);
@@ -109,7 +108,9 @@ pub fn gpu_narrow_phase_shape_shape(
 
     // NOTE: `collision_pairs_len` might be greater than `contacts_batch_apacity` if the
     //       narrow-phase found more pairs than the buffer can contain.
-    let len = collision_pairs_len.read(batch_id as usize).min(contacts_batch_capacity as u32);
+    let len = collision_pairs_len
+        .read(batch_id as usize)
+        .min(contacts_batch_capacity as u32);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let pair = collision_pairs[i as usize];
@@ -413,10 +414,7 @@ fn polyline_convex(
 }
 
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct NarrowPhasePfmPair {
     shape1: Shape,

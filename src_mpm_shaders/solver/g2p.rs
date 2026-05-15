@@ -20,8 +20,8 @@ use crate::{Matrix, PaddedMatrix, Vector};
 use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::{
-    sync::workgroup_memory_barrier_with_group_sync,
     macros::{spirv, spirv_bindgen},
+    sync::workgroup_memory_barrier_with_group_sync,
 };
 use unroll::unroll_for_loops;
 /*
@@ -77,7 +77,8 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                         shared_nodes_vel.write(flat_shared_index, node.momentum_velocity);
 
                         if USE_CPIC {
-                            shared_nodes_vel_incompatible.write(flat_shared_index, node.momentum_velocity_incompatible);
+                            shared_nodes_vel_incompatible
+                                .write(flat_shared_index, node.momentum_velocity_incompatible);
                             shared_nodes_cdf.write(flat_shared_index, node.cdf);
                         }
                     } else {

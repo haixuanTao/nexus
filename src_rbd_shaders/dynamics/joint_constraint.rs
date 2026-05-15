@@ -82,10 +82,7 @@ impl JointSolverBody {
 
 /// A joint constraint between two rigid bodies.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim2")] // Same as 3D but with different field ordering to avoid padding.
 pub struct JointConstraint {
@@ -107,10 +104,7 @@ pub struct JointConstraint {
 
 /// A joint constraint between two rigid bodies.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim3")] // Same as 2D but with different field ordering to avoid padding.
 pub struct JointConstraint {
@@ -147,10 +141,7 @@ impl Default for JointConstraint {
 /// A single element (DOF) of a joint constraint.
 // NOTE: field order has been selected meticulously to reduce padding in both 2D and 3D versions.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct JointConstraintElement {
     /// Linear Jacobian direction.
@@ -326,8 +317,7 @@ pub fn gpu_remove_joint_bias(
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let idx = i as usize;
         for j in 0..(constraints[idx].len as usize) {
-            constraints[idx].elements.at_mut(j).rhs =
-                constraints[idx].elements.at(j).rhs_wo_bias;
+            constraints[idx].elements.at_mut(j).rhs = constraints[idx].elements.at(j).rhs_wo_bias;
         }
     }
 }
@@ -353,7 +343,11 @@ pub fn gpu_solve_joint_constraints(
     let color = *curr_color as usize;
     let color_groups = batch_ids.color_groups_batch(batch_id, all_color_groups);
 
-    let start = if color > 0 { color_groups[color - 1] } else { 0 };
+    let start = if color > 0 {
+        color_groups[color - 1]
+    } else {
+        0
+    };
     let end = color_groups[color];
 
     for i in StepRng::new(start + invocation_id.x..end, num_threads) {

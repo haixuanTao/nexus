@@ -18,8 +18,8 @@ use glamx::{Vec2, Vec3, Vec4};
 
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::{BatchIndices, Slice};
 use crate::utils::linalg::{MAX_MB_DOFS, MatSlice, fill_par, gemv_tr_spatial_split_par};
+use crate::utils::{BatchIndices, Slice};
 use crate::{AngVector, Vector, gcross_av};
 
 use super::lu::{
@@ -45,10 +45,12 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] gen_forces: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
@@ -71,7 +73,9 @@ pub fn gpu_mb_gravity_and_lu(
     let mb_idx = wg_id.x;
     let lane = lid.x;
 
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let num_links = mb.num_links;
     let ndofs = mb.ndofs;
     let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
@@ -236,10 +240,7 @@ pub fn gpu_mb_gravity_and_lu(
     if i < ndofs {
         let idx = gen_base + i as usize;
         let cur = gen_forces.read(idx);
-        gen_forces.write(
-            idx,
-            cur - damping_slice[i as usize] * vel_slice[i as usize],
-        );
+        gen_forces.write(idx, cur - damping_slice[i as usize] * vel_slice[i as usize]);
     }
     workgroup_memory_barrier_with_group_sync();
 

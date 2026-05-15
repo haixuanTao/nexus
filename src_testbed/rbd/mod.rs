@@ -6,8 +6,8 @@ pub use graphics::{RenderContext, setup_graphics, update_instances};
 
 use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::dynamics::GpuSimParams;
-use nexus::rbd::pipeline::GpuPhysicsPipeline;
 use nexus::rbd::math::Pose;
+use nexus::rbd::pipeline::GpuPhysicsPipeline;
 use rapier::geometry::{ColliderHandle, ColliderSet, SharedShape};
 use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodySet};
 use std::collections::HashMap;

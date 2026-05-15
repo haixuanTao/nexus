@@ -17,9 +17,9 @@
 
 use crate::grid::grid::*;
 use crate::solver::particle::{Position, associated_cell_index_in_block_off_by_one};
-use khal_std::sync::atomic_add_u32;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::atomic_add_u32;
 
 /// Marks all blocks associated with each particle as active.
 ///

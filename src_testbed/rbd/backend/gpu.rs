@@ -1,9 +1,9 @@
 use super::SimulationBackend;
 use crate::rbd::SimulationState;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps};
-use rapier::prelude::JointAxis;
 use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};
+use rapier::prelude::JointAxis;
 
 /// GPU-based physics backend using nexus
 pub struct GpuBackend {
@@ -171,7 +171,9 @@ impl SimulationBackend for GpuBackend {
         gpu.synchronize().unwrap();
         run_stats.total_simulation_time_without_readback = t0.elapsed();
 
-        self.pipeline.auto_resize_buffers(gpu, &mut self.state).await;
+        self.pipeline
+            .auto_resize_buffers(gpu, &mut self.state)
+            .await;
         Self::read_poses_into(gpu, &self.state, &mut self.poses_cache).await;
 
         // Read timestamp results.

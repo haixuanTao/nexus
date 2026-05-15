@@ -53,7 +53,6 @@ impl<'a, T: Copy> SliceMut<'a, T> {
     }
 }
 
-
 impl<T: Copy> Index<usize> for Slice<'_, T> {
     type Output = T;
     #[inline(always)]

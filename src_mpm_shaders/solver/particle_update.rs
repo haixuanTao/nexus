@@ -27,10 +27,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 
 /// Phase data for multi-material mixing (currently unused placeholder).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct Phase {
     pub phase: f32,

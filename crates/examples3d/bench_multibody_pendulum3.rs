@@ -21,10 +21,10 @@ use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
 use nexus_testbed3d::SimulationState;
+use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
+use nexus_testbed3d::rbd::BatchEnvironment;
 use nexus_testbed3d::rbd::GpuBackend;
 use nexus_testbed3d::rbd::backend::SimulationBackend;
-use nexus_testbed3d::rbd::BatchEnvironment;
-use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
 use rapier3d::prelude::*;
 use std::collections::HashMap;
 
@@ -83,7 +83,11 @@ fn build_scene(num_links: usize, num_batches: usize) -> SimulationState {
     build_scene_with_substeps(num_links, num_batches, 4)
 }
 
-fn build_scene_with_substeps(num_links: usize, num_batches: usize, num_substeps: u32) -> SimulationState {
+fn build_scene_with_substeps(
+    num_links: usize,
+    num_batches: usize,
+    num_substeps: u32,
+) -> SimulationState {
     let environments = (0..num_batches.max(1))
         .map(|_| build_one_batch_with_substeps(num_links, num_substeps))
         .collect();

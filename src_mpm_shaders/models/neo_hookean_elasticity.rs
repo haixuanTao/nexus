@@ -12,10 +12,7 @@ use khal_std::num_traits::Float;
 /// Computes stress based on the deformation gradient using the
 /// neo-Hookean strain energy density function.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct NeoHookeanModel {
     pub lambda: f32,

@@ -1,6 +1,8 @@
 //! Tests for the GJK (Gilbert-Johnson-Keerthi) algorithm.
 
-use crate::queries::gjk::{CLOSEST_POINTS, INTERSECTION, closest_points, cso_point_from_shapes, VoronoiSimplex};
+use crate::queries::gjk::{
+    CLOSEST_POINTS, INTERSECTION, VoronoiSimplex, closest_points, cso_point_from_shapes,
+};
 use crate::shapes::Shape;
 use crate::{PaddedVector, Pose, Vector};
 

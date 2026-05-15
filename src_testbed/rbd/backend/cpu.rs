@@ -5,7 +5,9 @@ use nexus::rbd::math::Pose;
 use nexus::rbd::pipeline::RunStats;
 use rapier::dynamics::{CCDSolver, IntegrationParameters, IslandManager};
 use rapier::geometry::{BroadPhaseBvh, ColliderSet, NarrowPhase};
-use rapier::prelude::{ImpulseJointSet, JointAxis, MultibodyJointSet, PhysicsPipeline, RigidBodySet};
+use rapier::prelude::{
+    ImpulseJointSet, JointAxis, MultibodyJointSet, PhysicsPipeline, RigidBodySet,
+};
 
 /// CPU-based physics backend using rapier
 pub struct CpuBackend {

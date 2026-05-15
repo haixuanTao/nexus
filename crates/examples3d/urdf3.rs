@@ -82,8 +82,12 @@ fn build() -> SimulationState {
             // via `with_rbd_tick` on the demo builder) re-randomizes it every
             // 5 simulated seconds.
             for urdf_joint in &mut robot.joints {
-                urdf_joint.joint.set_motor_model(JointAxis::AngX, MotorModel::AccelerationBased);
-                urdf_joint.joint.set_motor_velocity(JointAxis::AngX, 0.0, 1.0);
+                urdf_joint
+                    .joint
+                    .set_motor_model(JointAxis::AngX, MotorModel::AccelerationBased);
+                urdf_joint
+                    .joint
+                    .set_motor_velocity(JointAxis::AngX, 0.0, 1.0);
             }
 
             // let handles = robot.insert_using_impulse_joints(
@@ -95,7 +99,7 @@ fn build() -> SimulationState {
                 &mut bodies,
                 &mut colliders,
                 &mut multibody_joints,
-                UrdfMultibodyOptions::DISABLE_SELF_CONTACTS
+                UrdfMultibodyOptions::DISABLE_SELF_CONTACTS,
             );
 
             for link in &handles.links {
@@ -103,20 +107,14 @@ fn build() -> SimulationState {
                     if let Some(visual) = &collider.visual {
                         visuals.insert(
                             collider.handle,
-                            VisualShape::with_local_pose(
-                                visual.shape.clone(),
-                                visual.local_pose,
-                            ),
+                            VisualShape::with_local_pose(visual.shape.clone(), visual.local_pose),
                         );
                     }
                 }
             }
         }
         Err(e) => {
-            eprintln!(
-                "Failed to load URDF file at {}: {e}.",
-                path.display()
-            );
+            eprintln!("Failed to load URDF file at {}: {e}.", path.display());
         }
     }
 

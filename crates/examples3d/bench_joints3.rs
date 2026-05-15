@@ -20,11 +20,11 @@ use std::time::Duration;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
+use nexus_testbed3d::SimulationState;
 use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
+use nexus_testbed3d::rbd::BatchEnvironment;
 use nexus_testbed3d::rbd::GpuBackend;
 use nexus_testbed3d::rbd::backend::SimulationBackend;
-use nexus_testbed3d::rbd::BatchEnvironment;
-use nexus_testbed3d::SimulationState;
 use rapier3d::prelude::*;
 
 fn create_prismatic_joints(
@@ -183,7 +183,9 @@ fn create_revolute_joints_with_limits(
     colliders.insert_with_parent(ColliderBuilder::cuboid(4.0, 0.2, 2.0), platform2, bodies);
 
     let z = Vector::Z;
-    let joint1 = RevoluteJointBuilder::new(z).local_anchor1(shift).limits([-0.2, 0.2]);
+    let joint1 = RevoluteJointBuilder::new(z)
+        .local_anchor1(shift)
+        .limits([-0.2, 0.2]);
     multibody_joints.insert(ground, platform1, joint1, true);
 
     let joint2 = RevoluteJointBuilder::new(z)
@@ -191,15 +193,17 @@ fn create_revolute_joints_with_limits(
         .limits([-0.2, 0.2]);
     multibody_joints.insert(platform1, platform2, joint2, true);
 
-    let cuboid_body1 = bodies
-        .insert(RigidBodyBuilder::dynamic().translation(origin_v + shift + Vector::new(-2.0, 4.0, 0.0)));
+    let cuboid_body1 = bodies.insert(
+        RigidBodyBuilder::dynamic().translation(origin_v + shift + Vector::new(-2.0, 4.0, 0.0)),
+    );
     colliders.insert_with_parent(
         ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0),
         cuboid_body1,
         bodies,
     );
     let cuboid_body2 = bodies.insert(
-        RigidBodyBuilder::dynamic().translation(origin_v + shift * 2.0 + Vector::new(2.0, 16.0, 0.0)),
+        RigidBodyBuilder::dynamic()
+            .translation(origin_v + shift * 2.0 + Vector::new(2.0, 16.0, 0.0)),
     );
     colliders.insert_with_parent(
         ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0),
@@ -352,7 +356,11 @@ fn create_actuated_revolute_joints(
 
     for i in 0..num {
         let fi = i as f32;
-        let status = if i == 0 { RigidBodyType::Fixed } else { RigidBodyType::Dynamic };
+        let status = if i == 0 {
+            RigidBodyType::Fixed
+        } else {
+            RigidBodyType::Dynamic
+        };
         let shifty = (i >= 1) as u32 as f32 * -2.0;
         let rb = RigidBodyBuilder::new(status).translation(Vector::new(
             origin.x,
@@ -395,7 +403,11 @@ fn create_actuated_spherical_joints(
 
     for i in 0..num {
         let fi = i as f32;
-        let status = if i == 0 { RigidBodyType::Fixed } else { RigidBodyType::Dynamic };
+        let status = if i == 0 {
+            RigidBodyType::Fixed
+        } else {
+            RigidBodyType::Dynamic
+        };
         let rb = RigidBodyBuilder::new(status).translation(Vector::new(
             origin.x,
             origin.y,
@@ -430,7 +442,13 @@ fn build_one_batch(num_substeps: u32) -> BatchEnvironment {
     let mut impulse_joints = ImpulseJointSet::new();
     let mut multibody_joints = MultibodyJointSet::new();
 
-    create_prismatic_joints(&mut bodies, &mut colliders, &mut multibody_joints, Vector::new(20.0, 5.0, 0.0), 4);
+    create_prismatic_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut multibody_joints,
+        Vector::new(20.0, 5.0, 0.0),
+        4,
+    );
     create_actuated_prismatic_joints(
         &mut bodies,
         &mut colliders,
@@ -438,13 +456,54 @@ fn build_one_batch(num_substeps: u32) -> BatchEnvironment {
         Vector::new(25.0, 5.0, 0.0),
         4,
     );
-    create_revolute_joints(&mut bodies, &mut colliders, &mut multibody_joints, Vector::new(20.0, 0.0, 0.0), 3);
-    create_revolute_joints_with_limits(&mut bodies, &mut colliders, &mut multibody_joints, Vector::new(34.0, 0.0, 0.0));
-    create_fixed_joints(&mut bodies, &mut colliders, &mut impulse_joints, &mut multibody_joints, Vector::new(0.0, 10.0, 0.0), 10);
-    create_actuated_revolute_joints(&mut bodies, &mut colliders, &mut multibody_joints, Vector::new(20.0, 10.0, 0.0), 6);
-    create_actuated_spherical_joints(&mut bodies, &mut colliders, &mut multibody_joints, Vector::new(13.0, 10.0, 0.0), 3);
-    create_spherical_joints(&mut bodies, &mut colliders, &mut impulse_joints, &mut multibody_joints, 9);
-    create_spherical_joints_with_limits(&mut bodies, &mut colliders, &mut multibody_joints, Vector::new(-5.0, 0.0, 0.0));
+    create_revolute_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut multibody_joints,
+        Vector::new(20.0, 0.0, 0.0),
+        3,
+    );
+    create_revolute_joints_with_limits(
+        &mut bodies,
+        &mut colliders,
+        &mut multibody_joints,
+        Vector::new(34.0, 0.0, 0.0),
+    );
+    create_fixed_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut impulse_joints,
+        &mut multibody_joints,
+        Vector::new(0.0, 10.0, 0.0),
+        10,
+    );
+    create_actuated_revolute_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut multibody_joints,
+        Vector::new(20.0, 10.0, 0.0),
+        6,
+    );
+    create_actuated_spherical_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut multibody_joints,
+        Vector::new(13.0, 10.0, 0.0),
+        3,
+    );
+    create_spherical_joints(
+        &mut bodies,
+        &mut colliders,
+        &mut impulse_joints,
+        &mut multibody_joints,
+        9,
+    );
+    create_spherical_joints_with_limits(
+        &mut bodies,
+        &mut colliders,
+        &mut multibody_joints,
+        Vector::new(-5.0, 0.0, 0.0),
+    );
 
     let mut sim_params = GpuSimParams::default();
     sim_params.num_solver_iterations = num_substeps;

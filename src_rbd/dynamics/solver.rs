@@ -1,4 +1,3 @@
-
 //! GPU-parallel constraint solver using graph coloring.
 //!
 //! This module implements a constraint-based physics solver that runs entirely on the GPU.
@@ -238,8 +237,7 @@ impl GpuSolver {
         joint_solver: &GpuJointSolver,
         args: SolverArgs<'a>,
         mut joint_args: JointSolverArgs<'a>,
-        #[cfg(feature = "dim3")]
-        multibody: Option<(&GpuMultibodySolver, &mut GpuMultibodySet)>,
+        #[cfg(feature = "dim3")] multibody: Option<(&GpuMultibodySolver, &mut GpuMultibodySet)>,
     ) -> Result<(), GpuBackendError> {
         let num_substeps = args.num_solver_iterations;
         #[cfg(feature = "dim3")]
@@ -366,7 +364,6 @@ impl GpuSolver {
                 args.sim_params,
                 args.batch_indices,
             )?;
-
 
             /*
              * Solve WITHOUT bias.

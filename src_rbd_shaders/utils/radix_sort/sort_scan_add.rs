@@ -13,10 +13,10 @@
 //! Workgroup size: 256 threads
 //! Shared memory: 256 entries for sums + 4x256 entries for local data
 
-use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use super::sorting::{BIN_COUNT, BLOCK_SIZE, ELEMENTS_PER_THREAD, WG, div_ceil};
 use crate::utils::radix_sort::SortUniforms;

@@ -207,13 +207,12 @@ impl GpuImpulseJointSet {
             // touching different bodies of the same multibody must be in
             // different colors.
             let max_body_id = body_ids.values().copied().max().unwrap_or_default();
-            let body_group: Vec<u32> = if env_idx < multibody_groups.len()
-                && !multibody_groups[env_idx].is_empty()
-            {
-                multibody_groups[env_idx].clone()
-            } else {
-                (0..=max_body_id).collect()
-            };
+            let body_group: Vec<u32> =
+                if env_idx < multibody_groups.len() && !multibody_groups[env_idx].is_empty() {
+                    multibody_groups[env_idx].clone()
+                } else {
+                    (0..=max_body_id).collect()
+                };
             let max_group = body_group.iter().copied().max().unwrap_or(0);
 
             // Run graph coloring on the multibody-grouped graph.

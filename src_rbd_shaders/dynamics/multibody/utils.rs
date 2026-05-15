@@ -1,14 +1,14 @@
 //! Small math / coordinate helpers shared across multibody kernels.
 
-#[cfg(feature = "dim3")]
-use glamx::Vec3;
 #[cfg(feature = "dim2")]
 use glamx::Vec2;
+#[cfg(feature = "dim3")]
+use glamx::Vec3;
 
-use khal_std::index::MaybeIndexUnchecked;
-use parry::math::VectorExt;
 use crate::dynamics::joint::{ANG_AXES_MASK, LIN_AXES_MASK};
 use crate::{DIM, Pose, Rotation, Vector};
+use khal_std::index::MaybeIndexUnchecked;
+use parry::math::VectorExt;
 
 use super::types::{MAX_JOINT_DOFS, MultibodyLinkStatic, MultibodyLinkWorkspace};
 

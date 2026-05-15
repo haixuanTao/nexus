@@ -25,10 +25,7 @@ pub const MAX_CONSTRAINTS_PER_MANIFOLD: usize = 4;
 ///
 /// This data is used to initialize and update constraints at each solver substep.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim2")] // Same as dim3, but with a different fields ordering to limit padding.
 pub struct TwoBodyConstraintInfos {
@@ -50,10 +47,7 @@ pub struct TwoBodyConstraintInfos {
 }
 
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 #[cfg(feature = "dim3")]
 pub struct TwoBodyConstraintInfos {
@@ -79,10 +73,7 @@ pub struct TwoBodyConstraintInfos {
 ///
 /// Stores auxiliary information needed to update constraints at each solver substep.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C, align(16))]
 pub struct TwoBodyConstraintBuilder {
     /// Information for each contact point in the manifold.
@@ -98,10 +89,7 @@ pub struct TwoBodyConstraintBuilder {
 /// - Per-contact-point constraint elements.
 // PERF: differentiate two-bodies and one-body constraints?
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct TwoBodyConstraint {
     /// Contact normal direction from body A's perspective (points away from A).
@@ -155,10 +143,7 @@ pub struct TwoBodyConstraint {
 
 /// Constraint data for a single contact point.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct TwoBodyConstraintElement {
     /// Normal constraint: prevents penetration.
@@ -173,10 +158,7 @@ pub struct TwoBodyConstraintElement {
 /// Implements the constraint: C >= 0 (bodies cannot interpenetrate)
 /// Solved as a unilateral constraint (impulse >= 0).
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct TwoBodyConstraintNormalPart {
     /// Angular contribution for body A: r_a × normal
@@ -220,10 +202,7 @@ pub struct TwoBodyConstraintNormalPart {
 /// Implements Coulomb friction: |f_tangent| <= μ * f_normal
 /// Solved as a bilateral constraint with limits.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct TwoBodyConstraintTangentPart {
     /// Angular contributions for body A (one per tangent direction).

@@ -8,10 +8,7 @@ pub const TWO_PI: f32 = core::f32::consts::TAU;
 
 /// Parameters for a time-step of the physics engine.
 #[derive(Clone, Copy)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct SimParams {
     /// The timestep length (default: `1.0 / 60.0`).

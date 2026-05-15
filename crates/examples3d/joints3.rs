@@ -197,7 +197,9 @@ fn create_revolute_joints_with_limits(
     colliders.insert_with_parent(ColliderBuilder::cuboid(4.0, 0.2, 2.0), platform2, bodies);
 
     let z = Vector::Z;
-    let joint1 = RevoluteJointBuilder::new(z).local_anchor1(shift).limits([-0.2, 0.2]);
+    let joint1 = RevoluteJointBuilder::new(z)
+        .local_anchor1(shift)
+        .limits([-0.2, 0.2]);
     // let joint1 = GenericJointBuilder::new(JointAxesMask::X | JointAxesMask::Y | JointAxesMask::Z)
     //     .local_axis1(z)
     //     .local_axis2(z)
@@ -232,8 +234,9 @@ fn create_revolute_joints_with_limits(
     }
 
     // Let's add a couple of cuboids that will fall on the platforms, triggering the joint limits.
-    let cuboid_body1 = bodies
-        .insert(RigidBodyBuilder::dynamic().translation(origin_v + shift + Vector::new(-2.0, 4.0, 0.0)));
+    let cuboid_body1 = bodies.insert(
+        RigidBodyBuilder::dynamic().translation(origin_v + shift + Vector::new(-2.0, 4.0, 0.0)),
+    );
     colliders.insert_with_parent(
         ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0),
         cuboid_body1,
@@ -241,7 +244,8 @@ fn create_revolute_joints_with_limits(
     );
 
     let cuboid_body2 = bodies.insert(
-        RigidBodyBuilder::dynamic().translation(origin_v + shift * 2.0 + Vector::new(2.0, 16.0, 0.0)),
+        RigidBodyBuilder::dynamic()
+            .translation(origin_v + shift * 2.0 + Vector::new(2.0, 16.0, 0.0)),
     );
     colliders.insert_with_parent(
         ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0),

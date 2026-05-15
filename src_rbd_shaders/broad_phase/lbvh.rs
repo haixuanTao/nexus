@@ -22,13 +22,13 @@ use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
 use crate::utils::{BatchIndices, Slice, SliceMut, div_ceil};
 use crate::{PaddedVector, Pose, Vector};
-use khal_std::sync::{
-    atomic_add_u32, atomic_load_u32, control_barrier, workgroup_memory_barrier_with_group_sync,
-};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::{
+    atomic_add_u32, atomic_load_u32, control_barrier, workgroup_memory_barrier_with_group_sync,
+};
 use rapier::geometry::InteractionGroups;
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -58,10 +58,7 @@ const REDUCTION_WORKGROUP_SIZE: u32 = 128;
 /// - parent points to parent internal node
 /// - refit_count is unused
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct LbvhNode {
     /// Axis-aligned bounding box for this node's subtree.

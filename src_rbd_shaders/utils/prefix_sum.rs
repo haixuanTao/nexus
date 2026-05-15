@@ -12,9 +12,9 @@
 //! - Output: [0, 3, 5, 10] (end index of constraints for each body)
 //! - Body i's constraints are at indices [output[i-1], output[i])
 
-use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::glamx::UVec3;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use khal_std::index::MaybeIndexUnchecked;
 

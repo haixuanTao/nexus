@@ -14,7 +14,6 @@ use crate::dynamics::{GpuMultibodySet, GpuMultibodySolver};
 use crate::math::{Pose, Vector};
 use crate::queries::GpuIndexedContact;
 use crate::shaders::PaddedVector;
-use crate::shaders::utils::BatchIndices;
 use crate::shaders::broad_phase::{LbvhNode, NarrowPhasePfmPair};
 use crate::shaders::dynamics::{
     LocalMassProperties as GpuLocalMassProperties, SimParams as GpuSimParams, TwoBodyConstraint,
@@ -22,6 +21,7 @@ use crate::shaders::dynamics::{
     WorldMassProperties as GpuWorldMassProperties,
 };
 use crate::shaders::shapes::Shape;
+use crate::shaders::utils::BatchIndices;
 use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
 
@@ -452,9 +452,7 @@ impl GpuPhysicsState {
             )> = joint_envs
                 .iter()
                 .zip(multibody_envs.iter())
-                .map(|((imp, body_ids), (mb_set, _, bodies))| {
-                    (*imp, *mb_set, body_ids, *bodies)
-                })
+                .map(|((imp, body_ids), (mb_set, _, bodies))| (*imp, *mb_set, body_ids, *bodies))
                 .collect();
             mb.set_impulse_joints(backend, &imp_refs);
             mb
@@ -499,8 +497,7 @@ impl GpuPhysicsState {
         // `body_group` stores PER-BATCH local indices (so a kernel can use the
         // same `Slice(buf, colliders_start)` pattern as for `body_constraint_*`
         // and just index by `group_local`).
-        let mut all_body_group: Vec<u32> =
-            Vec::with_capacity(max_colliders * num_batches as usize);
+        let mut all_body_group: Vec<u32> = Vec::with_capacity(max_colliders * num_batches as usize);
         for _batch_idx in 0..num_batches as usize {
             for b in 0..max_colliders {
                 all_body_group.push(b as u32);
@@ -514,7 +511,9 @@ impl GpuPhysicsState {
                     .links()
                     .next()
                     .and_then(|root| body_ids.get(&root.rigid_body_handle()).copied());
-                let Some(group_local) = group_local else { continue };
+                let Some(group_local) = group_local else {
+                    continue;
+                };
                 for link in mb.links() {
                     if let Some(&local) = body_ids.get(&link.rigid_body_handle()) {
                         all_body_group[base + local as usize] = group_local;
@@ -522,8 +521,7 @@ impl GpuPhysicsState {
                 }
             }
         }
-        let body_group =
-            Tensor::vector(backend, &all_body_group, BufferUsages::STORAGE).unwrap();
+        let body_group = Tensor::vector(backend, &all_body_group, BufferUsages::STORAGE).unwrap();
 
         let num_colliders_per_batch = max_colliders;
         let num_bodies_total = num_colliders_per_batch * num_batches as usize;
@@ -533,8 +531,7 @@ impl GpuPhysicsState {
         let shapes = Tensor::vector(backend, &all_shapes, storage).unwrap();
         let collider_local_poses =
             Tensor::vector(backend, &all_collider_local_poses, storage).unwrap();
-        let collision_groups =
-            Tensor::vector(backend, &all_collision_groups, storage).unwrap();
+        let collision_groups = Tensor::vector(backend, &all_collision_groups, storage).unwrap();
 
         let num_shapes = Tensor::vector(
             backend,
@@ -873,8 +870,8 @@ impl GpuPhysicsPipeline {
     pub fn from_backend(backend: &GpuBackend) -> Self {
         Self {
             mprops_update: GpuMpropsUpdate::from_backend(backend).unwrap(),
-            sync_collider_poses:
-                crate::dynamics::GpuSyncColliderPosesShader::from_backend(backend).unwrap(),
+            sync_collider_poses: crate::dynamics::GpuSyncColliderPosesShader::from_backend(backend)
+                .unwrap(),
             narrow_phase: GpuNarrowPhase::from_backend(backend).unwrap(),
             solver: GpuSolver::from_backend(backend).unwrap(),
             joint_solver: GpuJointSolver::from_backend(backend).unwrap(),
@@ -1232,14 +1229,39 @@ impl GpuPhysicsPipeline {
 
     pub async fn auto_resize_buffers(&self, backend: &GpuBackend, state: &mut GpuPhysicsState) {
         let mut encoder = backend.begin_encoding();
-        encoder.copy_buffer_to_buffer(state.collision_pairs_len.buffer(), 0, state.collision_pairs_len_staging.buffer_mut(), 0, 1).unwrap();
-        encoder.copy_buffer_to_buffer(state.uncolored.buffer(), 0, state.uncolored_staging.buffer_mut(), 0, 1).unwrap();
+        encoder
+            .copy_buffer_to_buffer(
+                state.collision_pairs_len.buffer(),
+                0,
+                state.collision_pairs_len_staging.buffer_mut(),
+                0,
+                1,
+            )
+            .unwrap();
+        encoder
+            .copy_buffer_to_buffer(
+                state.uncolored.buffer(),
+                0,
+                state.uncolored_staging.buffer_mut(),
+                0,
+                1,
+            )
+            .unwrap();
         backend.submit(encoder).unwrap();
 
         let mut collision_pairs_len = [0u32];
         let mut coloring_converged = [0u32];
-        backend.read_buffer(state.collision_pairs_len_staging.buffer(), &mut collision_pairs_len).await.unwrap();
-        backend.read_buffer(state.uncolored_staging.buffer(), &mut coloring_converged).await.unwrap();
+        backend
+            .read_buffer(
+                state.collision_pairs_len_staging.buffer(),
+                &mut collision_pairs_len,
+            )
+            .await
+            .unwrap();
+        backend
+            .read_buffer(state.uncolored_staging.buffer(), &mut coloring_converged)
+            .await
+            .unwrap();
 
         if coloring_converged[0] == 0 {
             state.max_colors += 5;
@@ -1254,9 +1276,7 @@ impl GpuPhysicsPipeline {
             let per_batch_capacity = state.collision_pairs.len() as u32 / state.num_batches;
             // Add a 25% slack so we resize once for a band of nearby
             // overflows instead of bouncing on each new pair.
-            let needed = collision_pairs_len[0].saturating_add(
-                collision_pairs_len[0] / 4,
-            );
+            let needed = collision_pairs_len[0].saturating_add(collision_pairs_len[0] / 4);
             if needed >= per_batch_capacity {
                 let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
                 let desired_len = needed.next_power_of_two().max(per_batch_capacity);
@@ -1269,15 +1289,14 @@ impl GpuPhysicsPipeline {
                     desired_len,
                     BufferUsages::STORAGE | BufferUsages::UNIFORM,
                 )
-                    .unwrap();
+                .unwrap();
                 state.contacts_batch_capacity = Tensor::scalar(
                     backend,
                     desired_len,
                     BufferUsages::STORAGE | BufferUsages::UNIFORM,
                 )
-                    .unwrap();
-                state.contacts =
-                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                .unwrap();
+                state.contacts = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
                 state.pfm_pairs =
                     Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
                 state.old_constraints =
@@ -1294,8 +1313,7 @@ impl GpuPhysicsPipeline {
                     Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
                 state.constraints_colors =
                     Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-                state.colored =
-                    Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+                state.colored = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
                 state.constraints_rands =
                     Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
 
@@ -1595,10 +1613,7 @@ fn local_mprops_from_rapier(
 /// pose and body-local mass properties. Mirrors the GPU `update_mprops` shader
 /// so the buffer is consistent the moment the simulation starts.
 #[cfg(feature = "from_rapier")]
-fn world_mprops_from_local(
-    pose: &Pose,
-    local: &GpuLocalMassProperties,
-) -> GpuWorldMassProperties {
+fn world_mprops_from_local(pose: &Pose, local: &GpuLocalMassProperties) -> GpuWorldMassProperties {
     #[cfg(feature = "dim2")]
     {
         GpuWorldMassProperties {

@@ -39,14 +39,13 @@ use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot};
 
 use super::types::{
     CONTACT_CONSTRAINTS_PER_POINT, MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MAX_MB_CONTACTS_PER_MB,
-    MB_CONTACT_KIND_NORMAL, MB_CONTACT_KIND_TANGENT,
-    MultibodyContactConstraint, MultibodyInfo,
+    MB_CONTACT_KIND_NORMAL, MB_CONTACT_KIND_TANGENT, MultibodyContactConstraint, MultibodyInfo,
 };
 
-#[cfg(feature = "dim3")]
-use glamx::Vec3;
 #[cfg(feature = "dim2")]
 use glamx::Vec2;
+#[cfg(feature = "dim3")]
+use glamx::Vec3;
 
 /// Default Coulomb friction coefficient — matches the rb-rb default in
 /// `solver_utils::contact_to_constraint`. Per-collider material props are a
@@ -147,9 +146,11 @@ pub fn gpu_mb_init_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_jacobians: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_to_link: &[[u32; 2]],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    contact_constraints: &mut [MultibodyContactConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contact_constraint_count: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    contact_constraint_count: &mut [u32],
     #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
@@ -234,7 +235,11 @@ pub fn gpu_mb_init_contact_constraints(
         let pose1 = poses.read(colliders_start + id1 as usize);
         let pose2 = poses.read(colliders_start + id2 as usize);
         let world_normal = pose1.rotation * im.contact.normal_a;
-        let lin_jac = if is_self || mb_on_1 { world_normal } else { -world_normal };
+        let lin_jac = if is_self || mb_on_1 {
+            world_normal
+        } else {
+            -world_normal
+        };
         let mb_normal = -lin_jac;
 
         let free_mp = if is_self {
@@ -284,8 +289,7 @@ pub fn gpu_mb_init_contact_constraints(
             #[cfg(feature = "dim3")]
             let torque_a_t1 = gcross(shift_a, mb_tangent1);
 
-            let rhs_bias =
-                (erp_inv_dt * (dist + allowed_lin_err)).clamp(-max_corr_velocity, 0.0);
+            let rhs_bias = (erp_inv_dt * (dist + allowed_lin_err)).clamp(-max_corr_velocity, 0.0);
             let rhs_wo_bias = if dist > 0.0 { dist * inv_dt } else { 0.0 };
 
             let normal_slot = count;
@@ -396,7 +400,9 @@ pub fn gpu_mb_init_contact_constraints(
             // Limit `±μ · normal_impulse` is computed at solve time by
             // looking up `cons[normal_constraint_slot].impulse`.
             for tang_idx in 0..(CONTACT_CONSTRAINTS_PER_POINT - 1) {
-                let mb_tangent = if tang_idx == 0 { mb_tangent0 } else {
+                let mb_tangent = if tang_idx == 0 {
+                    mb_tangent0
+                } else {
                     #[cfg(feature = "dim3")]
                     {
                         mb_tangent1
@@ -407,7 +413,9 @@ pub fn gpu_mb_init_contact_constraints(
                         mb_tangent0
                     }
                 };
-                let torque_a_tang = if tang_idx == 0 { torque_a_t0 } else {
+                let torque_a_tang = if tang_idx == 0 {
+                    torque_a_t0
+                } else {
                     #[cfg(feature = "dim3")]
                     {
                         torque_a_t1
@@ -529,9 +537,11 @@ pub fn gpu_mb_finalize_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] mass_matrices: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] lu_pivots: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    contact_constraints: &mut [MultibodyContactConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contact_constraint_columns: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    contact_constraint_columns: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contact_constraint_count: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
@@ -609,7 +619,8 @@ pub fn gpu_mb_finalize_contact_constraints(
 pub fn gpu_mb_solve_contact_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    contact_constraints: &mut [MultibodyContactConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contact_constraint_jacs: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contact_constraint_columns: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_count: &[u32],
@@ -664,8 +675,7 @@ pub fn gpu_mb_solve_contact_constraints(
         }
 
         let rhs_total = j_dot_v + cons.rhs;
-        let raw_imp = cons.impulse
-            - cons.inv_lhs * (rhs_total + cons.cfm_gain * cons.impulse);
+        let raw_imp = cons.impulse - cons.inv_lhs * (rhs_total + cons.cfm_gain * cons.impulse);
 
         // Normal: clamp to ≥ 0 (no separation impulse). Friction tangent:
         // clamp to `±μ · normal_impulse` — looks up the paired normal slot
@@ -675,8 +685,7 @@ pub fn gpu_mb_solve_contact_constraints(
         // per-tangent clamp, i.e. box friction; rapier's circular-cone
         // joint clamp is a future refinement).
         let new_imp = if cons.kind == MB_CONTACT_KIND_TANGENT {
-            let normal = contact_constraints
-                .read(cons_base + cons.normal_constraint_slot as usize);
+            let normal = contact_constraints.read(cons_base + cons.normal_constraint_slot as usize);
             let limit = cons.friction_coeff * normal.impulse;
             if raw_imp > limit {
                 limit
@@ -703,8 +712,7 @@ pub fn gpu_mb_solve_contact_constraints(
             }
             if !is_self {
                 let mut new_free = free;
-                new_free.linear =
-                    new_free.linear + cons.lin_jac * (cons.free_body_im * delta);
+                new_free.linear = new_free.linear + cons.lin_jac * (cons.free_body_im * delta);
                 new_free.angular = new_free.angular + cons.ii_ang_jac * delta;
                 solver_vels.write(colliders_start + cons.free_body_id as usize, new_free);
             }
@@ -718,7 +726,8 @@ pub fn gpu_mb_solve_contact_constraints(
 #[spirv(compute(threads(1)))]
 pub fn gpu_mb_remove_contact_constraint_bias(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
+    contact_constraints: &mut [MultibodyContactConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contact_constraint_count: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
@@ -744,4 +753,3 @@ pub fn gpu_mb_remove_contact_constraint_bias(
         contact_constraints.write(cons_base + s as usize, cons);
     }
 }
-

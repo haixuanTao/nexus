@@ -22,11 +22,11 @@ use std::time::Duration;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
+use nexus_testbed3d::SimulationState;
 use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
+use nexus_testbed3d::rbd::BatchEnvironment;
 use nexus_testbed3d::rbd::GpuBackend;
 use nexus_testbed3d::rbd::backend::SimulationBackend;
-use nexus_testbed3d::rbd::BatchEnvironment;
-use nexus_testbed3d::SimulationState;
 use rapier3d::prelude::*;
 use rapier3d_urdf::{UrdfLoaderOptions, UrdfMultibodyOptions, UrdfRobot};
 
@@ -67,8 +67,12 @@ fn build_one_batch(path: &PathBuf, num_substeps: u32) -> Option<BatchEnvironment
     };
 
     for urdf_joint in &mut robot.joints {
-        urdf_joint.joint.set_motor_model(JointAxis::AngX, MotorModel::AccelerationBased);
-        urdf_joint.joint.set_motor_velocity(JointAxis::AngX, 0.0, 1.0);
+        urdf_joint
+            .joint
+            .set_motor_model(JointAxis::AngX, MotorModel::AccelerationBased);
+        urdf_joint
+            .joint
+            .set_motor_velocity(JointAxis::AngX, 0.0, 1.0);
     }
 
     let _ = robot.insert_using_multibody_joints(

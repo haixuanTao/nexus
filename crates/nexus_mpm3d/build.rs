@@ -6,11 +6,11 @@ fn main() {
         .join("shaders-spirv");
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
-    let mut builder = KhalBuilder::from_dependency("nexus_mpm_shaders3d", true)
-        .feature("dim3");
+    let mut builder = KhalBuilder::from_dependency("nexus_mpm_shaders3d", true).feature("dim3");
 
     if target_arch == "wasm32" {
-        builder = builder.feature("web-compat")
+        builder = builder
+            .feature("web-compat")
             .feature("unsafe_remove_boundchecks");
     }
 

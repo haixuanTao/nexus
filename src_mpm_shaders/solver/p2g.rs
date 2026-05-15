@@ -11,19 +11,19 @@
 
 use crate::grid::grid::*;
 use crate::grid::kernel::*;
-use crate::nexus_rbd_shaders::dynamics::{Velocity as BodyVelocity};
+use crate::nexus_rbd_shaders::dynamics::Velocity as BodyVelocity;
 use crate::solver::boundary_condition::BoundaryCondition;
 use crate::solver::particle::{Kinematics, Position, dir_to_associated_grid_node};
 use crate::{AngVector, Matrix, PaddingExt, TWO_WAYS_COUPLING_ENABLED, Vector};
 use core::ops::Range;
 use glamx::*;
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::sync::{
     atomic_add_i32, atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup,
 };
-use khal_std::index::MaybeIndexUnchecked;
 use khal_std::{
-    sync::workgroup_memory_barrier_with_group_sync,
     macros::{spirv, spirv_bindgen},
+    sync::workgroup_memory_barrier_with_group_sync,
 };
 use unroll::unroll_for_loops;
 /*
@@ -77,10 +77,7 @@ impl P2GStepResult {
 /// Uses integer atomics to avoid floating-point atomic limitations on GPU.
 /// The COM (center of mass) is stored alongside to reduce binding count.
 #[derive(Clone, Copy, Default)]
-#[cfg_attr(
-    not(target_arch_is_gpu),
-    derive(bytemuck::Pod, bytemuck::Zeroable)
-)]
+#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct IntegerImpulseAtomic {
     pub com: Vector,

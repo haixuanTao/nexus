@@ -14,12 +14,12 @@ use crate::solver::particle::{Position, RigidParticleIndices};
 use crate::{Vector, abs};
 use core::ops::Range;
 use glamx::*;
+use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::sync::{
     atomic_load_u32_workgroup, atomic_max_u32_workgroup, atomic_store_u32_workgroup,
 };
-use khal_std::index::MaybeIndexUnchecked;
-use khal_std::macros::{spirv, spirv_bindgen};
 use nexus_rbd_shaders::PaddedVector;
 use unroll::unroll_for_loops;
 

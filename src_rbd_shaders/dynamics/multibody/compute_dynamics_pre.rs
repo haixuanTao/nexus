@@ -33,18 +33,18 @@ use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 #[cfg(feature = "dim3")]
 use glamx::{Mat3, Vec3};
 
-use parry::math::VectorExt;
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::{BatchIndices, Slice, SliceMut};
+#[cfg(feature = "dim3")]
+use crate::utils::linalg::gemm_skew_lhs_cross_buf_par;
 use crate::utils::linalg::{
     MAX_MB_DOFS, MatSlice, copy_from_par, fill_par, gemm_inertia_lhs_par,
     gemm_omega_skew_tr_cross_buf_par, gemm_skew_tr_lhs_cross_buf_par, gemm_skew_tr_lhs_par,
     gemm_tr_par, quadform_spatial_par,
 };
-#[cfg(feature = "dim3")]
-use crate::utils::linalg::gemm_skew_lhs_cross_buf_par;
+use crate::utils::{BatchIndices, Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross_av};
+use parry::math::VectorExt;
 
 use super::jacobian::{joint_jacobian_accumulate_par, joint_jacobian_column};
 use super::mass_matrix::link_world_inertia;
@@ -61,10 +61,12 @@ pub fn gpu_mb_compute_dynamics_pre(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
@@ -91,7 +93,9 @@ pub fn gpu_mb_compute_dynamics_pre(
 
     let dt = *dt_uniform;
 
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let num_links = mb.num_links;
     let ndofs = mb.ndofs;
     let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
@@ -179,7 +183,6 @@ pub fn gpu_mb_compute_dynamics_pre(
             ndofs,
         );
 
-
         if k < num_links {
             let link_infos = (&stat_slice[k as usize]);
             let link = (&ws_slice[k as usize]);
@@ -187,9 +190,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             if k != 0 {
                 let parent_j = MatSlice::dense(
                     mb_jac_base
-                        + (link_infos.parent_link_id as usize)
-                        * SPATIAL_DIM
-                        * (ndofs as usize),
+                        + (link_infos.parent_link_id as usize) * SPATIAL_DIM * (ndofs as usize),
                     SPATIAL_DIM as u32,
                     ndofs,
                 );
@@ -274,10 +275,8 @@ pub fn gpu_mb_compute_dynamics_pre(
                 let transform_rot = parent_to_world_rot * stat.data.local_frame_a.rotation;
 
                 #[cfg(feature = "dim3")]
-                let joint_velocity = Velocity::new(
-                    transform_rot * jv_local_lin,
-                    transform_rot * jv_local_ang,
-                );
+                let joint_velocity =
+                    Velocity::new(transform_rot * jv_local_lin, transform_rot * jv_local_ang);
                 #[cfg(feature = "dim2")]
                 let joint_velocity = Velocity::new(transform_rot * jv_local_lin, jv_local_ang);
 
@@ -424,8 +423,20 @@ pub fn gpu_mb_compute_dynamics_pre(
                 );
                 let parent_w = parent_link.rb_vels.angular;
 
-                copy_from_par(coriolis_packed, coriolis_v_i, parent_coriolis_v, lane, LANES);
-                copy_from_par(coriolis_packed, coriolis_w_i, parent_coriolis_w, lane, LANES);
+                copy_from_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    parent_coriolis_v,
+                    lane,
+                    LANES,
+                );
+                copy_from_par(
+                    coriolis_packed,
+                    coriolis_w_i,
+                    parent_coriolis_w,
+                    lane,
+                    LANES,
+                );
 
                 gemm_skew_tr_lhs_par(
                     coriolis_packed,
@@ -538,8 +549,10 @@ pub fn gpu_mb_compute_dynamics_pre(
                             let (jv, _) = joint_jacobian_column(&stat, transform_rot, c);
                             let iv0 = coriolis_v_part.idx(0, c);
                             let iv1 = coriolis_v_part.idx(1, c);
-                            coriolis_packed.write(iv0, coriolis_packed.read(iv0) + 2.0 * (-parent_w * jv.y));
-                            coriolis_packed.write(iv1, coriolis_packed.read(iv1) + 2.0 * (parent_w * jv.x));
+                            coriolis_packed
+                                .write(iv0, coriolis_packed.read(iv0) + 2.0 * (-parent_w * jv.y));
+                            coriolis_packed
+                                .write(iv1, coriolis_packed.read(iv1) + 2.0 * (parent_w * jv.x));
                         }
                         let _ = coriolis_w_part;
                     }
@@ -647,7 +660,6 @@ pub fn gpu_mb_compute_dynamics_pre(
     }
 }
 
-
 /// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
 #[spirv_bindgen]
 #[spirv(compute(threads(32, 1, 1)))]
@@ -655,10 +667,12 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
@@ -681,7 +695,9 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
 
     let dt = *dt_uniform;
 
-    let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
     let num_links = mb.num_links;
     let ndofs = mb.ndofs;
     let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
@@ -771,9 +787,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
             if k != 0 {
                 let parent_j = MatSlice::dense(
                     mb_jac_base
-                        + (link_infos.parent_link_id as usize)
-                        * SPATIAL_DIM
-                        * (ndofs as usize),
+                        + (link_infos.parent_link_id as usize) * SPATIAL_DIM * (ndofs as usize),
                     SPATIAL_DIM as u32,
                     ndofs,
                 );
@@ -857,10 +871,8 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
                 let transform_rot = parent_to_world_rot * stat.data.local_frame_a.rotation;
 
                 #[cfg(feature = "dim3")]
-                let joint_velocity = Velocity::new(
-                    transform_rot * jv_local_lin,
-                    transform_rot * jv_local_ang,
-                );
+                let joint_velocity =
+                    Velocity::new(transform_rot * jv_local_lin, transform_rot * jv_local_ang);
                 #[cfg(feature = "dim2")]
                 let joint_velocity = Velocity::new(transform_rot * jv_local_lin, jv_local_ang);
 

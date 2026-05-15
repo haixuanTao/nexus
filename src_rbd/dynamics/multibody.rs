@@ -21,25 +21,22 @@
 
 #![cfg(feature = "dim3")]
 
-use crate::shaders::utils::BatchIndices;
-use crate::shaders::utils::linalg::MAX_MB_DOFS;
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
-    GpuMbFinalizeContactConstraints,
-    GpuMbInitContactConstraints, GpuMbInitSolveJointWithBias, GpuMbIntegrate,
-    GpuMbComputeDynamicsPre, GpuMbGravityAndLu, GpuMbIntegrateVelocities,
-    GpuMbComputeDynamicsWithoutCoriolisPre,
-    GpuMbRemoveContactConstraintBias,
-    GpuMbRemoveImpulseJointConstraintBias, GpuMbRemoveSolveJointNoBias,
-    GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
-    GpuMbUpdateImpulseJointConstraints, LocalMassProperties,
-    MAX_AXIS_CONSTRAINTS, MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder,
-    MbImpulseJointConstraint,
+    GpuMbComputeDynamicsPre, GpuMbComputeDynamicsWithoutCoriolisPre,
+    GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbInitContactConstraints,
+    GpuMbInitSolveJointWithBias, GpuMbIntegrate, GpuMbIntegrateVelocities,
+    GpuMbRemoveContactConstraintBias, GpuMbRemoveImpulseJointConstraintBias,
+    GpuMbRemoveSolveJointNoBias, GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
+    GpuMbUpdateImpulseJointConstraints, LocalMassProperties, MAX_AXIS_CONSTRAINTS,
+    MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder, MbImpulseJointConstraint,
     MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic,
     MultibodyLinkWorkspace, SIDE_KIND_BODY, SIDE_KIND_FIXED, SIDE_KIND_MB, Velocity,
     WorldMassProperties,
 };
+use crate::shaders::utils::BatchIndices;
+use crate::shaders::utils::linalg::MAX_MB_DOFS;
 use glamx::Vec4;
 use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
@@ -67,9 +64,7 @@ const MB_LU_LANES: u32 = 32;
 
 #[cfg(feature = "from_rapier")]
 use {
-    crate::rapier::dynamics::{
-        ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodySet,
-    },
+    crate::rapier::dynamics::{ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodySet},
     crate::shaders::dynamics::{GenericJoint, JointLimits, JointMotor},
     std::collections::HashMap,
 };
@@ -425,7 +420,12 @@ impl GpuMultibodySet {
 
             for (mb_idx, mb) in set.multibodies().enumerate() {
                 if mb.ndofs() > MAX_MB_DOFS {
-                    panic!("Multibody {} dofs {} exceed the maximum supported {}.", mb_idx, mb.ndofs(), MAX_MB_DOFS);
+                    panic!(
+                        "Multibody {} dofs {} exceed the maximum supported {}.",
+                        mb_idx,
+                        mb.ndofs(),
+                        MAX_MB_DOFS
+                    );
                 }
 
                 // rapier always creates the root with a free 6-DOF joint and only
@@ -498,7 +498,10 @@ impl GpuMultibodySet {
                 // order as `links()`.
                 let mut assembly_counter = 0u32;
                 for (link_idx, link) in mb.links().enumerate() {
-                    let rb_id = body_ids.get(&link.rigid_body_handle()).copied().unwrap_or(0);
+                    let rb_id = body_ids
+                        .get(&link.rigid_body_handle())
+                        .copied()
+                        .unwrap_or(0);
                     let parent_id = match link.parent_id() {
                         Some(p) => p as u32,
                         None => u32::MAX,
@@ -643,8 +646,7 @@ impl GpuMultibodySet {
         }
 
         // Flatten, padding each batch to `*_cap`.
-        let mut all_infos: Vec<MultibodyInfo> =
-            Vec::with_capacity((mb_cap * num_batches) as usize);
+        let mut all_infos: Vec<MultibodyInfo> = Vec::with_capacity((mb_cap * num_batches) as usize);
         let mut all_statics: Vec<MultibodyLinkStatic> =
             Vec::with_capacity((links_cap * num_batches) as usize);
         let mut all_ws: Vec<MultibodyLinkWorkspace> =
@@ -714,12 +716,8 @@ impl GpuMultibodySet {
 
             num_multibodies: Tensor::vector(backend, &all_num_mb, usage_u).unwrap(),
             multibody_info: Tensor::vector(backend, &all_infos, storage).unwrap(),
-            links_static: Tensor::vector(
-                backend,
-                &all_statics,
-                storage | BufferUsages::COPY_DST,
-            )
-            .unwrap(),
+            links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
+                .unwrap(),
             links_static_mirror: all_statics.clone(),
             links_workspace: Tensor::vector(backend, &all_ws, storage).unwrap(),
             links_mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
@@ -818,7 +816,10 @@ impl GpuMultibodySet {
             .unwrap(),
             mb_imp_joint_builders: Tensor::vector(
                 backend,
-                &vec![<MbImpulseJointBuilder as bytemuck::Zeroable>::zeroed(); num_batches as usize],
+                &vec![
+                    <MbImpulseJointBuilder as bytemuck::Zeroable>::zeroed();
+                    num_batches as usize
+                ],
                 storage,
             )
             .unwrap(),
@@ -862,18 +863,10 @@ impl GpuMultibodySet {
             mass_matrix_batch_capacity: Tensor::scalar(backend, mm_cap, usage_u).unwrap(),
             coriolis_batch_capacity: Tensor::scalar(backend, cor_cap, usage_u).unwrap(),
             i_coriolis_dt_batch_capacity: Tensor::scalar(backend, icdt_cap, usage_u).unwrap(),
-            dof_damping_section_offset: Tensor::scalar(
-                backend,
-                dofs_cap * num_batches,
-                usage_u,
-            )
-            .unwrap(),
-            coriolis_w_section_offset: Tensor::scalar(
-                backend,
-                cor_cap * num_batches,
-                usage_u,
-            )
-            .unwrap(),
+            dof_damping_section_offset: Tensor::scalar(backend, dofs_cap * num_batches, usage_u)
+                .unwrap(),
+            coriolis_w_section_offset: Tensor::scalar(backend, cor_cap * num_batches, usage_u)
+                .unwrap(),
             i_coriolis_dt_section_offset: Tensor::scalar(
                 backend,
                 2 * cor_cap * num_batches,
@@ -881,7 +874,8 @@ impl GpuMultibodySet {
             )
             .unwrap(),
             joint_constraints_batch_capacity: Tensor::scalar(backend, cons_cap, usage_u).unwrap(),
-            joint_constraint_columns_batch_capacity: Tensor::scalar(backend, cons_col_cap, usage_u).unwrap(),
+            joint_constraint_columns_batch_capacity: Tensor::scalar(backend, cons_col_cap, usage_u)
+                .unwrap(),
             contact_constraints_batch_capacity: Tensor::scalar(backend, contact_cons_cap, usage_u)
                 .unwrap(),
             contact_constraint_columns_batch_capacity: Tensor::scalar(
@@ -927,8 +921,7 @@ impl GpuMultibodySet {
         dst.i_coriolis_dt_batch_capacity = self.i_coriolis_dt_entries_per_batch;
         dst.dof_batch_capacity = self.dofs_per_batch;
         dst.mb_joint_constraints_batch_capacity = self.joint_constraints_per_batch;
-        dst.mb_joint_constraint_columns_batch_capacity =
-            self.joint_constraint_columns_per_batch;
+        dst.mb_joint_constraint_columns_batch_capacity = self.joint_constraint_columns_per_batch;
         dst.mb_contact_constraints_batch_capacity = self.contact_constraints_per_batch;
         dst.mb_contact_constraint_columns_batch_capacity =
             self.contact_constraint_columns_per_batch;
@@ -936,8 +929,7 @@ impl GpuMultibodySet {
         dst.mb_imp_joint_constraints_batch_capacity = self.mb_imp_joint_constraints_per_batch;
         dst.mb_imp_joint_jacobians_batch_capacity = self.mb_imp_joint_jacobians_per_batch;
         dst.coriolis_w_section_offset = self.coriolis_entries_per_batch * self.num_batches;
-        dst.i_coriolis_dt_section_offset =
-            2 * self.coriolis_entries_per_batch * self.num_batches;
+        dst.i_coriolis_dt_section_offset = 2 * self.coriolis_entries_per_batch * self.num_batches;
         dst.dof_damping_section_offset = self.dofs_per_batch * self.num_batches;
     }
 
@@ -1015,32 +1007,18 @@ impl GpuMultibodySet {
                 let (side_a_kind, side_a_id, side_a_link, ndofs_a) = match (mb1, rb1) {
                     (Some((mb_idx, link_idx)), _) => {
                         let mb = mb_set.multibodies().nth(mb_idx as usize).unwrap();
-                        (
-                            SIDE_KIND_MB,
-                            mb_idx,
-                            link_idx,
-                            mb.ndofs() as u32,
-                        )
+                        (SIDE_KIND_MB, mb_idx, link_idx, mb.ndofs() as u32)
                     }
-                    (None, Some(rb)) if rb.is_dynamic() => {
-                        (SIDE_KIND_BODY, local1, 0, 6)
-                    }
+                    (None, Some(rb)) if rb.is_dynamic() => (SIDE_KIND_BODY, local1, 0, 6),
                     _ => (SIDE_KIND_FIXED, u32::MAX, 0, 0),
                 };
 
                 let (side_b_kind, side_b_id, side_b_link, ndofs_b) = match (mb2, rb2) {
                     (Some((mb_idx, link_idx)), _) => {
                         let mb = mb_set.multibodies().nth(mb_idx as usize).unwrap();
-                        (
-                            SIDE_KIND_MB,
-                            mb_idx,
-                            link_idx,
-                            mb.ndofs() as u32,
-                        )
+                        (SIDE_KIND_MB, mb_idx, link_idx, mb.ndofs() as u32)
                     }
-                    (None, Some(rb)) if rb.is_dynamic() => {
-                        (SIDE_KIND_BODY, local2, 0, 6)
-                    }
+                    (None, Some(rb)) if rb.is_dynamic() => (SIDE_KIND_BODY, local2, 0, 6),
                     _ => (SIDE_KIND_FIXED, u32::MAX, 0, 0),
                 };
 
