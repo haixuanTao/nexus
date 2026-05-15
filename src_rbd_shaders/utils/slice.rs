@@ -28,6 +28,11 @@ pub struct SliceMut<'a, T>(pub &'a mut [T], pub usize);
 
 impl<'a, T: Copy> SliceMut<'a, T> {
     #[inline]
+    pub fn as_ref(&self) -> Slice<'_, T> {
+        Slice(&*self.0, self.1)
+    }
+
+    #[inline]
     pub fn at(&self, i: usize) -> &T {
         self.0.at(self.1 + i)
     }
