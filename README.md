@@ -33,7 +33,7 @@ Nexus uses [`cargo gpu`](https://github.com/Rust-GPU/cargo-gpu) to compile its R
 the build. **You must install it before building**, otherwise the shader compilation step will fail:
 
 ```sh
-cargo install cargo-gpu
+cargo install cargo-gpu --version 0.10.0-alpha.1
 ```
 
 ## Running the examples
