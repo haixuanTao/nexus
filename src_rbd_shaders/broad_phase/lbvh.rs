@@ -22,7 +22,9 @@ use crate::bounding_volumes::Aabb;
 use crate::shapes::Shape;
 use crate::utils::{BatchIndices, Slice, SliceMut, div_ceil};
 use crate::{PaddedVector, Pose, Vector};
-use khal_std::sync::{atomic_add_u32, control_barrier, workgroup_memory_barrier_with_group_sync};
+use khal_std::sync::{
+    atomic_add_u32, atomic_load_u32, control_barrier, workgroup_memory_barrier_with_group_sync,
+};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::iter::StepRng;
@@ -101,17 +103,24 @@ pub fn gpu_lbvh_reset_collision_pairs(
 #[spirv(compute(threads(1)))]
 pub fn gpu_lbvh_init_dispatch(
     // TODO: take the batch dimension as argument (instead of relying on the len of `collision_pairs_len`)?
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] collision_pairs_len: &[u32],
+    // NOTE: the `collision_pairs_len` is mutable here even though we don’t modify it. That’s
+    //       because we access it with an atomic load otherwise it would occasionally read
+    //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
+    //       https://github.com/gfx-rs/wgpu/issues/9221
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] collision_pairs_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
 ) {
     // For indirect dispatch, get the largest length along all batch dimensions.
+    let num_batches = collision_pairs_len.len();
     let mut highest_pairs_len = 0;
-    for batch_id in 0..collision_pairs_len.len() {
-        highest_pairs_len = highest_pairs_len.max(collision_pairs_len.read(batch_id));
+    for batch_id in 0..num_batches {
+        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `collision_pairs_len`).
+        highest_pairs_len =
+            highest_pairs_len.max(atomic_load_u32(collision_pairs_len.at_mut(batch_id)));
     }
 
     *indirect_args.at_mut(0) = highest_pairs_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = collision_pairs_len.len() as u32;
+    *indirect_args.at_mut(1) = num_batches as u32;
     *indirect_args.at_mut(2) = 1;
 }
 

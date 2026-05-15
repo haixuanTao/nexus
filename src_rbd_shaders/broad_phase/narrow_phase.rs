@@ -13,7 +13,10 @@ use crate::{PaddedVector, Pose, Vector};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
-use khal_std::{sync::atomic_add_u32, iter::StepRng};
+use khal_std::{
+    iter::StepRng,
+    sync::{atomic_add_u32, atomic_load_u32},
+};
 
 use crate::utils::{BatchIndices, Slice, SliceMut};
 use glamx::UVec2;
@@ -45,17 +48,24 @@ pub fn gpu_reset_narrow_phase(
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_narrow_phase_init_contacts_dispatch(
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &[u32],
+    // NOTE: the `contacts_len` is mutable here even though we don’t modify it. That’s
+    //       because we access it with an atomic load otherwise it would occasionally read
+    //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
+    //       https://github.com/gfx-rs/wgpu/issues/9221
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
 ) {
     // For indirect dispatch, get the largest length along all batch dimensions.
+    let num_batches = contacts_len.len();
     let mut highest_contacts_len = 0;
-    for i in 0..contacts_len.len() {
-        highest_contacts_len = highest_contacts_len.max(contacts_len.read(i));
+    for i in 0..num_batches {
+        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `contacts_len`).
+        highest_contacts_len =
+            highest_contacts_len.max(atomic_load_u32(contacts_len.at_mut(i)));
     }
 
     *indirect_args.at_mut(0) = highest_contacts_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = contacts_len.len() as u32;
+    *indirect_args.at_mut(1) = num_batches as u32;
     *indirect_args.at_mut(2) = 1;
 }
 
@@ -421,16 +431,23 @@ pub struct NarrowPhasePfmPair {
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_init_pfm_pfm_dispatch(
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] pfm_pairs_len: &[u32],
+    // NOTE: the `pfm_pairs_len` is mutable here even though we don’t modify it. That’s
+    //       because we access it with an atomic load otherwise it would occasionally read
+    //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
+    //       https://github.com/gfx-rs/wgpu/issues/9221
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] pfm_pairs_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
 ) {
+    let num_batches = pfm_pairs_len.len();
     let mut highest_pfm_pairs_len = 0;
-    for batch_id in 0..pfm_pairs_len.len() {
-        highest_pfm_pairs_len = highest_pfm_pairs_len.max(pfm_pairs_len.read(batch_id));
+    for batch_id in 0..num_batches {
+        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `pfm_pairs_len`).
+        highest_pfm_pairs_len =
+            highest_pfm_pairs_len.max(atomic_load_u32(pfm_pairs_len.at_mut(batch_id)));
     }
     // TODO PERF: pfm_pfm is very divergent. Use a smaller workgroup size?
     *indirect_args.at_mut(0) = highest_pfm_pairs_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = pfm_pairs_len.len() as u32;
+    *indirect_args.at_mut(1) = num_batches as u32;
     *indirect_args.at_mut(2) = 1;
 }
 
