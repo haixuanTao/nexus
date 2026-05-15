@@ -713,23 +713,23 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         let root_pose = if mb.root_is_dynamic == 0 {
             poses_slice[stat0.rb_id as usize]
         } else {
-            let ws_ref = (&ws_slice[0]);
+            let ws_ref = &ws_slice[0];
             let pose = body_to_parent(&stat0, ws_ref.joint_rot, &ws_ref.coords);
             poses_slice[stat0.rb_id as usize] = pose;
             pose
         };
-        let link0 = (&mut ws_slice[0]);
+        let link0 = &mut ws_slice[0];
         link0.local_to_parent = root_pose;
         link0.local_to_world = root_pose;
 
         for k in 1..num_links {
             let k_usize = k as usize;
-            let stat = (&stat_slice[k_usize]);
+            let stat = &stat_slice[k_usize];
             let local_to_parent;
             let parent_to_world;
             {
-                let ws_ref = (&ws_slice[k_usize]);
-                let parent_ref = (&ws_slice[stat.parent_link_id as usize]);
+                let ws_ref = &ws_slice[k_usize];
+                let parent_ref = &ws_slice[stat.parent_link_id as usize];
                 parent_to_world = parent_ref.local_to_world;
                 local_to_parent = body_to_parent(&stat, ws_ref.joint_rot, &ws_ref.coords);
             }

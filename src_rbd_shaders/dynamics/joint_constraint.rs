@@ -83,7 +83,7 @@ impl JointSolverBody {
 /// A joint constraint between two rigid bodies.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -108,7 +108,7 @@ pub struct JointConstraint {
 /// A joint constraint between two rigid bodies.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -148,7 +148,7 @@ impl Default for JointConstraint {
 // NOTE: field order has been selected meticulously to reduce padding in both 2D and 3D versions.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

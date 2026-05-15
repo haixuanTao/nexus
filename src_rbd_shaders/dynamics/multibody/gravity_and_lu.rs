@@ -70,13 +70,6 @@ pub fn gpu_mb_gravity_and_lu(
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
     let lane = lid.x;
-    // Padding multibody slots have `num_links == 0` and `ndofs == 0` so all
-    // per-link / per-DOF loops below iterate zero times. No early-return —
-    // WGSL's naga frontend can't prove a storage-loaded comparison is
-    // uniform across the workgroup, so any subsequent `workgroupBarrier()`
-    // would be flagged "called from non-uniform control flow". See
-    // `gpu_mb_lu_decompose` for the rationale.
-    let _ = num_multibodies;
 
     let mb = batch_ids.mb_batch(batch_id, multibody_info).read(mb_idx as usize);
     let num_links = mb.num_links;
@@ -104,6 +97,10 @@ pub fn gpu_mb_gravity_and_lu(
 
     // ---- Phase 1: zero the generalized-force vector (parallel across DOFs). ----
     let accelerations = MatSlice::dense(gen_base, ndofs, 1);
+    // TODO(perf): up to a certain number of degrees of freedom, we could actually run all the
+    //             calculations in shared memory and only write the result in the end.
+    //             Currently, the max number of dofs is 32 but we still accumulate forces/accelerations
+    //             in global memory whereas it could be done in shared memory instead.
     fill_par(gen_forces, accelerations, 0.0, lane, LANES);
     workgroup_memory_barrier_with_group_sync();
 
@@ -247,11 +244,6 @@ pub fn gpu_mb_gravity_and_lu(
     workgroup_memory_barrier_with_group_sync();
 
     // ---- Phase 3: load M into shared memory, factor in place. ----
-    // No early-return on `ndofs == 0`: the loops/conditionals below already
-    // guard with `lane < ndofs`, and `lu_factor_in_shared` /
-    // `lu_triangular_solve_in_place` iterate zero times for `ndofs == 0`.
-    // Dropping the early-return keeps barriers in uniform control flow per
-    // WGSL's naga uniformity rules.
     let m_view = MatSlice::dense(mb_mm_base, ndofs, ndofs);
     if lane < ndofs {
         for r in 0..ndofs {

@@ -87,7 +87,7 @@ fn wg_reduce_add(lid: usize, value: f32, shared: &mut [f32; WG_SIZE], global: &m
 /// Stores f32 values as u32 bits for CAS-based atomic add.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

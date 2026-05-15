@@ -19,7 +19,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 /// so that atomic min operations can be used.
 #[derive(Clone, Copy, Default, Debug)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

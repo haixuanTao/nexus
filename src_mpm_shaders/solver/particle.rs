@@ -4,7 +4,7 @@ use crate::{Matrix, PaddedMatrix, UVector, Vector};
 /// A particle position in the MPM grid.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -31,7 +31,7 @@ impl Position {
 /// nearest rigid collider surface.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -85,7 +85,7 @@ impl Cdf {
 /// In 3D, this references a triangle by its three vertex indices.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -115,7 +115,7 @@ pub struct RigidParticleIndices {
 /// - In 2D, Vec2 has align(8), so f32 fields are grouped at the end.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -163,7 +163,7 @@ pub struct Kinematics {
 /// unnecessary write-back bandwidth.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

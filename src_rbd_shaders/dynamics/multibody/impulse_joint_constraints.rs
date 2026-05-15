@@ -85,7 +85,7 @@ pub const SIDE_KIND_FIXED: u32 = 2;
 /// `constraints` slab.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -135,7 +135,7 @@ pub struct MbImpulseJointBuilder {
 /// `kind` values: `0` = inactive / unused slot, `1` = active.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

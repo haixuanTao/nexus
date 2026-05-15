@@ -26,7 +26,7 @@ pub const MAX_CONSTRAINTS_PER_MANIFOLD: usize = 4;
 /// This data is used to initialize and update constraints at each solver substep.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -51,7 +51,7 @@ pub struct TwoBodyConstraintInfos {
 
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -80,7 +80,7 @@ pub struct TwoBodyConstraintInfos {
 /// Stores auxiliary information needed to update constraints at each solver substep.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C, align(16))]
@@ -99,7 +99,7 @@ pub struct TwoBodyConstraintBuilder {
 // PERF: differentiate two-bodies and one-body constraints?
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -156,7 +156,7 @@ pub struct TwoBodyConstraint {
 /// Constraint data for a single contact point.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -174,7 +174,7 @@ pub struct TwoBodyConstraintElement {
 /// Solved as a unilateral constraint (impulse >= 0).
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -221,7 +221,7 @@ pub struct TwoBodyConstraintNormalPart {
 /// Solved as a bilateral constraint with limits.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

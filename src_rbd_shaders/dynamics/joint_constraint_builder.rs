@@ -33,7 +33,7 @@ const DIM: usize = 3;
 /// Builder data for constructing joint constraints.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

@@ -833,6 +833,10 @@ pub fn gemm_skew_tr_lhs_par(
 ) {
     let j = lane;
     if j < c.cols {
+        // TODO(perf): since matrices are stored column-major,
+        //             the workgroup memory access into buf are not coalesced here.
+        //             (we probably just need to switch storage to row-major to match
+        //              the convention from vortx)
         let bw = buf.read(b.idx(0, j));
         let i0 = c.idx(0, j);
         let i1 = c.idx(1, j);
@@ -846,6 +850,7 @@ pub fn gemm_skew_tr_lhs_par(
 pub fn fill_par(buf: &mut [f32], m: MatSlice, val: f32, lane: u32, _lanes: u32) {
     let c = lane;
     if c < m.cols {
+        // TODO(perf): not a good memory access pattern if the matrix is column-major.
         for r in 0..m.rows {
             buf.write(m.idx(r, c), val);
         }
@@ -861,6 +866,10 @@ pub fn copy_from_par(
     lane: u32,
     _lanes: u32,
 ) {
+    // TODO(perf): memory access patern isn’t ideal for column-major matrix
+    //             since `c` is the workgroup thread index.
+    //             (we probably just need to switch storage to row-major to match
+    //              the convention from vortx)
     let c = lane;
     if c < dst.cols {
         for r in 0..dst.rows {

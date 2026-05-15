@@ -12,7 +12,7 @@ use glamx::{Rot2, Vec2};
 /// The mass-properties of a rigid-body in local (body-space) coordinates.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable, Debug)
 )]
 #[repr(C)]
@@ -103,7 +103,7 @@ impl LocalMassProperties {
 /// The mass-properties of a rigid-body in world-space coordinates.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -160,7 +160,7 @@ impl Default for WorldMassProperties {
 /// An impulse (instantaneous change in momentum).
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -181,7 +181,7 @@ impl Impulse {
 /// A force and torque applied to a rigid body.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -220,7 +220,7 @@ impl Force {
 /// Linear and angular velocity of a rigid body.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

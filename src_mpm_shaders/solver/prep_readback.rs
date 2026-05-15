@@ -26,7 +26,7 @@ const RENDER_MODE_CDF_SIGNS: u32 = 6;
 /// Render configuration for the readback shader.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -42,7 +42,7 @@ pub struct RenderConfig {
 #[cfg(feature = "dim2")]
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -64,7 +64,7 @@ pub struct ReadbackData {
 #[cfg(feature = "dim3")]
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

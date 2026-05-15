@@ -13,7 +13,7 @@ pub const BOUNDARY_CONDITION_NON_REFLECTING: u32 = 3;
 /// The `ty` field should be one of the `BOUNDARY_CONDITION_*` constants.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

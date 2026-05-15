@@ -7,7 +7,7 @@ use crate::{DIM, PaddedMatrix, PaddedVector, VERTS_PER_ELEM};
 /// Per-element static data (immutable after setup).
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -37,7 +37,7 @@ pub struct ElementInfo {
 /// Per-vertex static data.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -53,7 +53,7 @@ pub struct VertexInfo {
 /// Per-vertex dynamic state (position + velocity).
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -67,7 +67,7 @@ pub struct VertexState {
 /// Per-vertex constraint data.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -86,7 +86,7 @@ pub struct VertexConstraint {
 /// Per-element precomputed data (updated each Newton iteration for corotated).
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -109,7 +109,7 @@ impl Default for ElementPrecomputed {
 /// Per-element energy and gradient output.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -129,7 +129,7 @@ pub struct ElementEnergyGrad {
 #[cfg(feature = "dim3")]
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -140,7 +140,7 @@ pub struct ElementHessian {
 #[cfg(feature = "dim2")]
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -151,7 +151,7 @@ pub struct ElementHessian {
 /// Per-vertex PCG solver state.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -181,7 +181,7 @@ pub struct PcgVertexState {
 /// Global scalar state for PCG solver (single element, read/written atomically).
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -199,7 +199,7 @@ pub struct PcgScalars {
 /// Global scalar state for line search.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -217,7 +217,7 @@ pub struct LinesearchScalars {
 /// Simulation parameters (uniform buffer).
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(Debug, bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

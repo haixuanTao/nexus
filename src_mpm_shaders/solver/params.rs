@@ -5,7 +5,7 @@ use crate::Vector;
 /// In 2D, a padding field is added after gravity to satisfy uniform size/alignment requirements.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

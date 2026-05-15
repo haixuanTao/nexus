@@ -31,7 +31,7 @@ pub const ANG_AXES_MASK: u32 = (1 << 3) + (1 << 4) + (1 << 5);
 /// An impulse-based joint connecting two rigid bodies.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -50,7 +50,7 @@ pub struct ImpulseJoint {
 /// A generic (6 DOFs in 3D or 3 DOFs in 2D) joint.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -96,7 +96,7 @@ pub struct GenericJoint {
 /// When a joint hits its limit, forces are applied to prevent further movement in that direction.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -120,7 +120,7 @@ pub struct JointLimits {
 /// 2. **Position control**: Set `target_pos` with `stiffness`/`damping` to reach a target angle/position
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

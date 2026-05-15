@@ -55,7 +55,7 @@ pub const MULTIBODY_ROOT: u32 = u32::MAX;
 /// Written once at init time.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -85,7 +85,7 @@ pub struct MultibodyLinkStatic { // TODO: change the name to `MultibodyLink` ?
 /// Per-link workspace updated every step.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -121,7 +121,7 @@ pub struct MultibodyLinkWorkspace {
 /// Per-link workspace updated every step.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -163,7 +163,7 @@ pub struct MultibodyLinkWorkspace {
 /// `kind` values: 0 = inactive, 1 = limit, 2 = motor.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -213,7 +213,7 @@ pub struct MultibodyJointConstraint { // TODO: rename to MultibodyUnitJointConst
 /// TODO: handle contact between two multibodies.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -277,7 +277,7 @@ pub struct MultibodyContactConstraint {
 /// to a scalar.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
@@ -317,7 +317,7 @@ pub struct MultibodyContactConstraint {
 /// the offsets into the dense jacobian/mass-matrix/gen-force tensors.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]

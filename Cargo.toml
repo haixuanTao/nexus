@@ -46,6 +46,7 @@ crunchy = "0.2.4"
 [workspace.lints]
 rust.unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(feature, values("dim2", "dim3", "from_rapier", "cpu", "cuda", "metal"))',
+    'cfg(target_arch_is_gpu)',
 ] }
 
 [patch.crates-io]

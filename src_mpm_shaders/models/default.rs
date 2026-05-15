@@ -26,7 +26,7 @@ pub const MODEL_SAND_NEO_HOOKEAN: u32 = 3;
 /// as the appropriate model struct.
 #[derive(Clone, Copy)]
 #[cfg_attr(
-    not(any(target_arch = "spirv", target_arch = "nvptx64")),
+    not(target_arch_is_gpu),
     derive(bytemuck::Pod, bytemuck::Zeroable)
 )]
 #[repr(C)]
