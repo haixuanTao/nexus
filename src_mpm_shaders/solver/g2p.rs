@@ -77,8 +77,7 @@ fn global_shared_memory_transfers<const USE_CPIC: bool>(
                         shared_nodes_vel.write(flat_shared_index, node.momentum_velocity);
 
                         if USE_CPIC {
-                            shared_nodes_vel_incompatible[flat_shared_index] =
-                                node.momentum_velocity_incompatible;
+                            shared_nodes_vel_incompatible.write(flat_shared_index, node.momentum_velocity_incompatible);
                             shared_nodes_cdf.write(flat_shared_index, node.cdf);
                         }
                     } else {

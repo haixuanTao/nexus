@@ -10,7 +10,8 @@ fn main() {
         .feature("dim2");
 
     if target_arch == "wasm32" {
-        builder = builder.feature("web-compat");
+        builder = builder.feature("web-compat")
+            .feature("unsafe_remove_boundchecks");
     }
 
     builder.build(output_dir);
