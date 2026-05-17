@@ -31,6 +31,7 @@ use glamx::{Mat3, Mat4, Quat, Vec3};
 
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
+use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::dynamics::body::{Velocity, WorldMassProperties};
@@ -205,7 +206,6 @@ fn side_dot_vel(
         return 0.0;
     }
     if kind == SIDE_KIND_BODY {
-        // Layout: `[lin (DIM), ang (ANG_DIM)]` — exactly `SPATIAL_DIM` floats.
         let v = solver_vels.read(colliders_start + body_id as usize);
         let mut acc = 0.0f32;
         // Linear part.
@@ -1604,34 +1604,36 @@ fn side_world_pose(
         return poses.read(colliders_start + side_id as usize);
     }
     let link_global = links_start + mb.first_link as usize + side_link as usize;
-    let ws = links_workspace.read(link_global);
-    ws.local_to_world
+    links_workspace.read(link_global).local_to_world
 }
 
-/// One PGS sweep over all multibody-touching impulse-joint axis constraints.
-/// Updates both the multibody `dof_velocities` and the free-body
-/// `solver_vels`.
+/// One PGS sweep over the multibody-touching impulse-joint axis constraints
+/// of a single color. Updates both the multibody `dof_velocities` and the
+/// free-body `solver_vels`.
 ///
-/// **Important:** this kernel must be dispatched **serially** (single
-/// workgroup, threads(1)) — different joints can share both multibodies and
-/// free bodies, and we do not yet have a coloring for the new constraint
-/// type. Coloring is a TODO; for now correctness wins over parallelism.
+/// Joints are graph-colored at init time (see `set_impulse_joints`): within
+/// one color no two joints share a multibody or a free body, so every joint
+/// of the current color touches disjoint mutable state and runs race-free in
+/// parallel. The host dispatches one color per iteration, so a full sweep is
+/// an exact sequential Gauss–Seidel sweep in color-sorted order.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(64)))]
 pub fn gpu_mb_solve_impulse_joint_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] builders: &[MbImpulseJointBuilder],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     constraints: &mut [MbImpulseJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] jacobians: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_joints: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_color_groups: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] curr_color: &u32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] solver_vels: &mut [Velocity],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
+    let num_threads = num_workgroups.x * 64;
     let batch_id = invocation_id.y;
-    let len = num_joints.read(batch_id as usize);
 
     let joints_start = batch_ids.mb_imp_joints_start(batch_id);
     let cons_start = batch_ids.mb_imp_joint_constraints_start(batch_id);
@@ -1639,27 +1641,35 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
     let dof_start = batch_ids.dof_start(batch_id);
     let colliders_start = batch_ids.coll_start(batch_id);
 
-    for i in 0..len {
-        let builder = builders.read(joints_start + i as usize);
+    // `color_groups` is a per-batch prefix-sum over the color-sorted
+    // builders: color `c` owns the sorted-builder range
+    // `[color_groups[c-1], color_groups[c])` (start `0` for color `0`).
+    let color = *curr_color as usize;
+    let color_groups = batch_ids.mb_imp_joint_color_groups_batch(batch_id, all_color_groups);
+    let start = if color > 0 { color_groups[color - 1] } else { 0 };
+    let end = color_groups[color];
+
+    for i in StepRng::new(start + invocation_id.x..end, num_threads) {
+        let builder = builders.at(joints_start + i as usize);
         let cons_base = cons_start + builder.constraint_id as usize;
 
         // Per-multibody dof base: cached out of the per-axis loop — same for
         // every axis constraint of this joint.
         let dof_base_a = if builder.side_a_kind == SIDE_KIND_MB {
-            let mb = multibody_info.read(mb_start + builder.side_a_id as usize);
+            let mb = multibody_info.at(mb_start + builder.side_a_id as usize);
             dof_start + mb.first_dof as usize
         } else {
             0
         };
         let dof_base_b = if builder.side_b_kind == SIDE_KIND_MB {
-            let mb = multibody_info.read(mb_start + builder.side_b_id as usize);
+            let mb = multibody_info.at(mb_start + builder.side_b_id as usize);
             dof_start + mb.first_dof as usize
         } else {
             0
         };
 
         for s in 0..MAX_AXIS_CONSTRAINTS {
-            let mut c = constraints.read(cons_base + s as usize);
+            let c = constraints.at_mut(cons_base + s as usize);
             if c.kind == 0 {
                 continue;
             }
@@ -1691,7 +1701,6 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
                 .clamp(c.impulse_lo, c.impulse_hi);
             let delta = total - c.impulse;
             c.impulse = total;
-            constraints.write(cons_base + s as usize, c);
 
             // Apply ±delta · W·J: sign +1 for side A, -1 for side B (matches
             // rapier `solver_vel1.axpy(delta_impulse, &wj1, 1.0)`,
@@ -1746,13 +1755,12 @@ pub fn gpu_mb_remove_impulse_joint_constraint_bias(
     let cons_start = batch_ids.mb_imp_joint_constraints_start(batch_id);
     let mut i = invocation_id.x;
     while i < len {
-        let builder = builders.read(joints_start + i as usize);
+        let builder = builders.at(joints_start + i as usize);
         let cons_base = cons_start + builder.constraint_id as usize;
         for s in 0..MAX_AXIS_CONSTRAINTS {
-            let mut c = constraints.read(cons_base + s as usize);
+            let c = constraints.at_mut(cons_base + s as usize);
             if c.kind != 0 {
                 c.rhs = c.rhs_wo_bias;
-                constraints.write(cons_base + s as usize, c);
             }
         }
         i += num_threads;

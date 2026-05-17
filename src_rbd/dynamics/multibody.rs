@@ -24,8 +24,9 @@
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
-    GpuMbComputeDynamicsPre, GpuMbComputeDynamicsWithoutCoriolisPre,
+    GpuIncJointColor, GpuMbComputeDynamicsPre, GpuMbComputeDynamicsWithoutCoriolisPre,
     GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbInitContactConstraints,
+    GpuResetJointColor,
     GpuMbInitSolveJointWithBias, GpuMbIntegrate, GpuMbIntegrateVelocities,
     GpuMbRemoveContactConstraintBias, GpuMbRemoveImpulseJointConstraintBias,
     GpuMbRemoveSolveJointNoBias, GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
@@ -192,6 +193,19 @@ pub struct GpuMultibodySet {
     mb_imp_joints_per_batch: u32,
     mb_imp_joint_constraints_per_batch: u32,
     mb_imp_joint_jacobians_per_batch: u32,
+
+    /// Per-batch prefix-sum over the color-sorted `mb_imp_joint_builders`:
+    /// color `c` owns sorted-builder range `[cg[c-1], cg[c])`. Built at
+    /// init time by `set_impulse_joints` (greedy graph coloring), consumed
+    /// by `gpu_mb_solve_impulse_joint_constraints`.
+    mb_imp_joint_color_groups: Tensor<u32>,
+    /// Scalar color cursor incremented by the host color loop.
+    mb_imp_joint_curr_color: Tensor<u32>,
+    /// Number of colors (per-batch stride of `mb_imp_joint_color_groups`,
+    /// and the host color-loop trip count). CPU mirror.
+    mb_imp_joint_num_colors: u32,
+    /// Largest color group across batches — the per-color dispatch width.
+    mb_imp_joint_max_color_group_len: u32,
     /// Per-batch capacities of the joint / contact constraint slabs (CPU-side
     /// mirror of the corresponding `*_batch_capacity` tensors). Stored so
     /// `GpuPhysicsState` can rebuild its `BatchIndices` value when caps change.
@@ -849,6 +863,15 @@ impl GpuMultibodySet {
             mb_imp_joints_per_batch: 0,
             mb_imp_joint_constraints_per_batch: MAX_AXIS_CONSTRAINTS,
             mb_imp_joint_jacobians_per_batch: 1,
+            mb_imp_joint_color_groups: Tensor::vector(
+                backend,
+                &vec![0u32; num_batches as usize],
+                storage,
+            )
+            .unwrap(),
+            mb_imp_joint_curr_color: Tensor::scalar(backend, 0u32, usage_u).unwrap(),
+            mb_imp_joint_num_colors: 0,
+            mb_imp_joint_max_color_group_len: 0,
             joint_constraints_per_batch: cons_cap,
             joint_constraint_columns_per_batch: cons_col_cap,
             contact_constraints_per_batch: contact_cons_cap,
@@ -928,6 +951,7 @@ impl GpuMultibodySet {
         dst.mb_imp_joints_batch_capacity = self.mb_imp_joints_per_batch.max(1);
         dst.mb_imp_joint_constraints_batch_capacity = self.mb_imp_joint_constraints_per_batch;
         dst.mb_imp_joint_jacobians_batch_capacity = self.mb_imp_joint_jacobians_per_batch;
+        dst.mb_imp_joint_color_groups_batch_capacity = self.mb_imp_joint_num_colors.max(1);
         dst.coriolis_w_section_offset = self.coriolis_entries_per_batch * self.num_batches;
         dst.i_coriolis_dt_section_offset = 2 * self.coriolis_entries_per_batch * self.num_batches;
         dst.dof_damping_section_offset = self.dofs_per_batch * self.num_batches;
@@ -960,6 +984,14 @@ impl GpuMultibodySet {
         // Stage 1 — per-batch list of touched joints + their side metadata.
         let mut per_env_builders: Vec<Vec<MbImpulseJointBuilder>> =
             Vec::with_capacity(self.num_batches as usize);
+        // Per-env color-group prefix sums (one Vec<u32> per batch), built
+        // alongside the builders below. `global_num_colors` /
+        // `global_max_color_group_len` are the cross-batch maxima used to
+        // size the flat buffer and the per-color dispatch width.
+        let mut per_env_color_groups: Vec<Vec<u32>> =
+            Vec::with_capacity(self.num_batches as usize);
+        let mut global_num_colors = 0u32;
+        let mut global_max_color_group_len = 0u32;
         let mut max_joints = 0u32;
         let mut max_jac_floats = 0u32;
 
@@ -1073,7 +1105,83 @@ impl GpuMultibodySet {
 
             max_joints = max_joints.max(builders.len() as u32);
             max_jac_floats = max_jac_floats.max(jac_offset);
-            per_env_builders.push(builders);
+
+            // ── Init-time graph coloring (mirrors the rigid-body impulse
+            // joint coloring in `dynamics/joint.rs`). Conflict graph: nodes
+            // are multibodies and free bodies that appear in an MB joint
+            // (FIXED sides touch no mutable state → no node); an edge joins
+            // the two sides of every joint. Two joints get the same color
+            // only if they share no node, so within a color every joint
+            // writes disjoint `dof_state` / `solver_vels`, making the
+            // per-color sweep an exact (race-free) Gauss–Seidel step.
+            let num_mb = mb_set.multibodies().count() as u32;
+            // Unified node id: MB side → mb_idx; free body → num_mb +
+            // local_body_id; FIXED → none.
+            let node = |kind: u32, id: u32| -> Option<usize> {
+                if kind == SIDE_KIND_MB {
+                    Some(id as usize)
+                } else if kind == SIDE_KIND_BODY {
+                    Some((num_mb + id) as usize)
+                } else {
+                    None
+                }
+            };
+            let max_node = builders
+                .iter()
+                .flat_map(|b| {
+                    [
+                        node(b.side_a_kind, b.side_a_id),
+                        node(b.side_b_kind, b.side_b_id),
+                    ]
+                })
+                .flatten()
+                .max()
+                .unwrap_or(0);
+
+            let mut colors = Vec::with_capacity(builders.len());
+            let mut group_masks = vec![0u128; max_node + 1];
+            for b in &builders {
+                let a = node(b.side_a_kind, b.side_a_id);
+                let bb = node(b.side_b_kind, b.side_b_id);
+                let used = a.map_or(0, |n| group_masks[n]) | bb.map_or(0, |n| group_masks[n]);
+                let color = used.trailing_ones();
+                colors.push(color);
+                if let Some(n) = a {
+                    group_masks[n] |= 1 << color;
+                }
+                if let Some(n) = bb {
+                    group_masks[n] |= 1 << color;
+                }
+            }
+
+            let env_num_colors = colors.iter().copied().max().map(|n| n + 1).unwrap_or(0);
+            let mut color_groups = vec![0u32; env_num_colors as usize];
+            for c in &colors {
+                color_groups[*c as usize] += 1;
+            }
+            let env_max_color_group_len = color_groups.iter().copied().max().unwrap_or(0);
+
+            // Prefix sum → per-color end offsets in the sorted builder slab.
+            for i in 0..color_groups.len().saturating_sub(1) {
+                color_groups[i + 1] += color_groups[i];
+            }
+
+            // Bucket-sort builders by color (constraint_id / jacobian_offset
+            // travel inside each builder, so reordering is safe — every
+            // kernel indexes the slab via `builder.constraint_id`).
+            let mut target = color_groups.clone();
+            target.insert(0, 0);
+            let mut sorted_builders = builders.clone();
+            for (b, c) in builders.iter().zip(colors.iter()) {
+                sorted_builders[target[*c as usize] as usize] = *b;
+                target[*c as usize] += 1;
+            }
+
+            global_num_colors = global_num_colors.max(env_num_colors);
+            global_max_color_group_len = global_max_color_group_len.max(env_max_color_group_len);
+
+            per_env_color_groups.push(color_groups);
+            per_env_builders.push(sorted_builders);
         }
 
         // Stage 2 — flatten with per-batch padding to `max_joints`.
@@ -1122,6 +1230,26 @@ impl GpuMultibodySet {
         self.mb_imp_joints_per_batch = joints_cap;
         self.mb_imp_joint_constraints_per_batch = cons_cap;
         self.mb_imp_joint_jacobians_per_batch = jac_cap;
+
+        // Flat color-groups buffer [num_batches * cols]. Envs with fewer
+        // colors are padded with their last prefix value so the extra
+        // colors are no-ops (start == end). `cols` is clamped to ≥1 so the
+        // buffer is always a valid non-empty binding even with no joints.
+        let cols = global_num_colors.max(1);
+        let mut all_color_groups =
+            Vec::with_capacity((cols * self.num_batches) as usize);
+        for env_cg in &per_env_color_groups {
+            let last = env_cg.last().copied().unwrap_or(0);
+            all_color_groups.extend_from_slice(env_cg);
+            for _ in env_cg.len()..cols as usize {
+                all_color_groups.push(last);
+            }
+        }
+        self.mb_imp_joint_color_groups =
+            Tensor::vector(backend, &all_color_groups, storage).unwrap();
+        self.mb_imp_joint_curr_color = Tensor::scalar(backend, 0u32, usage_u).unwrap();
+        self.mb_imp_joint_num_colors = global_num_colors;
+        self.mb_imp_joint_max_color_group_len = global_max_color_group_len;
     }
 
     /// Upload a new integration timestep.
@@ -1227,6 +1355,10 @@ pub struct GpuMultibodySolver {
     remove_contact_constraint_bias: GpuMbRemoveContactConstraintBias,
     update_impulse_joint_constraints: GpuMbUpdateImpulseJointConstraints,
     solve_impulse_joint_constraints: GpuMbSolveImpulseJointConstraints,
+    /// Color cursor reset / increment for the colored impulse-joint solve
+    /// loop. Reuses the free-body joint color kernels (generic `&mut u32`).
+    reset_imp_joint_color: GpuResetJointColor,
+    inc_imp_joint_color: GpuIncJointColor,
     remove_impulse_joint_constraint_bias: GpuMbRemoveImpulseJointConstraintBias,
     integrate_velocities: GpuMbIntegrateVelocities,
     integrate: GpuMbIntegrate,
@@ -1395,6 +1527,7 @@ impl GpuMultibodySolver {
         if mb.is_empty() {
             return Ok(());
         }
+
         let dispatch = [mb.multibodies_per_batch, mb.num_batches, 1];
 
         // 1. v += a · dt_substep.
@@ -1488,13 +1621,11 @@ impl GpuMultibodySolver {
             self.update_impulse_joint_constraints.call(
                 pass,
                 imp_dispatch,
-                // set 0 storage (binding 0..=2)
                 &mb.mb_imp_joint_builders,
                 &mut mb.mb_imp_joint_constraints,
                 &mut mb.mb_imp_joint_jacobians,
                 &mb.dt,
                 args.batch_indices,
-                // set 1 storage (binding 0..=6)
                 &mb.multibody_info,
                 &mb.links_workspace,
                 &mb.body_jacobians,
@@ -1503,21 +1634,28 @@ impl GpuMultibodySolver {
                 args.poses,
                 args.mprops,
             )?;
-            // Solve sweep is single-workgroup, threads(1) — see kernel doc.
-            self.solve_impulse_joint_constraints.call(
-                pass,
-                [1u32, mb.num_batches, 1],
-                // set 0 storage (binding 0..=3)
-                &mb.mb_imp_joint_builders,
-                &mut mb.mb_imp_joint_constraints,
-                &mb.mb_imp_joint_jacobians,
-                &mb.mb_imp_joint_count,
-                args.batch_indices,
-                // set 1 storage (binding 0..=2)
-                &mb.multibody_info,
-                &mut mb.dof_state,
-                args.solver_vels,
-            )?;
+            // Colored PGS sweep WITH bias: one dispatch per color, each
+            // color's joints solved race-free in parallel (graph coloring
+            // done at init in `set_impulse_joints`).
+            self.reset_imp_joint_color
+                .call(pass, 1u32, &mut mb.mb_imp_joint_curr_color)?;
+            for _ in 0..mb.mb_imp_joint_num_colors {
+                self.solve_impulse_joint_constraints.call(
+                    pass,
+                    [mb.mb_imp_joint_max_color_group_len, mb.num_batches, 1],
+                    &mb.mb_imp_joint_builders,
+                    &mut mb.mb_imp_joint_constraints,
+                    &mb.mb_imp_joint_jacobians,
+                    &mb.mb_imp_joint_color_groups,
+                    args.batch_indices,
+                    &mb.mb_imp_joint_curr_color,
+                    &mb.multibody_info,
+                    &mut mb.dof_state,
+                    args.solver_vels,
+                )?;
+                self.inc_imp_joint_color
+                    .call(pass, 1u32, &mut mb.mb_imp_joint_curr_color)?;
+            }
         }
 
         // 4. Integrate positions with the corrected `v`.
@@ -1595,21 +1733,27 @@ impl GpuMultibodySolver {
             args.batch_indices,
         )?;
         if mb.mb_imp_joints_per_batch > 0 {
-            // Final stabilization sweep WITHOUT bias.
-            self.solve_impulse_joint_constraints.call(
-                pass,
-                [1u32, mb.num_batches, 1],
-                // set 0 storage
-                &mb.mb_imp_joint_builders,
-                &mut mb.mb_imp_joint_constraints,
-                &mb.mb_imp_joint_jacobians,
-                &mb.mb_imp_joint_count,
-                args.batch_indices,
-                // set 1 storage
-                &mb.multibody_info,
-                &mut mb.dof_state,
-                args.solver_vels,
-            )?;
+            // Final stabilization sweep WITHOUT bias — colored, one
+            // dispatch per color (see the with-bias sweep above).
+            self.reset_imp_joint_color
+                .call(pass, 1u32, &mut mb.mb_imp_joint_curr_color)?;
+            for _ in 0..mb.mb_imp_joint_num_colors {
+                self.solve_impulse_joint_constraints.call(
+                    pass,
+                    [mb.mb_imp_joint_max_color_group_len, mb.num_batches, 1],
+                    &mb.mb_imp_joint_builders,
+                    &mut mb.mb_imp_joint_constraints,
+                    &mb.mb_imp_joint_jacobians,
+                    &mb.mb_imp_joint_color_groups,
+                    args.batch_indices,
+                    &mb.mb_imp_joint_curr_color,
+                    &mb.multibody_info,
+                    &mut mb.dof_state,
+                    args.solver_vels,
+                )?;
+                self.inc_imp_joint_color
+                    .call(pass, 1u32, &mut mb.mb_imp_joint_curr_color)?;
+            }
         }
 
         Ok(())

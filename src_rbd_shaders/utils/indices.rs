@@ -41,6 +41,10 @@ pub struct BatchIndices {
     pub mb_imp_joints_batch_capacity: u32,
     pub mb_imp_joint_constraints_batch_capacity: u32,
     pub mb_imp_joint_jacobians_batch_capacity: u32,
+    /// Multibody-touching impulse-joint color-group slab (per-batch stride
+    /// = number of colors). Mirrors `color_groups_batch_capacity` for the
+    /// free-body impulse joints.
+    pub mb_imp_joint_color_groups_batch_capacity: u32,
 
     /*
      * Intra-batch offsets for multi-purpose buffers.
@@ -152,6 +156,11 @@ impl BatchIndices {
     #[inline]
     pub fn mb_imp_joint_jacobians_start(&self, batch_id: u32) -> usize {
         batch_id as usize * self.mb_imp_joint_jacobians_batch_capacity as usize
+    }
+
+    #[inline]
+    pub fn mb_imp_joint_color_groups_start(&self, batch_id: u32) -> usize {
+        batch_id as usize * self.mb_imp_joint_color_groups_batch_capacity as usize
     }
 
     /*
@@ -312,5 +321,14 @@ impl BatchIndices {
         slice: &'s mut [T],
     ) -> SliceMut<'s, T> {
         SliceMut(slice, self.mb_imp_joint_constraints_start(batch_id))
+    }
+
+    #[inline]
+    pub fn mb_imp_joint_color_groups_batch<'s, T>(
+        &self,
+        batch_id: u32,
+        slice: &'s [T],
+    ) -> Slice<'s, T> {
+        Slice(slice, self.mb_imp_joint_color_groups_start(batch_id))
     }
 }
