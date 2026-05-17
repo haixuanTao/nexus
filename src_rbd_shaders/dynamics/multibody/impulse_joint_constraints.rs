@@ -31,8 +31,8 @@ use glamx::{Mat3, Mat4, Quat, Vec3};
 
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
-use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use crate::dynamics::body::{Velocity, WorldMassProperties};
 use crate::dynamics::joint::{
@@ -43,6 +43,7 @@ use crate::utils::BatchIndices;
 use crate::utils::linalg::{MatSlice, lu_solve_in_place};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot, rotation_to_matrix};
 
+use super::lu::LANES;
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 
 /// Maximum unit-axis constraints any single impulse joint can produce.
@@ -187,11 +188,50 @@ fn wj_id(j_id: u32, ndofs: u32) -> usize {
     (j_id + ndofs) as usize
 }
 
-/// `J · v` for a generic side: dot the per-side jacobian against either
-/// the free body's spatial velocity or the multibody's generalized
-/// velocities, depending on `kind`.
+/// `k`-th component of a free body's spatial velocity, in the same order
+/// the jacobian rows are packed: `[lin (DIM), ang (ANG_DIM)]`. Returns a
+/// value (not a reference) to avoid SPIR-V pointer-phi nodes.
 #[inline]
-fn side_dot_vel(
+fn spatial_component(v: Velocity, k: u32) -> f32 {
+    #[cfg(feature = "dim3")]
+    {
+        if k == 0 {
+            v.linear.x
+        } else if k == 1 {
+            v.linear.y
+        } else if k == 2 {
+            v.linear.z
+        } else if k == 3 {
+            v.angular.x
+        } else if k == 4 {
+            v.angular.y
+        } else {
+            v.angular.z
+        }
+    }
+    #[cfg(feature = "dim2")]
+    {
+        if k == 0 {
+            v.linear.x
+        } else if k == 1 {
+            v.linear.y
+        } else {
+            v.angular
+        }
+    }
+}
+
+/// Workgroup-cooperative `J · v` for a generic side. Every one of the
+/// `LANES` lanes forms a single product term, which are tree-reduced
+/// through `partial`; the scalar result is broadcast to all lanes.
+///
+/// The barrier sequence is **identical for every side kind and for
+/// inactive constraints** (`active == false` just zeroes the term), so the
+/// enclosing per-axis loop stays in workgroup-uniform control flow — no
+/// lane ever skips a barrier another lane executes.
+#[inline]
+fn side_dot_vel_par(
+    active: bool,
     kind: u32,
     j_id: u32,
     ndofs: u32,
@@ -201,46 +241,59 @@ fn side_dot_vel(
     dof_base_for_mb: usize,
     solver_vels: &[Velocity],
     colliders_start: usize,
+    lane: u32,
+    partial: &mut [f32; LANES as usize],
 ) -> f32 {
-    if kind == SIDE_KIND_FIXED {
-        return 0.0;
-    }
-    if kind == SIDE_KIND_BODY {
-        let v = solver_vels.read(colliders_start + body_id as usize);
-        let mut acc = 0.0f32;
-        // Linear part.
-        #[cfg(feature = "dim3")]
-        {
-            acc += jacobians.read(j_id as usize) * v.linear.x;
-            acc += jacobians.read(j_id as usize + 1) * v.linear.y;
-            acc += jacobians.read(j_id as usize + 2) * v.linear.z;
-            acc += jacobians.read(j_id as usize + 3) * v.angular.x;
-            acc += jacobians.read(j_id as usize + 4) * v.angular.y;
-            acc += jacobians.read(j_id as usize + 5) * v.angular.z;
+    // Lane → term mapping:
+    //   * SIDE_KIND_MB:   lane l (< ndofs)      → J[l] · v_dof[l]
+    //   * SIDE_KIND_BODY: lane k (< SPATIAL_DIM) → J[k] · v_spatial[k]
+    //   * FIXED / inactive / out-of-range        → 0
+    let term = if !active || kind == SIDE_KIND_FIXED {
+        0.0f32
+    } else if kind == SIDE_KIND_BODY {
+        if lane < SPATIAL_DIM as u32 {
+            let v = solver_vels.read(colliders_start + body_id as usize);
+            jacobians.read(j_id as usize + lane as usize) * spatial_component(v, lane)
+        } else {
+            0.0f32
         }
-        #[cfg(feature = "dim2")]
-        {
-            acc += jacobians.read(j_id as usize) * v.linear.x;
-            acc += jacobians.read(j_id as usize + 1) * v.linear.y;
-            acc += jacobians.read(j_id as usize + 2) * v.angular;
+    } else {
+        // SIDE_KIND_MB
+        if lane < ndofs {
+            jacobians.read(j_id as usize + lane as usize)
+                * dof_vels.read(dof_base_for_mb + lane as usize)
+        } else {
+            0.0f32
         }
-        let _ = ndofs;
-        return acc;
+    };
+
+    partial.write(lane as usize, term);
+    workgroup_memory_barrier_with_group_sync();
+    // Tree reduction over the 32 lanes (2^5 == LANES).
+    for step in 0..5u32 {
+        let stride = 1u32 << (4 - step);
+        if lane < stride {
+            let v = partial.read(lane as usize) + partial.read((lane + stride) as usize);
+            partial.write(lane as usize, v);
+        }
+        workgroup_memory_barrier_with_group_sync();
     }
-    // SIDE_KIND_MB
-    let mut acc = 0.0f32;
-    for i in 0..ndofs {
-        let j = jacobians.read(j_id as usize + i as usize);
-        let v = dof_vels.read(dof_base_for_mb + i as usize);
-        acc += j * v;
-    }
-    acc
+    let result = partial.read(0);
+    // Trailing barrier: guarantees every lane has read `partial[0]` before
+    // the next reduction (or caller) overwrites `partial`.
+    workgroup_memory_barrier_with_group_sync();
+    result
 }
 
-/// Apply `±delta · W·J` to either the free body or the multibody's
-/// generalized velocities.
+/// Workgroup-cooperative `±delta · W·J` apply. The multibody side is
+/// lane-split over its DOFs (lane `l` owns DOF `l` → disjoint writes, no
+/// barrier); the free-body side is a single shared velocity so lane 0 does
+/// the read-modify-write alone. Contains no barriers — the caller issues
+/// one unconditional barrier per axis after both apply calls so the
+/// velocity writes are visible to the next axis's dot products.
 #[inline]
-fn side_apply_impulse(
+fn side_apply_impulse_par(
+    active: bool,
     kind: u32,
     j_id: u32,
     ndofs: u32,
@@ -252,41 +305,42 @@ fn side_apply_impulse(
     dof_base_for_mb: usize,
     solver_vels: &mut [Velocity],
     colliders_start: usize,
+    lane: u32,
 ) {
-    if kind == SIDE_KIND_FIXED || delta == 0.0 {
+    // All operands are workgroup-uniform, so this early-out is uniform.
+    if !active || kind == SIDE_KIND_FIXED || delta == 0.0 {
         return;
     }
     let wj0 = wj_id(j_id, ndofs);
+    let scaled = sign * delta;
     if kind == SIDE_KIND_BODY {
-        let coll_idx = colliders_start + body_id as usize;
-        let mut v = solver_vels.read(coll_idx);
-        #[cfg(feature = "dim3")]
-        {
-            let scaled = sign * delta;
-            v.linear.x += scaled * jacobians.read(wj0);
-            v.linear.y += scaled * jacobians.read(wj0 + 1);
-            v.linear.z += scaled * jacobians.read(wj0 + 2);
-            v.angular.x += scaled * jacobians.read(wj0 + 3);
-            v.angular.y += scaled * jacobians.read(wj0 + 4);
-            v.angular.z += scaled * jacobians.read(wj0 + 5);
+        if lane == 0 {
+            let coll_idx = colliders_start + body_id as usize;
+            let mut v = solver_vels.read(coll_idx);
+            #[cfg(feature = "dim3")]
+            {
+                v.linear.x += scaled * jacobians.read(wj0);
+                v.linear.y += scaled * jacobians.read(wj0 + 1);
+                v.linear.z += scaled * jacobians.read(wj0 + 2);
+                v.angular.x += scaled * jacobians.read(wj0 + 3);
+                v.angular.y += scaled * jacobians.read(wj0 + 4);
+                v.angular.z += scaled * jacobians.read(wj0 + 5);
+            }
+            #[cfg(feature = "dim2")]
+            {
+                v.linear.x += scaled * jacobians.read(wj0);
+                v.linear.y += scaled * jacobians.read(wj0 + 1);
+                v.angular += scaled * jacobians.read(wj0 + 2);
+            }
+            solver_vels.write(coll_idx, v);
         }
-        #[cfg(feature = "dim2")]
-        {
-            let scaled = sign * delta;
-            v.linear.x += scaled * jacobians.read(wj0);
-            v.linear.y += scaled * jacobians.read(wj0 + 1);
-            v.angular += scaled * jacobians.read(wj0 + 2);
-        }
-        solver_vels.write(coll_idx, v);
-        let _ = ndofs;
         return;
     }
-    // SIDE_KIND_MB
-    let scaled = sign * delta;
-    for i in 0..ndofs {
-        let v_idx = dof_base_for_mb + i as usize;
+    // SIDE_KIND_MB — lane l owns DOF l (disjoint → race-free).
+    if lane < ndofs {
+        let v_idx = dof_base_for_mb + lane as usize;
         let cur = dof_vels.read(v_idx);
-        let w = jacobians.read(wj0 + i as usize);
+        let w = jacobians.read(wj0 + lane as usize);
         dof_vels.write(v_idx, cur + scaled * w);
     }
 }
@@ -1608,19 +1662,27 @@ fn side_world_pose(
 }
 
 /// One PGS sweep over the multibody-touching impulse-joint axis constraints
-/// of a single color. Updates both the multibody `dof_velocities` and the
-/// free-body `solver_vels`.
+/// of a single color — **one workgroup per joint**, the 32 lanes cooperating
+/// on that joint's per-axis `J·v` reductions and `W·J` applies.
 ///
 /// Joints are graph-colored at init time (see `set_impulse_joints`): within
 /// one color no two joints share a multibody or a free body, so every joint
 /// of the current color touches disjoint mutable state and runs race-free in
 /// parallel. The host dispatches one color per iteration, so a full sweep is
 /// an exact sequential Gauss–Seidel sweep in color-sorted order.
+///
+/// Workgroup `wg_id.x` owns the joint at sorted-builder slot
+/// `start + wg_id.x`; colors smaller than the dispatch grid leave trailing
+/// workgroups idle via a workgroup-uniform early return. The per-axis loop
+/// stays sequential (Gauss–Seidel within the joint — axis `s+1` reads the
+/// velocities axis `s` just wrote), but the divergent per-joint work is gone:
+/// lanes now split the dot products / applies for the *same* joint instead of
+/// straddling different joints.
 #[spirv_bindgen]
-#[spirv(compute(threads(64)))]
+#[spirv(compute(threads(32, 1, 1)))]
 pub fn gpu_mb_solve_impulse_joint_constraints(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(num_workgroups)] num_workgroups: UVec3,
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] builders: &[MbImpulseJointBuilder],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     constraints: &mut [MbImpulseJointConstraint],
@@ -1631,9 +1693,11 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] solver_vels: &mut [Velocity],
+    // Per-lane scratch for the J·v tree reductions.
+    #[spirv(workgroup)] partial: &mut [f32; LANES as usize],
 ) {
-    let num_threads = num_workgroups.x * 64;
-    let batch_id = invocation_id.y;
+    let batch_id = wg_id.y;
+    let lane = lid.x;
 
     let joints_start = batch_ids.mb_imp_joints_start(batch_id);
     let cons_start = batch_ids.mb_imp_joint_constraints_start(batch_id);
@@ -1649,89 +1713,117 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
     let start = if color > 0 { color_groups[color - 1] } else { 0 };
     let end = color_groups[color];
 
-    for i in StepRng::new(start + invocation_id.x..end, num_threads) {
-        let builder = builders.at(joints_start + i as usize);
-        let cons_base = cons_start + builder.constraint_id as usize;
+    let mut j = start + wg_id.x;
+    let workgroup_is_active = j < end;
+    if !workgroup_is_active {
+        // Technically, if we enter here, we should return. However, on the web, a return would
+        // break uniform control flow. This could be avoided with a `workgroupUniformLoad` but
+        // that’s not supported by rust-gpu.
+        j = start; // Any valid index will do.
+    }
 
-        // Per-multibody dof base: cached out of the per-axis loop — same for
-        // every axis constraint of this joint.
-        let dof_base_a = if builder.side_a_kind == SIDE_KIND_MB {
-            let mb = multibody_info.at(mb_start + builder.side_a_id as usize);
-            dof_start + mb.first_dof as usize
-        } else {
-            0
-        };
-        let dof_base_b = if builder.side_b_kind == SIDE_KIND_MB {
-            let mb = multibody_info.at(mb_start + builder.side_b_id as usize);
-            dof_start + mb.first_dof as usize
-        } else {
-            0
-        };
+    let builder = builders.at(joints_start + j as usize);
+    let cons_base = cons_start + builder.constraint_id as usize;
 
-        for s in 0..MAX_AXIS_CONSTRAINTS {
-            let c = constraints.at_mut(cons_base + s as usize);
-            if c.kind == 0 {
-                continue;
-            }
-            // dvel = J_b · v_b - J_a · v_a   (rapier's `vel2 - vel1`)
-            let v1 = side_dot_vel(
-                c.side_a_kind,
-                c.j_id_a,
-                c.ndofs_a,
-                c.side_a_id,
-                jacobians,
-                dof_state,
-                dof_base_a,
-                solver_vels,
-                colliders_start,
-            );
-            let v2 = side_dot_vel(
-                c.side_b_kind,
-                c.j_id_b,
-                c.ndofs_b,
-                c.side_b_id,
-                jacobians,
-                dof_state,
-                dof_base_b,
-                solver_vels,
-                colliders_start,
-            );
+    // Per-multibody dof base: same for every axis constraint of this joint.
+    let dof_base_a = if builder.side_a_kind == SIDE_KIND_MB {
+        let mb = multibody_info.at(mb_start + builder.side_a_id as usize);
+        dof_start + mb.first_dof as usize
+    } else {
+        0
+    };
+    let dof_base_b = if builder.side_b_kind == SIDE_KIND_MB {
+        let mb = multibody_info.at(mb_start + builder.side_b_id as usize);
+        dof_start + mb.first_dof as usize
+    } else {
+        0
+    };
+
+    // TODO(PERF): load jacobians into shared memory and keep the velocity deltat on shared
+    //             memory and only writeback after all the axis constraints are solved.
+    for s in 0..MAX_AXIS_CONSTRAINTS {
+        let c = constraints.at_mut(cons_base + s as usize);
+        let active = workgroup_is_active && c.kind != 0;
+
+        // dvel = J_b · v_b - J_a · v_a   (rapier's `vel2 - vel1`).
+        let v1 = side_dot_vel_par(
+            active,
+            c.side_a_kind,
+            c.j_id_a,
+            c.ndofs_a,
+            c.side_a_id,
+            jacobians,
+            dof_state,
+            dof_base_a,
+            solver_vels,
+            colliders_start,
+            lane,
+            partial,
+        );
+        let v2 = side_dot_vel_par(
+            active,
+            c.side_b_kind,
+            c.j_id_b,
+            c.ndofs_b,
+            c.side_b_id,
+            jacobians,
+            dof_state,
+            dof_base_b,
+            solver_vels,
+            colliders_start,
+            lane,
+            partial,
+        );
+
+        let delta = if active {
             let dvel = c.rhs + (v2 - v1);
             let total = (c.impulse + c.inv_lhs * (dvel - c.cfm_gain * c.impulse))
-                .clamp(c.impulse_lo, c.impulse_hi);
-            let delta = total - c.impulse;
-            c.impulse = total;
+                // NOTE: should be `clamp`, but `clamp` breaks uniform control flow for some reasons.
+                .max(c.impulse_lo).min(c.impulse_hi);
+            let d = total - c.impulse;
+            if lane == 0 {
+                c.impulse = total;
+            }
+            d
+        } else {
+            0.0f32
+        };
 
-            // Apply ±delta · W·J: sign +1 for side A, -1 for side B (matches
-            // rapier `solver_vel1.axpy(delta_impulse, &wj1, 1.0)`,
-            // `solver_vel2.axpy(-delta_impulse, &wj2, 1.0)`).
-            side_apply_impulse(
-                c.side_a_kind,
-                c.j_id_a,
-                c.ndofs_a,
-                c.side_a_id,
-                1.0,
-                delta,
-                jacobians,
-                dof_state,
-                dof_base_a,
-                solver_vels,
-                colliders_start,
-            );
-            side_apply_impulse(
-                c.side_b_kind,
-                c.j_id_b,
-                c.ndofs_b,
-                c.side_b_id,
-                -1.0,
-                delta,
-                jacobians,
-                dof_state,
-                dof_base_b,
-                solver_vels,
-                colliders_start,
-            );
-        }
+        // Apply ±delta · W·J: sign +1 for side A, -1 for side B (matches
+        // rapier `solver_vel1.axpy(delta_impulse, &wj1, 1.0)`,
+        // `solver_vel2.axpy(-delta_impulse, &wj2, 1.0)`).
+        side_apply_impulse_par(
+            active,
+            c.side_a_kind,
+            c.j_id_a,
+            c.ndofs_a,
+            c.side_a_id,
+            1.0,
+            delta,
+            jacobians,
+            dof_state,
+            dof_base_a,
+            solver_vels,
+            colliders_start,
+            lane,
+        );
+        side_apply_impulse_par(
+            active,
+            c.side_b_kind,
+            c.j_id_b,
+            c.ndofs_b,
+            c.side_b_id,
+            -1.0,
+            delta,
+            jacobians,
+            dof_state,
+            dof_base_b,
+            solver_vels,
+            colliders_start,
+            lane,
+        );
+
+        workgroup_memory_barrier_with_group_sync();
     }
 }
 

@@ -1642,7 +1642,13 @@ impl GpuMultibodySolver {
             for _ in 0..mb.mb_imp_joint_num_colors {
                 self.solve_impulse_joint_constraints.call(
                     pass,
-                    [mb.mb_imp_joint_max_color_group_len, mb.num_batches, 1],
+                    // One workgroup (MB_LU_LANES threads) per joint; thread
+                    // count = joints-in-largest-color × workgroup size.
+                    [
+                        mb.mb_imp_joint_max_color_group_len * MB_LU_LANES,
+                        mb.num_batches,
+                        1,
+                    ],
                     &mb.mb_imp_joint_builders,
                     &mut mb.mb_imp_joint_constraints,
                     &mb.mb_imp_joint_jacobians,
@@ -1740,7 +1746,13 @@ impl GpuMultibodySolver {
             for _ in 0..mb.mb_imp_joint_num_colors {
                 self.solve_impulse_joint_constraints.call(
                     pass,
-                    [mb.mb_imp_joint_max_color_group_len, mb.num_batches, 1],
+                    // One workgroup (MB_LU_LANES threads) per joint; thread
+                    // count = joints-in-largest-color × workgroup size.
+                    [
+                        mb.mb_imp_joint_max_color_group_len * MB_LU_LANES,
+                        mb.num_batches,
+                        1,
+                    ],
                     &mb.mb_imp_joint_builders,
                     &mut mb.mb_imp_joint_constraints,
                     &mb.mb_imp_joint_jacobians,
