@@ -238,8 +238,6 @@ pub fn gpu_mb_solve_joint_constraints(
     );
 }
 
-/// Init body — extracted from `gpu_mb_init_joint_constraints` so the fused
-/// kernel can chain straight into a PGS sweep without a separate dispatch.
 #[inline]
 fn init_joint_constraints_body(
     multibody_info: &[MultibodyInfo],
@@ -293,10 +291,7 @@ fn init_joint_constraints_body(
 
     let mut slot = 0u32;
     for k in 0..num_links {
-        let stat = stat_slice[k as usize];
-        // Access workspace via reference: only `coords[axis]` is read here, so
-        // a whole-struct copy of `MultibodyLinkWorkspace` (~240 B in 3D) would
-        // be wasted traffic for a single-field probe.
+        let stat = &stat_slice[k as usize];
         let ws = &ws_slice[k as usize];
         let locked = stat.data.locked_axes;
         let limit_axes = stat.data.limit_axes & !locked;

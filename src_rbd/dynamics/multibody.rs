@@ -1543,9 +1543,12 @@ impl GpuMultibodySolver {
         )?;
 
         // 2+3. Build limit / motor constraints AND apply one PGS sweep WITH
-        // bias — fused into a single threads(1) kernel to drop a dispatch.
-        // Skipped entirely when no multibody declared limit/motor axes.
+        // bias.
         if mb.has_joint_constraints {
+            // TODO(PERF): consider splitting in two kernels so we can
+            //             have parallelism for the init part (one workgroup per joint)
+            //             even in we can’t have parallelism on the solve since they
+            //             necessarily all touch the same multibody?
             self.init_solve_joint_with_bias.call(
                 pass,
                 dispatch,
@@ -1569,7 +1572,6 @@ impl GpuMultibodySolver {
         self.init_contact_constraints.call(
             pass,
             dispatch,
-            // descriptor_set 0.
             &mb.multibody_info,
             &mb.body_jacobians,
             &mb.body_to_link,
@@ -1578,7 +1580,6 @@ impl GpuMultibodySolver {
             &mut mb.contact_constraint_count,
             &mb.dt,
             args.batch_indices,
-            // descriptor_set 1.
             args.mprops,
             args.collider_world_poses,
             args.contacts,
