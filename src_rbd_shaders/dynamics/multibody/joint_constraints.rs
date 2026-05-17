@@ -64,92 +64,6 @@ fn lu_solve_unit(
     lu_solve_in_place(buf_m, m, buf_pivots, pivots_offset, dst, dst_offset);
 }
 
-/// Initialize the multibody's joint-limit / joint-motor unit constraints.
-///
-/// For each link, scans every free DOF that has either `limit_axes` or `motor_axes`
-/// set, and emits one `MultibodyJointConstraint` per active limit and one per
-/// active motor (rapier emits these separately even when both are on the same axis).
-///
-/// Must run after `gpu_mb_lu_decompose` — the LU factors of `M` are used to compute
-/// the per-constraint M⁻¹ column and effective inverse mass.
-#[spirv_bindgen]
-#[spirv(compute(threads(1)))]
-pub fn gpu_mb_init_joint_constraints(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
-    links_static: &[MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
-    links_workspace: &[MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] mass_matrices: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] lu_pivots: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
-    joint_constraints: &mut [MultibodyJointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
-    joint_constraint_columns: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
-) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
-    if mb_idx >= num_mb {
-        return;
-    }
-    init_joint_constraints_body(
-        multibody_info,
-        links_static,
-        links_workspace,
-        mass_matrices,
-        lu_pivots,
-        joint_constraints,
-        joint_constraint_columns,
-        batch_id,
-        mb_idx,
-        *dt_uniform,
-        batch_ids,
-    );
-}
-
-/// Replace each active constraint's `rhs` with `rhs_wo_bias`, mirroring rapier's
-/// `GenericJointConstraint::remove_bias_from_rhs`.
-///
-/// Used by the TGS-soft substep loop: bias-driven PGS happens before position
-/// integration, then `remove_bias` runs and a final PGS sweep settles velocity
-/// along constrained DOFs to zero (no rebound from positional bias).
-#[spirv_bindgen]
-#[spirv(compute(threads(1)))]
-pub fn gpu_mb_remove_joint_constraint_bias(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
-    joint_constraints: &mut [MultibodyJointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
-) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
-    if mb_idx >= num_mb {
-        return;
-    }
-
-    let mb = batch_ids
-        .mb_batch(batch_id, multibody_info)
-        .read(mb_idx as usize);
-    let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
-
-    for s in 0..mb.max_constraints {
-        let mut cons = joint_constraints.read(cons_base + s as usize);
-        if cons.kind == 0 {
-            continue;
-        }
-        cons.rhs = cons.rhs_wo_bias;
-        joint_constraints.write(cons_base + s as usize, cons);
-    }
-}
-
 /// PGS sweep body — shared between `gpu_mb_solve_joint_constraints` and
 /// the fused init+solve / remove-bias+solve kernels. Writes back `cons`
 /// before subtracting `delta · column` from `v`.
@@ -204,38 +118,6 @@ fn solve_joint_constraints_body(
             dof_state.write(v_idx, cur - delta * col);
         }
     }
-}
-
-/// One PGS sweep: iterates the multibody's active limit/motor constraints and
-/// updates `dof_velocities` in place. Mirrors rapier's `JointConstraint::solve_generic`
-/// for a 1-DOF jacobian.
-#[spirv_bindgen]
-#[spirv(compute(threads(1)))]
-pub fn gpu_mb_solve_joint_constraints(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
-    joint_constraints: &mut [MultibodyJointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
-) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
-    if mb_idx >= num_mb {
-        return;
-    }
-    solve_joint_constraints_body(
-        multibody_info,
-        joint_constraints,
-        joint_constraint_columns,
-        dof_state,
-        batch_id,
-        mb_idx,
-        batch_ids,
-    );
 }
 
 #[inline]
