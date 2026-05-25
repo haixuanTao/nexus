@@ -1,23 +1,11 @@
 [workspace]
+# Trimmed to the 3D rigid-body library crates zealot needs (skips testbed/examples,
+# which need kiss3d). mpm/fem remain optional path-deps of nexus3d (not built).
 members = [
-    "crates/nexus2d",
     "crates/nexus3d",
-    "crates/nexus_testbed2d",
-    "crates/nexus_testbed3d",
-    "crates/examples2d",
-    "crates/examples3d",
-    "crates/nexus_rbd2d",
     "crates/nexus_rbd3d",
-    "crates/nexus_rbd_shaders2d",
     "crates/nexus_rbd_shaders3d",
-    "crates/nexus_mpm_shaders2d",
-    "crates/nexus_mpm_shaders3d",
-    "crates/nexus_mpm2d",
-    "crates/nexus_mpm3d",
-    "crates/nexus_fem_shaders2d",
-    "crates/nexus_fem_shaders3d",
-    "crates/nexus_fem2d",
-    "crates/nexus_fem3d",
+    "crates/pendulum_headless",
 ]
 resolver = "2"
 
@@ -67,7 +55,8 @@ vortx-shaders = { path = "../vortx/vortx-shaders" }
 #vortx-shaders = { path = "../vortx/vortx-shaders" }
 
 #glamx = { path = "../glamx" }
-kiss3d = { path = "../kiss3d" }
+# kiss3d disabled — testbed-only, not needed for the library build.
+#kiss3d = { path = "../kiss3d" }
 parry2d = { path = "../parry/crates/parry2d" }
 parry3d = { path = "../parry/crates/parry3d" }
 rapier2d = { path = "../rapier/crates/rapier2d" }

@@ -1,0 +1,14 @@
+[package]
+name = "pendulum_headless"
+version = "0.1.0"
+edition = "2024"
+
+# Headless smoke test for the rbd + from_rapier GPU path (no kiss3d / mpm / fem).
+# Mirrors crates/examples3d/bench_multibody_pendulum3.rs but drives the raw
+# nexus_rbd3d pipeline directly so it builds against only the rbd library crates.
+
+[dependencies]
+nexus3d = { path = "../nexus3d", features = ["rbd", "from_rapier"] }
+rapier3d = "0.32"
+khal = { workspace = true, features = ["webgpu"] }
+pollster = "0.4"
