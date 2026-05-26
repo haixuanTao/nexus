@@ -12,3 +12,8 @@ nexus3d = { path = "../nexus3d", features = ["rbd", "from_rapier"] }
 rapier3d = "0.32"
 khal = { workspace = true, features = ["webgpu"] }
 pollster = "0.4"
+# GPU MLP policy (vortx tensor ops) for pendulum_gpu_policy — vortx is path-patched
+# to ../vortx by the workspace; nalgebra matches zealot-rl / vortx (0.34).
+vortx = "0.1"
+nalgebra = "0.34"
+anyhow = "1"
