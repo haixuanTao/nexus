@@ -365,6 +365,43 @@ impl GpuMultibodySet {
         )
     }
 
+    /// Overwrite environment `dst_env`'s multibody state with that of a freshly
+    /// built single-env set `src` — the per-env half of a "reset". Copies the
+    /// dynamic joint-space state (workspace, generalized coords + their rates)
+    /// and the per-link static descriptors (also resets motor targets/impulses).
+    /// `src` must hold exactly one batch laid out identically to this set.
+    pub async fn reset_env_from(&mut self, backend: &GpuBackend, dst_env: u32, src: &GpuMultibodySet) {
+        let lpb = self.links_per_batch as usize;
+        let dpb = self.dofs_per_batch as usize;
+
+        let mut ws = bytemuck::zeroed_vec(src.links_workspace.len() as usize);
+        backend.slow_read_buffer(src.links_workspace.buffer(), &mut ws).await.unwrap();
+        backend
+            .write_buffer(self.links_workspace.buffer_mut(), (dst_env as usize * lpb) as u64, &ws[..lpb])
+            .unwrap();
+
+        let mut st: Vec<MultibodyLinkStatic> = bytemuck::zeroed_vec(src.links_static.len() as usize);
+        backend.slow_read_buffer(src.links_static.buffer(), &mut st).await.unwrap();
+        backend
+            .write_buffer(self.links_static.buffer_mut(), (dst_env as usize * lpb) as u64, &st[..lpb])
+            .unwrap();
+        let base = dst_env as usize * lpb;
+        self.links_static_mirror[base..base + lpb].copy_from_slice(&st[..lpb]);
+
+        if dpb > 0 {
+            let mut dv: Vec<f32> = bytemuck::zeroed_vec(src.dof_values.len() as usize);
+            backend.slow_read_buffer(src.dof_values.buffer(), &mut dv).await.unwrap();
+            backend
+                .write_buffer(self.dof_values.buffer_mut(), (dst_env as usize * dpb) as u64, &dv[..dpb])
+                .unwrap();
+            let mut ds: Vec<f32> = bytemuck::zeroed_vec(src.dof_state.len() as usize);
+            backend.slow_read_buffer(src.dof_state.buffer(), &mut ds).await.unwrap();
+            backend
+                .write_buffer(self.dof_state.buffer_mut(), (dst_env as usize * dpb) as u64, &ds[..dpb])
+                .unwrap();
+        }
+    }
+
     /// Upload a new gravity vector.
     pub fn set_gravity(&mut self, backend: &GpuBackend, g: [f32; 3]) {
         self.gravity = Tensor::scalar(
@@ -733,9 +770,11 @@ impl GpuMultibodySet {
             links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
                 .unwrap(),
             links_static_mirror: all_statics.clone(),
-            links_workspace: Tensor::vector(backend, &all_ws, storage).unwrap(),
+            // COPY_DST on the dynamic joint-space buffers so `reset_env_from` can
+            // overwrite a single env's state in place.
+            links_workspace: Tensor::vector(backend, &all_ws, storage | BufferUsages::COPY_DST).unwrap(),
             links_mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
-            dof_values: Tensor::vector(backend, &all_dof_vals, storage).unwrap(),
+            dof_values: Tensor::vector(backend, &all_dof_vals, storage | BufferUsages::COPY_DST).unwrap(),
             dof_state: {
                 // Pack [velocities (N), damping (N)] back-to-back where
                 // N = dofs_cap * num_batches.
@@ -744,7 +783,7 @@ impl GpuMultibodySet {
                 buf.extend_from_slice(&all_dof_vels);
                 buf.extend_from_slice(&all_dof_damping);
                 debug_assert_eq!(buf.len(), 2 * n);
-                Tensor::vector(backend, &buf, storage).unwrap()
+                Tensor::vector(backend, &buf, storage | BufferUsages::COPY_DST).unwrap()
             },
             gen_forces: Tensor::vector(
                 backend,

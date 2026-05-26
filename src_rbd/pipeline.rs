@@ -655,7 +655,8 @@ impl GpuPhysicsState {
             num_colliders_per_batch: num_colliders_per_batch as u32,
             num_solver_iterations,
             sim_params: Tensor::vector(backend, &all_sim_params, BufferUsages::STORAGE).unwrap(),
-            vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
+            // COPY_DST so `reset_env_from` can overwrite a single env's velocities.
+            vels: Tensor::vector(backend, &all_vels, storage | BufferUsages::COPY_DST).unwrap(),
             solver_vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
             solver_vels_out: Tensor::vector(backend, &all_vels, storage).unwrap(),
             solver_vels_inc: Tensor::vector(backend, &all_vels, storage).unwrap(),
@@ -668,7 +669,8 @@ impl GpuPhysicsState {
             body_poses: Tensor::vector(
                 backend,
                 &all_poses,
-                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+                // COPY_DST so `reset_env_from` can overwrite a single env's poses.
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             )
             .unwrap(),
             // Sized like `body_poses`. Will be (re-)seeded each step before
@@ -845,6 +847,34 @@ impl GpuPhysicsState {
     /// The number of solver iterations (max across all environments).
     pub fn num_solver_iterations(&self) -> u32 {
         self.num_solver_iterations
+    }
+
+    /// Reset a single environment in-place to the state of a freshly built
+    /// single-env state `src` (which must describe one batch with the same scene
+    /// layout as this one). Copies the per-env carry-over state — body poses,
+    /// velocities, and the multibody joint-space state — so env `dst_env` starts
+    /// fresh while the other environments keep running. The per-step scratch
+    /// (contacts, constraints, colors, broad-phase) is recomputed each step and
+    /// needs no copy. This is the per-env "reset" RL environments need.
+    #[cfg(feature = "dim3")]
+    pub async fn reset_env_from(&mut self, backend: &GpuBackend, dst_env: u32, src: &GpuPhysicsState) {
+        let nb = self.num_batches as u64;
+        // body_poses + velocities (per-batch slabs; stride = len / num_batches)
+        let mut bp = bytemuck::zeroed_vec(src.body_poses.len() as usize);
+        backend.slow_read_buffer(src.body_poses.buffer(), &mut bp).await.unwrap();
+        let bps = (self.body_poses.len() / nb) as usize;
+        backend
+            .write_buffer(self.body_poses.buffer_mut(), dst_env as u64 * bps as u64, &bp[..bps])
+            .unwrap();
+
+        let mut vv = bytemuck::zeroed_vec(src.vels.len() as usize);
+        backend.slow_read_buffer(src.vels.buffer(), &mut vv).await.unwrap();
+        let vs = (self.vels.len() / nb) as usize;
+        backend
+            .write_buffer(self.vels.buffer_mut(), dst_env as u64 * vs as u64, &vv[..vs])
+            .unwrap();
+
+        self.multibodies.reset_env_from(backend, dst_env, &src.multibodies).await;
     }
 }
 
