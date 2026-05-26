@@ -180,9 +180,9 @@ async fn run(label: &str, controlled: bool, link_id: u32, motor_sign: f32, tilt:
     frac
 }
 
-/// Run one episode and record the rod COM (x, y) at every step (incl. start),
-/// for rendering. Mirrors `run`'s control loop.
-async fn record(controlled: bool, link_id: u32, motor_sign: f32, tilt: f32) -> Vec<(f32, f32)> {
+/// Run one episode and record the rod's full pose [x,y,z,qx,qy,qz,qw] at every
+/// step (incl. start), for 3D rendering. Mirrors `run`'s control loop.
+async fn record(controlled: bool, link_id: u32, motor_sign: f32, tilt: f32) -> Vec<[f32; 7]> {
     let (bodies, colliders, multibody_joints, sim_params) = build(controlled, tilt);
     let impulse_joints = ImpulseJointSet::new();
     let gpu = webgpu_backend().await;
@@ -196,13 +196,14 @@ async fn record(controlled: bool, link_id: u32, motor_sign: f32, tilt: f32) -> V
     )];
     let mut state = GpuPhysicsState::from_rapier(&gpu, &envs);
 
-    let com = |poses: &[Pose]| {
-        let t = poses.last().expect("rod").translation;
-        (t.x, t.y)
+    let pose7 = |poses: &[Pose]| {
+        let p = poses.last().expect("rod");
+        let (t, q) = (p.translation, p.rotation);
+        [t.x, t.y, t.z, q.x, q.y, q.z, q.w]
     };
     let mut traj = Vec::with_capacity(STEPS + 1);
     let p = read_poses(&gpu, &state).await;
-    traj.push(com(&p));
+    traj.push(pose7(&p));
     let mut theta = p.last().unwrap().translation.y.atan2(p.last().unwrap().translation.x);
     let mut prev_theta = theta;
 
@@ -219,7 +220,7 @@ async fn record(controlled: bool, link_id: u32, motor_sign: f32, tilt: f32) -> V
         gpu.synchronize().expect("sync");
         pipeline.auto_resize_buffers(&gpu, &mut state).await;
         let p = read_poses(&gpu, &state).await;
-        traj.push(com(&p));
+        traj.push(pose7(&p));
         prev_theta = theta;
         theta = p.last().unwrap().translation.y.atan2(p.last().unwrap().translation.x);
     }
@@ -240,11 +241,16 @@ fn main() {
         pollster::block_on(async {
             let ctrl = record(true, DEFAULT_LINK_ID, DEFAULT_MOTOR_SIGN, tilt).await;
             let base = record(false, DEFAULT_LINK_ID, DEFAULT_MOTOR_SIGN, tilt).await;
-            let mut s = String::from("step,cx,cy,bx,by\n");
+            // full 6-DOF pose for both rods: translation + quaternion
+            let mut s = String::from(
+                "step,cx,cy,cz,cqx,cqy,cqz,cqw,bx,by,bz,bqx,bqy,bqz,bqw\n",
+            );
             for i in 0..ctrl.len() {
+                let (c, b) = (ctrl[i], base[i]);
                 s.push_str(&format!(
-                    "{i},{:.5},{:.5},{:.5},{:.5}\n",
-                    ctrl[i].0, ctrl[i].1, base[i].0, base[i].1
+                    "{i},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}\n",
+                    c[0], c[1], c[2], c[3], c[4], c[5], c[6],
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6],
                 ));
             }
             std::fs::write(&out, s).expect("write csv");
