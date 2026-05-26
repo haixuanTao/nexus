@@ -19,9 +19,25 @@ use rapier3d::prelude::*;
 
 // --- scene ---
 const ROD_LEN: f32 = 2.0; // pivot-to-tip, pole lies along the body's local +X
-const START_TILT: f32 = 30.0 * PI / 180.0; // initial angle away from vertical
 const DT: f32 = 1.0 / 60.0;
 const STEPS: usize = 300; // 5 s at 1/60
+const EPISODES: usize = 8; // randomized initial conditions per run
+const MAX_TILT: f32 = 50.0 * PI / 180.0; // initial tilt sampled from ±this (from vertical)
+
+/// Tiny seeded LCG so the randomized starts are reproducible per seed (no dep).
+struct Lcg(u64);
+impl Lcg {
+    fn unit(&mut self) -> f32 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.0 >> 40) as f32) / ((1u64 << 24) as f32) // [0,1)
+    }
+    fn range(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + (hi - lo) * self.unit()
+    }
+}
 
 // --- controller (velocity-PD on the joint angle) ---
 // Gravity torque on this rod is ~1.5 Nm, so the motor only needs a modest force
@@ -42,7 +58,7 @@ const BALANCED_TOL: f32 = 25.0 * PI / 180.0; // "upside down" = within this of v
 
 /// Build the single-rod pendulum. With `motor`, the revolute joint carries a
 /// velocity motor (damping + max force) so the runtime PD has authority.
-fn build(motor: bool) -> (RigidBodySet, ColliderSet, MultibodyJointSet, GpuSimParams) {
+fn build(motor: bool, tilt: f32) -> (RigidBodySet, ColliderSet, MultibodyJointSet, GpuSimParams) {
     let mut bodies = RigidBodySet::new();
     let mut colliders = ColliderSet::new();
     let mut multibody_joints = MultibodyJointSet::new();
@@ -53,7 +69,7 @@ fn build(motor: bool) -> (RigidBodySet, ColliderSet, MultibodyJointSet, GpuSimPa
 
     // Rod: pole along local +X. Rotate by `theta0` about Z so it starts tilted,
     // and place the COM so the rod's inner end sits on the pivot.
-    let theta0 = UPRIGHT - START_TILT; // 60° from +X axis
+    let theta0 = UPRIGHT - tilt; // tilt>0 leans toward +X, tilt<0 toward -X
     let com = Vec3::new(ROD_LEN * theta0.cos(), ROD_LEN * theta0.sin(), 0.0);
     let rod = bodies.insert(
         RigidBodyBuilder::dynamic()
@@ -110,8 +126,10 @@ async fn read_poses(gpu: &KhalGpuBackend, state: &GpuPhysicsState) -> Vec<Pose> 
         .expect("read poses")
 }
 
-async fn run(label: &str, controlled: bool, link_id: u32, motor_sign: f32) -> f32 {
-    let (bodies, colliders, multibody_joints, sim_params) = build(controlled);
+/// Run one episode from a given initial `tilt` (rad, from vertical). Returns the
+/// fraction of steps the rod spent "upside down" (within BALANCED_TOL of upright).
+async fn run(label: &str, controlled: bool, link_id: u32, motor_sign: f32, tilt: f32) -> f32 {
+    let (bodies, colliders, multibody_joints, sim_params) = build(controlled, tilt);
     let impulse_joints = ImpulseJointSet::new();
     let gpu = webgpu_backend().await;
     let pipeline = GpuPhysicsPipeline::from_backend(&gpu);
@@ -124,34 +142,16 @@ async fn run(label: &str, controlled: bool, link_id: u32, motor_sign: f32) -> f3
     )];
     let mut state = GpuPhysicsState::from_rapier(&gpu, &envs);
 
-    let poses0 = read_poses(&gpu, &state).await;
-    println!("[{label}] {} poses:", poses0.len());
-    for (i, p) in poses0.iter().enumerate() {
-        let t = p.translation;
-        println!(
-            "    pose[{i}] = ({:>6.2}, {:>6.2}, {:>6.2})  θ={:>6.1}°",
-            t.x,
-            t.y,
-            t.z,
-            t.y.atan2(t.x).to_degrees()
-        );
-    }
-
     let mut theta = pole_angle(&read_poses(&gpu, &state).await);
     let mut prev_theta = theta;
     let mut balanced_steps = 0usize;
-    println!(
-        "[{label}] start θ = {:.1}° (target 90°), {STEPS} steps",
-        theta.to_degrees()
-    );
 
-    for step in 1..=STEPS {
-        let mut cmd = 0.0;
+    for _step in 1..=STEPS {
         if controlled {
             // Velocity-PD toward upright; θ̇ from the last step's finite difference.
             let err = UPRIGHT - theta;
             let theta_dot = (theta - prev_theta) / DT;
-            cmd = (KP * err - KD * theta_dot).clamp(-VMAX, VMAX) * motor_sign;
+            let cmd = (KP * err - KD * theta_dot).clamp(-VMAX, VMAX) * motor_sign;
             let _ = state
                 .multibodies_mut()
                 .set_motor_velocity(&gpu, 0, link_id, JointAxis::AngX, cmd);
@@ -167,23 +167,15 @@ async fn run(label: &str, controlled: bool, link_id: u32, motor_sign: f32) -> f3
         if (theta - UPRIGHT).abs() < BALANCED_TOL {
             balanced_steps += 1;
         }
-        if controlled && step <= 12 {
-            println!(
-                "  step {step:>3}: θ = {:>6.1}°  cmd = {:>6.2} rad/s",
-                theta.to_degrees(),
-                cmd
-            );
-        } else if step % 50 == 0 || step == STEPS {
-            println!("  step {step:>3}: θ = {:>6.1}°", theta.to_degrees());
-        }
     }
-
     let frac = balanced_steps as f32 / STEPS as f32;
+    let start_deg = (UPRIGHT - tilt).to_degrees();
     println!(
-        "[{label}] upside-down {balanced_steps}/{STEPS} steps = {:.0}%  (~{:.2}s of {:.2}s)",
+        "  [{label}] start θ={start_deg:>5.1}° (tilt {:>+5.1}°) → final {:>6.1}°, upright {:>3.0}% ({:.2}s)",
+        tilt.to_degrees(),
+        theta.to_degrees(),
         frac * 100.0,
-        balanced_steps as f32 * DT,
-        STEPS as f32 * DT,
+        frac * STEPS as f32 * DT,
     );
     frac
 }
@@ -195,15 +187,44 @@ fn main() {
         .get(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_MOTOR_SIGN);
-    println!("(link_id = {link_id}, motor_sign = {motor_sign:+})");
+    // Seed: argv[3] if given (reproducible), else wall-clock nanos (fresh each run).
+    let seed = args.get(3).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+            | 1
+    });
+    println!("(link_id={link_id}, motor_sign={motor_sign:+}, seed={seed}, {EPISODES} randomized episodes)");
 
     pollster::block_on(async {
-        let ctrl = run("controlled", true, link_id, motor_sign).await;
-        let base = run("baseline", false, link_id, motor_sign).await;
+        let mut rng = Lcg(seed);
+        let mut ctrl_scores = Vec::new();
+        let mut base_scores = Vec::new();
+
+        for ep in 0..EPISODES {
+            // Random initial tilt in ±MAX_TILT (both lean directions), per episode.
+            let tilt = rng.range(-MAX_TILT, MAX_TILT);
+            let c = run(&format!("ep{ep} ctrl"), true, link_id, motor_sign, tilt).await;
+            let b = run(&format!("ep{ep} base"), false, link_id, motor_sign, tilt).await;
+            ctrl_scores.push(c);
+            base_scores.push(b);
+        }
+
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        let min = |v: &[f32]| v.iter().cloned().fold(f32::INFINITY, f32::min);
+        let solved = ctrl_scores.iter().filter(|&&f| f > 0.8).count();
         println!(
-            "\ninverted pendulum — controlled held upright {:.0}% vs baseline {:.0}%",
-            ctrl * 100.0,
-            base * 100.0
+            "\nrandomized inverted pendulum ({EPISODES} eps, tilt ±{:.0}°):\n  \
+             controlled  mean {:>3.0}%  worst {:>3.0}%  (≥80% upright in {}/{} eps)\n  \
+             baseline    mean {:>3.0}%  worst {:>3.0}%",
+            MAX_TILT.to_degrees(),
+            mean(&ctrl_scores) * 100.0,
+            min(&ctrl_scores) * 100.0,
+            solved,
+            EPISODES,
+            mean(&base_scores) * 100.0,
+            min(&base_scores) * 100.0,
         );
     });
 }
