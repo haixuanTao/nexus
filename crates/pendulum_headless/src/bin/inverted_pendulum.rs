@@ -180,8 +180,79 @@ async fn run(label: &str, controlled: bool, link_id: u32, motor_sign: f32, tilt:
     frac
 }
 
+/// Run one episode and record the rod COM (x, y) at every step (incl. start),
+/// for rendering. Mirrors `run`'s control loop.
+async fn record(controlled: bool, link_id: u32, motor_sign: f32, tilt: f32) -> Vec<(f32, f32)> {
+    let (bodies, colliders, multibody_joints, sim_params) = build(controlled, tilt);
+    let impulse_joints = ImpulseJointSet::new();
+    let gpu = webgpu_backend().await;
+    let pipeline = GpuPhysicsPipeline::from_backend(&gpu);
+    let envs = vec![(
+        &bodies,
+        &colliders,
+        &impulse_joints,
+        &multibody_joints,
+        &sim_params,
+    )];
+    let mut state = GpuPhysicsState::from_rapier(&gpu, &envs);
+
+    let com = |poses: &[Pose]| {
+        let t = poses.last().expect("rod").translation;
+        (t.x, t.y)
+    };
+    let mut traj = Vec::with_capacity(STEPS + 1);
+    let p = read_poses(&gpu, &state).await;
+    traj.push(com(&p));
+    let mut theta = p.last().unwrap().translation.y.atan2(p.last().unwrap().translation.x);
+    let mut prev_theta = theta;
+
+    for _ in 1..=STEPS {
+        if controlled {
+            let err = UPRIGHT - theta;
+            let theta_dot = (theta - prev_theta) / DT;
+            let cmd = (KP * err - KD * theta_dot).clamp(-VMAX, VMAX) * motor_sign;
+            let _ = state
+                .multibodies_mut()
+                .set_motor_velocity(&gpu, 0, link_id, JointAxis::AngX, cmd);
+        }
+        let _ = pipeline.step(&gpu, &mut state, None).await;
+        gpu.synchronize().expect("sync");
+        pipeline.auto_resize_buffers(&gpu, &mut state).await;
+        let p = read_poses(&gpu, &state).await;
+        traj.push(com(&p));
+        prev_theta = theta;
+        theta = p.last().unwrap().translation.y.atan2(p.last().unwrap().translation.x);
+    }
+    traj
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Recording mode: `inverted_pendulum record [tilt_deg] [out.csv]` writes the
+    // controlled and baseline rod trajectories (same start) for rendering.
+    if args.get(1).map(String::as_str) == Some("record") {
+        let tilt = args.get(2).and_then(|s| s.parse::<f32>().ok()).unwrap_or(45.0) * PI / 180.0;
+        let out = args
+            .get(3)
+            .cloned()
+            .unwrap_or_else(|| "/tmp/pendulum_traj.csv".to_string());
+        pollster::block_on(async {
+            let ctrl = record(true, DEFAULT_LINK_ID, DEFAULT_MOTOR_SIGN, tilt).await;
+            let base = record(false, DEFAULT_LINK_ID, DEFAULT_MOTOR_SIGN, tilt).await;
+            let mut s = String::from("step,cx,cy,bx,by\n");
+            for i in 0..ctrl.len() {
+                s.push_str(&format!(
+                    "{i},{:.5},{:.5},{:.5},{:.5}\n",
+                    ctrl[i].0, ctrl[i].1, base[i].0, base[i].1
+                ));
+            }
+            std::fs::write(&out, s).expect("write csv");
+            println!("wrote {} steps to {out}", ctrl.len());
+        });
+        return;
+    }
+
     let link_id = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_LINK_ID);
     let motor_sign = args
         .get(2)
