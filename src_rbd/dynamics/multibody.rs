@@ -273,6 +273,20 @@ impl GpuMultibodySet {
         &self.dof_state
     }
 
+    /// Per-batch per-step link workspace (joint coords, joint rotation, shifts,
+    /// local/world poses). Exposed for diagnostic readback while debugging
+    /// dimforge/nexus-rustgpu#1; not part of the stable API.
+    pub fn links_workspace(&self) -> &Tensor<MultibodyLinkWorkspace> {
+        &self.links_workspace
+    }
+
+    /// Per-link local mass properties (inv_mass / inv_inertia / com /
+    /// inertia_ref_frame). Exposed for diagnostic readback while debugging
+    /// dimforge/nexus-rustgpu#1; not part of the stable API.
+    pub fn links_mprops(&self) -> &Tensor<LocalMassProperties> {
+        &self.links_mprops
+    }
+
     /// GPU buffer for generalized coordinates.
     pub fn dof_values(&self) -> &Tensor<f32> {
         &self.dof_values
@@ -356,6 +370,47 @@ impl GpuMultibodySet {
             None => return Ok(()),
         };
         entry.data.motors[axis_id].target_vel = target_vel;
+        entry.data.motor_axes |= 1u32 << axis_id;
+        let snapshot = *entry;
+        backend.write_buffer(
+            self.links_static.buffer_mut(),
+            global_idx as u64,
+            std::slice::from_ref(&snapshot),
+        )
+    }
+
+    /// Sets a motor's target *position* on a multibody joint and uploads the
+    /// updated link to the GPU. The companion of [`set_motor_velocity`](Self::set_motor_velocity)
+    /// for PD position control: the multibody solver drives the joint toward
+    /// `target_pos` using the motor's `stiffness`/`damping`/`max_force`, which are
+    /// configured once at build time on the rapier joint
+    /// (`motor_position` / `motor_max_force` / `motor_model`) and carried through
+    /// [`from_rapier`](Self::from_rapier). This setter is the per-step hot path:
+    /// it writes only the target, exactly as `set_motor_velocity` writes only the
+    /// target velocity.
+    ///
+    /// `link_id` is the global link id within the batch; `axis` is the joint axis
+    /// index (0..=2 linear, 3..=5 angular). The motor axis bit is auto-enabled.
+    ///
+    /// Note: this leaves `target_vel` untouched, so the velocity term acts as a
+    /// damping setpoint. For pure position tracking, build the motor with
+    /// `target_vel = 0` (rapier's `motor_position` does this).
+    pub fn set_motor_position(
+        &mut self,
+        backend: &GpuBackend,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_pos: f32,
+    ) -> Result<(), GpuBackendError> {
+        let stride = self.links_per_batch;
+        let global_idx = (batch * stride + link_id) as usize;
+        let axis_id = axis as usize;
+        let entry = match self.links_static_mirror.get_mut(global_idx) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+        entry.data.motors[axis_id].target_pos = target_pos;
         entry.data.motor_axes |= 1u32 << axis_id;
         let snapshot = *entry;
         backend.write_buffer(
