@@ -420,6 +420,38 @@ impl GpuMultibodySet {
         )
     }
 
+    /// Bulk version of [`set_motor_position`]: stage updates into the host
+    /// mirror without touching the GPU, then call [`flush_links_static`] once
+    /// to push the whole mirror in a single `write_buffer` call. Avoids the
+    /// `N_envs * N_joints` per-step write_buffer overhead.
+    pub fn stage_motor_position(
+        &mut self,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_pos: f32,
+    ) {
+        let stride = self.links_per_batch;
+        let global_idx = (batch * stride + link_id) as usize;
+        let axis_id = axis as usize;
+        let Some(entry) = self.links_static_mirror.get_mut(global_idx) else {
+            return;
+        };
+        entry.data.motors[axis_id].target_pos = target_pos;
+        entry.data.motor_axes |= 1u32 << axis_id;
+    }
+
+    /// Push the entire host-side `links_static_mirror` to the GPU in a single
+    /// `write_buffer` call. Pairs with [`stage_motor_position`] for batched
+    /// per-step motor target updates.
+    pub fn flush_links_static(&mut self, backend: &GpuBackend) -> Result<(), GpuBackendError> {
+        backend.write_buffer(
+            self.links_static.buffer_mut(),
+            0,
+            &self.links_static_mirror,
+        )
+    }
+
     /// Overwrite environment `dst_env`'s multibody state with that of a freshly
     /// built single-env set `src` — the per-env half of a "reset". Copies the
     /// dynamic joint-space state (workspace, generalized coords + their rates)
