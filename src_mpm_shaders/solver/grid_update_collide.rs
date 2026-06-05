@@ -100,7 +100,7 @@ fn collide(
     collision
 }
 
-/// GPU kernel: grid update CDF (3D version).
+// TODO(PERF) mereg with gpu_grid_update
 #[spirv_bindgen]
 #[cfg_attr(feature = "dim2", spirv(compute(threads(8, 8))))]
 #[cfg_attr(feature = "dim3", spirv(compute(threads(4, 4, 4))))]

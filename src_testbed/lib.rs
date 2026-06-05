@@ -266,6 +266,7 @@ impl Testbed {
     pub async fn run(mut self) {
         let mut window = Window::new("nexus demos").await;
         window.set_background_color(Color::new(245.0 / 255.0, 245.0 / 255.0, 236.0 / 255.0, 1.0));
+        window.set_shadows_enabled(false);
 
         #[cfg(feature = "dim2")]
         let (mut camera2d, mut camera3d) = {

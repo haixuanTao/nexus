@@ -3,6 +3,7 @@ use rapier3d::prelude::*;
 use rapier3d_urdf::{UrdfLoaderOptions, UrdfMultibodyOptions, UrdfRobot};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use rand::RngExt;
 
 pub fn builder() -> DemoBuilder {
     DemoBuilder::rbd("URDF (multibody)", build).with_rbd_tick(apply_random_ang_motors)

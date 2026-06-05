@@ -28,18 +28,18 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/dimforge/nexus"
 
 [workspace.dependencies]
-glamx = { version = "0.2", default-features = false, features = ["nostd-libm", "bytemuck"] }
+glamx = { version = "0.3", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
-khal-std = "0.1"
-khal = { version = "0.1", features = ["derive"]}
-vortx = "0.1"
+khal-std = "0.2"
+khal = { version = "0.2", features = ["derive"]}
+vortx = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
 web-time = "1"
 static_assertions = "1"
 
 # Shaders deps
-khal-builder = "0.1.1"
-vortx-shaders = { version = "0.1", default-features = false }
+khal-builder = "0.2"
+vortx-shaders = { version = "0.2", default-features = false }
 unroll = "0.1"
 crunchy = "0.2.4"
 
@@ -50,12 +50,12 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [patch.crates-io]
-khal = { path = "../khal/crates/khal" }
-khal-derive = { path = "../khal/crates/khal-derive" }
-khal-std = { path = "../khal/crates/khal-std" }
-khal-builder = { path = "../khal/crates/khal-builder" }
-vortx = { path = "../vortx" }
-vortx-shaders = { path = "../vortx/vortx-shaders" }
+#khal = { path = "../khal/crates/khal" }
+#khal-derive = { path = "../khal/crates/khal-derive" }
+#khal-std = { path = "../khal/crates/khal-std" }
+#khal-builder = { path = "../khal/crates/khal-builder" }
+#vortx = { path = "../vortx" }
+#vortx-shaders = { path = "../vortx/vortx-shaders" }
 
 #glamx = { git = "https://github.com/dimforge/glamx", branch = "bytemuck"}
 #parry2d = { git = "https://github.com/dimforge/parry", branch = "spirv-compat"}
@@ -67,11 +67,11 @@ vortx-shaders = { path = "../vortx/vortx-shaders" }
 #vortx-shaders = { path = "../vortx/vortx-shaders" }
 
 #glamx = { path = "../glamx" }
-kiss3d = { path = "../kiss3d" }
-parry2d = { path = "../parry/crates/parry2d" }
-parry3d = { path = "../parry/crates/parry3d" }
-rapier2d = { path = "../rapier/crates/rapier2d" }
-rapier3d = { path = "../rapier/crates/rapier3d" }
-rapier3d-urdf = { path = "../rapier/crates/rapier3d-urdf" }
-rapier3d-meshloader = { path = "../rapier/crates/rapier3d-meshloader" }
+#kiss3d = { path = "../kiss3d" }
+#parry2d = { path = "../parry/crates/parry2d" }
+#parry3d = { path = "../parry/crates/parry3d" }
+#rapier2d = { path = "../rapier/crates/rapier2d" }
+#rapier3d = { path = "../rapier/crates/rapier3d" }
+#rapier3d-urdf = { path = "../rapier/crates/rapier3d-urdf" }
+#rapier3d-meshloader = { path = "../rapier/crates/rapier3d-meshloader" }
 #vortx = { path = "../vortx" }
