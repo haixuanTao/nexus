@@ -9,6 +9,7 @@
 
 use super::body::{LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{
+    MAX_CONSTRAINTS_PER_MANIFOLD,
     SUB_LEN, TwoBodyConstraint, TwoBodyConstraintBuilder, TwoBodyConstraintNormalPart,
     TwoBodyConstraintTangentPart,
 };
@@ -180,7 +181,13 @@ pub fn contact_to_constraint(
         constraint.tangent_a = tangents1.read(0);
     }
 
-    for k in 0..(contact.len as usize) {
+    // WORKAROUND (libNVVM bug): a runtime loop bound on this `elements[k]`
+    // store makes libNVVM emit out-of-bounds unconditional stores. `elements`
+    // is fixed-size (SUB_LEN), so use a constant bound + an inner break.
+    for k in 0..MAX_CONSTRAINTS_PER_MANIFOLD {
+        if k >= contact.len as usize {
+            break;
+        }
         let pt = cpose1
             * (contact.points_a.at(k).pt + contact.normal_a * contact.points_a.at(k).dist / 2.0);
         // `mprops.com` and `solver_body_pose.translation` are equal (both are

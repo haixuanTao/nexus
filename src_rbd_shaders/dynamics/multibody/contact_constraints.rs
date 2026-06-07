@@ -192,7 +192,11 @@ pub fn gpu_mb_init_contact_constraints(
         col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
 
     let contacts_slice = batch_ids.contact_batch(batch_id, contacts);
-    let n_contacts = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let n_contacts = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
     let mut count = 0u32;
 
     for ci in 0..n_contacts {
@@ -722,6 +726,11 @@ pub fn gpu_mb_solve_contact_constraints(
 
 /// Strip the positional bias from each active contact constraint's `rhs`,
 /// matching `gpu_mb_remove_joint_constraint_bias`.
+///
+/// NOTE: keep this kernel around for now (compat / standalone use), but the
+/// hot end-of-substep path uses the fused
+/// `gpu_mb_remove_solve_contact_no_bias` below, which inlines this loop
+/// before the PGS sweep so the two threads(1) dispatches collapse into one.
 #[spirv_bindgen]
 #[spirv(compute(threads(1)))]
 pub fn gpu_mb_remove_contact_constraint_bias(
@@ -751,5 +760,124 @@ pub fn gpu_mb_remove_contact_constraint_bias(
         }
         cons.rhs = cons.rhs_wo_bias;
         contact_constraints.write(cons_base + s as usize, cons);
+    }
+}
+
+/// Fused end-of-substep stabilization: strip the positional bias from each
+/// active contact constraint's `rhs` (was `gpu_mb_remove_contact_constraint_bias`),
+/// then run one PGS sweep WITHOUT bias (was `gpu_mb_solve_contact_constraints`).
+///
+/// Drops one `threads(1)` dispatch per substep × 4 substeps = ~4 dispatches
+/// per ctrl step on the multibody side, and avoids one round-trip through
+/// global memory for the `cons` struct in the bias-strip pass (the loaded
+/// value is immediately reused by the solve pass).
+///
+/// Mirrors the existing `gpu_mb_remove_solve_joint_no_bias` fusion for joint
+/// constraints (`joint_constraints.rs:669`).
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_mb_remove_solve_contact_no_bias(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contact_constraint_jacs: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contact_constraint_columns: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_count: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] dof_state: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] solver_vels: &mut [Velocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let mb_idx = invocation_id.x;
+    let num_mb = num_multibodies.read(batch_id as usize);
+    if mb_idx >= num_mb {
+        return;
+    }
+
+    let mb_start = batch_ids.mb_start(batch_id);
+    let cons_start = batch_ids.mb_contact_constraints_start(batch_id);
+    let col_start = batch_ids.mb_contact_constraint_columns_start(batch_id);
+    let colliders_start = batch_ids.coll_start(batch_id);
+
+    let mb = multibody_info.read(mb_start + mb_idx as usize);
+    let ndofs = mb.ndofs;
+    if ndofs == 0 {
+        return;
+    }
+    let v_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+    let cons_base = cons_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize);
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
+    let col_base =
+        col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
+
+    let count = contact_constraint_count.read(mb_start + mb_idx as usize);
+    for s in 0..count {
+        // Load once, strip the bias, keep the modified struct in a local so
+        // the solve below sees the post-strip `rhs` without going back to
+        // global memory (the original two-kernel chain stored + reloaded).
+        let mut cons = contact_constraints.read(cons_base + s as usize);
+        if cons.kind != 0 {
+            cons.rhs = cons.rhs_wo_bias;
+        }
+
+        // === PGS solve (identical to `gpu_mb_solve_contact_constraints`) ===
+        let col_offset = col_base + (s as usize) * dofs_stride;
+
+        // J · u = J_mb · v_mb_dofs + J_free · v_free.
+        let is_self = cons.free_body_id == u32::MAX;
+        let mut j_dot_v = 0.0f32;
+        for i in 0..ndofs {
+            let j = contact_constraint_jacs.read(col_offset + i as usize);
+            let v = dof_state.read(v_base + i as usize);
+            j_dot_v += j * v;
+        }
+        let free = if is_self {
+            Velocity::default()
+        } else {
+            solver_vels.read(colliders_start + cons.free_body_id as usize)
+        };
+        if !is_self {
+            j_dot_v += cons.lin_jac.dot(free.linear) + gdot(cons.ang_jac, free.angular);
+        }
+
+        let rhs_total = j_dot_v + cons.rhs;
+        let raw_imp = cons.impulse - cons.inv_lhs * (rhs_total + cons.cfm_gain * cons.impulse);
+
+        // Normal: clamp to ≥ 0. Friction tangent: clamp to ±μ · |normal_impulse|.
+        let new_imp = if cons.kind == MB_CONTACT_KIND_TANGENT {
+            let normal = contact_constraints.read(cons_base + cons.normal_constraint_slot as usize);
+            let limit = cons.friction_coeff * normal.impulse;
+            if raw_imp > limit {
+                limit
+            } else if raw_imp < -limit {
+                -limit
+            } else {
+                raw_imp
+            }
+        } else if raw_imp < 0.0 {
+            0.0
+        } else {
+            raw_imp
+        };
+        let delta = new_imp - cons.impulse;
+        cons.impulse = new_imp;
+        contact_constraints.write(cons_base + s as usize, cons);
+
+        if delta != 0.0 {
+            for i in 0..ndofs {
+                let v_idx = v_base + i as usize;
+                let cur = dof_state.read(v_idx);
+                let col = contact_constraint_columns.read(col_offset + i as usize);
+                dof_state.write(v_idx, cur + delta * col);
+            }
+            if !is_self {
+                let mut new_free = free;
+                new_free.linear = new_free.linear + cons.lin_jac * (cons.free_body_im * delta);
+                new_free.angular = new_free.angular + cons.ii_ang_jac * delta;
+                solver_vels.write(colliders_start + cons.free_body_id as usize, new_free);
+            }
+        }
     }
 }

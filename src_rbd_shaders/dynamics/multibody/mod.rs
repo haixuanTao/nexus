@@ -41,6 +41,7 @@ mod jacobian;
 mod joint_constraints;
 mod lu;
 mod mass_matrix;
+mod packed_dof_poc;
 mod types;
 mod utils;
 
@@ -50,5 +51,6 @@ pub use gravity_and_lu::*;
 pub use impulse_joint_constraints::*;
 pub use integrate::*;
 pub use joint_constraints::*;
+pub use packed_dof_poc::*;
 pub use types::*;
 pub use utils::*;

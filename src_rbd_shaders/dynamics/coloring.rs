@@ -61,7 +61,11 @@ pub fn gpu_reset_luby(
     let batch_id = invocation_id.y;
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let mut constraints_rands = batch_ids.contact_batch_mut(batch_id, constraints_rands);
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
 
     let i = invocation_id.x;
 
@@ -108,7 +112,11 @@ pub fn gpu_step_graph_coloring_luby(
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let constraints_rands = batch_ids.contact_batch(batch_id, constraints_rands);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
     let color = *curr_color;
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -227,7 +235,11 @@ pub fn gpu_reset_topo_gc(
     let batch_id = invocation_id.y;
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
 
     let i = invocation_id.x;
 
@@ -295,7 +307,11 @@ pub fn gpu_step_graph_coloring_topo_gc(
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;
@@ -388,7 +404,11 @@ pub fn gpu_fix_conflicts_topo_gc(
     let constraints_colors = batch_ids.contact_batch(batch_id, constraints_colors);
     let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;

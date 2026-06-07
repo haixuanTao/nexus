@@ -1,21 +1,20 @@
-//! Headless 3D rigid-body demo: a small pile of boxes dropped onto a floor,
-//! simulated on the nexus GPU rbd pipeline (contacts + friction), recording each
-//! box's full 6-DOF pose per step to CSV for 3D rendering.
+//! CUDA-backend twin of `boxes3d` — identical simulation, but runs the nexus
+//! rbd pipeline on the native-CUDA (cuda-oxide cubin) backend instead of WebGPU.
+//! Dumps the same per-step pose CSV so the two backends can be diffed for
+//! bit-exactness of the ported physics kernels.
 //!
-//! Run: `cargo run -p pendulum_headless --bin boxes3d --release [out.csv]`
+//! Run: `cargo run -p pendulum_headless --bin boxes3d_cuda --release [out.csv]`
 
-use khal::backend::{Backend, GpuBackend as KhalGpuBackend, WebGpu};
-use khal::re_exports::wgpu;
+use khal::backend::{Backend, Cuda, GpuBackend as KhalGpuBackend};
 use nexus3d::rbd::math::Pose;
 use nexus3d::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState};
 use rapier3d::prelude::*;
 
 const NX: i32 = 3;
-const NY: i32 = 3; // layers
+const NY: i32 = 3;
 const NZ: i32 = 2;
-const HALF: f32 = 0.5; // box half-extent (1.0 cube)
+const HALF: f32 = 0.5;
 const SPACING: f32 = 1.15;
-const DT: f32 = 1.0 / 60.0;
 const STEPS: usize = 200;
 
 struct Lcg(u64);
@@ -33,8 +32,6 @@ fn num_boxes() -> usize {
     (NX * NY * NZ) as usize
 }
 
-/// Dynamic boxes (indices 0..N) above a fixed floor (index N). Slight random
-/// position/orientation jitter so the stack topples instead of dropping cleanly.
 fn build() -> (RigidBodySet, ColliderSet) {
     let mut bodies = RigidBodySet::new();
     let mut colliders = ColliderSet::new();
@@ -60,26 +57,10 @@ fn build() -> (RigidBodySet, ColliderSet) {
         }
     }
 
-    // Fixed floor (top surface at y = 0), inserted last → pose index == num_boxes.
     let floor = bodies.insert(RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -0.5, 0.0)));
     colliders.insert_with_parent(ColliderBuilder::cuboid(8.0, 0.5, 8.0), floor, &mut bodies);
 
     (bodies, colliders)
-}
-
-async fn webgpu_backend() -> KhalGpuBackend {
-    let limits = wgpu::Limits {
-        max_buffer_size: 1_200_000_000,
-        max_storage_buffer_binding_size: 1_200_000_000,
-        max_storage_buffers_per_shader_stage: 14,
-        max_compute_workgroup_storage_size: 19_904,
-        ..Default::default()
-    };
-    let mut webgpu = WebGpu::new(wgpu::Features::default(), limits)
-        .await
-        .expect("init WebGPU");
-    webgpu.force_buffer_copy_src = true;
-    KhalGpuBackend::WebGpu(webgpu)
 }
 
 async fn read_poses(gpu: &KhalGpuBackend, state: &GpuPhysicsState) -> Vec<Pose> {
@@ -89,7 +70,7 @@ async fn read_poses(gpu: &KhalGpuBackend, state: &GpuPhysicsState) -> Vec<Pose> 
 }
 
 fn main() {
-    let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp/boxes3d.csv".to_string());
+    let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp/boxes3d_cuda.csv".to_string());
     let n = num_boxes();
 
     pollster::block_on(async {
@@ -97,7 +78,7 @@ fn main() {
         let impulse_joints = ImpulseJointSet::new();
         let multibody_joints = MultibodyJointSet::new();
         let sim_params = nexus3d::rbd::dynamics::GpuSimParams::default();
-        let gpu = webgpu_backend().await;
+        let gpu = KhalGpuBackend::Cuda(Cuda::new(0).expect("init CUDA backend"));
         let pipeline = GpuPhysicsPipeline::from_backend(&gpu);
         let envs = vec![(
             &bodies,
@@ -109,9 +90,8 @@ fn main() {
         let mut state = GpuPhysicsState::from_rapier(&gpu, &envs);
 
         let p0 = read_poses(&gpu, &state).await;
-        println!("{} poses total ({n} dynamic boxes + floor)", p0.len());
+        println!("[cuda] {} poses total ({n} dynamic boxes + floor)", p0.len());
 
-        // CSV (long format): step, box, x, y, z, qx, qy, qz, qw
         let mut csv = String::from("step,box,x,y,z,qx,qy,qz,qw\n");
         let mut dump = |step: usize, poses: &[Pose], csv: &mut String| {
             for b in 0..n {
@@ -127,6 +107,7 @@ fn main() {
         dump(0, &p0, &mut csv);
 
         for step in 1..=STEPS {
+            eprintln!("[STEP {step}]");
             let _ = pipeline.step(&gpu, &mut state, None).await;
             gpu.synchronize().expect("sync");
             if step == 23 {
@@ -165,6 +146,6 @@ fn main() {
         let ys: Vec<f32> = (0..n).map(|b| last[b].translation.y).collect();
         let miny = ys.iter().cloned().fold(f32::INFINITY, f32::min);
         let maxy = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        println!("wrote {out}: {} steps × {n} boxes. settled y∈[{miny:.2},{maxy:.2}]", STEPS + 1);
+        println!("[cuda] wrote {out}: {} steps × {n} boxes. settled y∈[{miny:.2},{maxy:.2}]", STEPS + 1);
     });
 }

@@ -18,7 +18,7 @@ repository = "https://github.com/dimforge/nexus"
 [workspace.dependencies]
 glamx = { version = "0.2", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
-khal-std = "0.1"
+khal-std = { version = "0.1", default-features = false }
 khal = { version = "0.1", features = ["derive"]}
 vortx = "0.1"
 bytemuck = { version = "1", features = ["derive"] }

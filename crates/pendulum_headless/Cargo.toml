@@ -8,9 +8,9 @@ edition = "2024"
 # nexus_rbd3d pipeline directly so it builds against only the rbd library crates.
 
 [dependencies]
-nexus3d = { path = "../nexus3d", features = ["rbd", "from_rapier"] }
+nexus3d = { path = "../nexus3d", features = ["rbd", "from_rapier", "cuda"] }
 rapier3d = "0.32"
-khal = { workspace = true, features = ["webgpu"] }
+khal = { workspace = true, features = ["webgpu", "cuda"] }
 pollster = "0.4"
 # GPU MLP policy (vortx tensor ops) for pendulum_gpu_policy — vortx is path-patched
 # to ../vortx by the workspace; nalgebra matches zealot-rl / vortx (0.34).

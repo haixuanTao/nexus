@@ -42,7 +42,11 @@ pub fn gpu_transfer_warmstart_impulses(
     let mut new_constraints = SliceMut(new_constraints, contacts_start);
     let new_constraint_builders = Slice(new_constraint_builders, contacts_start);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
     let cid_new = invocation_id.x;
 
     if cid_new < len {

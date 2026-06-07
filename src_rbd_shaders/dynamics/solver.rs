@@ -153,7 +153,11 @@ pub fn gpu_solver_update_constraints(
     let mut constraints = batch_ids.contact_batch_mut(batch_id, constraints);
     let constraint_builders = batch_ids.contact_batch(batch_id, constraint_builders);
     let solver_body_poses = batch_ids.coll_batch(batch_id, solver_body_poses);
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         update_constraint(
@@ -187,7 +191,11 @@ pub fn gpu_solver_sort_constraints(
     let body_group = batch_ids.coll_batch(batch_id, body_group);
     let mprops = batch_ids.coll_batch(batch_id, mprops);
     let mut body_constraint_ids = SliceMut(body_constraint_ids, bci_start);
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let body1 = contacts[i as usize].colliders.x as usize;
@@ -359,7 +367,11 @@ pub fn gpu_warmstart(
     let constraints = batch_ids.contact_batch(batch_id, constraints);
     let constraints_colors = batch_ids.contact_batch(batch_id, constraints_colors);
     let mut solver_vels = batch_ids.coll_batch_mut(batch_id, solver_vels);
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
     let color = *curr_color;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -399,7 +411,11 @@ pub fn gpu_step_gauss_seidel(
     let mut constraints = batch_ids.contact_batch_mut(batch_id, constraints);
     let constraints_colors = batch_ids.contact_batch(batch_id, constraints_colors);
     let mut solver_vels = batch_ids.coll_batch_mut(batch_id, solver_vels);
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
     let color = *curr_color;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -533,7 +549,11 @@ pub fn gpu_remove_cfm_and_bias_kernel(
     let i = invocation_id.x;
 
     let mut constraints = batch_ids.contact_batch_mut(batch_id, constraints);
-    let len = contacts_len.read(batch_id as usize);
+    // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
+        // capacity (writes are skipped beyond it), so iterating to the raw
+        // count would read unwritten/out-of-bounds slots. WebGPU clamps such
+        // reads; native CUDA (unsafe_remove_boundchecks) would fault.
+        let len = contacts_len.read(batch_id as usize).min(batch_ids.contacts_batch_capacity);
 
     if i < len {
         remove_cfm_and_bias(&mut constraints[i as usize]);

@@ -805,6 +805,26 @@ impl GpuPhysicsState {
         &self.collider_world_poses
     }
 
+    /// DEBUG accessors for the contact/pair buffers (native-CUDA diagnosis).
+    pub fn dbg_collision_pairs(&self) -> &Tensor<[u32; 2]> {
+        &self.collision_pairs
+    }
+    pub fn dbg_collision_pairs_len(&self) -> &Tensor<u32> {
+        &self.collision_pairs_len
+    }
+    pub fn dbg_contacts_len(&self) -> &Tensor<u32> {
+        &self.contacts_len
+    }
+    pub fn dbg_contacts(&self) -> &Tensor<GpuIndexedContact> {
+        &self.contacts
+    }
+    pub fn dbg_num_batches(&self) -> u32 {
+        self.num_batches
+    }
+    pub fn dbg_contacts_capacity(&self) -> u32 {
+        self.collision_pairs.len() as u32 / self.num_batches
+    }
+
     /// Per-body world-origin pose (matches rapier's `RigidBody::position`).
     pub fn body_poses(&self) -> &Tensor<Pose> {
         &self.body_poses

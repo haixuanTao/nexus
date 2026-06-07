@@ -28,6 +28,9 @@ use crate::shaders::dynamics::{
     GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbInitContactConstraints,
     GpuResetJointColor,
     GpuMbInitSolveJointWithBias, GpuMbIntegrate, GpuMbIntegrateVelocities,
+    GpuMbIntegrateVelocitiesPackedDof, GpuMbRemoveSolveContactNoBias,
+    GpuMbTransposeDofStateFromPacked, GpuMbTransposeDofStateToPacked,
+    GpuMbTransposeGenForcesToPacked,
     GpuMbRemoveContactConstraintBias, GpuMbRemoveImpulseJointConstraintBias,
     GpuMbRemoveSolveJointNoBias, GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
     GpuMbUpdateImpulseJointConstraints, LocalMassProperties, MAX_AXIS_CONSTRAINTS,
@@ -125,6 +128,29 @@ pub struct GpuMultibodySet {
     dof_state: Tensor<f32>,
     /// Generalized forces / after solve, generalized accelerations.
     gen_forces: Tensor<f32>,
+    /// **PoC for the dof-major layout rewrite.** Sized `dofs_cap × num_batches`
+    /// (same total size as the velocity section of `dof_state`), but stored
+    /// in DOF-major order: `dof_state_packed[d * num_batches + batch_id]` is
+    /// the velocity of env `batch_id`, DOF `d`. The packed
+    /// `integrate_velocities` kernel reads/writes through this buffer so its
+    /// 32 SIMD lanes load 32 consecutive envs' DOF[d] in ONE cache line
+    /// instead of 32 scattered cache lines (the failure mode of the prior
+    /// "packed but env-major" PoC).
+    ///
+    /// Currently transposed into and back out of `dof_state` around each
+    /// `integrate_velocities` call. A full rewrite would eliminate
+    /// `dof_state` entirely and have every kernel use this layout — that
+    /// removes the transpose tax and is the real expected source of gain.
+    /// This PoC measures the kernel speedup with the transpose tax included
+    /// so we can decide whether to commit to the full rewrite.
+    dof_state_packed: Tensor<f32>,
+    /// Same DOF-major layout as `dof_state_packed`, but for generalized
+    /// accelerations / forces. Transposed in from `gen_forces` before the
+    /// packed kernel reads it.
+    gen_forces_packed: Tensor<f32>,
+    /// Scalar uniform: total number of batches (envs). Needed by the packed
+    /// kernels to compute strides for the DOF-major layout above.
+    num_batches_uniform: Tensor<u32>,
     /// Per-link `6 × ndofs` column-major jacobians.
     body_jacobians: Tensor<f32>,
     /// Per-multibody `ndofs × ndofs` mass matrices (also used as LU work buffer).
@@ -878,6 +904,19 @@ impl GpuMultibodySet {
                 storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
+            dof_state_packed: Tensor::vector(
+                backend,
+                &vec![0.0f32; (dofs_cap * num_batches) as usize],
+                storage | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
+            gen_forces_packed: Tensor::vector(
+                backend,
+                &vec![0.0f32; (dofs_cap * num_batches) as usize],
+                storage,
+            )
+            .unwrap(),
+            num_batches_uniform: Tensor::scalar(backend, num_batches, usage_u).unwrap(),
             body_jacobians: Tensor::vector(
                 backend,
                 &vec![0.0f32; (jac_cap * num_batches) as usize],
@@ -1479,6 +1518,11 @@ pub struct GpuMultibodySolver {
     finalize_contact_constraints: GpuMbFinalizeContactConstraints,
     solve_contact_constraints: GpuMbSolveContactConstraints,
     remove_contact_constraint_bias: GpuMbRemoveContactConstraintBias,
+    /// Fused `remove_contact_constraint_bias` + `solve_contact_constraints`
+    /// for the end-of-substep stabilization sweep. Drops one threads(1)
+    /// dispatch per substep on the multibody side. Mirrors
+    /// `remove_solve_joint_no_bias` (same pattern for joint constraints).
+    remove_solve_contact_no_bias: GpuMbRemoveSolveContactNoBias,
     update_impulse_joint_constraints: GpuMbUpdateImpulseJointConstraints,
     solve_impulse_joint_constraints: GpuMbSolveImpulseJointConstraints,
     /// Color cursor reset / increment for the colored impulse-joint solve
@@ -1488,6 +1532,13 @@ pub struct GpuMultibodySolver {
     remove_impulse_joint_constraint_bias: GpuMbRemoveImpulseJointConstraintBias,
     integrate_velocities: GpuMbIntegrateVelocities,
     integrate: GpuMbIntegrate,
+    /// **PoC**: dof-major transposes + packed integrate_velocities. Used
+    /// only when `multibodies_per_batch == 1` (zealot's bipedal case). See
+    /// `packed_dof_poc.rs` for the design + measurement rationale.
+    transpose_dof_state_to_packed: GpuMbTransposeDofStateToPacked,
+    transpose_dof_state_from_packed: GpuMbTransposeDofStateFromPacked,
+    transpose_gen_forces_to_packed: GpuMbTransposeGenForcesToPacked,
+    integrate_velocities_packed_dof: GpuMbIntegrateVelocitiesPackedDof,
 }
 
 /// Arguments for one multibody dispatch. The poses buffer is shared with the rest
@@ -1657,6 +1708,9 @@ impl GpuMultibodySolver {
         let dispatch = [mb.multibodies_per_batch, mb.num_batches, 1];
 
         // 1. v += a · dt_substep.
+        // (PoC: DOF-major transpose-dance disabled. See packed_dof_poc.rs
+        // for the rationale + measured regression; the only viable path is
+        // the full layout rewrite without transposes.)
         self.integrate_velocities.call(
             pass,
             dispatch,
@@ -1831,14 +1885,6 @@ impl GpuMultibodySolver {
                 args.batch_indices,
             )?;
         }
-        self.remove_contact_constraint_bias.call(
-            pass,
-            dispatch,
-            &mut mb.contact_constraints,
-            &mb.contact_constraint_count,
-            &mb.num_multibodies,
-            args.batch_indices,
-        )?;
         if mb.mb_imp_joints_per_batch > 0 {
             let imp_dispatch = [mb.mb_imp_joints_per_batch, mb.num_batches, 1];
             self.remove_impulse_joint_constraint_bias.call(
@@ -1851,8 +1897,14 @@ impl GpuMultibodySolver {
             )?;
         }
 
-        // 7. (joint sweep WITHOUT bias was fused into `remove_solve_joint_no_bias` above.)
-        self.solve_contact_constraints.call(
+        // 6 + 7 (multibody-side): fused bias-strip + no-bias PGS sweep over
+        // multibody contacts. Replaces the previous
+        // (`remove_contact_constraint_bias` → `solve_contact_constraints`)
+        // pair, dropping one threads(1) dispatch per substep × decimation
+        // substeps per ctrl step. The previous two-kernel form is left in
+        // the shader source for compatibility but no longer wired into the
+        // hot path.
+        self.remove_solve_contact_no_bias.call(
             pass,
             dispatch,
             &mb.multibody_info,
