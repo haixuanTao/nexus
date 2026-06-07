@@ -398,6 +398,7 @@ pub fn abs(x: f32) -> f32 {
 //
 // Modules
 //
+pub mod barrier_div_test;
 pub mod bounding_volumes;
 pub mod broad_phase;
 pub mod dynamics;
