@@ -1,9 +1,9 @@
 #!/bin/bash
 set -eo pipefail
-TOOL=/home/baguette/.rustup/toolchains/nightly-2025-08-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin
-LIBDEV=/home/baguette/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/libdevice/libdevice.10.bc
-PTXAS=/home/baguette/.local/lib/python3.12/site-packages/triton/backends/nvidia/bin/ptxas
-BACKEND=/home/baguette/cuda-oxide-src/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so
+TOOL=$HOME/.rustup/toolchains/nightly-2025-08-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin
+LIBDEV=$HOME/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/libdevice/libdevice.10.bc
+PTXAS=$HOME/.local/lib/python3.12/site-packages/triton/backends/nvidia/bin/ptxas
+BACKEND=$HOME/cuda-oxide-src/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so
 export CUDA_OXIDE_PTX_DIR=$HOME/nexus_ptx
 export PATH=$HOME/.cargo/bin:$PATH
 cd ~/Documents/work/nexus-cuda

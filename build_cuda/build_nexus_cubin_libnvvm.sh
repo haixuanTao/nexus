@@ -1,11 +1,11 @@
 #!/bin/bash
 set -eo pipefail
-BACKEND=/home/baguette/cuda-oxide-src/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so
+BACKEND=$HOME/cuda-oxide-src/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so
 export CUDA_OXIDE_PTX_DIR=$HOME/nexus_ptx
 export PATH=$HOME/.cargo/bin:$PATH
-export CUDA_OXIDE_LIBDEVICE=/home/baguette/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/libdevice/libdevice.10.bc
-export LIBNVVM_PATH=/home/baguette/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/lib64/libnvvm.so
-export LIBNVJITLINK_PATH=/home/baguette/nvjit-wheel/extracted/nvidia/nvjitlink/lib/libnvJitLink.so.12
+export CUDA_OXIDE_LIBDEVICE=$HOME/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/libdevice/libdevice.10.bc
+export LIBNVVM_PATH=$HOME/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/lib64/libnvvm.so
+export LIBNVJITLINK_PATH=$HOME/nvjit-wheel/extracted/nvidia/nvjitlink/lib/libnvJitLink.so.12
 cd ~/Documents/work/nexus-cuda
 
 echo "=== [1/4] cuda-oxide build nexus_rbd_shaders3d -> .ll ==="
