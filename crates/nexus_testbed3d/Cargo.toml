@@ -1,0 +1,36 @@
+[package]
+name = "nexus_testbed3d"
+version = "0.4.0"
+authors = ["Sébastien Crozet <developer@crozet.re>"]
+description = "Testbed for 3D GPU physics demos with nexus."
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nexus_testbed3d"
+path = "../../src_testbed/lib.rs"
+required-features = ["dim3"]
+
+[lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("dim2", "cpu", "cuda", "metal"))',
+] }
+
+[features]
+default = ["dim3", "webgpu"]
+dim3 = []
+webgpu = ["khal/webgpu"]
+metal = ["khal/metal", "nexus3d/metal"]
+cpu = ["nexus3d/cpu", "vortx/cpu"]
+cpu-parallel = ["cpu", "nexus3d/cpu-parallel", "vortx/cpu-parallel"]
+cuda = ["nexus3d/cuda"]
+
+[dependencies]
+nexus3d = { path = "../nexus3d", features = ["rbd", "mpm", "fem", "from_rapier"]}
+glamx = { version = "0.2", default-features = false }
+khal = { workspace = true }
+vortx = { workspace = true }
+rapier3d = "0.32"
+bytemuck = { version = "1", features = ["derive"] }
+kiss3d = { version = "0.41", features = ["egui"] }
+web-time = "1"

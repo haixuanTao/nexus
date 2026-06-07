@@ -1,0 +1,56 @@
+[package]
+name = "nexus_mpm3d"
+authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
+description = "Cross-platform 3D GPU-accelerated MPM physics."
+repository = { workspace = true }
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+
+[lib]
+name = "nexus_mpm3d"
+path = "../../src_mpm/lib.rs"
+required-features = ["dim3"]
+
+[lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("dim2"))',
+] }
+
+[features]
+default = ["dim3", "f32", "webgpu"]
+dim3 = []
+f32 = []
+f64 = []
+webgpu = ["khal/webgpu"]
+metal = ["khal/metal", "nexus_rbd3d/metal"]
+from_rapier = ["rapier3d", "parry3d", "nexus_rbd3d/from_rapier"]
+cpu = ["nexus_mpm_shaders3d/cpu", "nexus_rbd3d/cpu", "vortx/cpu"]
+cpu-parallel = ["cpu", "nexus_mpm_shaders3d/cpu-parallel", "nexus_rbd3d/cpu-parallel", "vortx/cpu-parallel"]
+cuda = ["khal/cuda", "khal-builder/cuda", "nexus_mpm_shaders3d/cuda"]
+
+[dependencies]
+nexus_mpm_shaders3d = { path = "../nexus_mpm_shaders3d" }
+nexus_rbd3d = { path = "../nexus_rbd3d", default-features = false, features = ["dim3"] }
+glamx = { workspace = true }
+include_dir = { workspace = true }
+khal = { workspace = true }
+vortx = { workspace = true }
+bytemuck = { workspace = true }
+web-time = { workspace = true }
+static_assertions = { workspace = true }
+bvh = "0.7"
+
+# Optional dependencies for rapier/parry interop
+rapier3d = { version = "0.32", optional = true }
+parry3d = { version = "0.26", optional = true }
+
+[dev-dependencies]
+futures-test = "0.3"
+serial_test = "3"
+approx = "0.5"
+rand = "0.9"
+
+[build-dependencies]
+khal-builder = {workspace = true}
+nexus_mpm_shaders3d = { version = "0.1", path = "../nexus_mpm_shaders3d" }

@@ -1,0 +1,45 @@
+[package]
+name = "nexus_examples_3d"
+version = "0.4.0"
+authors = ["Sébastien Crozet <developer@crozet.re>"]
+edition = "2024"
+
+[features]
+default = []
+cpu = ["nexus_testbed3d/cpu"]
+cpu-parallel = ["cpu", "nexus_testbed3d/cpu-parallel"]
+cuda = ["nexus_testbed3d/cuda"]
+metal = ["nexus_testbed3d/metal"]
+
+[dependencies]
+glamx = { version = "0.2", default-features = false }
+nexus_testbed3d = { path = "../nexus_testbed3d" }
+nexus_rbd3d = { path = "../nexus_rbd3d" }
+rapier3d = "0.32"
+rapier3d-urdf = { version = "0.13", features = ["stl"] }
+khal = { workspace = true }
+Inflector = "0.11"
+kiss3d = "0.41"
+oorandom = "11"
+rand = "0.9"
+pollster = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[[bin]]
+name = "all_examples3"
+path = "all_examples3.rs"
+
+[[bin]]
+name = "bench_multibody_pendulum3"
+path = "bench_multibody_pendulum3.rs"
+
+[[bin]]
+name = "bench_urdf3"
+path = "bench_urdf3.rs"
+
+[[bin]]
+name = "bench_joints3"
+path = "bench_joints3.rs"
