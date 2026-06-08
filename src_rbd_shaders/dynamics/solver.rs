@@ -65,8 +65,6 @@ pub fn gpu_solver_init_constraints(
     constraints: &mut [TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     constraint_builders: &mut [TwoBodyConstraintBuilder],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] body_constraint_counts: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_group: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] collider_world_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] solver_body_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] vels: &[Velocity],
@@ -77,49 +75,70 @@ pub fn gpu_solver_init_constraints(
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let params = all_params.at(batch_id as usize);
-
     let contacts = batch_ids.contact_batch(batch_id, contacts);
     let mut constraints = batch_ids.contact_batch_mut(batch_id, constraints);
     let mut constraint_builders = batch_ids.contact_batch_mut(batch_id, constraint_builders);
-    let mut body_constraint_counts = batch_ids.coll_batch_mut(batch_id, body_constraint_counts);
-    let body_group = batch_ids.coll_batch(batch_id, body_group);
     let collider_world_poses = batch_ids.coll_batch(batch_id, collider_world_poses);
     let solver_body_poses = batch_ids.coll_batch(batch_id, solver_body_poses);
     let vels = batch_ids.coll_batch(batch_id, vels);
     let mprops = batch_ids.coll_batch(batch_id, mprops);
-    // Iterating to `cap` (instead of `contacts_len[batch]`) lets us drop the
-    // `contacts_len` storage binding to fit WebGPU's 10-storage-per-stage
-    // limit. Empty / unused contact slots have `contact.len == 0` and are
-    // skipped — narrow-phase zero-initialises the buffer so the sentinel is
-    // reliable.
     let cap = batch_ids.contacts_batch_capacity;
-
     for i in StepRng::new(invocation_id.x..cap, num_threads) {
         let im = &contacts[i as usize];
         if im.contact.len == 0 {
             continue;
         }
+        // GUARD (bug 2): skip contacts with OOB collider indices (native CUDA faults
+        // where WebGPU robust-clamps). mprops/poses/vels are all coll-batch sliced.
+        let nc = mprops.0.len();
+        if mprops.1 + im.colliders.x as usize >= nc || mprops.1 + im.colliders.y as usize >= nc {
+            continue;
+        }
         contact_to_constraint(
-            im,
-            &mprops,
-            &collider_world_poses,
-            &solver_body_poses,
-            &vels,
-            params,
-            &mut constraints[i as usize],
-            &mut constraint_builders[i as usize],
+            im, &mprops, &collider_world_poses, &solver_body_poses, &vels, params,
+            &mut constraints[i as usize], &mut constraint_builders[i as usize],
         );
+    }
+}
 
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_count_body_constraints(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(num_workgroups)] num_workgroups: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &[IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_constraint_counts: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_group: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] mprops: &[WorldMassProperties],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+) {
+    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let batch_id = invocation_id.y;
+    let contacts = batch_ids.contact_batch(batch_id, contacts);
+    let mut body_constraint_counts = batch_ids.coll_batch_mut(batch_id, body_constraint_counts);
+    let body_group = batch_ids.coll_batch(batch_id, body_group);
+    let mprops = batch_ids.coll_batch(batch_id, mprops);
+    let cap = batch_ids.contacts_batch_capacity;
+    for i in StepRng::new(invocation_id.x..cap, num_threads) {
+        let im = &contacts[i as usize];
+        if im.contact.len == 0 {
+            continue;
+        }
         let body1 = im.colliders.x;
         let body2 = im.colliders.y;
+        let nbg = body_group.0.len();
+        let nmp = mprops.0.len();
+        if body_group.1 + body1 as usize >= nbg || body_group.1 + body2 as usize >= nbg
+            || mprops.1 + body1 as usize >= nmp || mprops.1 + body2 as usize >= nmp {
+            continue;
+        }
         let group1 = body_group[body1 as usize];
         let group2 = body_group[body2 as usize];
-
-        // Count toward the body's GROUP slot. A body is "active" for the
-        // graph-coloring graph if it's a free dynamic body (inv_mass != 0) OR
-        // it's part of a multibody (group != self — the multibody handles its
-        // own dynamics but its bodies still need correct coloring so contacts
-        // touching different links of the same multibody never share a color).
+        let nbcc = body_constraint_counts.0.len();
+        if body_constraint_counts.1 + group1 as usize >= nbcc
+            || body_constraint_counts.1 + group2 as usize >= nbcc {
+            continue;
+        }
         let is_mb1 = group1 != body1;
         if mprops[body1 as usize].inv_mass != Vector::ZERO || is_mb1 {
             atomic_add_u32(&mut body_constraint_counts[group1 as usize], 1);
