@@ -20,7 +20,7 @@ use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
     GpuApplySolverVelsInc, GpuInitSolverBodies, GpuInitSolverVelsInc, GpuIntegrateLinearized,
     GpuRemoveCfmAndBiasKernel, GpuSolverCleanup, GpuSolverFinalize, GpuSolverIncColor,
-    GpuSolverInitConstraints, GpuSolverResetColor, GpuSolverSortConstraints,
+    GpuCountBodyConstraints, GpuSolverInitConstraints, GpuSolverResetColor, GpuSolverSortConstraints,
     GpuSolverUpdateConstraints, GpuStepGaussSeidel, GpuWarmstart, GpuWarmstartWithoutColors,
     LocalMassProperties, SimParams, TwoBodyConstraint, TwoBodyConstraintBuilder, Velocity,
     WorldMassProperties,
@@ -41,6 +41,7 @@ pub struct GpuSolver {
     inc_color: GpuSolverIncColor,
     /// Initializes constraints from contact manifolds.
     init_constraints: GpuSolverInitConstraints,
+    count_body_constraints: GpuCountBodyConstraints,
     /// Updates nonlinear constraint terms during substeps.
     update_constraints: GpuSolverUpdateConstraints,
     /// Clears solver velocities and constraint counts.
@@ -187,19 +188,12 @@ impl GpuSolver {
         )?;
 
         self.init_constraints.call(
-            pass,
-            args.contacts_len_indirect,
-            args.contacts,
-            args.constraints,
-            args.constraint_builders,
-            args.body_constraint_counts,
-            args.body_group,
-            args.collider_world_poses,
-            args.solver_body_poses,
-            args.vels,
-            args.mprops,
-            args.sim_params,
-            args.batch_indices,
+            pass, args.contacts_len_indirect, args.contacts, args.constraints, args.constraint_builders,
+            args.collider_world_poses, args.solver_body_poses, args.vels, args.mprops, args.sim_params, args.batch_indices,
+        )?;
+        self.count_body_constraints.call(
+            pass, args.contacts_len_indirect, args.contacts, args.body_constraint_counts,
+            args.body_group, args.mprops, args.batch_indices,
         )?;
 
         args.prefix_sum.launch(
