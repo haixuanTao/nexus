@@ -97,6 +97,13 @@ pub struct ColoringArgs<'a> {
     pub body_group: &'a Tensor<u32>,
 }
 
+/// Fixed capacity-based grid for the (grid-stride) coloring kernels —
+/// `BIPED_FIXED_GRID` path (see `crate::dispatch_grid`).
+fn coloring_grid(args: &ColoringArgs) -> [u32; 3] {
+    let nb = (args.contacts_len.len() as u32).max(1);
+    [(args.constraints.len() as u32 / nb).max(1).div_ceil(64), nb, 1]
+}
+
 impl GpuColoring {
     /// Dispatches the reset_luby kernel.
     fn dispatch_reset_luby(
@@ -106,7 +113,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.reset_luby_kernel.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
             args.constraints_colors,
             args.constraints_rands,
             args.contacts_len,
@@ -123,7 +130,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.step_graph_coloring_luby_kernel.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
             args.body_constraint_counts,
             args.body_constraint_ids,
             args.constraints,
@@ -146,7 +153,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.reset_topo_gc_kernel.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
             args.constraints_colors,
             args.colored,
             args.contacts_len,
@@ -163,7 +170,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.step_graph_coloring_topo_gc_kernel.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
             args.body_constraint_counts,
             args.body_constraint_ids,
             args.constraints,
@@ -185,7 +192,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.fix_conflicts_topo_gc_kernel.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
             args.body_constraint_counts,
             args.body_constraint_ids,
             args.constraints,

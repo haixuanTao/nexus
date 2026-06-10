@@ -159,6 +159,11 @@ pub struct GpuPhysicsState {
     colored: Tensor<u32>,
     constraints_rands: Tensor<u32>,
     curr_color: Tensor<u32>,
+    /// Constant per-color uniform buffers holding `[1, 2, …, N]`. Used by the
+    /// solver's per-color sweeps INSTEAD of bumping `curr_color` via the
+    /// `reset_color`/`inc_color` kernels (which were ~28% of per-step dispatches
+    /// doing zero math). Each loop iteration binds `color_uniforms[c]`.
+    color_uniforms: Vec<Tensor<u32>>,
     uncolored: Tensor<u32>,
     uncolored_staging: Tensor<u32>,
     lbvh: LbvhState,
@@ -198,6 +203,11 @@ impl GpuPhysicsState {
             &GpuSimParams,
         )],
     ) -> Self {
+        // Pick the dispatch-grid strategy from the backend: fixed-grid on CUDA
+        // (the INDIRECT host round-trip is a ~1100 ms/rollout GPU drain there),
+        // indirect on WebGPU (native/cheap). `BIPED_FIXED_GRID` overrides.
+        crate::set_fixed_dispatch_grid_default(backend.is_cuda());
+
         let num_batches = environments.len() as u32;
         let max_colliders = environments
             .iter()
@@ -731,6 +741,13 @@ impl GpuPhysicsState {
                     | BufferUsages::COPY_SRC,
             )
             .unwrap(),
+            // Constant color values [1..=256] for the solver's per-color sweeps.
+            color_uniforms: (1u32..=256)
+                .map(|c| {
+                    Tensor::scalar(backend, c, BufferUsages::STORAGE | BufferUsages::UNIFORM)
+                        .unwrap()
+                })
+                .collect(),
             uncolored: Tensor::scalar(
                 backend,
                 0,
@@ -1126,6 +1143,7 @@ impl GpuPhysicsPipeline {
                 body_constraint_ids: &mut state.new_body_constraint_ids,
                 constraints_colors: &state.constraints_colors,
                 curr_color: &mut state.curr_color,
+                color_uniforms: &state.color_uniforms,
                 prefix_sum: &self.prefix_sum,
                 num_colors: 0,
                 num_batches: state.num_batches,
@@ -1212,6 +1230,7 @@ impl GpuPhysicsPipeline {
             body_constraint_ids: &mut state.new_body_constraint_ids,
             constraints_colors: &state.constraints_colors,
             curr_color: &mut state.curr_color,
+            color_uniforms: &state.color_uniforms,
             prefix_sum: &self.prefix_sum,
             num_colors,
             num_batches: state.num_batches,
@@ -1229,6 +1248,7 @@ impl GpuPhysicsPipeline {
             local_mprops: &state.local_mprops,
             joints: &mut state.joints,
             batch_indices: &state.batch_indices,
+            color_uniforms: &state.color_uniforms,
         };
 
         {

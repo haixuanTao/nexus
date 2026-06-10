@@ -19,6 +19,12 @@
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
+
+/// Lanes per workgroup for the cooperative fused `init_solve_joint` kernel: one
+/// workgroup per articulation, the independent per-constraint init back-solves
+/// split across these lanes (the serial PGS solve then runs on lane 0).
+pub const MB_JOINT_INIT_LANES: u32 = 32;
 
 use crate::DIM;
 use crate::dynamics::joint::SPATIAL_DIM;
@@ -109,6 +115,7 @@ pub fn gpu_mb_init_joint_constraints(
         mb_idx,
         *dt_uniform,
         batch_ids,
+        false,
     );
 }
 
@@ -239,6 +246,12 @@ pub fn gpu_mb_solve_joint_constraints(
 }
 
 #[inline]
+/// Serial per-articulation constraint-discovery walk: emits one constraint slot
+/// per active limit/motor axis. `defer_column`: when true, the expensive LU
+/// back-solve is skipped (a later parallel phase fills `inv_lhs`/column from each
+/// slot's `dof_id`) — used by the cooperative fused kernel so the back-solves
+/// don't run serially inside this single-threaded walk. Pass `false` for the
+/// standalone single-thread kernel (back-solve inline).
 fn init_joint_constraints_body(
     multibody_info: &[MultibodyInfo],
     links_static: &[MultibodyLinkStatic],
@@ -251,6 +264,7 @@ fn init_joint_constraints_body(
     mb_idx: u32,
     dt: f32,
     batch_ids: &BatchIndices,
+    defer_column: bool,
 ) {
     let mb = batch_ids
         .mb_batch(batch_id, multibody_info)
@@ -341,6 +355,7 @@ fn init_joint_constraints_body(
                     m,
                     lu_pivots,
                     piv_offset,
+                    defer_column,
                 );
                 slot += 1;
             }
@@ -364,6 +379,7 @@ fn init_joint_constraints_body(
                     m,
                     lu_pivots,
                     piv_offset,
+                    defer_column,
                 );
                 slot += 1;
             }
@@ -398,6 +414,7 @@ fn init_joint_constraints_body(
                     m,
                     lu_pivots,
                     piv_offset,
+                    defer_column,
                 );
                 slot += 1;
             }
@@ -425,11 +442,68 @@ fn init_joint_constraints_body(
                     m,
                     lu_pivots,
                     piv_offset,
+                    defer_column,
                 );
                 slot += 1;
             }
             curr_free_dof += 1;
         }
+    }
+}
+
+/// Parallel back-solve phase (pairs with `init_joint_constraints_body(.., defer_column=true)`).
+/// Each lane owns a disjoint set of constraint slots (`s = lane, lane+num_lanes,
+/// …`) and computes that slot's `M⁻¹·e_{dof_id}` column + `inv_lhs`. The slots
+/// are independent (disjoint columns, read-only shared `M`), so this needs no
+/// barriers. Mirrors the cooperative `gpu_mb_finalize_contact_constraints`.
+#[inline]
+fn compute_joint_columns_par(
+    multibody_info: &[MultibodyInfo],
+    joint_constraints: &mut [MultibodyJointConstraint],
+    joint_constraint_columns: &mut [f32],
+    mass_matrices: &[f32],
+    lu_pivots: &[u32],
+    batch_id: u32,
+    mb_idx: u32,
+    batch_ids: &BatchIndices,
+    lane: u32,
+    num_lanes: u32,
+) {
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
+    let ndofs = mb.ndofs;
+    if ndofs == 0 {
+        return;
+    }
+    let mb_mm_base = batch_ids.mm_start(batch_id) + mb.mass_matrix_offset as usize;
+    let piv_offset = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+    let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
+    let col_base = batch_ids.mb_joint_constraint_columns_start(batch_id)
+        + (mb.first_constraint as usize) * dofs_stride;
+    let m = MatSlice::dense(mb_mm_base, ndofs, ndofs);
+
+    let mut s = lane;
+    while s < mb.max_constraints {
+        let mut cons = joint_constraints.read(cons_base + s as usize);
+        if cons.kind != 0 {
+            let inv_lhs = compute_constraint_column(
+                joint_constraint_columns,
+                col_base,
+                s,
+                dofs_stride,
+                ndofs,
+                cons.dof_id,
+                mass_matrices,
+                m,
+                lu_pivots,
+                piv_offset,
+            );
+            cons.inv_lhs = inv_lhs;
+            joint_constraints.write(cons_base + s as usize, cons);
+        }
+        s += num_lanes;
     }
 }
 
@@ -486,6 +560,11 @@ fn emit_limit_constraint(
     m: MatSlice,
     lu_pivots: &[u32],
     piv_offset: usize,
+    // When true, skip the (expensive) LU back-solve here and leave `inv_lhs = 0`;
+    // a later parallel phase recomputes the column from `dof_id`. Used by the
+    // cooperative fused kernel so the back-solves don't run serially inside the
+    // single-threaded discovery walk.
+    defer_column: bool,
 ) {
     // Fixed regularization values matching rapier's defaults for joint softness:
     // erp_inv_dt = 1 / dt, cfm_coeff = 0 — full positional bias, no compliance.
@@ -499,18 +578,22 @@ fn emit_limit_constraint(
     let rhs_bias = (hi_excess - lo_excess) * erp_inv_dt;
     let rhs_wo_bias = 0.0f32;
 
-    let inv_lhs = compute_constraint_column(
-        joint_constraint_columns,
-        col_base,
-        slot,
-        dofs_stride,
-        ndofs,
-        dof_id,
-        mass_matrices,
-        m,
-        lu_pivots,
-        piv_offset,
-    );
+    let inv_lhs = if defer_column {
+        0.0
+    } else {
+        compute_constraint_column(
+            joint_constraint_columns,
+            col_base,
+            slot,
+            dofs_stride,
+            ndofs,
+            dof_id,
+            mass_matrices,
+            m,
+            lu_pivots,
+            piv_offset,
+        )
+    };
 
     let max_neg_impulse = if min_enabled { -1.0e30f32 } else { 0.0 };
     let max_pos_impulse = if max_enabled { 1.0e30f32 } else { 0.0 };
@@ -556,6 +639,8 @@ fn emit_motor_constraint(
     m: MatSlice,
     lu_pivots: &[u32],
     piv_offset: usize,
+    // See `emit_limit_constraint`: defer the LU back-solve to a parallel phase.
+    defer_column: bool,
 ) {
     let (erp_inv_dt, cfm_coeff, cfm_gain, _, max_impulse) = motor_params(motor, dt);
 
@@ -577,18 +662,22 @@ fn emit_motor_constraint(
     }
     rhs_wo_bias += -target_vel;
 
-    let inv_lhs = compute_constraint_column(
-        joint_constraint_columns,
-        col_base,
-        slot,
-        dofs_stride,
-        ndofs,
-        dof_id,
-        mass_matrices,
-        m,
-        lu_pivots,
-        piv_offset,
-    );
+    let inv_lhs = if defer_column {
+        0.0
+    } else {
+        compute_constraint_column(
+            joint_constraint_columns,
+            col_base,
+            slot,
+            dofs_stride,
+            ndofs,
+            dof_id,
+            mass_matrices,
+            m,
+            lu_pivots,
+            piv_offset,
+        )
+    };
 
     let cons = MultibodyJointConstraint {
         dof_id,
@@ -613,9 +702,10 @@ fn emit_motor_constraint(
 /// dispatches with one — at the cost of ~zero extra work, since both kernels
 /// already iterate the same per-multibody slot loop.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(32)))]
 pub fn gpu_mb_init_solve_joint_with_bias(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     links_static: &[MultibodyLinkStatic],
@@ -632,34 +722,68 @@ pub fn gpu_mb_init_solve_joint_with_bias(
     #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
+    let batch_id = wg_id.y;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
     let num_mb = num_multibodies.read(batch_id as usize);
+    // Uniform across the workgroup (all lanes share `mb_idx`), so every lane
+    // takes the same branch — no barrier-divergence hazard below.
     if mb_idx >= num_mb {
         return;
     }
-    init_joint_constraints_body(
+    // Phase 1 (lane 0): serial constraint-discovery walk, writing each slot's
+    // metadata but DEFERRING the expensive LU back-solve. (Gating the back-solve
+    // inside this serial walk wouldn't parallelize it — the walk runs in SIMT
+    // lockstep, so one active lane per slot = still serial. Hence the split.)
+    if lane == 0 {
+        init_joint_constraints_body(
+            multibody_info,
+            links_static,
+            links_workspace,
+            mass_matrices,
+            lu_pivots,
+            joint_constraints,
+            joint_constraint_columns,
+            batch_id,
+            mb_idx,
+            *dt_uniform,
+            batch_ids,
+            true,
+        );
+    }
+    // Make lane 0's constraint metadata visible to all lanes.
+    workgroup_memory_barrier_with_group_sync();
+    // Phase 2 (all lanes): the independent per-slot back-solves run in parallel,
+    // each lane owning a disjoint set of slots (this is the actual win — same
+    // structure as the cooperative finalize_contact kernel).
+    compute_joint_columns_par(
         multibody_info,
-        links_static,
-        links_workspace,
+        joint_constraints,
+        joint_constraint_columns,
         mass_matrices,
         lu_pivots,
-        joint_constraints,
-        joint_constraint_columns,
-        batch_id,
-        mb_idx,
-        *dt_uniform,
-        batch_ids,
-    );
-    solve_joint_constraints_body(
-        multibody_info,
-        joint_constraints,
-        joint_constraint_columns,
-        dof_state,
         batch_id,
         mb_idx,
         batch_ids,
+        lane,
+        MB_JOINT_INIT_LANES,
     );
+    // Make every lane's column/inv_lhs writes visible before the PGS sweep.
+    workgroup_memory_barrier_with_group_sync();
+    // Phase 3 (lane 0): the PGS solve is Gauss-Seidel (each constraint
+    // reads/writes shared `dof_state`), so it stays serial. No barriers inside
+    // `solve_joint_constraints_body`, so the divergent branch is safe.
+    if lane == 0 {
+        solve_joint_constraints_body(
+            multibody_info,
+            joint_constraints,
+            joint_constraint_columns,
+            dof_state,
+            batch_id,
+            mb_idx,
+            batch_ids,
+        );
+    }
 }
 
 /// Fused `remove_bias + solve_without_bias` for joint constraints — runs once

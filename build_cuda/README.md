@@ -21,6 +21,7 @@ nexus_rbd3d build.rs (CUDA_OXIDE_SHADERS_PTX).
 - build_nexus_cubin.sh         : same but llc+ptxas cubin path
 
 ## Status
-- Builds + runs on the 5090; steps 1-22 bit-exact vs WebGPU.
-- KNOWN REMAINING: step-23 crash in gpu_solver_init_constraints (contact path,
-  CUDA_ERROR_ILLEGAL_ADDRESS) once contacts form -- separate codegen bug.
+- Builds + runs on the 5090; bit-exact vs WebGPU.
+- FIXED (29fac1e): the step-23 ILLEGAL_ADDRESS in gpu_solver_init_constraints
+  (contact path) is resolved. The contact-heavy biped (zealot iter_e2e_bench)
+  now runs end-to-end on native CUDA, gather bit-exact (err 0.0).

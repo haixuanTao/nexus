@@ -20,6 +20,7 @@ use khal_std::{
 
 use crate::utils::{BatchIndices, Slice, SliceMut};
 use glamx::UVec2;
+use super::lbvh::DISPATCH_REDUCE_LANES;
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -45,27 +46,30 @@ pub fn gpu_reset_narrow_phase(
 }
 
 /// Initializes indirect dispatch arguments for constraint solver.
+///
+/// One workgroup of `DISPATCH_REDUCE_LANES` threads computing
+/// `max(contacts_len[..])` via a shared-memory tree reduction (see
+/// `super::lbvh::highest_len_over_batches`). Replaces the former `threads(1)`
+/// serial scan over all batches (~3.7 ms at N=8192).
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(256)))]
 pub fn gpu_narrow_phase_init_contacts_dispatch(
+    #[spirv(local_invocation_id)] lid: UVec3,
     // NOTE: the `contacts_len` is mutable here even though we don’t modify it. That’s
     //       because we access it with an atomic load otherwise it would occasionally read
     //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
     //       https://github.com/gfx-rs/wgpu/issues/9221
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
+    #[spirv(workgroup)] partial: &mut [u32; DISPATCH_REDUCE_LANES as usize],
 ) {
-    // For indirect dispatch, get the largest length along all batch dimensions.
     let num_batches = contacts_len.len();
-    let mut highest_contacts_len = 0;
-    for i in 0..num_batches {
-        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `contacts_len`).
-        highest_contacts_len = highest_contacts_len.max(atomic_load_u32(contacts_len.at_mut(i)));
+    let highest = super::lbvh::highest_len_over_batches(lid.x, num_batches, contacts_len, partial);
+    if lid.x == 0 {
+        *indirect_args.at_mut(0) = highest.div_ceil(WORKGROUP_SIZE);
+        *indirect_args.at_mut(1) = num_batches as u32;
+        *indirect_args.at_mut(2) = 1;
     }
-
-    *indirect_args.at_mut(0) = highest_contacts_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = num_batches as u32;
-    *indirect_args.at_mut(2) = 1;
 }
 
 const PREDICTION: f32 = 2.0e-3; // TODO: make the prediction configurable.
@@ -426,27 +430,31 @@ pub struct NarrowPhasePfmPair {
 }
 
 /// Initializes PFM-PFM dispatch arguments for constraint solver.
+///
+/// One workgroup of `DISPATCH_REDUCE_LANES` threads computing
+/// `max(pfm_pairs_len[..])` via a shared-memory tree reduction (see
+/// `super::lbvh::highest_len_over_batches`). Replaces the former `threads(1)`
+/// serial scan over all batches (~3.7 ms at N=8192).
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(256)))]
 pub fn gpu_init_pfm_pfm_dispatch(
+    #[spirv(local_invocation_id)] lid: UVec3,
     // NOTE: the `pfm_pairs_len` is mutable here even though we don’t modify it. That’s
     //       because we access it with an atomic load otherwise it would occasionally read
     //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
     //       https://github.com/gfx-rs/wgpu/issues/9221
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] pfm_pairs_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
+    #[spirv(workgroup)] partial: &mut [u32; DISPATCH_REDUCE_LANES as usize],
 ) {
     let num_batches = pfm_pairs_len.len();
-    let mut highest_pfm_pairs_len = 0;
-    for batch_id in 0..num_batches {
-        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `pfm_pairs_len`).
-        highest_pfm_pairs_len =
-            highest_pfm_pairs_len.max(atomic_load_u32(pfm_pairs_len.at_mut(batch_id)));
+    let highest = super::lbvh::highest_len_over_batches(lid.x, num_batches, pfm_pairs_len, partial);
+    if lid.x == 0 {
+        // TODO PERF: pfm_pfm is very divergent. Use a smaller workgroup size?
+        *indirect_args.at_mut(0) = highest.div_ceil(WORKGROUP_SIZE);
+        *indirect_args.at_mut(1) = num_batches as u32;
+        *indirect_args.at_mut(2) = 1;
     }
-    // TODO PERF: pfm_pfm is very divergent. Use a smaller workgroup size?
-    *indirect_args.at_mut(0) = highest_pfm_pairs_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = num_batches as u32;
-    *indirect_args.at_mut(2) = 1;
 }
 
 #[spirv_bindgen]
