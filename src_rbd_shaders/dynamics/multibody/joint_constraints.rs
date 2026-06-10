@@ -213,6 +213,85 @@ fn solve_joint_constraints_body(
     }
 }
 
+/// Cooperative (threads(N)) PGS sweep — bit-identical to
+/// `solve_joint_constraints_body` but the per-constraint `O(ndofs)` velocity
+/// update is split across the workgroup's lanes. The sweep is Gauss-Seidel
+/// (constraint `s+1` reads velocities written by `s`), so the constraint loop
+/// stays serial: lane 0 computes the scalar impulse `delta` + writes the
+/// constraint, broadcasts `delta` through `shared_delta`, then all lanes apply
+/// disjoint DOFs. A barrier each iteration keeps the update visible before the
+/// next constraint reads it. EVERY lane iterates EVERY constraint (no divergent
+/// `continue`) so the barriers stay workgroup-uniform — inactive slots just
+/// broadcast `delta = 0`.
+#[inline]
+fn solve_joint_constraints_par(
+    multibody_info: &[MultibodyInfo],
+    joint_constraints: &mut [MultibodyJointConstraint],
+    joint_constraint_columns: &[f32],
+    dof_state: &mut [f32],
+    batch_id: u32,
+    mb_idx: u32,
+    batch_ids: &BatchIndices,
+    lane: u32,
+    num_lanes: u32,
+    shared_delta: &mut impl MaybeIndexUnchecked<f32>,
+) {
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
+    let ndofs = mb.ndofs;
+    if ndofs == 0 || mb.max_constraints == 0 {
+        return;
+    }
+    let v_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+    let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
+    let col_base = batch_ids.mb_joint_constraint_columns_start(batch_id)
+        + (mb.first_constraint as usize) * dofs_stride;
+
+    for s in 0..mb.max_constraints {
+        if lane == 0 {
+            let mut cons = joint_constraints.read(cons_base + s as usize);
+            let delta = if cons.kind != 0 {
+                let v_d = dof_state.read(v_base + cons.dof_id as usize);
+                let rhs_total = v_d + cons.rhs;
+                let raw_imp =
+                    cons.impulse + cons.inv_lhs * (rhs_total - cons.cfm_gain * cons.impulse);
+                let mut new_imp = raw_imp;
+                if new_imp < cons.impulse_lo {
+                    new_imp = cons.impulse_lo;
+                }
+                if new_imp > cons.impulse_hi {
+                    new_imp = cons.impulse_hi;
+                }
+                let d = new_imp - cons.impulse;
+                cons.impulse = new_imp;
+                joint_constraints.write(cons_base + s as usize, cons);
+                d
+            } else {
+                0.0
+            };
+            shared_delta.write(0, delta);
+        }
+        workgroup_memory_barrier_with_group_sync();
+        let delta = shared_delta.read(0);
+        if delta != 0.0 {
+            let mut i = lane;
+            while i < ndofs {
+                let v_idx = v_base + i as usize;
+                let cur = dof_state.read(v_idx);
+                let col = joint_constraint_columns
+                    .read(col_base + (s as usize) * dofs_stride + i as usize);
+                dof_state.write(v_idx, cur - delta * col);
+                i += num_lanes;
+            }
+        }
+        // Update visible before the next constraint's lane-0 read; also guards
+        // `shared_delta` before lane 0 overwrites it next iteration.
+        workgroup_memory_barrier_with_group_sync();
+    }
+}
+
 /// One PGS sweep: iterates the multibody's active limit/motor constraints and
 /// updates `dof_velocities` in place. Mirrors rapier's `JointConstraint::solve_generic`
 /// for a 1-DOF jacobian.
@@ -721,6 +800,7 @@ pub fn gpu_mb_init_solve_joint_with_bias(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &mut [f32],
     #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
+    #[spirv(workgroup)] shared_delta: &mut [f32; 1],
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -770,29 +850,30 @@ pub fn gpu_mb_init_solve_joint_with_bias(
     );
     // Make every lane's column/inv_lhs writes visible before the PGS sweep.
     workgroup_memory_barrier_with_group_sync();
-    // Phase 3 (lane 0): the PGS solve is Gauss-Seidel (each constraint
-    // reads/writes shared `dof_state`), so it stays serial. No barriers inside
-    // `solve_joint_constraints_body`, so the divergent branch is safe.
-    if lane == 0 {
-        solve_joint_constraints_body(
-            multibody_info,
-            joint_constraints,
-            joint_constraint_columns,
-            dof_state,
-            batch_id,
-            mb_idx,
-            batch_ids,
-        );
-    }
+    // Phase 3: cooperative PGS solve — Gauss-Seidel across constraints (serial),
+    // but the per-constraint DOF-apply is split across lanes.
+    solve_joint_constraints_par(
+        multibody_info,
+        joint_constraints,
+        joint_constraint_columns,
+        dof_state,
+        batch_id,
+        mb_idx,
+        batch_ids,
+        lane,
+        MB_JOINT_INIT_LANES,
+        shared_delta,
+    );
 }
 
 /// Fused `remove_bias + solve_without_bias` for joint constraints — runs once
 /// per substep at the end of the substep, after position integration. Drops
 /// one threads(1) dispatch per substep.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(32)))]
 pub fn gpu_mb_remove_solve_joint_no_bias(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     joint_constraints: &mut [MultibodyJointConstraint],
@@ -800,9 +881,11 @@ pub fn gpu_mb_remove_solve_joint_no_bias(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(workgroup)] shared_delta: &mut [f32; 1],
 ) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
+    let batch_id = wg_id.y;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
     let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
@@ -814,16 +897,21 @@ pub fn gpu_mb_remove_solve_joint_no_bias(
     let cons_base = batch_ids.mb_joint_constraints_start(batch_id) + mb.first_constraint as usize;
 
     // Inlined `remove_bias`: replace `rhs` with `rhs_wo_bias` for active slots.
-    for s in 0..mb.max_constraints {
+    // Independent per slot → lane-split.
+    let mut s = lane;
+    while s < mb.max_constraints {
         let mut cons = joint_constraints.read(cons_base + s as usize);
-        if cons.kind == 0 {
-            continue;
+        if cons.kind != 0 {
+            cons.rhs = cons.rhs_wo_bias;
+            joint_constraints.write(cons_base + s as usize, cons);
         }
-        cons.rhs = cons.rhs_wo_bias;
-        joint_constraints.write(cons_base + s as usize, cons);
+        s += 32;
     }
+    // Make every lane's `rhs` write visible before the cooperative solve reads
+    // the constraints.
+    workgroup_memory_barrier_with_group_sync();
 
-    solve_joint_constraints_body(
+    solve_joint_constraints_par(
         multibody_info,
         joint_constraints,
         joint_constraint_columns,
@@ -831,5 +919,8 @@ pub fn gpu_mb_remove_solve_joint_no_bias(
         batch_id,
         mb_idx,
         batch_ids,
+        lane,
+        32,
+        shared_delta,
     );
 }
