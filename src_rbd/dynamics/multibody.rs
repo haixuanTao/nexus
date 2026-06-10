@@ -33,7 +33,7 @@ use crate::shaders::dynamics::{
     GpuMbTransposeGenForcesToPacked,
     GpuMbRemoveContactConstraintBias, GpuMbRemoveImpulseJointConstraintBias,
     GpuMbRemoveSolveJointNoBias, GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
-    GpuMbUpdateImpulseJointConstraints, LocalMassProperties, MAX_AXIS_CONSTRAINTS,
+    GpuMbUpdateImpulseJointConstraints, GpuScatterMotorTargets, LocalMassProperties, MAX_AXIS_CONSTRAINTS,
     MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder, MbImpulseJointConstraint,
     MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic,
     MultibodyLinkWorkspace, SIDE_KIND_BODY, SIDE_KIND_FIXED, SIDE_KIND_MB, Velocity,
@@ -304,6 +304,65 @@ impl GpuMultibodySet {
     /// dimforge/nexus-rustgpu#1; not part of the stable API.
     pub fn links_workspace(&self) -> &Tensor<MultibodyLinkWorkspace> {
         &self.links_workspace
+    }
+
+    /// Per-link static descriptors (mutable). Exposed so a GPU motor-scatter
+    /// kernel can write `motors[axis].target_pos` directly (the on-GPU analogue
+    /// of `stage_motor_position` + `flush_links_static`). Layout is flat
+    /// `[num_batches * links_per_batch]`, index = `batch * links_per_batch + link_id`.
+    pub fn links_static_mut(&mut self) -> &mut Tensor<MultibodyLinkStatic> {
+        &mut self.links_static
+    }
+
+    /// Per-batch link stride (rows of `links_static` per env).
+    pub fn links_per_batch(&self) -> u32 {
+        self.links_per_batch
+    }
+
+    /// Scatter per-(actuated-joint, env) motor target positions into
+    /// `links_static` on the GPU — the on-device equivalent of
+    /// `stage_motor_position` + `flush_links_static`. `targets` is row-major
+    /// `[num_actuated x num_batches]` (element `(j, env)` at `j*num_batches+env`);
+    /// `actuated_link_ids[j]` is the link index of actuated joint `j`. Writes
+    /// `motors[axis].target_pos` and sets the `motor_axes` bit, matching
+    /// `stage_motor_position`. Prerequisite for applying RL actions without a
+    /// host round-trip (CUDA-graph-capturable rollout).
+    pub fn scatter_motor_targets(
+        &mut self,
+        backend: &GpuBackend,
+        targets: &[f32],
+        actuated_link_ids: &[u32],
+        axis: u32,
+    ) -> Result<(), GpuBackendError> {
+        use khal::backend::Encoder;
+        use khal::shader::Shader;
+        let num_actuated = actuated_link_ids.len() as u32;
+        let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
+        let t_targets =
+            Tensor::vector(backend, targets, BufferUsages::STORAGE | BufferUsages::COPY_DST)?;
+        let t_links = Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?;
+        let u_na = Tensor::scalar(backend, num_actuated, uu)?;
+        let u_ne = Tensor::scalar(backend, self.num_batches, uu)?;
+        let u_lpb = Tensor::scalar(backend, self.links_per_batch, uu)?;
+        let u_ax = Tensor::scalar(backend, axis, uu)?;
+        let bundle = MotorScatterBundle::from_backend(backend)?;
+        let mut enc = backend.begin_encoding();
+        {
+            let mut pass = enc.begin_pass("scatter_motor_targets", None);
+            bundle.scatter.call(
+                &mut pass,
+                [num_actuated, self.num_batches, 1],
+                &t_targets,
+                &mut self.links_static,
+                &t_links,
+                &u_na,
+                &u_ne,
+                &u_lpb,
+                &u_ax,
+            )?;
+        }
+        backend.submit(enc)?;
+        Ok(())
     }
 
     /// Per-link local mass properties (inv_mass / inv_inertia / com /
@@ -1502,6 +1561,14 @@ fn make_workspace_init() -> MultibodyLinkWorkspace {
     w
 }
 
+/// Standalone shader bundle for the motor-target scatter (used outside the
+/// solver, e.g. to apply RL actions on-GPU). `#[derive(Shader)]` supplies
+/// `from_backend`, which loads the embedded `gpu_scatter_motor_targets` entry.
+#[derive(Shader)]
+struct MotorScatterBundle {
+    scatter: GpuScatterMotorTargets,
+}
+
 /// GPU shader bundle for multibody dynamics.
 #[derive(Shader)]
 pub struct GpuMultibodySolver {
@@ -1725,13 +1792,16 @@ impl GpuMultibodySolver {
         // 2+3. Build limit / motor constraints AND apply one PGS sweep WITH
         // bias.
         if mb.has_joint_constraints {
-            // TODO(PERF): consider splitting in two kernels so we can
-            //             have parallelism for the init part (one workgroup per joint)
-            //             even in we can’t have parallelism on the solve since they
-            //             necessarily all touch the same multibody?
+            // Cooperative (threads(32)): one workgroup per articulation. The
+            // independent per-constraint init back-solves split across
+            // `MB_LU_LANES` lanes (the cheap link walk runs redundantly); the
+            // Gauss-Seidel PGS solve then runs serially on lane 0. ThreadCount =
+            // multibodies_per_batch · lanes → multibodies_per_batch workgroups.
+            let init_solve_dispatch =
+                [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
             self.init_solve_joint_with_bias.call(
                 pass,
-                dispatch,
+                init_solve_dispatch,
                 &mb.multibody_info,
                 &mb.links_static,
                 &mb.links_workspace,
@@ -1766,9 +1836,15 @@ impl GpuMultibodySolver {
             args.contacts_len,
         )?;
 
+        // `finalize_contact_constraints` is cooperative (threads(32)): one
+        // workgroup per articulation, the independent per-constraint LU
+        // back-solves split across `MB_LU_LANES` lanes. ThreadCount =
+        // multibodies_per_batch · lanes → multibodies_per_batch workgroups.
+        let finalize_contact_dispatch =
+            [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
         self.finalize_contact_constraints.call(
             pass,
-            dispatch,
+            finalize_contact_dispatch,
             &mb.multibody_info,
             &mb.mass_matrices,
             &mb.lu_pivots,

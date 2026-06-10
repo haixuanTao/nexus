@@ -27,7 +27,7 @@ use crate::shaders::dynamics::{
 };
 use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
-use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
+use khal::backend::{DispatchGrid, GpuBackend, GpuBackendError, GpuPass};
 use vortx::tensor::Tensor;
 
 /// GPU shader bundle for the constraint solver.
@@ -138,6 +138,9 @@ pub struct SolverArgs<'a> {
     pub constraints_colors: &'a Tensor<u32>,
     /// Current color being processed.
     pub curr_color: &'a mut Tensor<u32>,
+    /// Constant per-color uniforms `[1,2,…]` — bound per sweep instead of
+    /// bumping `curr_color` via reset/inc kernels. Empty ⇒ use the old path.
+    pub color_uniforms: &'a [Tensor<u32>],
     /// Prefix sum shader for building constraint ranges.
     pub prefix_sum: &'a GpuPrefixSum,
     /// Number of solver iterations (max across all environments).
@@ -187,12 +190,21 @@ impl GpuSolver {
             args.batch_indices,
         )?;
 
+        // Fixed capacity-based grid (BIPED_FIXED_GRID) — these contact kernels
+        // grid-stride over the true count, so this avoids the per-dispatch GPU
+        // drain of indirect dispatch (which would drain the pending broad/narrow
+        // GPU work mid-step). See `crate::dispatch_grid`.
+        let contacts_grid = [
+            (args.contacts.len() as u32 / args.num_batches.max(1)).max(1).div_ceil(64),
+            args.num_batches,
+            1,
+        ];
         self.init_constraints.call(
-            pass, args.contacts_len_indirect, args.contacts, args.constraints, args.constraint_builders,
+            pass, crate::dispatch_grid(args.contacts_len_indirect, contacts_grid), args.contacts, args.constraints, args.constraint_builders,
             args.collider_world_poses, args.solver_body_poses, args.vels, args.mprops, args.sim_params, args.batch_indices,
         )?;
         self.count_body_constraints.call(
-            pass, args.contacts_len_indirect, args.contacts, args.body_constraint_counts,
+            pass, crate::dispatch_grid(args.contacts_len_indirect, contacts_grid), args.contacts, args.body_constraint_counts,
             args.body_group, args.mprops, args.batch_indices,
         )?;
 
@@ -206,7 +218,7 @@ impl GpuSolver {
 
         self.sort_constraints.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, contacts_grid),
             args.body_constraint_counts,
             args.mprops,
             args.contacts,
@@ -234,6 +246,35 @@ impl GpuSolver {
         #[cfg(feature = "dim3")] multibody: Option<(&GpuMultibodySolver, &mut GpuMultibodySet)>,
     ) -> Result<(), GpuBackendError> {
         let num_substeps = args.num_solver_iterations;
+        assert!(
+            args.color_uniforms.len() >= args.num_colors as usize,
+            "color_uniforms ({}) < num_colors ({}) — bump the pre-allocated count",
+            args.color_uniforms.len(),
+            args.num_colors
+        );
+
+        // EXPERIMENT (BIPED_FIXED_GRID=1): replace the per-contact-kernel INDIRECT
+        // dispatch with a fixed capacity-based grid. khal's CUDA indirect dispatch
+        // does `stream.synchronize()` + device→host count read PER dispatch (a full
+        // GPU drain); the solver issues ~3·colors·substeps of them, which dominates
+        // the step (measured ~94%). These kernels grid-stride over the real count
+        // read from `contacts_len` (stride = num_workgroups.x·WORKGROUP_SIZE), so
+        // ANY grid is correct — a fixed `[ceil(capacity/64), num_batches, 1]` (both
+        // host-known, no readback) removes the drain. `None` = exact prior behavior.
+        let fixed_grid: Option<[u32; 3]> = if crate::fixed_dispatch_grid_enabled() {
+            let cap = (args.contacts.len() as u32 / args.num_batches.max(1)).max(1);
+            Some([cap.div_ceil(64), args.num_batches, 1])
+        } else {
+            None
+        };
+        let idr = args.contacts_len_indirect;
+        let cgrid = || -> DispatchGrid<'a, GpuBackend> {
+            match fixed_grid {
+                Some(a) => DispatchGrid::Grid(a),
+                None => DispatchGrid::Indirect(idr.buffer()),
+            }
+        };
+
         #[cfg(feature = "dim3")]
         let (mb_solver, mut mb_state) = match multibody {
             Some((s, st)) => (Some(s), Some(st)),
@@ -298,7 +339,7 @@ impl GpuSolver {
              */
             self.update_constraints.call(
                 pass,
-                args.contacts_len_indirect,
+                cgrid(),
                 args.constraints,
                 args.constraint_builders,
                 args.contacts_len,
@@ -312,38 +353,34 @@ impl GpuSolver {
             /*
              * Warmstart.
              */
-            self.reset_color.call(pass, 1u32, args.curr_color)?;
-            for _ in 0..args.num_colors {
+            for c in 0..args.num_colors as usize {
                 self.warmstart.call(
                     pass,
-                    args.contacts_len_indirect,
+                    cgrid(),
                     args.constraints,
                     args.solver_vels,
                     args.constraints_colors,
                     args.contacts_len,
-                    args.curr_color,
+                    &args.color_uniforms[c],
                     args.batch_indices,
                 )?;
-                self.inc_color.call(pass, 1u32, args.curr_color)?
             }
 
             /*
              * Solve with bias.
              */
             joint_solver.solve(pass, &mut joint_args, args.solver_vels, true)?;
-            self.reset_color.call(pass, 1u32, args.curr_color)?;
-            for _ in 0..args.num_colors {
+            for c in 0..args.num_colors as usize {
                 self.step_gauss_seidel.call(
                     pass,
-                    args.contacts_len_indirect,
+                    cgrid(),
                     args.constraints,
                     args.solver_vels,
                     args.constraints_colors,
                     args.contacts_len,
-                    args.curr_color,
+                    &args.color_uniforms[c],
                     args.batch_indices,
                 )?;
-                self.inc_color.call(pass, 1u32, args.curr_color)?
             }
 
             /*
@@ -366,25 +403,23 @@ impl GpuSolver {
 
             self.remove_cfm_and_bias_kernel.call(
                 pass,
-                args.contacts_len_indirect,
+                cgrid(),
                 args.constraints,
                 args.contacts_len,
                 args.batch_indices,
             )?;
 
-            self.reset_color.call(pass, 1u32, args.curr_color)?;
-            for _ in 0..args.num_colors {
+            for c in 0..args.num_colors as usize {
                 self.step_gauss_seidel.call(
                     pass,
-                    args.contacts_len_indirect,
+                    cgrid(),
                     args.constraints,
                     args.solver_vels,
                     args.constraints_colors,
                     args.contacts_len,
-                    args.curr_color,
+                    &args.color_uniforms[c],
                     args.batch_indices,
                 )?;
-                self.inc_color.call(pass, 1u32, args.curr_color)?
             }
         }
 

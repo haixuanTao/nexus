@@ -95,30 +95,81 @@ pub fn gpu_lbvh_reset_collision_pairs(
     }
 }
 
+/// Number of lanes in the single-workgroup `max`-over-batches reductions used
+/// by the `*_init_dispatch` kernels. 256 == WebGPU's default per-workgroup
+/// invocation cap, so this is the widest portable workgroup.
+pub const DISPATCH_REDUCE_LANES: u32 = 256;
+
 /// Initializes indirect dispatch arguments for narrow phase.
+///
+/// Computes `max(collision_pairs_len[..])` across all `num_batches` batches.
+/// Launched as ONE workgroup of `DISPATCH_REDUCE_LANES` threads (host passes
+/// grid `1`): each lane grid-strides over the batch array, then a shared-memory
+/// tree reduction collapses the per-lane maxima. Replaces the former
+/// `threads(1)` serial scan, which cost ~3.7 ms at N=8192 (one thread looping
+/// over 8192 batches) — ~17% of total GPU time.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(256)))]
 pub fn gpu_lbvh_init_dispatch(
-    // TODO: take the batch dimension as argument (instead of relying on the len of `collision_pairs_len`)?
+    #[spirv(local_invocation_id)] lid: UVec3,
     // NOTE: the `collision_pairs_len` is mutable here even though we don’t modify it. That’s
     //       because we access it with an atomic load otherwise it would occasionally read
     //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
     //       https://github.com/gfx-rs/wgpu/issues/9221
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] collision_pairs_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
+    #[spirv(workgroup)] partial: &mut [u32; DISPATCH_REDUCE_LANES as usize],
 ) {
-    // For indirect dispatch, get the largest length along all batch dimensions.
     let num_batches = collision_pairs_len.len();
-    let mut highest_pairs_len = 0;
-    for batch_id in 0..num_batches {
-        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `collision_pairs_len`).
-        highest_pairs_len =
-            highest_pairs_len.max(atomic_load_u32(collision_pairs_len.at_mut(batch_id)));
+    let highest = highest_len_over_batches(lid.x, num_batches, collision_pairs_len, partial);
+    if lid.x == 0 {
+        *indirect_args.at_mut(0) = highest.div_ceil(WORKGROUP_SIZE);
+        *indirect_args.at_mut(1) = num_batches as u32;
+        *indirect_args.at_mut(2) = 1;
     }
+}
 
-    *indirect_args.at_mut(0) = highest_pairs_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = num_batches as u32;
-    *indirect_args.at_mut(2) = 1;
+/// Single-workgroup parallel `max` over a per-batch length array. Lane `lane`
+/// (0..`DISPATCH_REDUCE_LANES`) grid-strides over `lens[..num_batches]`, then
+/// the partial maxima are tree-reduced through `partial`; the result is
+/// broadcast (every lane returns the same value).
+///
+/// The barrier sequence is workgroup-uniform (the `if lane < stride` guards are
+/// inside loop bodies whose barriers every lane reaches), matching the reduction
+/// idiom in `impulse_joint_constraints::side_dot_vel_par`.
+#[inline]
+pub fn highest_len_over_batches(
+    lane: u32,
+    num_batches: usize,
+    lens: &mut [u32],
+    partial: &mut impl MaybeIndexUnchecked<u32>,
+) -> u32 {
+    let mut m = 0u32;
+    let mut i = lane as usize;
+    while i < num_batches {
+        // NOTE: atomic_load is needed for correctness on some platforms (see
+        // the wgpu#9221 note at the call sites).
+        m = m.max(atomic_load_u32(lens.at_mut(i)));
+        i += DISPATCH_REDUCE_LANES as usize;
+    }
+    partial.write(lane as usize, m);
+    workgroup_memory_barrier_with_group_sync();
+    // Tree reduction over 256 lanes (2^8). Fixed trip count keeps control flow
+    // workgroup-uniform (rust-gpu/naga requirement).
+    for step in 0..8u32 {
+        let stride = 1u32 << (7 - step);
+        if lane < stride {
+            let a = partial.read(lane as usize);
+            let b = partial.read((lane + stride) as usize);
+            partial.write(lane as usize, a.max(b));
+        }
+        workgroup_memory_barrier_with_group_sync();
+    }
+    let result = partial.read(0);
+    // Trailing barrier: every lane has read `partial[0]` before any caller
+    // reuses the scratch.
+    workgroup_memory_barrier_with_group_sync();
+    result
 }
 
 /// Runs a reduction to compute the AABB of the collider positions.

@@ -366,6 +366,9 @@ pub struct JointSolverArgs<'a> {
     pub local_mprops: &'a Tensor<LocalMassProperties>,
     /// Shared per-batch capacity / section-offset uniform.
     pub batch_indices: &'a Tensor<crate::shaders::utils::BatchIndices>,
+    /// Constant per-color uniforms `[1,2,…]` — bound per joint-color sweep
+    /// instead of bumping `joints.curr_color` via reset/inc kernels.
+    pub color_uniforms: &'a [Tensor<u32>],
 }
 
 impl GpuJointSolver {
@@ -439,10 +442,7 @@ impl GpuJointSolver {
             )?;
         }
 
-        self.reset_joint_color
-            .call(pass, 1u32, &mut args.joints.curr_color)?;
-
-        for _ in 0..args.joints.num_colors {
+        for c in 0..args.joints.num_colors as usize {
             // TODO PERF: figure out a way to dispatch a number of threads that fits
             //            more tightly the size of the current color.
             self.solve_joint_constraints.call(
@@ -451,11 +451,9 @@ impl GpuJointSolver {
                 &mut args.joints.constraints,
                 solver_vels,
                 &args.joints.color_groups,
-                &args.joints.curr_color,
+                &args.color_uniforms[c],
                 args.batch_indices,
             )?;
-            self.inc_joint_color
-                .call(pass, 1u32, &mut args.joints.curr_color)?;
         }
 
         Ok(())

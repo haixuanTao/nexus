@@ -534,10 +534,17 @@ pub fn gpu_mb_init_contact_constraints(
 /// Pass 2: for each emitted constraint, LU back-solve `M · column = Jᵀ`
 /// (the row produced by the init kernel) and set `inv_lhs = 1 / (Jᵀ ·
 /// column + free_body_inv_r)`.
+/// Lanes per workgroup for the cooperative `*_finalize_contact_constraints` /
+/// per-constraint kernels: one workgroup per articulation, the `count`
+/// independent constraint back-solves are split across these lanes (grid-stride,
+/// no barriers — each constraint writes its own disjoint column + slot).
+pub const MB_CONTACT_FINALIZE_LANES: u32 = 32;
+
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(32)))]
 pub fn gpu_mb_finalize_contact_constraints(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] mass_matrices: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] lu_pivots: &[u32],
@@ -550,8 +557,9 @@ pub fn gpu_mb_finalize_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
+    let batch_id = wg_id.y;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
     let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
@@ -576,7 +584,12 @@ pub fn gpu_mb_finalize_contact_constraints(
     let m = MatSlice::dense(mb_mm_base, ndofs, ndofs);
     let count = contact_constraint_count.read(mb_start + mb_idx as usize);
 
-    for s in 0..count {
+    // Each constraint's back-solve is independent (disjoint column + slot, only
+    // read-only shared M/jacs), so split the slot loop across the workgroup's
+    // lanes with NO barriers — lane `lane` owns constraints
+    // `lane, lane+LANES, …`.
+    let mut s = lane;
+    while s < count {
         let col_offset = col_base + (s as usize) * dofs_stride;
         // 1) Copy J^T row into the column buffer (it'll be overwritten by the
         //    LU solve with the M⁻¹·Jᵀ result).
@@ -613,6 +626,7 @@ pub fn gpu_mb_finalize_contact_constraints(
         let total = inv_r_mb + inv_r_free;
         cons.inv_lhs = if total > 0.0 { 1.0 / total } else { 0.0 };
         contact_constraints.write(cons_base + s as usize, cons);
+        s += MB_CONTACT_FINALIZE_LANES;
     }
 }
 
