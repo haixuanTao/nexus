@@ -1856,9 +1856,11 @@ impl GpuMultibodySolver {
             args.batch_indices,
         )?;
 
+        // Cooperative threads(32): one workgroup per articulation.
+        let contact_solve_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
         self.solve_contact_constraints.call(
             pass,
-            dispatch,
+            contact_solve_dispatch,
             &mb.multibody_info,
             &mut mb.contact_constraints,
             &mb.contact_constraint_jacs,
@@ -1921,10 +1923,12 @@ impl GpuMultibodySolver {
             }
         }
 
-        // 4. Integrate positions with the corrected `v`.
+        // 4. Integrate positions with the corrected `v`. Cooperative
+        // threads(32): one workgroup per articulation, links split across lanes.
+        let integrate_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
         self.integrate.call(
             pass,
-            dispatch,
+            integrate_dispatch,
             &mb.multibody_info,
             &mb.links_static,
             &mut mb.links_workspace,
@@ -1950,9 +1954,13 @@ impl GpuMultibodySolver {
         // bias for joint limits/motors. Settles velocity along constrained
         // DOFs to zero (no rebound from the positional bias).
         if mb.has_joint_constraints {
+            // Cooperative threads(32): one workgroup per articulation, the
+            // per-constraint DOF-apply split across MB_LU_LANES lanes.
+            let remove_solve_joint_dispatch =
+                [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
             self.remove_solve_joint_no_bias.call(
                 pass,
-                dispatch,
+                remove_solve_joint_dispatch,
                 &mb.multibody_info,
                 &mut mb.joint_constraints,
                 &mb.joint_constraint_columns,
@@ -1980,9 +1988,11 @@ impl GpuMultibodySolver {
         // substeps per ctrl step. The previous two-kernel form is left in
         // the shader source for compatibility but no longer wired into the
         // hot path.
+        let remove_solve_contact_dispatch =
+            [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
         self.remove_solve_contact_no_bias.call(
             pass,
-            dispatch,
+            remove_solve_contact_dispatch,
             &mb.multibody_info,
             &mut mb.contact_constraints,
             &mb.contact_constraint_jacs,

@@ -131,9 +131,10 @@ pub fn gpu_mb_integrate_velocities_packed(
 }
 
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(32)))]
 pub fn gpu_mb_integrate(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     links_static: &[MultibodyLinkStatic],
@@ -145,8 +146,9 @@ pub fn gpu_mb_integrate(
     #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
+    let batch_id = wg_id.y;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
     let num_mb = num_multibodies.read(batch_id as usize);
     if mb_idx >= num_mb {
         return;
@@ -168,12 +170,16 @@ pub fn gpu_mb_integrate(
     let dof_val = SliceMut(dof_values, gen_base);
     let dof_vel = Slice(dof_state, gen_base);
 
-    // Per-link coord / joint_rot update (uses the already-corrected `dof_velocities`).
+    // Per-link coord / joint_rot update (uses the already-corrected
+    // `dof_velocities`). Each link's workspace is disjoint, and `curr_free` is
+    // recomputed per link from `assembly_id`, so links are independent → split
+    // them across the workgroup's lanes (no barriers).
     //
     // Only `coords` (≤ 24 B) and `joint_rot` (16 B) are modified. We mutate them
     // in place through `&mut ws_slice[k]` so SPIR-V emits field-targeted stores
     // instead of a whole `MultibodyLinkWorkspace` round-trip (~240 B in 3D).
-    for k in 0..num_links {
+    let mut k = lane;
+    while k < num_links {
         let k_usize = k as usize;
         let stat = stat_slice[k_usize];
         let locked = stat.data.locked_axes;
@@ -225,6 +231,7 @@ pub fn gpu_mb_integrate(
             }
         }
         // num_ang == 0: no-op.
+        k += 32;
     }
 
     // Silence dof_val unused warning — it will be used once we also support
