@@ -164,14 +164,41 @@ pub fn gpu_update_block_particle_count(
     if id < *particles_len {
         let cell_width = grid.cell_width;
         let particle = particles_pos.read(id as usize);
-        let block_vid = BlockVirtualId::block_associated_to_point(cell_width, particle.pt);
-        let active_block_id = grid.find_block_header_id(hmap_entries, &block_vid);
+        let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
+
+        // The particle's primary (base) block gets it as a regular particle and as an "extra".
+        let block0 = grid.find_block_header_id(hmap_entries, &blocks[0]);
+        atomic_add_u32(&mut active_blocks.at_mut(block0.id as usize).num_particles, 1);
         atomic_add_u32(
             &mut active_blocks
-                .at_mut(active_block_id.id as usize)
-                .num_particles,
+                .at_mut(block0.id as usize)
+                .num_particles_with_extras,
             1,
         );
+
+        // Each +1 neighbour block also receives the particle as an "extra" if the
+        // quadratic stencil actually spills into it, i.e. the local base-cell index is
+        // >= 2 along every axis where that block is the +1 neighbour.
+        let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
+        let id0 = blocks[0].id;
+        for i in 1..NUM_ASSOC_BLOCKS {
+            let bshift = blocks[i].id - id0;
+            #[cfg(feature = "dim2")]
+            let spills = (bshift.x == 0 || assoc.x >= 2) && (bshift.y == 0 || assoc.y >= 2);
+            #[cfg(feature = "dim3")]
+            let spills = (bshift.x == 0 || assoc.x >= 2)
+                && (bshift.y == 0 || assoc.y >= 2)
+                && (bshift.z == 0 || assoc.z >= 2);
+            if spills {
+                let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
+                atomic_add_u32(
+                    &mut active_blocks
+                        .at_mut(block_i.id as usize)
+                        .num_particles_with_extras,
+                    1,
+                );
+            }
+        }
     }
 }
 
@@ -189,7 +216,11 @@ pub fn gpu_copy_particles_len_to_scan_value(
 ) {
     let id = invocation_id.x;
     if id < grid.num_active_blocks {
-        scan_values.write(id as usize, active_blocks.at(id as usize).num_particles);
+        // The sorted array reserves room for every particle a block touches, extras included.
+        scan_values.write(
+            id as usize,
+            active_blocks.at(id as usize).num_particles_with_extras,
+        );
     }
 }
 
@@ -210,6 +241,13 @@ pub fn gpu_copy_scan_values_to_first_particles(
     if id < grid.num_active_blocks {
         let idx = id as usize;
         active_blocks.at_mut(idx).first_particle = scan_values.read(idx);
+        // Re-purpose the two counters for the finalize pass: `num_particles` becomes the
+        // running insertion cursor for primary particles (starting at 0), and
+        // `num_particles_with_extras` becomes the cursor for extras, starting right after
+        // the primaries within the block's range.
+        let num_particles = active_blocks.at(idx).num_particles;
+        active_blocks.at_mut(idx).num_particles_with_extras = num_particles;
+        active_blocks.at_mut(idx).num_particles = 0;
     }
 }
 
@@ -228,7 +266,8 @@ pub fn gpu_finalize_particles_sort(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] particles_pos: &[Position],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] particles_len: &u32,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] scan_values: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
+    active_blocks: &mut [ActiveBlockHeader],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     nodes_linked_lists: &mut [NodeLinkedList],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
@@ -239,16 +278,49 @@ pub fn gpu_finalize_particles_sort(
     if id < *particles_len {
         let cell_width = grid.cell_width;
         let particle = particles_pos.read(id as usize);
-        let block_vid = BlockVirtualId::block_associated_to_point(cell_width, particle.pt);
+        let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
 
-        // Place the particle at its sorted position.
-        let active_block_id = grid.find_block_header_id(hmap_entries, &block_vid);
-        let target_index = atomic_add_u32(&mut scan_values.at_mut(active_block_id.id as usize), 1);
-        sorted_particle_ids.write(target_index as usize, id);
+        // Place the particle in its primary block's range, using `num_particles` as the
+        // running cursor (it was reset to 0 in the prepare pass; the range starts at
+        // `first_particle`).
+        let block0 = grid.find_block_header_id(hmap_entries, &blocks[0]);
+        let first0 = active_blocks.at(block0.id as usize).first_particle;
+        let slot0 = atomic_add_u32(
+            &mut active_blocks.at_mut(block0.id as usize).num_particles,
+            1,
+        );
+        sorted_particle_ids.write((first0 + slot0) as usize, id);
 
-        // Build per-node particle linked list.
+        // Place the particle as an "extra" into each +1 neighbour block whose stencil it
+        // spills into, using `num_particles_with_extras` as the cursor (reset to the
+        // primary count in the prepare pass, so extras land after the primaries).
+        let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
+        let id0 = blocks[0].id;
+        for i in 1..NUM_ASSOC_BLOCKS {
+            let bshift = blocks[i].id - id0;
+            #[cfg(feature = "dim2")]
+            let spills = (bshift.x == 0 || assoc.x >= 2) && (bshift.y == 0 || assoc.y >= 2);
+            #[cfg(feature = "dim3")]
+            let spills = (bshift.x == 0 || assoc.x >= 2)
+                && (bshift.y == 0 || assoc.y >= 2)
+                && (bshift.z == 0 || assoc.z >= 2);
+            if spills {
+                let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
+                let first_i = active_blocks.at(block_i.id as usize).first_particle;
+                let slot_i = atomic_add_u32(
+                    &mut active_blocks
+                        .at_mut(block_i.id as usize)
+                        .num_particles_with_extras,
+                    1,
+                );
+                sorted_particle_ids.write((first_i + slot_i) as usize, id);
+            }
+        }
+
+        // Build per-node particle linked list for the primary block (used by other
+        // passes that still gather via linked lists, e.g. CDF).
         let node_local_id = associated_cell_index_in_block_off_by_one(&particle, cell_width);
-        let node_global_id = active_block_id.physical_id().node_id(node_local_id);
+        let node_global_id = block0.physical_id().node_id(node_local_id);
         let prev_head = khal_std::sync::atomic_exchange_u32(
             &mut nodes_linked_lists.at_mut(node_global_id.id as usize).head,
             id,

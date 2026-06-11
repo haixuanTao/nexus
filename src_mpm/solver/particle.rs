@@ -6,7 +6,7 @@ use crate::solver::particle_model::GpuParticleModelData;
 use khal::BufferUsages;
 use khal::backend::{Backend, GpuBackend, GpuBackendError};
 use nexus_rbd::dynamics::GpuBodySet;
-use nexus_rbd::math::{Matrix, Vector};
+use nexus_rbd::math::{Matrix, Vector, DIM};
 use std::ops::RangeBounds;
 use vortx::tensor::Tensor;
 
@@ -367,7 +367,7 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             def_grad: Tensor::vector(backend, &data.def_grad, resizeable)?,
             properties: Tensor::vector(backend, &data.properties, resizeable)?,
             models: Tensor::vector(backend, &data.models, resizeable)?,
-            sorted_ids: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
+            sorted_ids: Tensor::vector_uninit(backend, particles.len() as u32 * 2_u32.pow(DIM as u32), resizeable)?,
             node_linked_lists: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
         })
     }

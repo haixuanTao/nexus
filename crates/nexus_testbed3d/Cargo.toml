@@ -32,5 +32,5 @@ khal = { workspace = true }
 vortx = { workspace = true }
 rapier3d = "0.33"
 bytemuck = { version = "1", features = ["derive"] }
-kiss3d = { version = "0.43", features = ["egui"] }
+kiss3d = { version = "0.44", features = ["egui"] }
 web-time = "1"

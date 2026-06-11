@@ -153,7 +153,7 @@ impl WgGrid {
             &grid.hmap_entries,
             &particles.positions,
             &particles.gpu_len,
-            &mut grid.scan_values,
+            &mut grid.active_blocks,
             &mut grid.nodes_linked_lists,
             &mut particles.node_linked_lists,
             &mut particles.sorted_ids,

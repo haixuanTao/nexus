@@ -19,7 +19,7 @@ rapier3d = "0.33"
 rapier3d-urdf = { version = "0.33", features = ["stl"] }
 khal = { workspace = true }
 Inflector = "0.11"
-kiss3d = "0.43"
+kiss3d = "0.44"
 oorandom = "11"
 rand = "0.10"
 pollster = "0.4"

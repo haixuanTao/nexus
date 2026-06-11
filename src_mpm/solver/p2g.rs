@@ -35,15 +35,15 @@ impl WgP2G {
         bodies: &GpuBodySet,
         body_materials: &GpuMaterials,
     ) -> Result<(), GpuBackendError> {
+        // Scatter-style P2G: one workgroup per active block, one thread per grid node,
+        // streaming the block's particles (primaries + extras) from `sorted_particle_ids`.
         if use_cpic {
             self.p2g_cpic.call(
                 pass,
                 indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
                 &grid.meta,
-                &grid.hmap_entries,
                 &grid.active_blocks,
-                &grid.nodes_linked_lists,
-                particles.node_linked_lists(),
+                &particles.sorted_ids,
                 particles.positions(),
                 particles.kinematics(),
                 &mut grid.nodes,
@@ -56,10 +56,8 @@ impl WgP2G {
                 pass,
                 indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
                 &grid.meta,
-                &grid.hmap_entries,
                 &grid.active_blocks,
-                &grid.nodes_linked_lists,
-                particles.node_linked_lists(),
+                &particles.sorted_ids,
                 particles.positions(),
                 particles.kinematics(),
                 &mut grid.nodes,

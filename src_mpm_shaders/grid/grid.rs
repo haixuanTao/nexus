@@ -324,10 +324,16 @@ pub struct ActiveBlockHeader {
     pub virtual_id: BlockVirtualId,
     /// Index of the first particle belonging to this block in the sorted array.
     pub first_particle: u32,
-    /// Number of particles belonging to this block.
+    /// Number of particles whose primary (base) block is this block.
     pub num_particles: u32,
-    #[cfg(feature = "dim3")]
-    pub padding: [u32; 2],
+    /// Total number of particles contributing to this block, including those whose
+    /// quadratic stencil only spills in from a neighbouring block ("extras"). Used by
+    /// the scatter-style P2G, which processes one grid node per thread and therefore
+    /// needs every particle that can reach any node of the block.
+    pub num_particles_with_extras: u32,
+    /// Padding to keep the struct size a multiple of its alignment (32 bytes in 3D,
+    /// 24 bytes in 2D).
+    pub padding: u32,
 }
 
 /// Top-level grid metadata.
@@ -558,6 +564,9 @@ impl Grid {
                 .at_mut(block_header_id as usize)
                 .first_particle = 0;
             active_blocks.at_mut(block_header_id as usize).num_particles = 0;
+            active_blocks
+                .at_mut(block_header_id as usize)
+                .num_particles_with_extras = 0;
             hmap_entries.at_mut(slot as usize).value = BlockHeaderId {
                 id: block_header_id,
             };

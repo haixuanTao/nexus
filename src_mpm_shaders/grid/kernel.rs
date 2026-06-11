@@ -136,28 +136,29 @@ impl QuadraticKernel {
     /// piecewise-quadratic function based on distance from center.
     #[inline]
     pub fn eval(x: f32) -> f32 {
+        // Branchless: rust-gpu lowers `if/else if/else` to real branches, which are
+        // expensive in the per-particle inner loop of the transfer kernels. Computing both
+        // pieces and masking compiles to selects/arithmetic instead (matching what the
+        // slang version produces).
         let x_abs = abs(x);
-        if x_abs < 0.5 {
-            0.75 - x_abs * x_abs
-        } else if x_abs < 1.5 {
-            0.5 * (1.5 - x_abs) * (1.5 - x_abs)
-        } else {
-            0.0
-        }
+        let part1 = 0.75 - x_abs * x_abs;
+        let part2 = 0.5 * (1.5 - x_abs) * (1.5 - x_abs);
+        let lt05 = (x_abs < 0.5) as u32 as f32;
+        let lt15 = (x_abs < 1.5) as u32 as f32;
+        lt05 * part1 + (1.0 - lt05) * lt15 * part2
     }
 
     /// Evaluates the derivative of a single quadratic B-spline basis function at position `x`.
     #[inline]
     pub fn eval_derivative(x: f32) -> f32 {
+        // Branchless, see `eval`.
         let x_abs = abs(x);
-        let sign = if x >= 0.0 { 1.0 } else { -1.0 };
-        if x_abs < 0.5 {
-            -2.0 * sign * x_abs
-        } else if x_abs < 1.5 {
-            -sign * (1.5 - x_abs)
-        } else {
-            0.0
-        }
+        let sign = (x >= 0.0) as u32 as f32 * 2.0 - 1.0;
+        let part1 = -2.0 * sign * x_abs;
+        let part2 = -sign * (1.5 - x_abs);
+        let lt05 = (x_abs < 0.5) as u32 as f32;
+        let lt15 = (x_abs < 1.5) as u32 as f32;
+        lt05 * part1 + (1.0 - lt05) * lt15 * part2
     }
 
     /// Precomputes all kernel weights for a particle at position `ref_pos` relative
