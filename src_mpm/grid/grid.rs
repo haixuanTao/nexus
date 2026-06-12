@@ -1,9 +1,7 @@
 //! Grid data structures and GPU kernels for sparse grid management.
 
 use crate::grid::sort::WgSort;
-use crate::mpm_shaders::grid::grid::{
-    ActiveBlockHeader, Grid, GridHashMapEntry, Node, NodeLinkedList,
-};
+use crate::mpm_shaders::grid::grid::{ActiveBlockHeader, Grid, GridHashMapEntry, Node};
 use crate::solver::{GpuParticleModelData, GpuParticles, GpuRigidParticles};
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
@@ -135,15 +133,11 @@ impl WgGrid {
             &mut grid.active_blocks,
         )?;
 
-        // Reset here so the linked list heads get reset before `finalize_particles_sort` which
-        // also setups the per-node linked list.
         self.reset.call(
             pass,
             indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
             &grid.meta,
             &mut grid.nodes,
-            &mut grid.nodes_linked_lists,
-            &mut grid.rigid_nodes_linked_lists,
         )?;
 
         sort_module.finalize_particles_sort.call(
@@ -154,8 +148,6 @@ impl WgGrid {
             &particles.positions,
             &particles.gpu_len,
             &mut grid.active_blocks,
-            &mut grid.nodes_linked_lists,
-            &mut particles.node_linked_lists,
             &mut particles.sorted_ids,
         )?;
 
@@ -194,10 +186,6 @@ pub struct GpuGrid {
     pub active_blocks: Tensor<ActiveBlockHeader>,
     /// Workspace for prefix sum operations.
     pub scan_values: Tensor<u32>,
-    /// Per-node linked lists for MPM particles.
-    pub nodes_linked_lists: Tensor<NodeLinkedList>,
-    /// Per-node linked lists for rigid body particles.
-    pub rigid_nodes_linked_lists: Tensor<NodeLinkedList>,
     /// Indirect dispatch arguments for block-parallel kernels.
     ///
     /// Stored as `Tensor<u32>` with 3 elements so it can be written by
@@ -268,10 +256,6 @@ impl GpuGrid {
         let hmap_entries = Tensor::vector(backend, &default_entries, BufferUsages::STORAGE)?;
         let nodes =
             Tensor::vector_uninit(backend, capacity * NODES_PER_BLOCK, BufferUsages::STORAGE)?;
-        let nodes_linked_lists =
-            Tensor::vector_uninit(backend, capacity * NODES_PER_BLOCK, BufferUsages::STORAGE)?;
-        let rigid_nodes_linked_lists =
-            Tensor::vector_uninit(backend, capacity * NODES_PER_BLOCK, BufferUsages::STORAGE)?;
         let active_blocks = Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
         let scan_values = Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
         let indirect_n_blocks_groups =
@@ -294,8 +278,6 @@ impl GpuGrid {
             scan_values,
             indirect_n_blocks_groups,
             indirect_n_g2p_p2g_groups,
-            nodes_linked_lists,
-            rigid_nodes_linked_lists,
             debug,
         })
     }

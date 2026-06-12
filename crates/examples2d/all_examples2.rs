@@ -24,6 +24,7 @@ struct CliOptions {
     example: Option<String>,
     list: bool,
     cpu: bool,
+    metal: bool,
     run: bool,
 }
 
@@ -33,6 +34,7 @@ fn parse_command_line() -> CliOptions {
         example: None,
         list: false,
         cpu: false,
+        metal: false,
         run: false,
     };
 
@@ -41,6 +43,7 @@ fn parse_command_line() -> CliOptions {
             "--example" => opts.example = args.next(),
             "--list" => opts.list = true,
             "--cpu" => opts.cpu = true,
+            "--metal" => opts.metal = true,
             "--run" => opts.run = true,
             _ => {}
         }
@@ -107,6 +110,10 @@ pub async fn main() {
     let mut testbed = Testbed::from_builders(builders);
     if opts.cpu {
         testbed = testbed.with_cpu();
+    }
+    #[cfg(feature = "metal")]
+    if opts.metal {
+        testbed = testbed.with_backend(nexus_testbed2d::BackendType::Metal);
     }
     if opts.run {
         testbed = testbed.with_running();

@@ -273,19 +273,6 @@ pub struct NodePhysicalId {
  * Data structures.
  */
 
-/// Per-node linked list head for particle sorting.
-///
-/// Each grid node maintains a linked list of particles that map to it.
-/// The `head` field points to the first particle, and the `len` field
-/// counts the number of particles in the list.
-#[derive(Clone, Copy, Default)]
-#[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
-#[repr(C)]
-pub struct NodeLinkedList {
-    pub head: u32,
-    pub len: u32,
-}
-
 /// An entry in the GPU hashmap that maps block virtual IDs to header IDs.
 ///
 /// The hashmap uses open addressing with linear probing. The `state` field
@@ -331,9 +318,18 @@ pub struct ActiveBlockHeader {
     /// the scatter-style P2G, which processes one grid node per thread and therefore
     /// needs every particle that can reach any node of the block.
     pub num_particles_with_extras: u32,
-    /// Padding to keep the struct size a multiple of its alignment (32 bytes in 3D,
-    /// 24 bytes in 2D).
+    /// Index of the first rigid particle belonging to this block in the sorted rigid
+    /// particle array.
+    pub first_rigid_particle: u32,
+    /// Total number of rigid particles contributing to this block, extras included.
+    /// Used by the scatter-style P2G-CDF.
+    pub num_rigid_particles_with_extras: u32,
+    /// Padding to keep the struct size a multiple of its alignment (48 bytes in 3D,
+    /// 32 bytes in 2D).
+    #[cfg(feature = "dim2")]
     pub padding: u32,
+    #[cfg(feature = "dim3")]
+    pub padding: [u32; 3],
 }
 
 /// Top-level grid metadata.
@@ -567,6 +563,12 @@ impl Grid {
             active_blocks
                 .at_mut(block_header_id as usize)
                 .num_particles_with_extras = 0;
+            active_blocks
+                .at_mut(block_header_id as usize)
+                .first_rigid_particle = 0;
+            active_blocks
+                .at_mut(block_header_id as usize)
+                .num_rigid_particles_with_extras = 0;
             hmap_entries.at_mut(slot as usize).value = BlockHeaderId {
                 id: block_header_id,
             };
@@ -705,20 +707,15 @@ pub fn gpu_init_indirect_workgroups(
     n_g2p_p2g_groups.write(2, 1);
 }
 
-/// Resets all grid nodes and linked lists for the current set of active blocks.
+/// Resets all grid nodes for the current set of active blocks.
 ///
-/// Each thread resets one node. Clears momentum, velocity, mass, CDF data,
-/// and both particle and rigid particle linked lists.
+/// Each thread resets one node. Clears momentum, velocity, mass, and CDF data.
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_reset(
     #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] nodes: &mut [Node],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
-    nodes_linked_lists: &mut [NodeLinkedList],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
-    rigid_nodes_linked_lists: &mut [NodeLinkedList],
 ) {
     let i = invocation_id.x;
     let num_nodes = grid.num_active_blocks * NUM_CELL_PER_BLOCK;
@@ -730,13 +727,5 @@ pub fn gpu_reset(
         node.momentum_velocity_incompatible = Vector::ZERO;
         node.mass_incompatible = 0.0;
         node.cdf = NodeCdf::NONE;
-
-        let ll = nodes_linked_lists.at_mut(idx);
-        ll.head = NONE;
-        ll.len = 0;
-
-        let rll = rigid_nodes_linked_lists.at_mut(idx);
-        rll.head = NONE;
-        rll.len = 0;
     }
 }

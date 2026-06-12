@@ -197,8 +197,8 @@ pub struct GpuRigidParticles {
     pub sample_points: Tensor<Position>,
     /// Bitmask indicating which rigid particles need grid cell blocking.
     pub rigid_particle_needs_block: Tensor<u32>,
-    /// Linked list for spatially sorting rigid particles into grid cells.
-    pub node_linked_lists: Tensor<u32>,
+    /// Rigid particle indices sorted by grid block (with room for per-block "extras").
+    pub sorted_ids: Tensor<u32>,
     /// Metadata associating each sample with its source collider and body.
     pub sample_ids: Tensor<RigidParticleIndices>,
 }
@@ -211,7 +211,7 @@ impl GpuRigidParticles {
         Ok(Self {
             local_sample_points: Tensor::vector(backend, empty_positions, BufferUsages::STORAGE)?,
             sample_points: Tensor::vector(backend, empty_positions, BufferUsages::STORAGE)?,
-            node_linked_lists: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE)?,
+            sorted_ids: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE)?,
             sample_ids: Tensor::vector(backend, empty_ids, BufferUsages::STORAGE)?,
             rigid_particle_needs_block: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE)?,
         })
@@ -233,9 +233,9 @@ impl GpuRigidParticles {
                 &sampling_buffers.samples,
                 BufferUsages::STORAGE,
             )?,
-            node_linked_lists: Tensor::vector_uninit(
+            sorted_ids: Tensor::vector_uninit(
                 backend,
-                sampling_buffers.samples.len() as u32,
+                sampling_buffers.samples.len() as u32 * 2_u32.pow(DIM as u32),
                 BufferUsages::STORAGE,
             )?,
             sample_ids: Tensor::vector(
@@ -329,7 +329,6 @@ pub struct GpuParticles<GpuModel: GpuParticleModelData> {
     pub properties: Tensor<ParticleProperties>,
     pub models: Tensor<GpuModel>,
     pub sorted_ids: Tensor<u32>,
-    pub node_linked_lists: Tensor<u32>,
 }
 
 impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
@@ -368,7 +367,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             properties: Tensor::vector(backend, &data.properties, resizeable)?,
             models: Tensor::vector(backend, &data.models, resizeable)?,
             sorted_ids: Tensor::vector_uninit(backend, particles.len() as u32 * 2_u32.pow(DIM as u32), resizeable)?,
-            node_linked_lists: Tensor::vector_uninit(backend, particles.len() as u32, resizeable)?,
         })
     }
 
@@ -432,16 +430,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
         &mut self.sorted_ids
     }
 
-    /// Returns reference to per-particle linked list buffer.
-    pub fn node_linked_lists(&self) -> &Tensor<u32> {
-        &self.node_linked_lists
-    }
-
-    /// Returns mutable reference to per-particle linked list buffer.
-    pub fn node_linked_lists_mut(&mut self) -> &mut Tensor<u32> {
-        &mut self.node_linked_lists
-    }
-
     /// Removes a range of particles from the GPU buffers, shifting elements to fill the gap.
     ///
     /// Returns the number of removed particles on success.
@@ -459,7 +447,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             properties,
             models,
             sorted_ids: _,
-            node_linked_lists: _,
         } = self;
 
         let removed = positions.shift_remove(backend, range.clone())?;
@@ -488,7 +475,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
             properties,
             models,
             sorted_ids,
-            node_linked_lists,
         } = self;
 
         let data = SoAParticles::new(particles);
@@ -500,7 +486,6 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
         properties.append(backend, &data.properties)?;
         models.append(backend, &data.models)?;
         sorted_ids.append(backend, &zeros)?;
-        node_linked_lists.append(backend, &zeros)?;
 
         *len += particles.len();
         backend.write_buffer(gpu_len.buffer_mut(), 0, &[*len as u32])?;

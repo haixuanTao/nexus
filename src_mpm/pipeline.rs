@@ -335,9 +335,12 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
 
             if data.use_cpic {
                 self.sort.launch_sort_rigid_particles(
+                    backend,
                     &mut pass,
                     &mut data.rigid_particles,
                     &mut data.grid,
+                    &mut data.prefix_sum,
+                    &self.prefix_sum,
                 )?;
             }
         }
