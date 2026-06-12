@@ -2,3 +2,14 @@
 *.mp4
 __pycache__/
 MUJOCO_LOG.TXT
+*.lock
+.vscode
+.idea
+.DS_Store
+dist
+dist2d
+dist3d
+assets/**/*.bin
+src/autogen2d
+src/autogen3d
+publish/
