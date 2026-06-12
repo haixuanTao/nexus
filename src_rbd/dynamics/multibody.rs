@@ -319,6 +319,18 @@ impl GpuMultibodySet {
         self.links_per_batch
     }
 
+    /// Diagnostic readback accessor (inert-motor debug): the limit/motor
+    /// constraint slots written by `gpu_mb_init_solve_joint_with_bias`. Layout
+    /// is `[num_batches * joint_constraints_per_batch]`. Not a stable API.
+    pub fn joint_constraints(&self) -> &Tensor<MultibodyJointConstraint> {
+        &self.joint_constraints
+    }
+
+    /// Per-batch constraint-slot stride for [`Self::joint_constraints`].
+    pub fn joint_constraints_per_batch(&self) -> u32 {
+        self.joint_constraints_per_batch
+    }
+
     /// Scatter per-(actuated-joint, env) motor target positions into
     /// `links_static` on the GPU — the on-device equivalent of
     /// `stage_motor_position` + `flush_links_static`. `targets` is row-major
@@ -924,6 +936,23 @@ impl GpuMultibodySet {
 
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         let usage_u = storage | BufferUsages::UNIFORM;
+
+        // Temporary diagnostic for the inert-motor bug: confirm the build-time
+        // constraint census (motor/limit slots) that gates the limit/motor
+        // kernel dispatch.
+        if std::env::var("NEXUS_DEBUG_MB").is_ok() {
+            let has = all_infos.iter().any(|info| info.max_constraints > 0);
+            let per: Vec<u32> = all_infos.iter().take(4).map(|i| i.max_constraints).collect();
+            let motor_links = all_statics
+                .iter()
+                .take(links_cap as usize)
+                .filter(|s| s.data.motor_axes & !s.data.locked_axes != 0)
+                .count();
+            eprintln!(
+                "[nexus mb] has_joint_constraints={has} max_constraints(first mbs)={per:?} \
+                 links_with_free_motor(batch0)={motor_links}/{links_cap}"
+            );
+        }
 
         Self {
             num_batches,

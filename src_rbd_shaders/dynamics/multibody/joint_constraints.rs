@@ -414,6 +414,13 @@ fn init_joint_constraints_body(
                 let has_limits = (limit_axes & (1 << axis)) != 0;
                 let limit_min = stat.data.limits[axis as usize].min;
                 let limit_max = stat.data.limits[axis as usize].max;
+                // Copy the motor BY VALUE before taking a reference: the
+                // cuda-oxide codegen drops the dynamic index when lowering
+                // `&stat.data.motors[axis]` as a call operand (it passes
+                // `&motors[0]`), which made every motor read slot 0's default
+                // (stiffness 0 ⇒ position targets ignored). By-value element
+                // loads keep the index on both backends.
+                let motor = stat.data.motors[axis as usize];
                 emit_motor_constraint(
                     joint_constraints,
                     joint_constraint_columns,
@@ -426,7 +433,7 @@ fn init_joint_constraints_body(
                     curr_pos,
                     inv_dt,
                     dt,
-                    &stat.data.motors[axis as usize],
+                    &motor,
                     has_limits,
                     limit_min,
                     limit_max,
@@ -501,6 +508,9 @@ fn init_joint_constraints_body(
                 let has_limits = (limit_axes & (1 << axis)) != 0;
                 let limit_min = stat.data.limits[axis as usize].min;
                 let limit_max = stat.data.limits[axis as usize].max;
+                // By-value copy — see the matching comment in the linear loop
+                // (cuda-oxide drops the dynamic index on `&motors[axis]`).
+                let motor = stat.data.motors[axis as usize];
                 emit_motor_constraint(
                     joint_constraints,
                     joint_constraint_columns,
@@ -513,7 +523,7 @@ fn init_joint_constraints_body(
                     curr_pos,
                     inv_dt,
                     dt,
-                    &stat.data.motors[axis as usize],
+                    &motor,
                     has_limits,
                     limit_min,
                     limit_max,
