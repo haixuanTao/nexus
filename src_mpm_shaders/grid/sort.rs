@@ -21,9 +21,45 @@
 
 use crate::grid::grid::*;
 use crate::solver::particle::{Position, associated_cell_index_in_block_off_by_one};
+use crate::{IVector, UVector};
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::atomic_add_u32;
+
+#[cfg(feature = "dim2")]
+const EXTRA_PARTICLE_MIN_SHIFT: u32 = 6;
+#[cfg(feature = "dim3")]
+const EXTRA_PARTICLE_MIN_SHIFT: u32 = 2;
+
+/// Returns the within-block sort bucket for a particle counted/inserted into its
+/// primary block: one bucket per associated-cell slab along the slowest-varying node
+/// axis (y in 2D, z in 3D).
+#[inline]
+fn primary_sort_bucket(assoc: UVector) -> usize {
+    #[cfg(feature = "dim2")]
+    {
+        assoc.y as usize
+    }
+    #[cfg(feature = "dim3")]
+    {
+        assoc.z as usize
+    }
+}
+
+/// Returns the within-block sort bucket for a particle counted/inserted as an "extra"
+/// into the neighbour block shifted by `bshift` from its primary block.
+///
+/// The associated slab relative to the neighbour block can be negative; slabs below
+/// -2 cannot influence any node of that block (the quadratic stencil only covers
+/// slabs `[assoc, assoc + 2]`), so they are clamped into the -2 bucket.
+#[inline]
+fn extra_sort_bucket(assoc: UVector, bshift: IVector) -> usize {
+    #[cfg(feature = "dim2")]
+    let local = assoc.y as i32 - bshift.y * 8;
+    #[cfg(feature = "dim3")]
+    let local = assoc.z as i32 - bshift.z * 4;
+    NUM_PRIMARY_SORT_BUCKETS + (local.max(-2) + 2) as usize
+}
 
 /// Marks all blocks associated with each particle as active.
 ///
@@ -171,6 +207,7 @@ pub fn gpu_update_block_particle_count(
         let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
 
         // The particle's primary (base) block gets it as a regular particle and as an "extra".
+        let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
         let block0 = grid.find_block_header_id(hmap_entries, &blocks[0]);
         atomic_add_u32(&mut active_blocks.at_mut(block0.id as usize).num_particles, 1);
         atomic_add_u32(
@@ -179,26 +216,39 @@ pub fn gpu_update_block_particle_count(
                 .num_particles_with_extras,
             1,
         );
+        atomic_add_u32(
+            active_blocks
+                .at_mut(block0.id as usize)
+                .sort_bucket_cursors
+                .at_mut(primary_sort_bucket(assoc)),
+            1,
+        );
 
         // Each +1 neighbour block also receives the particle as an "extra" if the
         // quadratic stencil actually spills into it, i.e. the local base-cell index is
-        // >= 2 along every axis where that block is the +1 neighbour.
-        let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
+        // >= EXTRA_PARTICLE_MIN_SHIFT along every axis where that block is the +1 neighbour.
         let id0 = blocks[0].id;
         for i in 1..NUM_ASSOC_BLOCKS {
             let bshift = blocks[i].id - id0;
             #[cfg(feature = "dim2")]
-            let spills = (bshift.x == 0 || assoc.x >= 2) && (bshift.y == 0 || assoc.y >= 2);
+            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
             #[cfg(feature = "dim3")]
-            let spills = (bshift.x == 0 || assoc.x >= 2)
-                && (bshift.y == 0 || assoc.y >= 2)
-                && (bshift.z == 0 || assoc.z >= 2);
+            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
+                && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
             if spills {
                 let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
                 atomic_add_u32(
                     &mut active_blocks
                         .at_mut(block_i.id as usize)
                         .num_particles_with_extras,
+                    1,
+                );
+                atomic_add_u32(
+                    active_blocks
+                        .at_mut(block_i.id as usize)
+                        .sort_bucket_cursors
+                        .at_mut(extra_sort_bucket(assoc, bshift)),
                     1,
                 );
             }
@@ -245,13 +295,17 @@ pub fn gpu_copy_scan_values_to_first_particles(
     if id < grid.num_active_blocks {
         let idx = id as usize;
         active_blocks.at_mut(idx).first_particle = scan_values.read(idx);
-        // Re-purpose the two counters for the finalize pass: `num_particles` becomes the
-        // running insertion cursor for primary particles (starting at 0), and
-        // `num_particles_with_extras` becomes the cursor for extras, starting right after
-        // the primaries within the block's range.
-        let num_particles = active_blocks.at(idx).num_particles;
-        active_blocks.at_mut(idx).num_particles_with_extras = num_particles;
-        active_blocks.at_mut(idx).num_particles = 0;
+        // Convert the per-bucket counts accumulated by the count pass into running
+        // insertion cursors (exclusive prefix sum), relative to `first_particle`.
+        // Primary buckets come first, so primaries land in
+        // [first_particle, first_particle + num_particles) as G2P expects, with the
+        // extras after them; both segments end up ordered by slab key.
+        let mut running = 0u32;
+        for k in 0..NUM_SORT_BUCKETS {
+            let count = active_blocks.at(idx).sort_bucket_cursors.read(k);
+            active_blocks.at_mut(idx).sort_bucket_cursors.write(k, running);
+            running += count;
+        }
     }
 }
 
@@ -279,37 +333,41 @@ pub fn gpu_finalize_particles_sort(
         let particle = particles_pos.read(id as usize);
         let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
 
-        // Place the particle in its primary block's range, using `num_particles` as the
-        // running cursor (it was reset to 0 in the prepare pass; the range starts at
-        // `first_particle`).
+        // Place the particle in its primary block's range, using its slab bucket's
+        // running cursor (the prepare pass turned the bucket counts into cursors
+        // relative to `first_particle`).
+        let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
         let block0 = grid.find_block_header_id(hmap_entries, &blocks[0]);
         let first0 = active_blocks.at(block0.id as usize).first_particle;
         let slot0 = atomic_add_u32(
-            &mut active_blocks.at_mut(block0.id as usize).num_particles,
+            active_blocks
+                .at_mut(block0.id as usize)
+                .sort_bucket_cursors
+                .at_mut(primary_sort_bucket(assoc)),
             1,
         );
         sorted_particle_ids.write((first0 + slot0) as usize, id);
 
         // Place the particle as an "extra" into each +1 neighbour block whose stencil it
-        // spills into, using `num_particles_with_extras` as the cursor (reset to the
-        // primary count in the prepare pass, so extras land after the primaries).
-        let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
+        // spills into, using the extra slab bucket cursors (extras land after the
+        // primaries because their buckets come last).
         let id0 = blocks[0].id;
         for i in 1..NUM_ASSOC_BLOCKS {
             let bshift = blocks[i].id - id0;
             #[cfg(feature = "dim2")]
-            let spills = (bshift.x == 0 || assoc.x >= 2) && (bshift.y == 0 || assoc.y >= 2);
+            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
             #[cfg(feature = "dim3")]
-            let spills = (bshift.x == 0 || assoc.x >= 2)
-                && (bshift.y == 0 || assoc.y >= 2)
-                && (bshift.z == 0 || assoc.z >= 2);
+            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
+                && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
             if spills {
                 let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
                 let first_i = active_blocks.at(block_i.id as usize).first_particle;
                 let slot_i = atomic_add_u32(
-                    &mut active_blocks
+                    active_blocks
                         .at_mut(block_i.id as usize)
-                        .num_particles_with_extras,
+                        .sort_bucket_cursors
+                        .at_mut(extra_sort_bucket(assoc, bshift)),
                     1,
                 );
                 sorted_particle_ids.write((first_i + slot_i) as usize, id);
@@ -356,11 +414,11 @@ pub fn gpu_update_block_rigid_particle_count(
             for i in 1..NUM_ASSOC_BLOCKS {
                 let bshift = blocks[i].id - id0;
                 #[cfg(feature = "dim2")]
-                let spills = (bshift.x == 0 || assoc.x >= 2) && (bshift.y == 0 || assoc.y >= 2);
+                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
                 #[cfg(feature = "dim3")]
-                let spills = (bshift.x == 0 || assoc.x >= 2)
-                    && (bshift.y == 0 || assoc.y >= 2)
-                    && (bshift.z == 0 || assoc.z >= 2);
+                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                    && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
+                    && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
                 if spills {
                     let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
                     if block_i.id != NONE {
@@ -458,11 +516,11 @@ pub fn gpu_finalize_rigid_particles_sort(
             for i in 1..NUM_ASSOC_BLOCKS {
                 let bshift = blocks[i].id - id0;
                 #[cfg(feature = "dim2")]
-                let spills = (bshift.x == 0 || assoc.x >= 2) && (bshift.y == 0 || assoc.y >= 2);
+                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
                 #[cfg(feature = "dim3")]
-                let spills = (bshift.x == 0 || assoc.x >= 2)
-                    && (bshift.y == 0 || assoc.y >= 2)
-                    && (bshift.z == 0 || assoc.z >= 2);
+                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                    && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
+                    && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
                 if spills {
                     let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
                     if block_i.id != NONE {

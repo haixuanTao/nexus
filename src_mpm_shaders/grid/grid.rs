@@ -44,6 +44,31 @@ pub const NUM_ASSOC_BLOCKS: usize = 8;
 /// Offset applied when computing cell indices within a block.
 const OFF_BY_ONE: i32 = 1;
 
+/// Number of "slab" buckets for the within-block counting sort of regular particles,
+/// for particles whose primary block is the block being sorted. One bucket per
+/// associated-cell slab along the slowest-varying node axis (y in 2D, z in 3D), so
+/// the sorted order lets P2G derive tight per-chunk slab bounds for culling.
+#[cfg(feature = "dim2")]
+pub const NUM_PRIMARY_SORT_BUCKETS: usize = 8;
+/// Number of "slab" buckets for the within-block counting sort of regular particles.
+#[cfg(feature = "dim3")]
+pub const NUM_PRIMARY_SORT_BUCKETS: usize = 4;
+
+/// Number of slab buckets for "extras" (particles spilling in from a neighbour
+/// block). Their associated slab relative to this block lies in
+/// `[-2, block_width - 1]`, clamped at -2 (slabs below -2 cannot influence any node
+/// of the block anyway).
+#[cfg(feature = "dim2")]
+pub const NUM_EXTRA_SORT_BUCKETS: usize = 10;
+/// Number of slab buckets for "extras".
+#[cfg(feature = "dim3")]
+pub const NUM_EXTRA_SORT_BUCKETS: usize = 6;
+
+/// Total number of within-block sort buckets. Primary buckets come first so that
+/// primaries end up contiguous in `[first_particle, first_particle + num_particles)`,
+/// which G2P relies on.
+pub const NUM_SORT_BUCKETS: usize = NUM_PRIMARY_SORT_BUCKETS + NUM_EXTRA_SORT_BUCKETS;
+
 /*
  * Index newtypes.
  */
@@ -324,12 +349,16 @@ pub struct ActiveBlockHeader {
     /// Total number of rigid particles contributing to this block, extras included.
     /// Used by the scatter-style P2G-CDF.
     pub num_rigid_particles_with_extras: u32,
-    /// Padding to keep the struct size a multiple of its alignment (48 bytes in 3D,
-    /// 32 bytes in 2D).
-    #[cfg(feature = "dim2")]
+    /// Per-slab-bucket cursors for the within-block counting sort of regular
+    /// particles. The count pass accumulates per-bucket counts here; the prepare pass
+    /// converts them in place to running insertion cursors (exclusive prefix sums,
+    /// relative to `first_particle`); the finalize pass increments them while
+    /// inserting. The resulting segment is ordered by slab key, which P2G uses to
+    /// derive per-chunk slab bounds for culling.
+    pub sort_bucket_cursors: [u32; NUM_SORT_BUCKETS],
+    /// Padding to keep the struct size a multiple of its alignment (80 bytes in 3D,
+    /// 104 bytes in 2D).
     pub padding: u32,
-    #[cfg(feature = "dim3")]
-    pub padding: [u32; 3],
 }
 
 /// Top-level grid metadata.
@@ -569,6 +598,12 @@ impl Grid {
             active_blocks
                 .at_mut(block_header_id as usize)
                 .num_rigid_particles_with_extras = 0;
+            for k in 0..NUM_SORT_BUCKETS {
+                active_blocks
+                    .at_mut(block_header_id as usize)
+                    .sort_bucket_cursors
+                    .write(k, 0);
+            }
             hmap_entries.at_mut(slot as usize).value = BlockHeaderId {
                 id: block_header_id,
             };

@@ -87,6 +87,9 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     // `&mut [T; N]` to `&mut [T]`, so both entry points pass fixed-size arrays.
     shared_affinities: &mut [AffinityBits; WORKGROUP_SIZE],
     shared_normals: &mut [Vector; WORKGROUP_SIZE],
+    // Per-particle slab key (associated-cell coordinate along the slowest node axis,
+    // relative to the block), used to derive the per-chunk culling bounds.
+    shared_zkey: &mut [i32; WORKGROUP_SIZE],
 ) {
     let bid = block_id.x;
     let cell_width = grid.cell_width;
@@ -135,6 +138,15 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     let first = active_blocks.at(bid as usize).first_particle;
     let num = active_blocks.at(bid as usize).num_particles_with_extras;
     let last = first + num;
+    // End of the primaries segment: the sorted slab keys are ascending within the
+    // primaries and within the extras, so chunk bounds need this boundary.
+    let primaries_end = first + active_blocks.at(bid as usize).num_particles;
+
+    // This thread's node slab along the sort axis (the slowest-varying node axis).
+    #[cfg(feature = "dim2")]
+    let node_slab = tid.y as i32;
+    #[cfg(feature = "dim3")]
+    let node_slab = tid.z as i32;
 
     // Number of workgroup-sized chunks. Capped on the web (bounded loop with a per-chunk
     // guard) so the workgroup barriers stay in uniform control flow; off the web, the
@@ -160,6 +172,18 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
             let slot = tid_flat as usize;
             if load_idx < last {
                 let pid = sorted_particle_ids.read(load_idx as usize);
+                let pos = particles_pos.read(pid as usize);
+
+                // Slab key along the sort axis, relative to the block; must match the
+                // bucket key used by the sort (same associated-cell rounding, same
+                // clamp at -2) so the shared keys stay ascending within each segment.
+                let assoc_cell = (pos.pt / cell_width).round() - Vector::ONE;
+                #[cfg(feature = "dim2")]
+                let zkey = (assoc_cell.y as i32 - vid.y * 8).max(-2);
+                #[cfg(feature = "dim3")]
+                let zkey = (assoc_cell.z as i32 - vid.z * 4).max(-2);
+                shared_zkey.write(slot, zkey);
+
                 let pkin = particles_kin.at(pid as usize);
                 if pkin.enabled != 0 {
                     // The first component holds the raw velocity when CPIC is on (the
@@ -170,7 +194,7 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
                     } else {
                         pkin.velocity * pkin.mass
                     };
-                    shared_pos.write(slot, particles_pos.read(pid as usize));
+                    shared_pos.write(slot, pos);
                     shared_vel_mass.write(slot, (vel_or_momentum, pkin.mass));
                     shared_affine.write(slot, pkin.affine.remove_padding());
                     if USE_CPIC {
@@ -195,7 +219,27 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
         if active_chunk {
             // `chunk_len` is uniform across the workgroup.
             let chunk_len = (last - chunk_base).min(WORKGROUP_SIZE as u32);
-            for p in 0..chunk_len {
+
+            // Per-chunk slab bounds, exact thanks to the within-block sort: the keys
+            // are ascending within the primaries and within the extras, so the range
+            // is given by the chunk's first/last key, plus the two values around the
+            // primaries/extras boundary if the chunk straddles it.
+            let mut zmin = shared_zkey.read(0);
+            let mut zmax = shared_zkey.read((chunk_len - 1) as usize);
+            if primaries_end > chunk_base && primaries_end < chunk_base + chunk_len {
+                let b = (primaries_end - chunk_base) as usize;
+                zmin = zmin.min(shared_zkey.read(b));
+                zmax = zmax.max(shared_zkey.read(b - 1));
+            }
+
+            // A particle with slab key `a` only influences nodes in slabs [a, a + 2]:
+            // skip the whole chunk if this thread's node slab is outside the chunk's
+            // dilated slab range. When that holds for every thread of a warp (e.g. a
+            // chunk of extras below the block vs. the upper-half warp), the warp skips
+            // the chunk entirely.
+            let in_range = node_slab >= zmin && node_slab <= zmax + 2;
+            let culled_len = if in_range { chunk_len } else { 0 };
+            for p in 0..culled_len {
                 let p = p as usize;
                 let pos = shared_pos.read(p);
                 // `vel_or_momentum` is the precomputed momentum (non-CPIC) or the raw
@@ -325,6 +369,7 @@ pub fn gpu_p2g(
     #[spirv(workgroup)] shared_affine: &mut [Matrix; WORKGROUP_SIZE],
     #[spirv(workgroup)] shared_affinities: &mut [AffinityBits; WORKGROUP_SIZE],
     #[spirv(workgroup)] shared_normals: &mut [Vector; WORKGROUP_SIZE],
+    #[spirv(workgroup)] shared_zkey: &mut [i32; WORKGROUP_SIZE],
 ) {
     gpu_p2g_generic::<false>(
         block_id,
@@ -344,6 +389,7 @@ pub fn gpu_p2g(
         shared_affine,
         shared_affinities,
         shared_normals,
+        shared_zkey,
     );
 }
 
@@ -372,6 +418,7 @@ pub fn gpu_p2g_cpic(
     #[spirv(workgroup)] shared_affine: &mut [Matrix; WORKGROUP_SIZE],
     #[spirv(workgroup)] shared_affinities: &mut [AffinityBits; WORKGROUP_SIZE],
     #[spirv(workgroup)] shared_normals: &mut [Vector; WORKGROUP_SIZE],
+    #[spirv(workgroup)] shared_zkey: &mut [i32; WORKGROUP_SIZE],
 ) {
     gpu_p2g_generic::<true>(
         block_id,
@@ -391,5 +438,6 @@ pub fn gpu_p2g_cpic(
         shared_affine,
         shared_affinities,
         shared_normals,
+        shared_zkey,
     );
 }
