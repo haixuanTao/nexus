@@ -335,4 +335,10 @@ pub struct MultibodyInfo {
     /// Maximum constraints this multibody can hold (sum over its joints of
     /// `2 * num_free_axes`). Slots beyond this are not touched.
     pub max_constraints: u32,
+    /// Coulomb friction coefficient `μ` for this multibody's contacts, read
+    /// from the rapier collider material at `from_rapier` time. The contact
+    /// builder uses this instead of a hardcoded default, so per-env friction
+    /// domain-randomization actually reaches the GPU solver. Falls back to
+    /// `FRICTION_DEFAULT` (0.5) when no collider friction is found.
+    pub friction: f32,
 }

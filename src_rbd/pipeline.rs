@@ -443,11 +443,40 @@ impl GpuPhysicsState {
                 .iter()
                 .map(|(mb, ids, bodies)| (*mb, ids, *bodies))
                 .collect();
+            // Per-env contact friction μ, read from the rapier collider
+            // material so per-env friction DR actually reaches the GPU contact
+            // solver (the builder previously hardcoded 0.5). Representative
+            // value: the friction of the first collider on a dynamic body (the
+            // robot's own colliders — set to the env's DR friction); falls back
+            // to 0.5 when none found. Aligned with `mb_refs` because
+            // `multibody_envs` is pushed one-per-env, parallel to `environments`.
+            let mb_frictions: Vec<f32> = environments
+                .iter()
+                .map(|(bodies, colliders, _, _, _)| {
+                    // The foot↔ground contact μ. Both the foot and the ground
+                    // collider are set to the env's DR friction, while the other
+                    // link colliders keep rapier's 0.5 default — so read the
+                    // GROUND (the fixed-body collider): it's the unambiguous,
+                    // single carrier of the contact friction for this env.
+                    colliders
+                        .iter()
+                        .find_map(|(_, c)| {
+                            let b = bodies.get(c.parent()?)?;
+                            b.is_fixed().then(|| c.friction())
+                        })
+                        .unwrap_or(0.5)
+                })
+                .collect();
+            if std::env::var_os("NEXUS_DEBUG_FRICTION").is_some() {
+                let n = mb_frictions.len().min(8);
+                eprintln!("[nexus] per-env contact μ (first {n}) = {:?}", &mb_frictions[..n]);
+            }
             let mut mb = GpuMultibodySet::from_rapier(
                 backend,
                 &mb_refs,
                 [0.0, -9.81, 0.0],
                 max_colliders as u32,
+                &mb_frictions,
             );
             mb.set_visible_dt(backend, multibody_dt);
 

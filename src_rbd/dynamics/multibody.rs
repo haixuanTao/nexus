@@ -612,6 +612,12 @@ impl GpuMultibodySet {
         )],
         gravity: [f32; 3],
         colliders_per_batch: u32,
+        // Per-env Coulomb friction μ (parallel to `environments`), extracted
+        // from the rapier collider material by the caller. Stored on each
+        // `MultibodyInfo` so the contact builder uses it instead of a hardcoded
+        // default — this is what makes per-env friction DR reach the GPU.
+        // `0.5` (the historical hardcoded default) is used where missing.
+        frictions: &[f32],
     ) -> Self {
         let num_batches = environments.len() as u32;
 
@@ -636,7 +642,8 @@ impl GpuMultibodySet {
         let mut global_max_icdt = 0u32;
         let mut global_max_cons = 0u32;
 
-        for (set, body_ids, bodies) in environments {
+        for (env_idx, (set, body_ids, bodies)) in environments.iter().enumerate() {
+            let env_friction = frictions.get(env_idx).copied().unwrap_or(0.5);
             let mut infos = Vec::new();
             let mut statics = Vec::new();
             let mut workspaces = Vec::new();
@@ -726,6 +733,7 @@ impl GpuMultibodySet {
                     i_coriolis_dt_offset: icdt_off,
                     first_constraint: cons_off,
                     max_constraints,
+                    friction: env_friction,
                 });
 
                 // `assembly_id` is not exposed publicly on `MultibodyLink`, so we
