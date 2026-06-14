@@ -50,13 +50,10 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [patch.crates-io]
-# Local glam clone with SPIR-V vector-arithmetic intrinsics (Vec3 add/sub/mul/scale).
-glam = { path = "../glam-rs" }
-# TEMPORARY (claude): local spirv-std for codegen-quality benchmarking of local rust-gpu changes.
-#spirv-std = { path = "../rust-gpu/crates/spirv-std" }
-# TEMPORARY (claude): patched naga (MSL loop emission fix, branch msl-bottom-form-loops-v29),
-# recovers the rust-gpu-vs-Slang p2g gap on Metal. Remove once upstreamed/released.
-naga = { path = "../wgpu-naga29/naga" }
+## Local glam clone with SPIR-V vector-arithmetic intrinsics (Vec3 add/sub/mul/scale).
+#glam = { path = "../glam-rs" }
+# 30% faster for loop in P2G
+naga = { git = "https://github.com/sebcrozet/wgpu", branch = "for-loop-opt" }
 #khal = { path = "../khal/crates/khal" }
 #khal-derive = { path = "../khal/crates/khal-derive" }
 #khal-std = { path = "../khal/crates/khal-std" }
