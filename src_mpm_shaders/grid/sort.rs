@@ -92,6 +92,83 @@ pub fn gpu_touch_particle_blocks(
     }
 }
 
+/// Marks only each particle's **primary** (base) block as active.
+///
+/// This is the first half of the two-pass block activation that replaces
+/// `gpu_touch_particle_blocks`: instead of every particle redundantly inserting
+/// all `NUM_ASSOC_BLOCKS` blocks of its stencil (the same 8 blocks are inserted
+/// once per particle sharing a base block, ~8× redundancy), each particle inserts
+/// only its base block here, and `gpu_touch_neighbor_blocks` then inserts the +1
+/// neighbour blocks once per active base block. The union of activated blocks is
+/// identical, but the number of hashmap insertions drops from
+/// `NUM_ASSOC_BLOCKS * num_particles` to `num_particles + (NUM_ASSOC_BLOCKS-1) * num_base_blocks`.
+// TODO HACK: spirv_passthrough because naga panics on the atomic compare-exchange
+//            in `mark_block_as_active` (see `gpu_touch_particle_blocks`).
+#[spirv_bindgen(spirv_passthrough)]
+#[spirv(compute(threads(64)))]
+pub fn gpu_touch_primary_blocks(
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &mut Grid,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    hmap_entries: &mut [GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    active_blocks: &mut [ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] particles_pos: &[Position],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] particles_len: &u32,
+) {
+    let id = invocation_id.x;
+    if id < *particles_len {
+        let cell_width = grid.cell_width;
+        let particle = particles_pos.read(id as usize);
+        let block = BlockVirtualId::block_associated_to_point(cell_width, particle.pt);
+        grid.mark_block_as_active(hmap_entries, active_blocks, &block);
+    }
+}
+
+/// Marks the +1 neighbour blocks of every already-active base block as active.
+///
+/// Second half of the two-pass block activation (see `gpu_touch_primary_blocks`).
+/// One thread per base block: reads the block's virtual id and inserts its
+/// `NUM_ASSOC_BLOCKS - 1` forward neighbours into the hashmap. `num_base_blocks`
+/// is a snapshot of `grid.num_active_blocks` taken *before* this pass runs, so
+/// that the neighbour blocks appended during the pass (at indices
+/// `>= num_base_blocks`) are not themselves processed.
+// TODO HACK: spirv_passthrough because naga panics on the atomic compare-exchange
+//            in `mark_block_as_active` (see `gpu_touch_particle_blocks`).
+#[spirv_bindgen(spirv_passthrough)]
+#[spirv(compute(threads(64)))]
+pub fn gpu_touch_neighbor_blocks(
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] grid: &mut Grid,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    hmap_entries: &mut [GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    active_blocks: &mut [ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_base_blocks: &[u32],
+) {
+    let id = invocation_id.x;
+    if id < num_base_blocks.read(0) {
+        let raw = active_blocks.at(id as usize).virtual_id;
+        // Rematerialize the block id into a fresh, register-aligned vector. Reading
+        // `IVec3` straight out of the storage buffer keeps naga's packed-`int3` type,
+        // and the vector arithmetic in `blocks_associated_to_block` then emits illegal
+        // packed↔aligned `as_type` casts under the spirv-passthrough path (Metal).
+        #[cfg(feature = "dim2")]
+        let vid = BlockVirtualId {
+            id: IVector::new(raw.id.x, raw.id.y),
+        };
+        #[cfg(feature = "dim3")]
+        let vid = BlockVirtualId {
+            id: IVector::new(raw.id.x, raw.id.y, raw.id.z),
+            padding: 0,
+        };
+        let blocks = BlockVirtualId::blocks_associated_to_block(&vid);
+        for i in 1..NUM_ASSOC_BLOCKS {
+            grid.mark_block_as_active(hmap_entries, active_blocks, &blocks[i]);
+        }
+    }
+}
+
 /// Marks all blocks associated with each rigid particle as active.
 ///
 /// Similar to `gpu_touch_particle_blocks`, but operates on rigid body surface
@@ -240,15 +317,12 @@ pub fn gpu_update_block_particle_count(
         let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
 
         // The particle's primary (base) block gets it as a regular particle and as an "extra".
+        // Only the per-slab-bucket counter is incremented: `num_particles` (sum of the
+        // primary buckets) and `num_particles_with_extras` (sum of all buckets) are derived
+        // per block in the copy passes, so we avoid two extra — and heavily contended —
+        // atomics per particle here.
         let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
         let block0 = grid.find_block_header_id(hmap_entries, &blocks[0]);
-        atomic_add_u32(&mut active_blocks.at_mut(block0.id as usize).num_particles, 1);
-        atomic_add_u32(
-            &mut active_blocks
-                .at_mut(block0.id as usize)
-                .num_particles_with_extras,
-            1,
-        );
         atomic_add_u32(
             active_blocks
                 .at_mut(block0.id as usize)
@@ -272,14 +346,10 @@ pub fn gpu_update_block_particle_count(
             if spills {
                 // The header IDs of the +1 neighbour blocks were precomputed by
                 // `gpu_update_nbh_block_ids`, so we read them from the primary block
-                // instead of doing a hashmap lookup per particle.
+                // instead of doing a hashmap lookup per particle. Only the extra slab
+                // bucket is incremented; the neighbour's `num_particles_with_extras` is
+                // recovered as the sum of its buckets in the copy passes.
                 let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
-                atomic_add_u32(
-                    &mut active_blocks
-                        .at_mut(block_i.id as usize)
-                        .num_particles_with_extras,
-                    1,
-                );
                 atomic_add_u32(
                     active_blocks
                         .at_mut(block_i.id as usize)
@@ -306,11 +376,14 @@ pub fn gpu_copy_particles_len_to_scan_value(
 ) {
     let id = invocation_id.x;
     if id < grid.num_active_blocks {
-        // The sorted array reserves room for every particle a block touches, extras included.
-        scan_values.write(
-            id as usize,
-            active_blocks.at(id as usize).num_particles_with_extras,
-        );
+        // The sorted array reserves room for every particle a block touches, extras
+        // included. `num_particles_with_extras` is the sum of all slab buckets (the count
+        // pass no longer maintains it as a separate atomic).
+        let mut total = 0u32;
+        for k in 0..NUM_SORT_BUCKETS {
+            total += active_blocks.at(id as usize).sort_bucket_cursors.read(k);
+        }
+        scan_values.write(id as usize, total);
     }
 }
 
@@ -330,18 +403,30 @@ pub fn gpu_copy_scan_values_to_first_particles(
     let id = invocation_id.x;
     if id < grid.num_active_blocks {
         let idx = id as usize;
-        active_blocks.at_mut(idx).first_particle = scan_values.read(idx);
+        let first = scan_values.read(idx);
+        active_blocks.at_mut(idx).first_particle = first;
         // Convert the per-bucket counts accumulated by the count pass into running
-        // insertion cursors (exclusive prefix sum), relative to `first_particle`.
+        // insertion cursors. The cursors are *absolute* offsets into the sorted array
+        // (i.e. `first_particle` is baked in), so the finalize pass can scatter each
+        // particle with a single atomic and no per-contribution `first_particle` read.
         // Primary buckets come first, so primaries land in
         // [first_particle, first_particle + num_particles) as G2P expects, with the
         // extras after them; both segments end up ordered by slab key.
-        let mut running = 0u32;
+        //
+        // The running total advanced past the primary buckets is `num_particles` (primaries
+        // only land in primary buckets), and the grand total is `num_particles_with_extras`.
+        // Both fields are derived here rather than maintained as per-particle atomics in
+        // the count pass.
+        let mut running = first;
         for k in 0..NUM_SORT_BUCKETS {
+            if k == NUM_PRIMARY_SORT_BUCKETS {
+                active_blocks.at_mut(idx).num_particles = running - first;
+            }
             let count = active_blocks.at(idx).sort_bucket_cursors.read(k);
             active_blocks.at_mut(idx).sort_bucket_cursors.write(k, running);
             running += count;
         }
+        active_blocks.at_mut(idx).num_particles_with_extras = running - first;
     }
 }
 
@@ -369,12 +454,11 @@ pub fn gpu_finalize_particles_sort(
         let particle = particles_pos.read(id as usize);
         let blocks = BlockVirtualId::blocks_associated_to_point(cell_width, particle.pt);
 
-        // Place the particle in its primary block's range, using its slab bucket's
-        // running cursor (the prepare pass turned the bucket counts into cursors
-        // relative to `first_particle`).
+        // Place the particle in its primary block's range. The prepare pass turned the
+        // bucket counts into absolute insertion cursors (first_particle baked in), so the
+        // atomically-claimed slot is already the final sorted index.
         let assoc = associated_cell_index_in_block_off_by_one(&particle, cell_width);
         let block0 = grid.find_block_header_id(hmap_entries, &blocks[0]);
-        let first0 = active_blocks.at(block0.id as usize).first_particle;
         let slot0 = atomic_add_u32(
             active_blocks
                 .at_mut(block0.id as usize)
@@ -382,7 +466,7 @@ pub fn gpu_finalize_particles_sort(
                 .at_mut(primary_sort_bucket(assoc)),
             1,
         );
-        sorted_particle_ids.write((first0 + slot0) as usize, id);
+        sorted_particle_ids.write(slot0 as usize, id);
 
         // Place the particle as an "extra" into each +1 neighbour block whose stencil it
         // spills into, using the extra slab bucket cursors (extras land after the
@@ -400,7 +484,6 @@ pub fn gpu_finalize_particles_sort(
                 // Reuse the neighbour header IDs precomputed by `gpu_update_nbh_block_ids`
                 // rather than re-querying the hashmap.
                 let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
-                let first_i = active_blocks.at(block_i.id as usize).first_particle;
                 let slot_i = atomic_add_u32(
                     active_blocks
                         .at_mut(block_i.id as usize)
@@ -408,7 +491,7 @@ pub fn gpu_finalize_particles_sort(
                         .at_mut(extra_sort_bucket(assoc, bshift)),
                     1,
                 );
-                sorted_particle_ids.write((first_i + slot_i) as usize, id);
+                sorted_particle_ids.write(slot_i as usize, id);
             }
         }
     }

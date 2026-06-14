@@ -3,7 +3,7 @@
 use crate::grid::sort::WgSort;
 use crate::mpm_shaders::grid::grid::{ActiveBlockHeader, Grid, GridHashMapEntry, Node};
 use crate::solver::{GpuParticleModelData, GpuParticles, GpuRigidParticles};
-use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
+use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuPass, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use nexus_rbd::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use vortx::tensor::Tensor;
@@ -14,8 +14,8 @@ use vortx::tensor::Tensor;
 #[derive(Shader)]
 pub struct WgGrid {
     reset_hmap: crate::mpm_shaders::grid::grid::GpuResetHmap,
+    capture_num_active_blocks: crate::mpm_shaders::grid::grid::GpuCaptureNumActiveBlocks,
     init_indirect_workgroups: crate::mpm_shaders::grid::grid::GpuInitIndirectWorkgroups,
-    reset: crate::mpm_shaders::grid::grid::GpuReset,
 }
 
 impl WgGrid {
@@ -47,7 +47,13 @@ impl WgGrid {
             self.reset_hmap
                 .call(pass, hmap_capacity, &mut grid.meta, &mut grid.hmap_entries)?;
 
-            sort_module.touch_particle_blocks.call(
+            // Block activation in two passes (cheaper than every particle inserting
+            // all NUM_ASSOC_BLOCKS of its stencil):
+            // 1. Each particle activates only its primary (base) block.
+            // 2. Each base block activates its +1 neighbour blocks (once per block,
+            //    not once per particle). `active_blocks_snapshot` records the base-block
+            //    count so pass 2 doesn't reprocess the neighbours it appends.
+            sort_module.touch_primary_blocks.call(
                 pass,
                 particles_len,
                 &mut grid.meta,
@@ -55,6 +61,32 @@ impl WgGrid {
                 &mut grid.active_blocks,
                 &particles.positions,
                 &particles.gpu_len,
+            )?;
+
+            self.capture_num_active_blocks.call(
+                pass,
+                1u32,
+                &grid.meta,
+                &mut grid.active_blocks_snapshot,
+            )?;
+
+            // Indirect dispatch sized for the base blocks (the neighbour pass runs one
+            // thread per base block).
+            self.init_indirect_workgroups.call(
+                pass,
+                1u32,
+                &grid.meta,
+                &mut grid.indirect_n_blocks_groups,
+                &mut grid.indirect_n_g2p_p2g_groups,
+            )?;
+
+            sort_module.touch_neighbor_blocks.call(
+                pass,
+                indirect_dispatch_tensor(&grid.indirect_n_blocks_groups),
+                &mut grid.meta,
+                &mut grid.hmap_entries,
+                &mut grid.active_blocks,
+                &grid.active_blocks_snapshot,
             )?;
 
             // Ensure blocks exist wherever we have rigid particles that might affect
@@ -141,13 +173,6 @@ impl WgGrid {
             &mut grid.active_blocks,
         )?;
 
-        self.reset.call(
-            pass,
-            indirect_dispatch_tensor(&grid.indirect_n_g2p_p2g_groups),
-            &grid.meta,
-            &mut grid.nodes,
-        )?;
-
         sort_module.finalize_particles_sort.call(
             pass,
             particles_len,
@@ -158,6 +183,219 @@ impl WgGrid {
             &mut grid.active_blocks,
             &mut particles.sorted_ids,
         )?;
+
+        Ok(())
+    }
+
+    /// Test helper: resets the hashmap and activates blocks for `particles` using
+    /// either the legacy single-pass touch (`two_pass = false`) or the new two-pass
+    /// touch (`two_pass = true`), leaving `grid.meta.num_active_blocks` readable.
+    ///
+    /// Both paths must activate the identical set of blocks; a benchmark compares the
+    /// resulting `num_active_blocks` to validate the two-pass touch without depending
+    /// on CPU/GPU rounding agreement.
+    #[doc(hidden)]
+    pub fn launch_touch_for_test<GpuModel: GpuParticleModelData>(
+        &self,
+        pass: &mut GpuPass,
+        particles: &GpuParticles<GpuModel>,
+        grid: &mut GpuGrid,
+        sort_module: &WgSort,
+        two_pass: bool,
+    ) -> Result<(), GpuBackendError> {
+        let particles_len = particles.len() as u32;
+        let hmap_capacity = grid.cpu_meta.hmap_capacity;
+
+        self.reset_hmap
+            .call(pass, hmap_capacity, &mut grid.meta, &mut grid.hmap_entries)?;
+
+        if two_pass {
+            sort_module.touch_primary_blocks.call(
+                pass,
+                particles_len,
+                &mut grid.meta,
+                &mut grid.hmap_entries,
+                &mut grid.active_blocks,
+                &particles.positions,
+                &particles.gpu_len,
+            )?;
+            self.capture_num_active_blocks.call(
+                pass,
+                1u32,
+                &grid.meta,
+                &mut grid.active_blocks_snapshot,
+            )?;
+            self.init_indirect_workgroups.call(
+                pass,
+                1u32,
+                &grid.meta,
+                &mut grid.indirect_n_blocks_groups,
+                &mut grid.indirect_n_g2p_p2g_groups,
+            )?;
+            sort_module.touch_neighbor_blocks.call(
+                pass,
+                indirect_dispatch_tensor(&grid.indirect_n_blocks_groups),
+                &mut grid.meta,
+                &mut grid.hmap_entries,
+                &mut grid.active_blocks,
+                &grid.active_blocks_snapshot,
+            )?;
+        } else {
+            sort_module.touch_particle_blocks.call(
+                pass,
+                particles_len,
+                &mut grid.meta,
+                &mut grid.hmap_entries,
+                &mut grid.active_blocks,
+                &particles.positions,
+                &particles.gpu_len,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Per-kernel-profiled variant of [`launch_sort`](Self::launch_sort) for the
+    /// regular-particle (CPIC-disabled) path.
+    ///
+    /// Runs the same kernel sequence as `launch_sort` with `rigid_particles = None`,
+    /// but wraps each sub-kernel in its own timestamp scope so a benchmark can see
+    /// where the sort spends its time. This is a diagnostics helper — the production
+    /// pipeline uses `launch_sort`.
+    #[doc(hidden)]
+    pub fn launch_sort_profiled<GpuModel: GpuParticleModelData>(
+        &self,
+        backend: &GpuBackend,
+        encoder: &mut GpuEncoder,
+        timestamps: &mut GpuTimestamps,
+        particles: &mut GpuParticles<GpuModel>,
+        grid: &mut GpuGrid,
+        prefix_sum: &mut PrefixSumWorkspace,
+        sort_module: &WgSort,
+        prefix_sum_module: &GpuPrefixSum,
+    ) -> Result<(), GpuBackendError> {
+        let particles_len = particles.len() as u32;
+        let hmap_capacity = grid.cpu_meta.hmap_capacity;
+
+        {
+            let mut pass = encoder.begin_pass("sort:reset_hmap", Some(timestamps));
+            self.reset_hmap
+                .call(&mut pass, hmap_capacity, &mut grid.meta, &mut grid.hmap_entries)?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:touch_primary_blocks", Some(timestamps));
+            sort_module.touch_primary_blocks.call(
+                &mut pass,
+                particles_len,
+                &mut grid.meta,
+                &mut grid.hmap_entries,
+                &mut grid.active_blocks,
+                &particles.positions,
+                &particles.gpu_len,
+            )?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:capture_num_active_blocks", Some(timestamps));
+            self.capture_num_active_blocks.call(
+                &mut pass,
+                1u32,
+                &grid.meta,
+                &mut grid.active_blocks_snapshot,
+            )?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:init_indirect_workgroups", Some(timestamps));
+            self.init_indirect_workgroups.call(
+                &mut pass,
+                1u32,
+                &grid.meta,
+                &mut grid.indirect_n_blocks_groups,
+                &mut grid.indirect_n_g2p_p2g_groups,
+            )?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:touch_neighbor_blocks", Some(timestamps));
+            sort_module.touch_neighbor_blocks.call(
+                &mut pass,
+                indirect_dispatch_tensor(&grid.indirect_n_blocks_groups),
+                &mut grid.meta,
+                &mut grid.hmap_entries,
+                &mut grid.active_blocks,
+                &grid.active_blocks_snapshot,
+            )?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:init_indirect_workgroups2", Some(timestamps));
+            self.init_indirect_workgroups.call(
+                &mut pass,
+                1u32,
+                &grid.meta,
+                &mut grid.indirect_n_blocks_groups,
+                &mut grid.indirect_n_g2p_p2g_groups,
+            )?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:update_nbh_block_ids", Some(timestamps));
+            sort_module.update_nbh_block_ids.call(
+                &mut pass,
+                indirect_dispatch_tensor(&grid.indirect_n_blocks_groups),
+                &grid.meta,
+                &grid.hmap_entries,
+                &mut grid.active_blocks,
+            )?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:update_block_particle_count", Some(timestamps));
+            sort_module.update_block_particle_count.call(
+                &mut pass,
+                particles_len,
+                &grid.meta,
+                &grid.hmap_entries,
+                &particles.positions,
+                &particles.gpu_len,
+                &mut grid.active_blocks,
+            )?;
+        }
+        {
+            let mut pass =
+                encoder.begin_pass("sort:copy_particles_len_to_scan_value", Some(timestamps));
+            sort_module.copy_particles_len_to_scan_value.call(
+                &mut pass,
+                indirect_dispatch_tensor(&grid.indirect_n_blocks_groups),
+                &grid.meta,
+                &grid.active_blocks,
+                &mut grid.scan_values,
+            )?;
+        }
+        {
+            let mut pass = encoder.begin_pass("sort:prefix_sum", Some(timestamps));
+            prefix_sum_module.launch(backend, &mut pass, prefix_sum, &mut grid.scan_values, 1)?;
+        }
+        {
+            let mut pass =
+                encoder.begin_pass("sort:copy_scan_values_to_first_particles", Some(timestamps));
+            sort_module.copy_scan_values_to_first_particles.call(
+                &mut pass,
+                indirect_dispatch_tensor(&grid.indirect_n_blocks_groups),
+                &grid.meta,
+                &grid.scan_values,
+                &mut grid.active_blocks,
+            )?;
+        }
+
+        {
+            let mut pass = encoder.begin_pass("sort:finalize_particles_sort", Some(timestamps));
+            sort_module.finalize_particles_sort.call(
+                &mut pass,
+                particles_len,
+                &grid.meta,
+                &grid.hmap_entries,
+                &particles.positions,
+                &particles.gpu_len,
+                &mut grid.active_blocks,
+                &mut particles.sorted_ids,
+            )?;
+        }
 
         Ok(())
     }
@@ -194,6 +432,9 @@ pub struct GpuGrid {
     pub active_blocks: Tensor<ActiveBlockHeader>,
     /// Workspace for prefix sum operations.
     pub scan_values: Tensor<u32>,
+    /// Single-element snapshot of `num_active_blocks` taken after the primary-block
+    /// touch pass, so the neighbour-block touch pass only iterates over base blocks.
+    pub active_blocks_snapshot: Tensor<u32>,
     /// Indirect dispatch arguments for block-parallel kernels.
     ///
     /// Stored as `Tensor<u32>` with 3 elements so it can be written by
@@ -266,6 +507,7 @@ impl GpuGrid {
             Tensor::vector_uninit(backend, capacity * NODES_PER_BLOCK, BufferUsages::STORAGE)?;
         let active_blocks = Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
         let scan_values = Tensor::vector_uninit(backend, capacity, BufferUsages::STORAGE)?;
+        let active_blocks_snapshot = Tensor::vector(backend, [0u32], BufferUsages::STORAGE)?;
         let indirect_n_blocks_groups =
             Tensor::vector_uninit(backend, 3, BufferUsages::STORAGE | BufferUsages::INDIRECT)?;
         let indirect_n_g2p_p2g_groups = Tensor::vector_uninit(
@@ -284,6 +526,7 @@ impl GpuGrid {
             nodes,
             active_blocks,
             scan_values,
+            active_blocks_snapshot,
             indirect_n_blocks_groups,
             indirect_n_g2p_p2g_groups,
             debug,

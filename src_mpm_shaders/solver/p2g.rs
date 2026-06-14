@@ -317,11 +317,10 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     // Write the node state to global memory (one write per node, no atomics).
     nodes.at_mut(gid).momentum_velocity = acc_mv;
     nodes.at_mut(gid).mass = acc_mass;
+    nodes.at_mut(gid).momentum_velocity_incompatible = acc_mv_incompatible;
+    nodes.at_mut(gid).mass_incompatible = acc_mass_incompatible;
 
     if USE_CPIC {
-        nodes.at_mut(gid).momentum_velocity_incompatible = acc_mv_incompatible;
-        nodes.at_mut(gid).mass_incompatible = acc_mass_incompatible;
-
         // Apply the accumulated impulse to the closest body using integer atomics.
         if TWO_WAYS_COUPLING_ENABLED && collider_id != NONE {
             let ci = collider_id as usize;

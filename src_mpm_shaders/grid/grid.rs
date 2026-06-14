@@ -723,6 +723,22 @@ pub fn gpu_reset_hmap(
     }
 }
 
+/// Snapshots the current `num_active_blocks` into a single-element buffer.
+///
+/// Used by the two-pass block activation: after `gpu_touch_primary_blocks` has
+/// activated all particle base blocks, this captures their count so that
+/// `gpu_touch_neighbor_blocks` only iterates over base blocks (and not over the
+/// neighbour blocks it appends).
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_capture_num_active_blocks(
+    #[spirv(global_invocation_id)] _invocation_id: khal_std::glamx::UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] num_base_blocks: &mut [u32],
+) {
+    num_base_blocks.write(0, grid.num_active_blocks);
+}
+
 /// Computes indirect dispatch sizes based on the number of active blocks.
 ///
 /// Produces two sets of dispatch arguments:

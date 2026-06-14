@@ -8,8 +8,9 @@ use crate::mpm_shaders::grid::sort::{
     GpuCopyParticlesLenToScanValue, GpuCopyRigidParticlesLenToScanValue,
     GpuCopyScanValuesToFirstParticles, GpuCopyScanValuesToFirstRigidParticles,
     GpuFinalizeParticlesSort, GpuFinalizeRigidParticlesSort, GpuMarkRigidParticlesNeedingBlock,
-    GpuTouchParticleBlocks, GpuTouchRigidParticleBlocks, GpuUpdateBlockParticleCount,
-    GpuUpdateBlockRigidParticleCount, GpuUpdateNbhBlockIds,
+    GpuTouchNeighborBlocks, GpuTouchParticleBlocks, GpuTouchPrimaryBlocks,
+    GpuTouchRigidParticleBlocks, GpuUpdateBlockParticleCount, GpuUpdateBlockRigidParticleCount,
+    GpuUpdateNbhBlockIds,
 };
 use crate::solver::GpuRigidParticles;
 use khal::Shader;
@@ -22,7 +23,11 @@ use nexus_rbd::utils::{GpuPrefixSum, PrefixSumWorkspace};
 /// for efficient neighbor queries during P2G/G2P.
 #[derive(Shader)]
 pub struct WgSort {
+    /// Legacy single-pass block activation, kept for the `launch_touch_for_test`
+    /// correctness check against the two-pass [`touch_primary_blocks`]/[`touch_neighbor_blocks`].
     pub(crate) touch_particle_blocks: GpuTouchParticleBlocks,
+    pub(crate) touch_primary_blocks: GpuTouchPrimaryBlocks,
+    pub(crate) touch_neighbor_blocks: GpuTouchNeighborBlocks,
     pub(crate) touch_rigid_particle_blocks: GpuTouchRigidParticleBlocks,
     pub(crate) mark_rigid_particles_needing_block: GpuMarkRigidParticlesNeedingBlock,
     pub(crate) update_block_particle_count: GpuUpdateBlockParticleCount,
