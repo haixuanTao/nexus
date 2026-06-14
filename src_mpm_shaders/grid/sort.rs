@@ -185,6 +185,39 @@ pub fn gpu_mark_rigid_particles_needing_block(
     }
 }
 
+/// Precomputes, for each active block, the header IDs of its +1 neighbour blocks.
+///
+/// Each particle contributes "extras" to the (up to) 3 (2D) / 7 (3D) blocks shifted by
+/// +1 along each axis from its primary block. Rather than re-querying the hashmap for
+/// those neighbours once per particle in the count/finalize passes, this kernel resolves
+/// them once per active block (the neighbour set is identical for every particle sharing
+/// a primary block) and caches them in `ActiveBlockHeader::nbh_block_ids`. Inactive
+/// neighbours are stored as `NONE`.
+///
+/// Must run after all blocks have been touched (so `num_active_blocks` is final and every
+/// neighbour that exists is in the hashmap) and before the particle/rigid count and
+/// finalize passes that read `nbh_block_ids`.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_update_nbh_block_ids(
+    #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &mut [ActiveBlockHeader],
+) {
+    let id = invocation_id.x;
+    if id < grid.num_active_blocks {
+        let block0 = active_blocks.at_mut(id as usize);
+        let vid = &block0.virtual_id;
+        let assoc = BlockVirtualId::blocks_associated_to_block(vid);
+        for nbh in 0..NUM_ASSOC_BLOCKS - 1 {
+            let nbh_vid = assoc[nbh + 1];
+            let nbh_hid = grid.find_block_header_id(hmap_entries, &nbh_vid);
+            block0.nbh_block_ids.write(nbh, nbh_hid);
+        }
+    }
+}
+
 /// Counts the number of particles in each active block.
 ///
 /// Each thread processes one particle, finds its associated block, and
@@ -237,7 +270,10 @@ pub fn gpu_update_block_particle_count(
                 && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
                 && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
             if spills {
-                let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
+                // The header IDs of the +1 neighbour blocks were precomputed by
+                // `gpu_update_nbh_block_ids`, so we read them from the primary block
+                // instead of doing a hashmap lookup per particle.
+                let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
                 atomic_add_u32(
                     &mut active_blocks
                         .at_mut(block_i.id as usize)
@@ -361,7 +397,9 @@ pub fn gpu_finalize_particles_sort(
                 && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
                 && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
             if spills {
-                let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
+                // Reuse the neighbour header IDs precomputed by `gpu_update_nbh_block_ids`
+                // rather than re-querying the hashmap.
+                let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
                 let first_i = active_blocks.at(block_i.id as usize).first_particle;
                 let slot_i = atomic_add_u32(
                     active_blocks
@@ -420,7 +458,9 @@ pub fn gpu_update_block_rigid_particle_count(
                     && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
                     && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
                 if spills {
-                    let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
+                    // The neighbour header IDs (or NONE for inactive neighbours) were
+                    // precomputed by `gpu_update_nbh_block_ids`.
+                    let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
                     if block_i.id != NONE {
                         atomic_add_u32(
                             &mut active_blocks
@@ -522,7 +562,8 @@ pub fn gpu_finalize_rigid_particles_sort(
                     && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
                     && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
                 if spills {
-                    let block_i = grid.find_block_header_id(hmap_entries, &blocks[i]);
+                    // Reuse the neighbour header IDs precomputed by `gpu_update_nbh_block_ids`.
+                    let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
                     if block_i.id != NONE {
                         let first_i = active_blocks.at(block_i.id as usize).first_rigid_particle;
                         let slot_i = atomic_add_u32(

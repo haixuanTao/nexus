@@ -106,6 +106,14 @@ impl WgGrid {
             &mut grid.indirect_n_g2p_p2g_groups,
         )?;
 
+        sort_module.update_nbh_block_ids.call(
+            pass,
+            indirect_dispatch_tensor(&grid.indirect_n_blocks_groups),
+            &grid.meta,
+            &grid.hmap_entries,
+            &mut grid.active_blocks,
+        )?;
+
         sort_module.update_block_particle_count.call(
             pass,
             particles_len,

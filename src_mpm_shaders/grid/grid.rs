@@ -40,6 +40,7 @@ pub const NUM_ASSOC_BLOCKS: usize = 4;
 /// Number of blocks associated with each particle/point.
 #[cfg(feature = "dim3")]
 pub const NUM_ASSOC_BLOCKS: usize = 8;
+pub const NUM_NBH_BLOCKS: usize = NUM_ASSOC_BLOCKS - 1;
 
 /// Offset applied when computing cell indices within a block.
 const OFF_BY_ONE: i32 = 1;
@@ -356,9 +357,11 @@ pub struct ActiveBlockHeader {
     /// inserting. The resulting segment is ordered by slab key, which P2G uses to
     /// derive per-chunk slab bounds for culling.
     pub sort_bucket_cursors: [u32; NUM_SORT_BUCKETS],
-    /// Padding to keep the struct size a multiple of its alignment (80 bytes in 3D,
-    /// 104 bytes in 2D).
-    pub padding: u32,
+    /// Header IDs of adjacent blocks to avoid repeated hmap lookup
+    /// in particle sorts.
+    pub nbh_block_ids: [BlockHeaderId; NUM_NBH_BLOCKS],
+    /// Padding.
+    pub padding: [u32; 2],
 }
 
 /// Top-level grid metadata.

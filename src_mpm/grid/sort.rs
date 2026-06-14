@@ -9,7 +9,7 @@ use crate::mpm_shaders::grid::sort::{
     GpuCopyScanValuesToFirstParticles, GpuCopyScanValuesToFirstRigidParticles,
     GpuFinalizeParticlesSort, GpuFinalizeRigidParticlesSort, GpuMarkRigidParticlesNeedingBlock,
     GpuTouchParticleBlocks, GpuTouchRigidParticleBlocks, GpuUpdateBlockParticleCount,
-    GpuUpdateBlockRigidParticleCount,
+    GpuUpdateBlockRigidParticleCount, GpuUpdateNbhBlockIds,
 };
 use crate::solver::GpuRigidParticles;
 use khal::Shader;
@@ -26,6 +26,7 @@ pub struct WgSort {
     pub(crate) touch_rigid_particle_blocks: GpuTouchRigidParticleBlocks,
     pub(crate) mark_rigid_particles_needing_block: GpuMarkRigidParticlesNeedingBlock,
     pub(crate) update_block_particle_count: GpuUpdateBlockParticleCount,
+    pub(crate) update_nbh_block_ids: GpuUpdateNbhBlockIds,
     pub(crate) copy_particles_len_to_scan_value: GpuCopyParticlesLenToScanValue,
     pub(crate) copy_scan_values_to_first_particles: GpuCopyScanValuesToFirstParticles,
     pub(crate) finalize_particles_sort: GpuFinalizeParticlesSort,
