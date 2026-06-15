@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
 use inflector::Inflector;
-use nexus_testbed2d::{DemoBuilder, Testbed};
-use std::cmp::Ordering;
+use nexus_testbed2d::{DemoKind, Viewer};
 
 mod balls2;
 mod boxes2;
@@ -19,6 +18,47 @@ mod centilever_beam2;
 mod elastic_cut2;
 mod elasticity2;
 mod sand2;
+
+/// Declares the demo registry: a `(name, kind)` list for the picker UI and a
+/// name -> `run()` dispatcher. Keeping both in one macro keeps them in sync.
+macro_rules! demos {
+    ( $( $name:literal => $kind:ident : $module:ident ),* $(,)? ) => {
+        fn demo_list() -> Vec<(String, DemoKind)> {
+            let mut demos: Vec<(String, DemoKind)> =
+                vec![ $( ($name.to_string(), DemoKind::$kind) ),* ];
+            demos.sort_by(|a, b| match (a.0.starts_with('('), b.0.starts_with('(')) {
+                (true, true) | (false, false) => a.0.cmp(&b.0),
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+            });
+            demos
+        }
+
+        async fn dispatch(name: &str, viewer: &mut Viewer) {
+            match name {
+                $( $name => $module::run(viewer).await, )*
+                _ => eprintln!("Unknown demo: '{name}'"),
+            }
+        }
+    };
+}
+
+demos! {
+    "Balls" => Rbd : balls2,
+    "Boxes" => Rbd : boxes2,
+    "Boxes & balls" => Rbd : boxes_and_balls2,
+    "Pyramid" => Rbd : pyramid2,
+    "Primitives" => Rbd : primitives2,
+    "Polyline" => Rbd : polyline2,
+    "Joints (spherical)" => Rbd : joint_ball2,
+    "Joints (prismatic)" => Rbd : joint_prismatic2,
+    "Joints (fixed)" => Rbd : joint_fixed2,
+    // MPM demos.
+    "Cantilever beam" => Mpm : centilever_beam2,
+    "Sand" => Mpm : sand2,
+    "Elasticity" => Mpm : elasticity2,
+    "Elastic cut" => Mpm : elastic_cut2,
+}
 
 struct CliOptions {
     example: Option<String>,
@@ -52,71 +92,51 @@ fn parse_command_line() -> CliOptions {
     opts
 }
 
-#[allow(clippy::type_complexity)]
-pub fn demo_builders() -> Vec<DemoBuilder> {
-    let mut builders: Vec<DemoBuilder> = vec![
-        balls2::builder(),
-        boxes2::builder(),
-        boxes_and_balls2::builder(),
-        pyramid2::builder(),
-        primitives2::builder(),
-        polyline2::builder(),
-        joint_ball2::builder(),
-        joint_prismatic2::builder(),
-        joint_fixed2::builder(),
-        // MPM demos.
-        centilever_beam2::builder(),
-        sand2::builder(),
-        elasticity2::builder(),
-        elastic_cut2::builder(),
-    ];
-
-    // Lexicographic sort, with stress tests moved at the end of the list.
-    builders.sort_by(
-        |a, b| match (a.name().starts_with('('), b.name().starts_with('(')) {
-            (true, true) | (false, false) => a.name().cmp(b.name()),
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-        },
-    );
-    builders
-}
-
 #[kiss3d::main]
 pub async fn main() {
     let opts = parse_command_line();
-    let mut builders = demo_builders();
+    let demos = demo_list();
 
     if opts.list {
-        for builder in &builders {
-            println!("{}", builder.name().to_camel_case());
+        for (name, _) in &demos {
+            println!("{}", name.to_camel_case());
         }
         return;
     }
 
+    let mut selected = 0;
     if let Some(ref demo) = opts.example {
-        if let Some(i) = builders
+        match demos
             .iter()
-            .position(|b| b.name().to_camel_case().as_str() == demo.as_str())
+            .position(|(name, _)| name.to_camel_case().as_str() == demo.as_str())
         {
-            let single = vec![builders.into_iter().nth(i).unwrap()];
-            builders = single;
-        } else {
-            eprintln!("Invalid example to run provided: '{demo}'");
-            return;
+            Some(i) => selected = i,
+            None => {
+                eprintln!("Invalid example to run provided: '{demo}'");
+                return;
+            }
         }
     }
 
-    let mut testbed = Testbed::from_builders(builders);
+    let mut viewer = Viewer::new(demos.clone()).await;
+    viewer = viewer.with_selected_demo(selected);
     if opts.cpu {
-        testbed = testbed.with_cpu();
+        viewer = viewer.with_cpu();
     }
     #[cfg(feature = "metal")]
     if opts.metal {
-        testbed = testbed.with_backend(nexus_testbed2d::BackendType::Metal);
+        viewer = viewer.with_backend(nexus_testbed2d::BackendType::Metal);
     }
     if opts.run {
-        testbed = testbed.with_running();
+        viewer = viewer.with_running();
     }
-    testbed.run().await
+
+    loop {
+        let sel = viewer.selected_demo();
+        dispatch(&demos[sel].0, &mut viewer).await;
+        if viewer.quitting() {
+            break;
+        }
+        viewer.clear_transition();
+    }
 }

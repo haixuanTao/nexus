@@ -1,6 +1,6 @@
 use glamx::vec3;
 use khal::backend::GpuBackend;
-use nexus_testbed3d::{DemoBuilder, nexus};
+use nexus_testbed3d::{Viewer, nexus};
 
 use nexus::fem::{
     mesh::FemMesh,
@@ -8,13 +8,13 @@ use nexus::fem::{
     solver::{FemConfig, FemMaterial, MaterialModel, SolverMethod},
 };
 
-#[allow(dead_code)]
-fn main() {
-    panic!("Run the `all_examples3` binary instead.");
-}
-
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::fem("FEM cube", build).with_camera(vec3(2.0, 2.0, 2.0), vec3(0.5, 0.3, 0.5))
+pub async fn run(viewer: &mut Viewer) {
+    viewer.set_camera(vec3(2.0, 2.0, 2.0), vec3(0.5, 0.3, 0.5));
+    let mut scene = viewer.set_fem(build).await;
+    while viewer.render(&mut scene).await {
+        scene.simulate(viewer).await;
+    }
+    scene.detach(viewer);
 }
 
 fn build(backend: &GpuBackend) -> FemData {

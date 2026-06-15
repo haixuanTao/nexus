@@ -1,9 +1,56 @@
+use crate::RunState;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps};
 use kiss3d::prelude::*;
+#[cfg(feature = "dim2")]
+use kiss3d::scene::SceneNode2d;
+#[cfg(feature = "dim3")]
+use kiss3d::scene::SceneNode3d;
 use nexus::fem::pipeline::{FemData, FemPipeline};
+
+#[cfg(feature = "dim2")]
+type RenderNode = SceneNode2d;
+#[cfg(feature = "dim3")]
+type RenderNode = SceneNode3d;
 
 pub type FemSceneBuildFn = fn(&KhalGpuBackend) -> FemData;
 pub type FemSceneBuilders = Vec<(String, FemSceneBuildFn)>;
+
+/// A FEM scene: the GPU FEM stage plus its vertex render node. Built via
+/// [`crate::Viewer::set_fem`].
+pub struct FemScene {
+    pub stage: FemStage,
+    pub(crate) vertex_node: RenderNode,
+}
+
+impl FemScene {
+    /// Runs the FEM solver for one render frame (internally substepped).
+    pub async fn step(&mut self) {
+        self.stage.update().await;
+    }
+
+    /// Pushes the latest vertex positions into the render node.
+    pub fn sync_graphics(&mut self) {
+        self.vertex_node.set_instances(&self.stage.instances);
+    }
+
+    /// Advances the simulation for one render frame (honoring pause) and syncs
+    /// graphics. Call this inside the example's loop body.
+    pub async fn simulate(&mut self, viewer: &mut crate::Viewer) {
+        if viewer.ui.run_state != RunState::Paused {
+            self.stage.update().await;
+        }
+        self.sync_graphics();
+        if viewer.ui.run_state == RunState::Step {
+            viewer.ui.run_state = RunState::Paused;
+        }
+    }
+
+    /// Detaches the vertex render node.
+    pub fn detach(self, _viewer: &mut crate::Viewer) {
+        let FemScene { mut vertex_node, .. } = self;
+        vertex_node.detach();
+    }
+}
 
 #[derive(Default)]
 pub struct FemStepTimings {

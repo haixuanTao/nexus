@@ -3,11 +3,12 @@ pub mod step;
 
 pub use data::*;
 
+use crate::RunState;
 use khal::Shader;
 use khal::backend::{GpuBackend as KhalGpuBackend, GpuTimestamps};
 use kiss3d::prelude::*;
 use nexus::mpm::pipeline::{MpmPipeline, MpmPipelineHooks};
-use nexus::mpm::solver::GpuParticleModelData;
+use nexus::mpm::solver::{GpuParticleModel, GpuParticleModelData};
 use rapier::geometry::{ColliderHandle, Shape, ShapeType};
 use step::{GpuReadbackData, SimulationStepResult, WgPrepReadback};
 
@@ -178,6 +179,57 @@ impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
                     }
                 }));
         }
+    }
+}
+
+/// A MPM scene: the GPU MPM stage plus its rendering nodes (particles and the
+/// rapier boundary colliders). Built via [`crate::Viewer::set_mpm`].
+pub struct MpmScene {
+    pub stage: MpmStage<GpuParticleModel>,
+    pub(crate) colliders_gfx: HashMap<ColliderHandle, RenderNode>,
+    pub(crate) particle_node: RenderNode,
+    pub(crate) rigid_particle_node: RenderNode,
+}
+
+impl MpmScene {
+    /// Runs the MPM solver for one render frame (internally substepped).
+    pub async fn step(&mut self) {
+        self.stage.update().await;
+    }
+
+    /// Pushes the latest particle/collider state into the render nodes.
+    pub fn sync_graphics(&mut self) {
+        update_colliders(&self.stage.physics, &mut self.colliders_gfx);
+        self.particle_node.set_instances(&self.stage.instances);
+        self.rigid_particle_node
+            .set_instances(&self.stage.rigid_instances);
+    }
+
+    /// Advances the simulation for one render frame (honoring pause) and syncs
+    /// graphics. Call this inside the example's loop body.
+    pub async fn simulate(&mut self, viewer: &mut crate::Viewer) {
+        if viewer.ui.run_state != RunState::Paused {
+            self.stage.update().await;
+        }
+        self.sync_graphics();
+        if viewer.ui.run_state == RunState::Step {
+            viewer.ui.run_state = RunState::Paused;
+        }
+    }
+
+    /// Detaches all render nodes owned by this scene.
+    pub fn detach(self, _viewer: &mut crate::Viewer) {
+        let MpmScene {
+            mut colliders_gfx,
+            mut particle_node,
+            mut rigid_particle_node,
+            ..
+        } = self;
+        for (_, mut node) in colliders_gfx.drain() {
+            node.detach();
+        }
+        particle_node.detach();
+        rigid_particle_node.detach();
     }
 }
 

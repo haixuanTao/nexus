@@ -1,4 +1,4 @@
-use nexus_testbed3d::DemoBuilder;
+use nexus_testbed3d::Viewer;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -10,17 +10,16 @@ use nexus::mpm::{
 };
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder};
 
-#[allow(dead_code)]
-fn main() {
-    panic!("Run the `all_examples3` binary instead.");
-}
-
 const DENSITY: f32 = 2700.0;
 const YOUNG_MODULUS: f32 = 2.0e9;
 const POISSON_RATIO: f32 = 0.2;
 
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::mpm("Sand", build)
+pub async fn run(viewer: &mut Viewer) {
+    let mut scene = viewer.set_mpm(build).await;
+    while viewer.render(&mut scene).await {
+        scene.simulate(viewer).await;
+    }
+    scene.detach(viewer);
 }
 
 fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {

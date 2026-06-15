@@ -143,7 +143,7 @@ async fn bench_backend(
 
     // Mirrors the urdf3 demo's `apply_random_ang_motors` tick: every 5 simulated
     // seconds, push a fresh random AngX motor target velocity to every link.
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
     let dt = 1.0 / 60.0_f64;
     let mut next_change_at = 0.0_f64;

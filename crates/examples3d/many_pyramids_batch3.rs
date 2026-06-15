@@ -1,8 +1,12 @@
-use nexus_testbed3d::{BatchEnvironment, DemoBuilder, SimulationState};
+use nexus_testbed3d::{BatchEnvironment, SimulationState, Viewer};
 use rapier3d::prelude::*;
 
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::rbd("Many pyramids (batched)", build)
+pub async fn run(viewer: &mut Viewer) {
+    let mut scene = viewer.set_rbd(build()).await;
+    while viewer.render(&mut scene).await {
+        scene.simulate(viewer).await;
+    }
+    scene.detach(viewer);
 }
 
 fn create_pyramid(

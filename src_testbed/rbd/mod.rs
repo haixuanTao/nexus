@@ -4,10 +4,11 @@ pub mod graphics;
 pub use backend::{BackendType, CpuBackend, GpuBackend, PhysicsBackend};
 pub use graphics::{RenderContext, setup_graphics, update_instances};
 
+use crate::RunState;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::dynamics::GpuSimParams;
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::GpuPhysicsPipeline;
+use nexus::rbd::pipeline::{GpuPhysicsPipeline, RunStats};
 use rapier::geometry::{ColliderHandle, ColliderSet, SharedShape};
 use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodySet};
 use std::collections::HashMap;
@@ -122,6 +123,74 @@ pub struct PhysicsContext {
 impl PhysicsContext {
     pub fn new(backend: PhysicsBackend) -> Self {
         Self { backend }
+    }
+}
+
+/// A rigid-body scene: GPU/CPU physics state plus its rendering instances.
+///
+/// Built via [`crate::Viewer::set_rbd`]. The example owns this and drives the
+/// loop with [`RbdScene::simulate`].
+pub struct RbdScene {
+    pub physics: PhysicsContext,
+    pub render_ctx: RenderContext,
+    /// Total elapsed simulated time, accumulated across non-paused steps.
+    pub sim_time: f64,
+    /// Per-step timestep length (copied from the scene's `sim_params.dt`).
+    pub dt: f32,
+    /// Number of physics steps run per render frame.
+    pub num_steps_per_frame: u32,
+    /// Backend the scene was created with, used to decide whether the GPU
+    /// pipeline can be cached on teardown.
+    pub(crate) created_backend: BackendType,
+}
+
+impl RbdScene {
+    /// Mutable access to the physics backend (e.g. to drive joint motors).
+    pub fn backend_mut(&mut self) -> &mut PhysicsBackend {
+        &mut self.physics.backend
+    }
+
+    /// Runs a single physics step. Self-contained (uses the backend's own GPU
+    /// device); does not render. This is the headless/Python entry point.
+    pub async fn step(&mut self) -> RunStats {
+        self.physics.backend.step(None).await
+    }
+
+    /// Pushes the latest poses into the kiss3d render instances.
+    pub fn sync_graphics(&mut self) {
+        update_instances(&mut self.render_ctx, &self.physics.backend);
+    }
+
+    /// Advances the simulation for one render frame (honoring pause/step) and
+    /// syncs graphics. Call this inside the example's loop body.
+    pub async fn simulate(&mut self, viewer: &mut crate::Viewer) {
+        if viewer.ui.run_state != RunState::Paused {
+            for _ in 0..self.num_steps_per_frame {
+                viewer.ui.run_stats = self.step().await;
+                self.sim_time += self.dt as f64;
+            }
+        }
+        self.sync_graphics();
+        if viewer.ui.run_state == RunState::Step {
+            viewer.ui.run_state = RunState::Paused;
+        }
+    }
+
+    /// Detaches the render nodes and, when the backend is unchanged, caches the
+    /// compiled GPU pipeline in the viewer for reuse by the next RBD scene.
+    pub fn detach(self, viewer: &mut crate::Viewer) {
+        let RbdScene {
+            mut render_ctx,
+            physics,
+            created_backend,
+            ..
+        } = self;
+        render_ctx.clear();
+        if created_backend == viewer.ui.backend_type {
+            if let PhysicsBackend::Gpu(gpu_backend) = physics.backend {
+                viewer.cache_pipeline(gpu_backend.into_pipeline());
+            }
+        }
     }
 }
 

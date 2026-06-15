@@ -1,4 +1,4 @@
-use nexus_testbed2d::DemoBuilder;
+use nexus_testbed2d::Viewer;
 use nexus_testbed2d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed2d::{nexus, rapier};
 
@@ -8,13 +8,12 @@ use nexus::mpm::pipeline::MpmData;
 use nexus::mpm::solver::{Particle, ParticleModel, SimulationParams};
 use rapier::prelude::{ColliderBuilder, RigidBodyBuilder};
 
-#[allow(dead_code)]
-fn main() {
-    panic!("Run the `all_examples2` binary instead.");
-}
-
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::mpm("Elasticity", build)
+pub async fn run(viewer: &mut Viewer) {
+    let mut scene = viewer.set_mpm(build).await;
+    while viewer.render(&mut scene).await {
+        scene.simulate(viewer).await;
+    }
+    scene.detach(viewer);
 }
 
 fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {

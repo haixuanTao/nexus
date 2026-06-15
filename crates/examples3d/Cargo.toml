@@ -43,3 +43,7 @@ path = "bench_urdf3.rs"
 [[bin]]
 name = "bench_joints3"
 path = "bench_joints3.rs"
+
+[[bin]]
+name = "bench_sort3"
+path = "bench_sort3.rs"

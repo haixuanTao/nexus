@@ -1,4 +1,4 @@
-use nexus_testbed3d::DemoBuilder;
+use nexus_testbed3d::Viewer;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -11,13 +11,12 @@ use nexus::mpm::{
 use rapier3d::parry::utils::Array2;
 use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
-#[allow(dead_code)]
-fn main() {
-    panic!("Run the `all_examples3` binary instead.");
-}
-
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::mpm("Heightfield", build)
+pub async fn run(viewer: &mut Viewer) {
+    let mut scene = viewer.set_mpm(build).await;
+    while viewer.render(&mut scene).await {
+        scene.simulate(viewer).await;
+    }
+    scene.detach(viewer);
 }
 
 fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {

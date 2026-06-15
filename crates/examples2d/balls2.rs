@@ -1,8 +1,12 @@
-use nexus_testbed2d::{DemoBuilder, SimulationState};
+use nexus_testbed2d::{SimulationState, Viewer};
 use rapier2d::prelude::*;
 
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::rbd("Balls", build)
+pub async fn run(viewer: &mut Viewer) {
+    let mut scene = viewer.set_rbd(build()).await;
+    while viewer.render(&mut scene).await {
+        scene.simulate(viewer).await;
+    }
+    scene.detach(viewer);
 }
 
 fn build() -> SimulationState {
