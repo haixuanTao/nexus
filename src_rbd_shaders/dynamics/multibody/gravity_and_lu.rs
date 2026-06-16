@@ -59,6 +59,10 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 10)] gravity: &Vec4,
     #[spirv(uniform, descriptor_set = 0, binding = 11)] batch_ids: &BatchIndices,
+    // Per-DOF Coulomb joint friction (MJCF `frictionloss`, N·m). Same per-env-per-
+    // DOF layout as the velocity section (indexed `gen_base + i`); 0 for the root
+    // and any unactuated DOF.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 12)] dof_frictionloss: &[f32],
     // Mass-matrix tile in shared memory.
     #[spirv(workgroup)] mat: &mut [f32; (MAX_MB_DOFS * MAX_MB_DOFS) as usize],
     // RHS / solution vector.
@@ -98,6 +102,7 @@ pub fn gpu_mb_gravity_and_lu(
         dof_state,
         batch_ids.dof_damping_section_offset as usize + gen_base,
     );
+    let frictionloss_slice = Slice(dof_frictionloss, gen_base);
 
     // ---- Phase 1: zero the generalized-force vector (parallel across DOFs). ----
     let accelerations = MatSlice::dense(gen_base, ndofs, 1);
@@ -240,7 +245,14 @@ pub fn gpu_mb_gravity_and_lu(
     if i < ndofs {
         let idx = gen_base + i as usize;
         let cur = gen_forces.read(idx);
-        gen_forces.write(idx, cur - damping_slice[i as usize] * vel_slice[i as usize]);
+        let v = vel_slice[i as usize];
+        // Viscous damping (linear) + Coulomb joint friction (frictionloss). The
+        // Coulomb term -fl·sign(v) is smoothed near v=0 via clamp(v/eps) (eps=1
+        // rad/s) so it tapers to viscous instead of chattering across zero. It's
+        // applied explicitly here (not folded into M like viscous damping) since
+        // Coulomb isn't linear in v.
+        let coulomb = frictionloss_slice[i as usize] * (v / 1.0).clamp(-1.0, 1.0);
+        gen_forces.write(idx, cur - damping_slice[i as usize] * v - coulomb);
     }
     workgroup_memory_barrier_with_group_sync();
 

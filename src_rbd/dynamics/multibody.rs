@@ -126,6 +126,18 @@ pub struct GpuMultibodySet {
     /// num_batches`). Seeded with damping from each joint's `default_damping`
     /// — 0.1 on every free angular DOF, 0 elsewhere.
     dof_state: Tensor<f32>,
+    /// Per-DOF Coulomb joint friction (MJCF `frictionloss`, N·m), `dofs_cap ×
+    /// num_batches` in the same layout as the velocity section. Applied
+    /// explicitly in `gpu_mb_gravity_and_lu` as `-frictionloss·sign(v)`
+    /// (smoothed near v=0). Initialised to 0; set via [`set_dof_frictionloss`].
+    dof_frictionloss: Tensor<f32>,
+    /// Per-DOF armature (rotor inertia, N·m·s²/rad), `dofs_cap × num_batches` in
+    /// the same env-major layout as the velocity section. Added to the mass-
+    /// matrix DIAGONAL in `gpu_mb_compute_dynamics_pre` (NOT the link inertia
+    /// tensor) so it stays consistent with the gravity bias force — armature in
+    /// the inertia tensor inflates M=JᵀIJ inconsistently and makes a free-falling
+    /// body spuriously buckle. Initialised to 0; set via [`set_dof_armature`].
+    dof_armature: Tensor<f32>,
     /// Generalized forces / after solve, generalized accelerations.
     gen_forces: Tensor<f32>,
     /// **PoC for the dof-major layout rewrite.** Sized `dofs_cap × num_batches`
@@ -441,6 +453,26 @@ impl GpuMultibodySet {
             BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         )
         .unwrap();
+    }
+
+    /// Set the per-DOF Coulomb joint friction (`frictionloss`, N·m). `values` is
+    /// `dofs_cap × num_batches` in the same env-major layout as the velocity
+    /// section of `dof_state` (0 for the root and any unactuated DOF). Applied as
+    /// `-frictionloss·sign(v)` in `gpu_mb_gravity_and_lu`.
+    pub fn set_dof_frictionloss(&mut self, backend: &GpuBackend, values: &[f32]) {
+        backend
+            .write_buffer(self.dof_frictionloss.buffer_mut(), 0, values)
+            .unwrap();
+    }
+
+    /// Set the per-DOF armature (rotor inertia). `values` is `dofs_cap ×
+    /// num_batches` in the same env-major layout as the velocity section of
+    /// `dof_state` (0 for the root and any unactuated DOF). Added to the mass-
+    /// matrix diagonal in `gpu_mb_compute_dynamics_pre`.
+    pub fn set_dof_armature(&mut self, backend: &GpuBackend, values: &[f32]) {
+        backend
+            .write_buffer(self.dof_armature.buffer_mut(), 0, values)
+            .unwrap();
     }
 
     /// Sets a motor's target velocity on a multibody joint and uploads the
@@ -994,6 +1026,18 @@ impl GpuMultibodySet {
                 debug_assert_eq!(buf.len(), 2 * n);
                 Tensor::vector(backend, &buf, storage | BufferUsages::COPY_DST).unwrap()
             },
+            dof_frictionloss: Tensor::vector(
+                backend,
+                &vec![0.0f32; (dofs_cap * num_batches) as usize],
+                storage | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
+            dof_armature: Tensor::vector(
+                backend,
+                &vec![0.0f32; (dofs_cap * num_batches) as usize],
+                storage | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
             gen_forces: Tensor::vector(
                 backend,
                 &vec![0.0f32; (dofs_cap * num_batches) as usize],
@@ -1712,6 +1756,7 @@ impl GpuMultibodySolver {
                 &mb.num_multibodies,
                 &mb.dt,
                 args.batch_indices,
+                &mb.dof_armature,
             )?;
         } else {
             self.compute_dynamics_without_coriolis_pre.call(
@@ -1728,6 +1773,7 @@ impl GpuMultibodySolver {
                 &mb.num_multibodies,
                 &mb.dt,
                 args.batch_indices,
+                &mb.dof_armature,
             )?;
         }
 
@@ -1751,6 +1797,7 @@ impl GpuMultibodySolver {
             &mb.num_multibodies,
             &mb.gravity,
             args.batch_indices,
+            &mb.dof_frictionloss,
         )?;
 
         Ok(())
@@ -2103,6 +2150,7 @@ impl GpuMultibodySolver {
                 &mb.num_multibodies,
                 &mb.dt,
                 args.batch_indices,
+                &mb.dof_armature,
             )?;
         } else {
             self.compute_dynamics_without_coriolis_pre.call(
@@ -2119,6 +2167,7 @@ impl GpuMultibodySolver {
                 &mb.num_multibodies,
                 &mb.dt,
                 args.batch_indices,
+                &mb.dof_armature,
             )?;
         }
 
@@ -2139,6 +2188,7 @@ impl GpuMultibodySolver {
             &mb.num_multibodies,
             &mb.gravity,
             args.batch_indices,
+            &mb.dof_frictionloss,
         )?;
 
         Ok(())

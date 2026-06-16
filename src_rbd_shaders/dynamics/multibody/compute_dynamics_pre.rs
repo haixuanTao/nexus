@@ -75,6 +75,12 @@ pub fn gpu_mb_compute_dynamics_pre(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 10)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 11)] batch_ids: &BatchIndices,
+    // Per-DOF armature (rotor inertia), env-major `dofs_cap × num_batches`, same
+    // layout/indexing as the velocity section (`vel_base + i`). Added to the mass-
+    // matrix DIAGONAL (not the link inertia tensor) so it stays consistent with
+    // the gravity bias force — otherwise a free-falling body gets spurious
+    // internal joint accelerations. 0 for the root / unactuated DOFs.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 12)] dof_armature: &[f32],
     // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
@@ -121,6 +127,9 @@ pub fn gpu_mb_compute_dynamics_pre(
         dof_state,
         vel_base + batch_ids.dof_damping_section_offset as usize,
     );
+    // Per-DOF armature, env-major, indexed `vel_base + dof` like the velocity
+    // section. Added to the mass-matrix diagonal below.
+    let armature_slice = Slice(dof_armature, vel_base);
     let vel_slice = Slice(dof_state, vel_base);
 
     // 1) Forward Kinematics (single-threaded)
@@ -489,7 +498,10 @@ pub fn gpu_mb_compute_dynamics_pre(
     if d < ndofs {
         let diag_idx = acc_augmented_mass.idx(d, d);
         let cur = mass_matrices.read(diag_idx);
-        mass_matrices.write(diag_idx, cur + damping_slice[d as usize] * dt);
+        mass_matrices.write(
+            diag_idx,
+            cur + damping_slice[d as usize] * dt + armature_slice[d as usize],
+        );
     }
 }
 
@@ -513,6 +525,10 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
     #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
+    // Per-DOF armature (rotor inertia) — see the with-Coriolis kernel. Added to
+    // the mass-matrix diagonal (binding here is 11; this kernel has no Coriolis
+    // buffer so its binding indices are one lower than the Coriolis variant).
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] dof_armature: &[f32],
     // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
@@ -551,6 +567,9 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         dof_state,
         vel_base + batch_ids.dof_damping_section_offset as usize,
     );
+    // Per-DOF armature, env-major, indexed `vel_base + dof` like the velocity
+    // section. Added to the mass-matrix diagonal below.
+    let armature_slice = Slice(dof_armature, vel_base);
     let vel_slice = Slice(dof_state, vel_base);
 
     // 1) Forward Kinematics (single-threaded)
@@ -618,7 +637,10 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     if d < ndofs {
         let diag_idx = acc_augmented_mass.idx(d, d);
         let cur = mass_matrices.read(diag_idx);
-        mass_matrices.write(diag_idx, cur + damping_slice[d as usize] * dt);
+        mass_matrices.write(
+            diag_idx,
+            cur + damping_slice[d as usize] * dt + armature_slice[d as usize],
+        );
     }
 }
 

@@ -169,7 +169,27 @@ pub fn gpu_mb_init_contact_constraints(
     let mb_idx = invocation_id.x;
     let dt = *dt_uniform;
     let inv_dt = if dt != 0.0 { 1.0 / dt } else { 0.0 };
-    let erp_inv_dt = inv_dt;
+    // Damped Baumgarte position correction from this env's `SimParams`, matching
+    // the rigid-body path's `contact_erp_inv_dt` = ω / (dt·ω + 2ζ). Replaces the
+    // old `erp_inv_dt = inv_dt` (ERP=1.0, which tried to undo ALL penetration in
+    // one step → a penetrating foot got a separating bias up to
+    // `max_corr_velocity` and LAUNCHED the articulation; energy injection that
+    // worsened with more solver iterations). Reading SimParams here also makes
+    // per-env `contact_natural_frequency` / `contact_damping_ratio` domain
+    // randomization actually reach the multibody contact solver.
+    // Damped Baumgarte position correction (mirrors the rigid-body path's
+    // `contact_erp_inv_dt`): erp_inv_dt = ω / (dt·ω + 2ζ). NOT `erp_inv_dt =
+    // inv_dt` (ERP=1.0) — that undoes ALL penetration in one step, so a
+    // penetrating foot got a separating bias up to `max_corr_velocity` and
+    // LAUNCHED the articulation (energy injection that worsened with more solver
+    // iterations). Hardcoded to SimParams::default() (contact_natural_frequency=
+    // 30 Hz, contact_damping_ratio=5): wiring per-env SimParams into this kernel
+    // regressed training even with identical 30/5 values (a binding/layout issue
+    // to be debugged separately), so contact-stiffness DR stays inert for now.
+    let contact_natural_frequency = 30.0f32;
+    let contact_damping_ratio = 5.0f32;
+    let ang_freq = contact_natural_frequency * core::f32::consts::TAU;
+    let erp_inv_dt = ang_freq / (dt * ang_freq + 2.0 * contact_damping_ratio);
     let allowed_lin_err = 0.001f32;
     let max_corr_velocity = 10.0f32;
 

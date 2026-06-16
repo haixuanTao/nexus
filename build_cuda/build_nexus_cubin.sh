@@ -1,12 +1,12 @@
 #!/bin/bash
 set -eo pipefail
-TOOL=$HOME/.rustup/toolchains/nightly-2026-04-03-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin
-LIBDEV=/usr/lib/nvidia-cuda-toolkit/libdevice/libdevice.10.bc
-PTXAS=/usr/bin/ptxas
+TOOL=$HOME/.rustup/toolchains/nightly-2025-08-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin
+LIBDEV=$HOME/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/libdevice/libdevice.10.bc
+PTXAS=$HOME/.local/lib/python3.12/site-packages/triton/backends/nvidia/bin/ptxas
 BACKEND=$HOME/cuda-oxide-src/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so
 export CUDA_OXIDE_PTX_DIR=$HOME/nexus_ptx
 export PATH=$HOME/.cargo/bin:$PATH
-cd /home/peter/Documents/work/nex/nexus-cuda
+cd ~/Documents/work/nexus-cuda
 
 echo "=== [1/6] cuda-oxide build nexus_rbd_shaders3d -> .ll ==="
 cargo clean -p nexus_rbd_shaders3d 2>/dev/null || true
@@ -25,10 +25,10 @@ $TOOL/llvm-link /tmp/nx.bc $LIBDEV -o /tmp/nx_linked.bc
 echo "=== [3/6] internalize + globaldce ==="
 $TOOL/opt -passes="internalize,globaldce" /tmp/nx_linked.bc -o /tmp/nx_pruned.bc
 echo "=== [4/6] llc -> ptx ==="
-$TOOL/llc -mcpu=sm_89 -O3 /tmp/nx_pruned.bc -o /tmp/nx.ptx
+$TOOL/llc -mcpu=sm_120 -O3 /tmp/nx_pruned.bc -o /tmp/nx.ptx
 echo "=== [5/6] ptxas -> cubin ==="
 rm -f $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
-$PTXAS -arch=sm_89 -O3 /tmp/nx.ptx -o $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
+$PTXAS -arch=sm_120 -O3 /tmp/nx.ptx -o $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
 ls -la $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
 
 echo "=== [6/6] rebuild HOST binary (boxes3d_cuda), embedding the cubin via build.rs ==="
