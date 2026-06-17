@@ -256,6 +256,59 @@ pub fn gpu_mb_gravity_and_lu(
     }
     workgroup_memory_barrier_with_group_sync();
 
+    // ---- Explicit force-based motor PD torque ----
+    // For motors with `model == FORCE_BASED`, apply the actuator torque
+    // τ = clamp(stiffness·(target − q) − damping·q̇, ±max_force) DIRECTLY as a
+    // generalized force (added to `gen_forces` before the LU solve, so it enters
+    // the accelerations like any applied force), instead of as the soft
+    // cfm_gain motor constraint (which under-realizes kp on the low-inertia leg
+    // joints, so the robot sags / buckles under gravity). This matches the real
+    // robot and MuJoCo's position actuator exactly: τ = kp·err − kv·q̇ with fixed
+    // gains. AccelerationBased motors (model 0) are untouched — they still go
+    // through the constraint path. Run serially on lane 0 over the links
+    // (`num_links` is small, ~13); each motor maps to a distinct DOF so there's
+    // no double-write, and `gen_forces` for this mb is final after the damping
+    // pass above.
+    if lane == 0 {
+        for k in 0..num_links {
+            let stat = stat_slice[k as usize];
+            if stat.kinematic != 0 {
+                continue;
+            }
+            let locked = stat.data.locked_axes;
+            let motor_axes = stat.data.motor_axes & !locked;
+            if motor_axes == 0 {
+                continue;
+            }
+            let ws = &ws_slice[k as usize];
+            // Walk the free axes in DOF order (mirrors `init_joint_constraints`),
+            // tracking the DOF offset within this joint's slice.
+            let mut curr_free_dof = 0u32;
+            for axis in 0..(SPATIAL_DIM as u32) {
+                if (locked & (1 << axis)) != 0 {
+                    continue;
+                }
+                if (motor_axes & (1 << axis)) != 0 {
+                    // By-value element load — cuda-oxide drops the dynamic index
+                    // on `&motors[axis]` (see init_joint_constraints).
+                    let motor = stat.data.motors[axis as usize];
+                    if motor.model == crate::dynamics::joint::FORCE_BASED {
+                        let q = ws.coords.read(axis as usize);
+                        let abs_dof = stat.assembly_id + curr_free_dof;
+                        let v = vel_slice[abs_dof as usize];
+                        let tau = (motor.stiffness * (motor.target_pos - q)
+                            - motor.damping * v)
+                            .clamp(-motor.max_force, motor.max_force);
+                        let idx = gen_base + abs_dof as usize;
+                        gen_forces.write(idx, gen_forces.read(idx) + tau);
+                    }
+                }
+                curr_free_dof += 1;
+            }
+        }
+    }
+    workgroup_memory_barrier_with_group_sync();
+
     // ---- Phase 3: load M into shared memory, factor in place. ----
     let m_view = MatSlice::dense(mb_mm_base, ndofs, ndofs);
     if lane < ndofs {

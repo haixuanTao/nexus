@@ -34,6 +34,7 @@ use crate::shaders::dynamics::{
     GpuMbRemoveContactConstraintBias, GpuMbRemoveImpulseJointConstraintBias,
     GpuMbRemoveSolveJointNoBias, GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
     GpuMbUpdateImpulseJointConstraints, GpuScatterMotorTargets, LocalMassProperties, MAX_AXIS_CONSTRAINTS,
+    SimParams as GpuSimParams,
     MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder, MbImpulseJointConstraint,
     MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic,
     MultibodyLinkWorkspace, SIDE_KIND_BODY, SIDE_KIND_FIXED, SIDE_KIND_MB, Velocity,
@@ -1710,6 +1711,10 @@ pub struct MultibodySolverArgs<'a> {
     pub contacts: &'a Tensor<GpuIndexedContact>,
     /// Per-batch contact count (parallel to `contacts`).
     pub contacts_len: &'a Tensor<u32>,
+    /// Per-env solver parameters (one `SimParams` per environment). Read by
+    /// `init_contact_constraints` for per-env `contact_natural_frequency` /
+    /// `contact_damping_ratio` (contact-stiffness domain randomization).
+    pub sim_params: &'a Tensor<GpuSimParams>,
     /// Free-body solver velocities (updated in place by `solve_contact_constraints`).
     pub solver_vels: &'a mut Tensor<Velocity>,
     /// Shared `BatchIndices` uniform — every multibody kernel reads its
@@ -1918,6 +1923,7 @@ impl GpuMultibodySolver {
             args.collider_world_poses,
             args.contacts,
             args.contacts_len,
+            args.sim_params,
         )?;
 
         // `finalize_contact_constraints` is cooperative (threads(32)): one

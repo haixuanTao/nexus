@@ -1006,6 +1006,7 @@ impl GpuPhysicsPipeline {
                     contacts_len: &state.contacts_len,
                     solver_vels: &mut state.solver_vels,
                     batch_indices: &state.batch_indices,
+                    sim_params: &state.sim_params,
                 };
                 self.multibody_solver
                     .init_step(&mut pass, &mut state.multibodies, &mut args)

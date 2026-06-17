@@ -36,6 +36,7 @@ pub const MB_CONTACT_SOLVE_LANES: u32 = 32;
 
 use crate::dynamics::body::{Velocity, WorldMassProperties};
 use crate::dynamics::joint::SPATIAL_DIM;
+use crate::dynamics::sim_params::SimParams;
 use crate::queries::IndexedManifold;
 use crate::utils::BatchIndices;
 use crate::utils::linalg::{MatSlice, lu_solve_in_place};
@@ -163,6 +164,7 @@ pub fn gpu_mb_init_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[SimParams],
     #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
@@ -182,12 +184,16 @@ pub fn gpu_mb_init_contact_constraints(
     // inv_dt` (ERP=1.0) — that undoes ALL penetration in one step, so a
     // penetrating foot got a separating bias up to `max_corr_velocity` and
     // LAUNCHED the articulation (energy injection that worsened with more solver
-    // iterations). Hardcoded to SimParams::default() (contact_natural_frequency=
-    // 30 Hz, contact_damping_ratio=5): wiring per-env SimParams into this kernel
-    // regressed training even with identical 30/5 values (a binding/layout issue
-    // to be debugged separately), so contact-stiffness DR stays inert for now.
-    let contact_natural_frequency = 30.0f32;
-    let contact_damping_ratio = 5.0f32;
+    // iterations). Now reads per-env `contact_natural_frequency` /
+    // `contact_damping_ratio` from this batch's `SimParams` (set 1, binding 4 —
+    // the same per-env tensor the free-body solver reads via `all_params.at`),
+    // so contact-stiffness domain randomization reaches the multibody contact
+    // solver. `dt` still comes from the dedicated `dt_uniform` (the substep dt),
+    // NOT from `params.dt`, so with DR off (all envs at the 30/5 default) the
+    // erp/cfm are bit-identical to the previous hardcoded path.
+    let params = all_params.at(batch_id as usize);
+    let contact_natural_frequency = params.contact_natural_frequency;
+    let contact_damping_ratio = params.contact_damping_ratio;
     let ang_freq = contact_natural_frequency * core::f32::consts::TAU;
     let erp_inv_dt = ang_freq / (dt * ang_freq + 2.0 * contact_damping_ratio);
     let allowed_lin_err = 0.001f32;

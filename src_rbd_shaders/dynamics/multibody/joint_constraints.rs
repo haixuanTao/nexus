@@ -731,6 +731,18 @@ fn emit_motor_constraint(
     // See `emit_limit_constraint`: defer the LU back-solve to a parallel phase.
     defer_column: bool,
 ) {
+    // Force-based motors are NOT emitted as soft constraints here — they are
+    // applied as an explicit generalized-force PD torque in
+    // `gpu_mb_gravity_and_lu` (`gen_forces += clamp(kp·(target−q) − kd·q̇,
+    // ±max_force)`). The soft cfm_gain motor constraint under-realizes kp on
+    // low-inertia joints (the ankles), so the articulation sags / buckles under
+    // gravity. Leaving this slot untouched keeps it at the inactive `kind = 0`
+    // written by the init zeroing pass, so the solver and the parallel
+    // back-solve (`if cons.kind != 0`) both skip it — slot accounting is
+    // unchanged.
+    if motor.model == crate::dynamics::joint::FORCE_BASED {
+        return;
+    }
     let (erp_inv_dt, cfm_coeff, cfm_gain, _, max_impulse) = motor_params(motor, dt);
 
     let mut rhs_wo_bias = 0.0f32;
