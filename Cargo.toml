@@ -36,6 +36,7 @@ vortx = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
 web-time = "1"
 static_assertions = "1"
+futures = "0.3"
 
 # Shaders deps
 khal-builder = "0.2"

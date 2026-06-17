@@ -30,7 +30,7 @@ use kiss3d::camera::{FixedView2d, OrbitCamera3d};
 use kiss3d::camera::{FixedView3d, PanZoomCamera2d};
 
 use nexus::mpm::solver::GpuParticleModel;
-use nexus::rbd::pipeline::{GpuPhysicsPipeline, RunStats};
+use nexus::rbd::pipeline::{RbdPipeline, RunStats};
 
 use crate::fem::{FemScene, FemSceneBuildFn};
 use crate::mpm::{self, MpmScene, MpmSceneBuildFn};
@@ -70,7 +70,7 @@ pub struct Viewer {
     cuda: Option<KhalGpuBackend>,
     #[cfg(feature = "metal")]
     metal: Option<KhalGpuBackend>,
-    cached_gpu_pipeline: Option<GpuPhysicsPipeline>,
+    cached_gpu_pipeline: Option<RbdPipeline>,
     pub ui: UiState,
 }
 
@@ -384,16 +384,16 @@ impl Viewer {
 
     /// Caches the GPU pipeline extracted from a finished RBD scene so the next
     /// RBD scene on the same backend can reuse it (skipping shader compilation).
-    pub(crate) fn cache_pipeline(&mut self, pipeline: GpuPhysicsPipeline) {
+    pub(crate) fn cache_pipeline(&mut self, pipeline: RbdPipeline) {
         self.cached_gpu_pipeline = Some(pipeline);
     }
 
     /// Builds a MPM scene from a build function (as in the example `build`).
-    pub async fn set_mpm(&mut self, build: MpmSceneBuildFn<GpuParticleModel>) -> MpmScene {
+    pub async fn set_mpm(&mut self, build: MpmSceneBuildFn) -> MpmScene {
         self.ensure_backend_initialized();
         let khal = self.cpu_or_gpu_backend("MPM");
         let mut stage =
-            crate::mpm::MpmStage::new(khal, |_| Box::new(()), vec![("demo".to_string(), build)])
+            crate::mpm::MpmStage::new(khal, vec![("demo".to_string(), build)])
                 .await;
         // Initial readback (0 substeps) so particles are visible before the first step.
         stage.update().await;

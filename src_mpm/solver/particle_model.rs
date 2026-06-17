@@ -122,19 +122,3 @@ impl From<ParticleModel> for GpuParticleModel {
         GpuParticleModel { tag, data }
     }
 }
-
-/// Trait for types that can be used as GPU particle model data.
-pub trait GpuParticleModelData: Pod + Send + Sync {
-    /// CPU-side material model type.
-    type Model: Copy;
-    /// Converts from CPU representation to GPU representation.
-    fn from_model(model: Self::Model) -> Self;
-}
-
-impl GpuParticleModelData for GpuParticleModel {
-    type Model = ParticleModel;
-
-    fn from_model(model: Self::Model) -> Self {
-        model.into()
-    }
-}

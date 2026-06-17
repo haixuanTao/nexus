@@ -10,7 +10,7 @@ use crate::mpm_shaders::models::default::GpuParticleModel;
 use crate::mpm_shaders::solver::timestep_bound::{
     GpuEstimateTimestepBound, GpuResetTimestepBound, GpuTimestepBounds,
 };
-use crate::solver::{GpuParticleModelData, GpuParticles};
+use crate::solver::{GpuParticles};
 use khal::Shader;
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
 use vortx::tensor::Tensor;
@@ -24,12 +24,12 @@ pub struct WgTimestepBounds {
 
 impl WgTimestepBounds {
     /// Launches the timestep bounds estimation and returns the estimated maximum timestep length.
-    pub async fn compute_bounds<GpuModel: GpuParticleModelData>(
+    pub async fn compute_bounds(
         &self,
         backend: &GpuBackend,
         timestamps: Option<&mut GpuTimestamps>,
         grid: &GpuGrid,
-        particles: &GpuParticles<GpuModel>,
+        particles: &GpuParticles,
         bounds: &mut Tensor<GpuTimestepBounds>,
         bounds_staging: &mut Tensor<GpuTimestepBounds>,
     ) -> Result<f32, GpuBackendError> {
@@ -47,11 +47,11 @@ impl WgTimestepBounds {
         Ok(result[0].computed_max_dt_as_uint as f32 / GpuTimestepBounds::FLOAT_TO_INT)
     }
 
-    fn launch<GpuModel: GpuParticleModelData>(
+    fn launch(
         &self,
         pass: &mut GpuPass,
         grid: &GpuGrid,
-        particles: &GpuParticles<GpuModel>,
+        particles: &GpuParticles,
         bounds: &mut Tensor<GpuTimestepBounds>,
     ) -> Result<(), GpuBackendError> {
         self.reset_timestep_bound.call(pass, 1u32, bounds)?;
@@ -61,7 +61,7 @@ impl WgTimestepBounds {
             pass,
             [len, 1, 1],
             &grid.meta,
-            cast_tensor::<GpuModel, GpuParticleModel>(&particles.models),
+            &particles.models,
             &particles.kinematics,
             &particles.def_grad,
             &particles.properties,

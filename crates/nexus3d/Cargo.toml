@@ -33,6 +33,8 @@ mpm = ["dep:nexus_mpm3d"]
 fem = ["dep:nexus_fem3d"]
 
 [dependencies]
+bitflags = "2"
+khal = { workspace = true }
 nexus_rbd3d = { path = "../nexus_rbd3d", optional = true }
 nexus_mpm3d = { path = "../nexus_mpm3d", optional = true }
 nexus_fem3d = { path = "../nexus_fem3d", optional = true }

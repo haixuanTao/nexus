@@ -6,12 +6,12 @@
 use crate::grid::grid::{GpuGrid, WgGrid};
 use crate::grid::sort::WgSort;
 use crate::solver::{
-    BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticleModelData,
+    BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials,
     GpuParticles, GpuRigidParticles, GpuSimulationParams, GpuTimestepBounds, Particle,
     SimulationParams, WgG2P, WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgIntegrateBodies, WgP2G,
     WgP2GCdf, WgParticleUpdate, WgRigidParticleUpdate, WgTimestepBounds,
 };
-use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use nexus_rbd::dynamics::GpuBodySet;
 use nexus_rbd::math::{Pose, Vector};
@@ -24,7 +24,7 @@ use vortx::tensor::Tensor;
 use nexus_rbd::dynamics::body::{BodyCoupling, RapierBodyCouplingEntry};
 
 /// GPU compute pipeline for Material Point Method simulation.
-pub struct MpmPipeline<GpuModel: GpuParticleModelData> {
+pub struct MpmPipeline {
     grid: WgGrid,
     prefix_sum: GpuPrefixSum,
     sort: WgSort,
@@ -40,98 +40,10 @@ pub struct MpmPipeline<GpuModel: GpuParticleModelData> {
     pub timestep_bounds: WgTimestepBounds,
     /// Rigid body impulse computation kernel (publicly accessible for external use).
     pub integrate_bodies: WgIntegrateBodies,
-    _phantom: PhantomData<GpuModel>,
 }
-
-/// Callbacks for adding custom steps to the MPM pipeline.
-pub trait MpmPipelineHooks<GpuModel: GpuParticleModelData> {
-    fn max_substep_dt(
-        &mut self,
-        _backend: &GpuBackend,
-        _timestamps: Option<&mut GpuTimestamps>,
-        _data: &mut MpmData<GpuModel>,
-        _state: &mut dyn Any,
-    ) -> Option<f32> {
-        None
-    }
-
-    /// Custom operation run after particles are sorted and attached to the grid.
-    fn after_particle_sort(
-        &mut self,
-        _backend: &GpuBackend,
-        _encoder: &mut GpuEncoder,
-        _timestamps: Option<&mut GpuTimestamps>,
-        _data: &mut MpmData<GpuModel>,
-        _state: &mut dyn Any,
-    ) -> Result<(), GpuBackendError> {
-        Ok(())
-    }
-
-    /// Custom operation run after the main Particle-To-Grid transfer.
-    fn after_p2g(
-        &mut self,
-        _backend: &GpuBackend,
-        _encoder: &mut GpuEncoder,
-        _timestamps: Option<&mut GpuTimestamps>,
-        _data: &mut MpmData<GpuModel>,
-        _state: &mut dyn Any,
-    ) -> Result<(), GpuBackendError> {
-        Ok(())
-    }
-
-    /// Custom operation run after updating the grid.
-    fn after_grid_update(
-        &mut self,
-        _backend: &GpuBackend,
-        _encoder: &mut GpuEncoder,
-        _timestamps: Option<&mut GpuTimestamps>,
-        _data: &mut MpmData<GpuModel>,
-        _state: &mut dyn Any,
-    ) -> Result<(), GpuBackendError> {
-        Ok(())
-    }
-
-    /// Custom operation run after the Grid-To-Particle transfer.
-    fn after_g2p(
-        &mut self,
-        _backend: &GpuBackend,
-        _encoder: &mut GpuEncoder,
-        _timestamps: Option<&mut GpuTimestamps>,
-        _data: &mut MpmData<GpuModel>,
-        _state: &mut dyn Any,
-    ) -> Result<(), GpuBackendError> {
-        Ok(())
-    }
-
-    fn particle_update_enabled(&self) -> bool {
-        true
-    }
-
-    fn g2p_enabled(&self) -> bool {
-        true
-    }
-
-    fn p2g_enabled(&self) -> bool {
-        true
-    }
-
-    /// Custom operation run after updating particles.
-    fn after_particles_update(
-        &mut self,
-        _backend: &GpuBackend,
-        _encoder: &mut GpuEncoder,
-        _timestamps: Option<&mut GpuTimestamps>,
-        _data: &mut MpmData<GpuModel>,
-        _state: &mut dyn Any,
-    ) -> Result<(), GpuBackendError> {
-        Ok(())
-    }
-}
-
-impl<GpuModel: GpuParticleModelData> MpmPipelineHooks<GpuModel> for () {}
 
 /// GPU-resident simulation state for MPM.
-pub struct MpmData<GpuModel: GpuParticleModelData> {
+pub struct MpmState {
     /// The simulation timestep.
     pub base_dt: f32,
     pub gravity: Vector,
@@ -141,7 +53,7 @@ pub struct MpmData<GpuModel: GpuParticleModelData> {
     /// Spatial grid for momentum transfer.
     pub grid: GpuGrid,
     /// MPM particles (positions, velocities, masses, material properties).
-    pub particles: GpuParticles<GpuModel>,
+    pub particles: GpuParticles,
     /// Particles sampled from rigid body collider surfaces for two-way coupling.
     pub rigid_particles: GpuRigidParticles,
     /// Rigid bodies coupled with the MPM simulation.
@@ -161,13 +73,70 @@ pub struct MpmData<GpuModel: GpuParticleModelData> {
     coupling: Vec<RapierBodyCouplingEntry>,
 }
 
+impl MpmState {
+    /// Creates an empty MPM state with no particles and no coupled bodies.
+    ///
+    /// The grid is preallocated to hold `grid_capacity` cells. Physical
+    /// parameters (`gravity`, `base_dt`, the grid `cell_width`) are left at
+    /// neutral defaults — set [`MpmState::gravity`] / [`MpmState::base_dt`] (and
+    /// recreate the grid if a different cell width is required) before stepping.
+    /// Particles and coupled bodies are appended lazily via the higher-level
+    /// `NexusState` API; the underlying GPU buffers grow on demand.
+    pub fn empty(backend: &GpuBackend, grid_capacity: u32) -> Result<Self, GpuBackendError> {
+        const DEFAULT_CELL_WIDTH: f32 = 1.0;
+        let params = SimulationParams {
+            gravity: Vector::ZERO,
+            #[cfg(feature = "dim2")]
+            padding: 0.0,
+            dt: 1.0 / 60.0,
+        };
+        let sim_params = GpuSimulationParams::new(backend, params)?;
+        let particles = GpuParticles::from_particles(backend, &[])?;
+        let rigid_particles = GpuRigidParticles::new(backend)?;
+        let bodies = GpuBodySet::empty(backend);
+        let body_materials = GpuMaterials::new(backend, &[])?;
+        let grid = GpuGrid::with_capacity(backend, grid_capacity, DEFAULT_CELL_WIDTH)?;
+        let prefix_sum = PrefixSumWorkspace::with_capacity(backend, grid_capacity);
+        let impulses = GpuImpulses::new(backend)?;
+        let poses_staging = Tensor::vector_uninit(
+            backend,
+            bodies.len(),
+            BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        )?;
+        let bounds = GpuTimestepBounds::default();
+        let timestep_bounds =
+            Tensor::scalar(backend, bounds, BufferUsages::STORAGE | BufferUsages::COPY_SRC)?;
+        let timestep_bounds_staging =
+            Tensor::scalar(backend, bounds, BufferUsages::COPY_DST | BufferUsages::MAP_READ)?;
+
+        Ok(Self {
+            base_dt: params.dt,
+            gravity: params.gravity,
+            use_cpic: false,
+            sim_params,
+            grid,
+            particles,
+            rigid_particles,
+            bodies,
+            body_materials,
+            impulses,
+            poses_staging,
+            timestep_bounds,
+            timestep_bounds_staging,
+            prefix_sum,
+            #[cfg(feature = "from_rapier")]
+            coupling: Vec::new(),
+        })
+    }
+}
+
 #[cfg(feature = "from_rapier")]
-impl<GpuModel: GpuParticleModelData> MpmData<GpuModel> {
+impl MpmState {
     /// Creates new MPM simulation data with default two-way coupling for all colliders.
     pub fn new(
         backend: &GpuBackend,
         params: SimulationParams,
-        particles: &[Particle<GpuModel::Model>],
+        particles: &[Particle],
         bodies: &rapier::dynamics::RigidBodySet,
         colliders: &rapier::geometry::ColliderSet,
         materials: &[(rapier::geometry::ColliderHandle, BoundaryCondition)],
@@ -212,7 +181,7 @@ impl<GpuModel: GpuParticleModelData> MpmData<GpuModel> {
     pub fn with_select_coupling(
         backend: &GpuBackend,
         params: SimulationParams,
-        particles: &[Particle<GpuModel::Model>],
+        particles: &[Particle],
         bodies: &rapier::dynamics::RigidBodySet,
         colliders: &rapier::geometry::ColliderSet,
         coupling: Vec<RapierBodyCouplingEntry>,
@@ -274,7 +243,7 @@ impl<GpuModel: GpuParticleModelData> MpmData<GpuModel> {
     }
 }
 
-impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
+impl MpmPipeline {
     /// Creates a new MPM compute pipeline by compiling all necessary shaders.
     pub fn new(backend: &GpuBackend) -> Result<Self, GpuBackendError> {
         Ok(Self {
@@ -291,20 +260,18 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             g2p_cdf: WgG2PCdf::from_backend(backend)?,
             integrate_bodies: WgIntegrateBodies::from_backend(backend)?,
             timestep_bounds: WgTimestepBounds::from_backend(backend)?,
-            _phantom: PhantomData,
         })
     }
 
     /// Executes one complete MPM simulation timestep.
-    pub async fn launch_step(
+    pub fn step(
         &self,
         backend: &GpuBackend,
-        encoder: &mut GpuEncoder,
-        data: &mut MpmData<GpuModel>,
+        data: &mut MpmState,
         mut timestamps: Option<&mut GpuTimestamps>,
-        hooks: &mut dyn MpmPipelineHooks<GpuModel>,
-        hooks_state: &mut dyn Any,
     ) -> Result<(), GpuBackendError> {
+        let mut encoder = backend.begin_encoding();
+
         {
             let mut pass = encoder.begin_pass("Rigid update", timestamps.as_deref_mut());
             self.integrate_bodies.launch_update_world_mass_properties(
@@ -345,14 +312,6 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             }
         }
 
-        hooks.after_particle_sort(
-            backend,
-            encoder,
-            timestamps.as_deref_mut(),
-            data,
-            hooks_state,
-        )?;
-
         if data.use_cpic {
             {
                 let mut pass = encoder.begin_pass("CDF grid update", timestamps.as_deref_mut());
@@ -381,7 +340,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             }
         }
 
-        if hooks.p2g_enabled() {
+        {
             let mut pass = encoder.begin_pass("P2G", timestamps.as_deref_mut());
             self.p2g.launch(
                 &mut pass,
@@ -393,14 +352,6 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
                 &data.body_materials,
             )?;
         }
-
-        hooks.after_p2g(
-            backend,
-            encoder,
-            timestamps.as_deref_mut(),
-            data,
-            hooks_state,
-        )?;
 
         {
             let mut pass = encoder.begin_pass("Grid update", timestamps.as_deref_mut());
@@ -414,15 +365,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_grid_update(
-            backend,
-            encoder,
-            timestamps.as_deref_mut(),
-            data,
-            hooks_state,
-        )?;
-
-        if hooks.g2p_enabled() {
+        {
             let mut pass = encoder.begin_pass("G2P", timestamps.as_deref_mut());
             self.g2p.launch(
                 &mut pass,
@@ -435,15 +378,7 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        hooks.after_g2p(
-            backend,
-            encoder,
-            timestamps.as_deref_mut(),
-            data,
-            hooks_state,
-        )?;
-
-        if hooks.particle_update_enabled() {
+        {
             let mut pass = encoder.begin_pass("Particle update", timestamps.as_deref_mut());
             self.particles_update.launch(
                 &mut pass,
@@ -452,14 +387,6 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
                 &mut data.particles,
             )?;
         }
-
-        hooks.after_particles_update(
-            backend,
-            encoder,
-            timestamps.as_deref_mut(),
-            data,
-            hooks_state,
-        )?;
 
         {
             let mut pass = encoder.begin_pass("Integrate bodies", timestamps.as_deref_mut());
@@ -472,6 +399,6 @@ impl<GpuModel: GpuParticleModelData> MpmPipeline<GpuModel> {
             )?;
         }
 
-        Ok(())
+        backend.submit(encoder)
     }
 }

@@ -10,7 +10,7 @@ use crate::shapes::ShapeBuffers;
 use crate::shaders::dynamics::{LocalMassProperties, Velocity, WorldMassProperties};
 use crate::shaders::shapes::Shape;
 use khal::BufferUsages;
-use khal::backend::GpuBackend;
+use khal::backend::{GpuBackend, GpuBackendError};
 use vortx::tensor::Tensor;
 
 use crate::shaders::PaddedVector;
@@ -211,41 +211,57 @@ impl GpuBodySet {
             &[0, 0, 0]
         };
 
+        // All per-body buffers carry COPY_SRC | COPY_DST so they support the
+        // incremental `append` / `shift_remove` paths used by the high-level
+        // `NexusState` API.
+        let resizeable = BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         Self {
             len: bodies.len() as u32,
-            mprops: Tensor::vector(backend, &mprops, BufferUsages::STORAGE).unwrap(),
-            local_mprops: Tensor::vector(backend, &local_mprops, BufferUsages::STORAGE).unwrap(),
-            vels: Tensor::vector(
-                backend,
-                &vels,
-                BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            )
-            .unwrap(),
-            poses: Tensor::vector(
-                backend,
-                &poses,
-                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            )
-            .unwrap(),
-            shapes: Tensor::vector(backend, &shapes_data, BufferUsages::STORAGE).unwrap(),
-            shapes_local_vertex_buffers: Tensor::vector(
-                backend,
-                vertex_buffer,
-                BufferUsages::STORAGE,
-            )
-            .unwrap(),
-            shapes_vertex_buffers: Tensor::vector(backend, vertex_buffer, BufferUsages::STORAGE)
-                .unwrap(),
-            shapes_index_buffers: Tensor::vector(backend, index_buffer, BufferUsages::STORAGE)
-                .unwrap(),
-            shapes_vertex_collider_id: Tensor::vector(
-                backend,
-                pt_collider_ids,
-                BufferUsages::STORAGE,
-            )
-            .unwrap(),
+            mprops: Tensor::vector(backend, &mprops, resizeable).unwrap(),
+            local_mprops: Tensor::vector(backend, &local_mprops, resizeable).unwrap(),
+            vels: Tensor::vector(backend, &vels, resizeable).unwrap(),
+            poses: Tensor::vector(backend, &poses, resizeable).unwrap(),
+            shapes: Tensor::vector(backend, &shapes_data, resizeable).unwrap(),
+            shapes_local_vertex_buffers: Tensor::vector(backend, vertex_buffer, resizeable).unwrap(),
+            shapes_vertex_buffers: Tensor::vector(backend, vertex_buffer, resizeable).unwrap(),
+            shapes_index_buffers: Tensor::vector(backend, index_buffer, resizeable).unwrap(),
+            shapes_vertex_collider_id: Tensor::vector(backend, pt_collider_ids, resizeable).unwrap(),
             shapes_data,
         }
+    }
+
+    /// Creates an empty body set.
+    pub fn empty(backend: &GpuBackend) -> Self {
+        Self::new(backend, &[], &[], &ShapeBuffers::default())
+    }
+
+    /// Removes a range of body slots from this set, shifting later bodies down
+    /// to fill the gap. Returns the number of removed bodies.
+    ///
+    /// NOTE: this updates the per-body buffers only. Shapes referencing the
+    /// shared vertex/index buffers (trimesh / heightfield / polyline) are *not*
+    /// compacted — the orphaned vertices remain allocated. Primitive (vertex-less)
+    /// colliders are fully handled.
+    pub fn shift_remove(
+        &mut self,
+        backend: &GpuBackend,
+        range: impl std::ops::RangeBounds<usize> + Clone,
+    ) -> Result<usize, GpuBackendError> {
+        let removed = self.poses.shift_remove(backend, range.clone())?;
+        self.vels.shift_remove(backend, range.clone())?;
+        self.mprops.shift_remove(backend, range.clone())?;
+        self.local_mprops.shift_remove(backend, range.clone())?;
+        self.shapes.shift_remove(backend, range.clone())?;
+
+        // Mirror the CPU-side shape cache.
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(i) => *i,
+            std::ops::Bound::Excluded(i) => *i + 1,
+            std::ops::Bound::Unbounded => 0,
+        };
+        self.shapes_data.drain(start..start + removed);
+        self.len -= removed as u32;
+        Ok(removed)
     }
 
     /// GPU storage buffer containing the poses of every rigid-body.
@@ -319,6 +335,72 @@ impl GpuBodySet {
     /// Useful for accessing shape information without GPU readback.
     pub fn shapes_data(&self) -> &[Shape] {
         &self.shapes_data
+    }
+}
+
+#[cfg(feature = "from_rapier")]
+impl GpuBodySet {
+    /// Appends rigid-bodies (converted from rapier) to this set and returns the
+    /// indices of the newly inserted bodies.
+    ///
+    /// Only primitive (vertex-less) colliders are supported by this incremental
+    /// path; mesh-based colliders (trimesh / heightfield / polyline) would
+    /// require growing the shared vertex/index buffers and offsetting the shape
+    /// references, which isn't handled yet.
+    pub fn append_rapier(
+        &mut self,
+        backend: &GpuBackend,
+        bodies: &[(
+            crate::rapier::dynamics::RigidBody,
+            crate::rapier::geometry::Collider,
+            BodyCoupling,
+        )],
+    ) -> Result<Vec<u32>, GpuBackendError> {
+        let start = self.len;
+        let mut poses = Vec::with_capacity(bodies.len());
+        let mut vels = Vec::with_capacity(bodies.len());
+        let mut mprops = Vec::with_capacity(bodies.len());
+        let mut local_mprops = Vec::with_capacity(bodies.len());
+        let mut shapes = Vec::with_capacity(bodies.len());
+
+        for (rb, co, coupling) in bodies {
+            let mut shape_buffers = ShapeBuffers::default();
+            let shape = shape_from_parry(co.shape(), &mut shape_buffers)
+                .expect("Unsupported shape type");
+            assert!(
+                shape_buffers.vertices.is_empty(),
+                "GpuBodySet::append_rapier currently supports primitive (vertex-less) colliders only."
+            );
+
+            let two_ways_coupling = rb.is_dynamic() && *coupling == BodyCoupling::TwoWays;
+            let local = if two_ways_coupling {
+                convert_local_mprops(&rb.mass_properties().local_mprops)
+            } else {
+                convert_local_mprops(&MassProperties::default())
+            };
+
+            poses.push(*rb.position());
+            vels.push(Velocity::new(
+                rb.linvel(),
+                #[cfg(feature = "dim2")]
+                rb.angvel(),
+                #[cfg(feature = "dim3")]
+                rb.angvel(),
+            ));
+            mprops.push(WorldMassProperties::default());
+            local_mprops.push(local);
+            shapes.push(shape);
+        }
+
+        self.poses.append(backend, &poses)?;
+        self.vels.append(backend, &vels)?;
+        self.mprops.append(backend, &mprops)?;
+        self.local_mprops.append(backend, &local_mprops)?;
+        self.shapes.append(backend, &shapes)?;
+        self.shapes_data.extend_from_slice(&shapes);
+        self.len += bodies.len() as u32;
+
+        Ok((start..self.len).collect())
     }
 }
 

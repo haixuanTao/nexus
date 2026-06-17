@@ -8,7 +8,7 @@ use crate::RunState;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::dynamics::GpuSimParams;
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::{GpuPhysicsPipeline, RunStats};
+use nexus::rbd::pipeline::{RbdPipeline, RunStats};
 use rapier::geometry::{ColliderHandle, ColliderSet, SharedShape};
 use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodySet};
 use std::collections::HashMap;
@@ -199,7 +199,7 @@ pub async fn setup_physics(
     phys: &SimulationState,
     backend_type: BackendType,
     gpu_error: &mut Option<String>,
-    cached_pipeline: &mut Option<GpuPhysicsPipeline>,
+    cached_pipeline: &mut Option<RbdPipeline>,
 ) -> PhysicsContext {
     let backend = match backend_type {
         BackendType::Gpu => {

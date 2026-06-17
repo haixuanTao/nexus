@@ -2,7 +2,7 @@
 
 use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::g2p_cdf::GpuG2pCdf;
-use crate::solver::{GpuParticleModelData, GpuParticles, GpuSimulationParams};
+use crate::solver::{GpuParticles, GpuSimulationParams};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
 
@@ -18,12 +18,12 @@ pub struct WgG2PCdf {
 
 impl WgG2PCdf {
     /// Launches G2P with CDF updates for MPM particles.
-    pub fn launch<GpuModel: GpuParticleModelData>(
+    pub fn launch(
         &self,
         pass: &mut GpuPass,
         sim_params: &GpuSimulationParams,
         grid: &GpuGrid,
-        particles: &mut GpuParticles<GpuModel>,
+        particles: &mut GpuParticles,
     ) -> Result<(), GpuBackendError> {
         self.g2p_cdf.call(
             pass,

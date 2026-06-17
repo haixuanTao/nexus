@@ -6,7 +6,6 @@
 use crate::grid::grid::GpuGrid;
 use crate::mpm_shaders::solver::prep_readback::{GpuPrepReadback, GpuPrepReadbackRigid};
 pub use crate::mpm_shaders::solver::prep_readback::{ReadbackData, RenderConfig};
-use crate::solver::particle_model::GpuParticleModelData;
 use crate::solver::{GpuParticles, GpuRigidParticles, GpuSimulationParams};
 use glamx::Vec4;
 use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
@@ -128,14 +127,14 @@ impl WgPrepReadback {
     /// This runs a compute pass that writes `ReadbackData` into `instances`,
     /// then copies `instances` → `instances_staging` for CPU readback.
     /// Also dispatches the rigid particle readback shader if there are rigid particles.
-    pub fn launch<GpuModel: GpuParticleModelData>(
+    pub fn launch(
         &self,
         encoder: &mut GpuEncoder,
         timestamps: Option<&mut GpuTimestamps>,
         readback: &mut GpuReadbackData,
         sim_params: &GpuSimulationParams,
         grid: &GpuGrid,
-        particles: &GpuParticles<GpuModel>,
+        particles: &GpuParticles,
         rigid_particles: &GpuRigidParticles,
     ) -> Result<(), GpuBackendError> {
         let len = particles.len() as u32;

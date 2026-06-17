@@ -1,7 +1,7 @@
 use crate::mpm::MpmStage;
 use crate::mpm::data::PhysicsState;
 use khal::backend::Backend;
-use nexus::mpm::solver::{GpuParticleModelData, SimulationParams};
+use nexus::mpm::solver::{GpuParticleModel, SimulationParams};
 
 pub use nexus::mpm::solver::prep_readback::{
     GpuReadbackData, ReadbackData, RenderConfig, WgPrepReadback,
@@ -23,25 +23,15 @@ pub struct SimulationStepResult {
     pub timings: SimulationTimes,
 }
 
-impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
+impl MpmStage {
     pub async fn step_simulation(&mut self) -> bool {
         let physics = &mut self.physics;
         let prev_particle_count = physics.data.particles.len();
 
-        // Run callbacks.
-        for callback in &mut physics.callbacks {
-            let mut phx = PhysicsState {
-                backend: &self.gpu,
-                data: &mut physics.data,
-                results: &self.step_result,
-                step_id: self.step_id,
-            };
-            callback.update(&mut phx);
-        }
-
         // Check if particle count changed.
         let new_particle_count = physics.data.particles.len();
         let num_rigid_particles = physics.data.rigid_particles.len() as usize;
+
         if prev_particle_count != new_particle_count {
             self.readback
                 .resize(
@@ -61,18 +51,10 @@ impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
         let prev_num_substeps = self.app_state.num_substeps;
 
         let mut no_state = Box::new(());
-        let hooks_state = physics.hooks_state.as_deref_mut().unwrap_or(&mut no_state);
 
         if self.app_state.min_num_substeps < self.app_state.max_num_substeps {
             // Adaptive stepping.
-            let bounds = if let Some(max_substep_dt) = self.hooks.max_substep_dt(
-                &self.gpu,
-                Some(&mut self.timestamps),
-                &mut physics.data,
-                hooks_state,
-            ) {
-                max_substep_dt
-            } else {
+            let bounds =
                 self.app_state
                     .pipeline
                     .timestep_bounds
@@ -85,8 +67,7 @@ impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
                         &mut physics.data.timestep_bounds_staging,
                     )
                     .await
-                    .unwrap()
-            };
+                    .unwrap();
 
             let num_substeps_estimated = (base_dt / bounds).ceil() as u32;
             let num_substeps = num_substeps_estimated.clamp(
@@ -119,20 +100,14 @@ impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
 
         // Run substeps.
         for _ in 0..self.app_state.num_substeps {
-            let mut encoder = self.gpu.begin_encoding();
             self.app_state
                 .pipeline
-                .launch_step(
+                .step(
                     &self.gpu,
-                    &mut encoder,
                     &mut physics.data,
                     Some(&mut self.timestamps),
-                    &mut *self.hooks,
-                    hooks_state,
                 )
-                .await
                 .unwrap();
-            self.gpu.submit(encoder).unwrap();
         }
 
         // Prepare readback data on GPU and copy to staging.

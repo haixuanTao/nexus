@@ -1,3 +1,6 @@
+pub mod pipeline;
+pub mod state;
+
 #[cfg(all(feature = "dim2", feature = "rbd"))]
 pub use nexus_rbd2d as rbd;
 #[cfg(all(feature = "dim3", feature = "rbd"))]
@@ -12,3 +15,10 @@ pub use nexus_mpm3d as mpm;
 pub use nexus_fem2d as fem;
 #[cfg(all(feature = "dim3", feature = "fem"))]
 pub use nexus_fem3d as fem;
+
+pub use rbd::{rapier, parry};
+
+pub mod prelude {
+    pub use crate::pipeline::*;
+    pub use crate::state::*;
+}

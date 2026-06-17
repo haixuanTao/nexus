@@ -5,14 +5,14 @@ use kiss3d::prelude::*;
 use kiss3d::scene::SceneNode2d;
 #[cfg(feature = "dim3")]
 use kiss3d::scene::SceneNode3d;
-use nexus::fem::pipeline::{FemData, FemPipeline};
+use nexus::fem::pipeline::{FemState, FemPipeline};
 
 #[cfg(feature = "dim2")]
 type RenderNode = SceneNode2d;
 #[cfg(feature = "dim3")]
 type RenderNode = SceneNode3d;
 
-pub type FemSceneBuildFn = fn(&KhalGpuBackend) -> FemData;
+pub type FemSceneBuildFn = fn(&KhalGpuBackend) -> FemState;
 pub type FemSceneBuilders = Vec<(String, FemSceneBuildFn)>;
 
 /// A FEM scene: the GPU FEM stage plus its vertex render node. Built via
@@ -66,7 +66,7 @@ pub struct FemStage {
     pub(crate) selected_demo: usize,
     pub(crate) builders: FemSceneBuilders,
     pub(crate) pipeline: FemPipeline,
-    pub(crate) data: FemData,
+    pub(crate) data: FemState,
     pub(crate) timestamps: GpuTimestamps,
     pub(crate) timings: FemStepTimings,
     #[cfg(feature = "dim2")]
@@ -110,7 +110,7 @@ impl FemStage {
         // Run substeps.
         for _ in 0..self.data.num_substeps {
             self.pipeline
-                .launch_step(&mut self.gpu, &mut self.data, Some(&mut self.timestamps))
+                .step(&mut self.gpu, &mut self.data, Some(&mut self.timestamps))
                 .unwrap();
         }
 

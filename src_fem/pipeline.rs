@@ -1,7 +1,7 @@
 //! FEM simulation pipeline: GPU buffer management and kernel dispatch.
 //!
-//! `FemPipeline` holds compiled GPU shaders, `FemData` holds all GPU state.
-//! Call `FemPipeline::launch_step()` per substep to advance the simulation.
+//! `FemPipeline` holds compiled GPU shaders, `FemState` holds all GPU state.
+//! Call `FemPipeline::step()` per substep to advance the simulation.
 
 #![allow(non_snake_case)]
 
@@ -51,10 +51,10 @@ impl FemPipeline {
     }
 
     /// Dispatch one substep of the FEM simulation.
-    pub fn launch_step(
+    pub fn step(
         &self,
-        gpu: &mut GpuBackend,
-        data: &mut FemData,
+        gpu: &GpuBackend,
+        data: &mut FemState,
         timestamps: Option<&mut GpuTimestamps>,
     ) -> Result<(), GpuBackendError> {
         match data.method {
@@ -65,8 +65,8 @@ impl FemPipeline {
 
     fn launch_explicit_step(
         &self,
-        gpu: &mut GpuBackend,
-        data: &mut FemData,
+        gpu: &GpuBackend,
+        data: &mut FemState,
         mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Result<(), GpuBackendError> {
         let nv = data.num_vertices;
@@ -152,8 +152,8 @@ impl FemPipeline {
 
     fn launch_implicit_step(
         &self,
-        gpu: &mut GpuBackend,
-        data: &mut FemData,
+        gpu: &GpuBackend,
+        data: &mut FemState,
         mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Result<(), GpuBackendError> {
         let nv = data.num_vertices;
@@ -481,13 +481,13 @@ impl FemPipeline {
     }
 }
 
-// ── FemData ──
+// ── FemState ──
 
 /// GPU state for a FEM simulation.
 ///
 /// Holds all GPU buffers (vertex state, element data, solver scratch space)
 /// and simulation configuration.
-pub struct FemData {
+pub struct FemState {
     // Configuration
     pub method: SolverMethod,
     pub num_substeps: u32,
@@ -546,7 +546,7 @@ fn compute_S(B_inv: Matrix) -> [Vector; VERTS_PER_ELEM] {
     }
 }
 
-impl FemData {
+impl FemState {
     /// Create FEM simulation data from meshes and materials.
     ///
     /// Each `(FemMesh, FemMaterial)` pair is an entity. Vertices and elements

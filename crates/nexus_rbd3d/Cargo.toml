@@ -38,6 +38,7 @@ vortx = { workspace = true }
 bytemuck = { workspace = true }
 web-time = { workspace = true }
 bvh = "0.7"
+futures = { workspace = true }
 
 # Optional dependencies for rapier/parry interop
 rapier3d = { version = "0.33", optional = true, features = ["bytemuck"] }

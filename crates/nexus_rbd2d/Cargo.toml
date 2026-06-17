@@ -37,6 +37,7 @@ khal = { workspace = true }
 vortx = { workspace = true }
 bytemuck = { workspace = true }
 web-time = { workspace = true }
+futures = { workspace = true }
 bvh = "0.7"
 
 # Optional dependencies for rapier/parry interop

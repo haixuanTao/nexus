@@ -7,7 +7,6 @@ use crate::cast_tensor_mut;
 use crate::grid::grid::GpuGrid;
 use crate::mpm_shaders::models::default::GpuParticleModel;
 use crate::mpm_shaders::solver::particle_update::GpuParticleUpdate;
-use crate::solver::particle_model::GpuParticleModelData;
 use crate::solver::{GpuParticles, GpuSimulationParams};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
@@ -24,12 +23,12 @@ pub struct WgParticleUpdate {
 
 impl WgParticleUpdate {
     /// Launches the particle update kernel.
-    pub fn launch<GpuModel: GpuParticleModelData>(
+    pub fn launch(
         &self,
         pass: &mut GpuPass,
         sim_params: &GpuSimulationParams,
         grid: &GpuGrid,
-        particles: &mut GpuParticles<GpuModel>,
+        particles: &mut GpuParticles,
     ) -> Result<(), GpuBackendError> {
         let len = particles.len() as u32;
         self.particle_update.call(
@@ -37,7 +36,7 @@ impl WgParticleUpdate {
             [len, 1, 1],
             &sim_params.params,
             &grid.meta,
-            cast_tensor_mut::<GpuModel, GpuParticleModel>(&mut particles.models),
+            &mut particles.models,
             &mut particles.positions,
             &mut particles.kinematics,
             &mut particles.def_grad,

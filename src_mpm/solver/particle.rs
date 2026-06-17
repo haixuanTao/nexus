@@ -2,7 +2,6 @@ use crate::mpm_shaders::solver::particle::{
     Kinematics, ParticleProperties, Position, RigidParticleIndices,
 };
 use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
-use crate::solver::particle_model::GpuParticleModelData;
 use khal::BufferUsages;
 use khal::backend::{Backend, GpuBackend, GpuBackendError};
 use nexus_rbd::dynamics::GpuBodySet;
@@ -15,6 +14,7 @@ use {
     crate::sampling::{self, SamplingBuffers, SamplingParams},
     nexus_rbd::dynamics::body::RapierBodyCouplingEntry,
 };
+use crate::solver::{ParticleModel, GpuParticleModel};
 
 /// Particle position type used on the GPU.
 ///
@@ -24,18 +24,18 @@ pub type ParticlePosition = Position;
 
 /// A single MPM particle with position, dynamics, and material model.
 #[derive(Copy, Clone, Debug)]
-pub struct Particle<Model> {
+pub struct Particle {
     /// Spatial position.
     pub position: Vector,
     /// Physical state (velocity, deformation, mass, etc.).
     pub dynamics: ParticleDynamics,
     /// Material model defining constitutive behavior.
-    pub model: Model,
+    pub model: ParticleModel,
 }
 
-impl<Model> Particle<Model> {
+impl Particle {
     /// Creates a new particle with the given properties.
-    pub fn new(position: Vector, radius: f32, density: f32, model: Model) -> Self {
+    pub fn new(position: Vector, radius: f32, density: f32, model: ParticleModel) -> Self {
         Particle {
             position,
             dynamics: ParticleDynamics::new(radius, density),
@@ -148,16 +148,16 @@ impl ParticleDynamics {
     }
 }
 
-struct SoAParticles<GpuModel: GpuParticleModelData> {
+struct SoAParticles {
     positions: Vec<Position>,
     kinematics: Vec<Kinematics>,
     def_grad: Vec<PaddedMatrix>,
     properties: Vec<ParticleProperties>,
-    models: Vec<GpuModel>,
+    models: Vec<GpuParticleModel>,
 }
 
-impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
-    pub fn new(particles: &[Particle<GpuModel::Model>]) -> Self {
+impl SoAParticles {
+    pub fn new(particles: &[Particle]) -> Self {
         let positions: Vec<_> = particles
             .iter()
             .map(|p| Position::new(p.position))
@@ -176,7 +176,7 @@ impl<GpuModel: GpuParticleModelData> SoAParticles<GpuModel> {
             .collect();
         let models: Vec<_> = particles
             .iter()
-            .map(|p| GpuModel::from_model(p.model))
+            .map(|p| GpuParticleModel::from(p.model))
             .collect();
 
         Self {
@@ -320,18 +320,18 @@ impl GpuRigidParticles {
 }
 
 /// GPU buffers storing all MPM particle data in Structure-of-Arrays layout.
-pub struct GpuParticles<GpuModel: GpuParticleModelData> {
+pub struct GpuParticles {
     len: usize,
     pub gpu_len: Tensor<u32>,
     pub positions: Tensor<Position>,
     pub kinematics: Tensor<Kinematics>,
     pub def_grad: Tensor<PaddedMatrix>,
     pub properties: Tensor<ParticleProperties>,
-    pub models: Tensor<GpuModel>,
+    pub models: Tensor<GpuParticleModel>,
     pub sorted_ids: Tensor<u32>,
 }
 
-impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
+impl GpuParticles {
     /// Returns true if there are no particles.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -350,7 +350,7 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
     /// Uploads CPU-side particles to GPU buffers.
     pub fn from_particles(
         backend: &GpuBackend,
-        particles: &[Particle<GpuModel::Model>],
+        particles: &[Particle],
     ) -> Result<Self, GpuBackendError> {
         let data = SoAParticles::new(particles);
         let resizeable = BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST;
@@ -371,12 +371,12 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
     }
 
     /// Returns reference to material model buffer.
-    pub fn models(&self) -> &Tensor<GpuModel> {
+    pub fn models(&self) -> &Tensor<GpuParticleModel> {
         &self.models
     }
 
     /// Returns mutable reference to material model buffer.
-    pub fn models_mut(&mut self) -> &mut Tensor<GpuModel> {
+    pub fn models_mut(&mut self) -> &mut Tensor<GpuParticleModel> {
         &mut self.models
     }
 
@@ -464,7 +464,7 @@ impl<GpuModel: GpuParticleModelData> GpuParticles<GpuModel> {
     pub fn append(
         &mut self,
         backend: &GpuBackend,
-        particles: &[Particle<GpuModel::Model>],
+        particles: &[Particle],
     ) -> Result<(), GpuBackendError> {
         let Self {
             len,

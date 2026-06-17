@@ -1,8 +1,8 @@
 //! Grid data structures and GPU kernels for sparse grid management.
 
 use crate::grid::sort::WgSort;
-use crate::mpm_shaders::grid::grid::{ActiveBlockHeader, Grid, GridHashMapEntry, Node};
-use crate::solver::{GpuParticleModelData, GpuParticles, GpuRigidParticles};
+use crate::mpm_shaders::grid::grid::{GpuResetHmap, GpuCaptureNumActiveBlocks, GpuInitIndirectWorkgroups, ActiveBlockHeader, Grid, GridHashMapEntry, Node};
+use crate::solver::{ GpuParticles, GpuRigidParticles};
 use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuPass, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use nexus_rbd::utils::{GpuPrefixSum, PrefixSumWorkspace};
@@ -13,18 +13,18 @@ use vortx::tensor::Tensor;
 /// Handles sparse grid allocation, reset, and indirect dispatch setup.
 #[derive(Shader)]
 pub struct WgGrid {
-    reset_hmap: crate::mpm_shaders::grid::grid::GpuResetHmap,
-    capture_num_active_blocks: crate::mpm_shaders::grid::grid::GpuCaptureNumActiveBlocks,
-    init_indirect_workgroups: crate::mpm_shaders::grid::grid::GpuInitIndirectWorkgroups,
+    reset_hmap: GpuResetHmap,
+    capture_num_active_blocks: GpuCaptureNumActiveBlocks,
+    init_indirect_workgroups: GpuInitIndirectWorkgroups,
 }
 
 impl WgGrid {
     /// Sorts particles into grid cells and allocates sparse grid blocks.
-    pub fn launch_sort<GpuModel: GpuParticleModelData>(
+    pub fn launch_sort(
         &self,
         backend: &GpuBackend,
         pass: &mut GpuPass,
-        particles: &mut GpuParticles<GpuModel>,
+        particles: &mut GpuParticles,
         mut rigid_particles: Option<&mut GpuRigidParticles>,
         grid: &mut GpuGrid,
         prefix_sum: &mut PrefixSumWorkspace,
@@ -195,10 +195,10 @@ impl WgGrid {
     /// resulting `num_active_blocks` to validate the two-pass touch without depending
     /// on CPU/GPU rounding agreement.
     #[doc(hidden)]
-    pub fn launch_touch_for_test<GpuModel: GpuParticleModelData>(
+    pub fn launch_touch_for_test(
         &self,
         pass: &mut GpuPass,
-        particles: &GpuParticles<GpuModel>,
+        particles: &GpuParticles,
         grid: &mut GpuGrid,
         sort_module: &WgSort,
         two_pass: bool,
@@ -263,12 +263,12 @@ impl WgGrid {
     /// where the sort spends its time. This is a diagnostics helper — the production
     /// pipeline uses `launch_sort`.
     #[doc(hidden)]
-    pub fn launch_sort_profiled<GpuModel: GpuParticleModelData>(
+    pub fn launch_sort_profiled(
         &self,
         backend: &GpuBackend,
         encoder: &mut GpuEncoder,
         timestamps: &mut GpuTimestamps,
-        particles: &mut GpuParticles<GpuModel>,
+        particles: &mut GpuParticles,
         grid: &mut GpuGrid,
         prefix_sum: &mut PrefixSumWorkspace,
         sort_module: &WgSort,

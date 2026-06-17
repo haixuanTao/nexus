@@ -2,14 +2,14 @@ use super::SimulationBackend;
 use crate::rbd::SimulationState;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps};
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::{GpuPhysicsPipeline, GpuPhysicsState, RunStats};
+use nexus::rbd::pipeline::{RbdPipeline, RbdState, RunStats};
 use rapier::prelude::JointAxis;
 
 /// GPU-based physics backend using nexus
 pub struct GpuBackend {
     gpu: KhalGpuBackend,
-    pipeline: GpuPhysicsPipeline,
-    state: GpuPhysicsState,
+    pipeline: RbdPipeline,
+    state: RbdState,
     poses_cache: Vec<Pose>,
     timestamps: GpuTimestamps,
 }
@@ -18,7 +18,7 @@ impl GpuBackend {
     /// Reads poses from GPU buffer, handling dimension-specific conversion.
     async fn read_poses(
         gpu: &KhalGpuBackend,
-        state: &GpuPhysicsState,
+        state: &RbdState,
     ) -> Result<Vec<Pose>, String> {
         gpu.slow_read_vec(state.poses().buffer())
             .await
@@ -28,7 +28,7 @@ impl GpuBackend {
     /// Reads poses into an existing buffer, handling dimension-specific conversion.
     async fn read_poses_into(
         gpu: &KhalGpuBackend,
-        state: &GpuPhysicsState,
+        state: &RbdState,
         poses_cache: &mut Vec<Pose>,
     ) {
         poses_cache.resize(state.poses().len() as usize, Pose::default());
@@ -44,7 +44,7 @@ impl GpuBackend {
     /// - GPU device doesn't support required features
     /// - Memory allocation fails
     pub async fn try_new(gpu: &KhalGpuBackend, phys: &SimulationState) -> Result<Self, String> {
-        let pipeline = GpuPhysicsPipeline::from_backend(gpu);
+        let pipeline = RbdPipeline::from_backend(gpu);
         let envs: Vec<_> = phys
             .environments
             .iter()
@@ -58,7 +58,7 @@ impl GpuBackend {
                 )
             })
             .collect();
-        let state = GpuPhysicsState::from_rapier(gpu, &envs);
+        let state = RbdState::from_rapier(gpu, &envs);
         let poses_cache = Self::read_poses(gpu, &state).await?;
         let timestamps = GpuTimestamps::new(gpu, 2048);
 
@@ -77,7 +77,7 @@ impl GpuBackend {
     /// it reuses the existing pipeline instead of recompiling shaders.
     pub async fn with_pipeline(
         gpu: &KhalGpuBackend,
-        pipeline: GpuPhysicsPipeline,
+        pipeline: RbdPipeline,
         phys: &SimulationState,
     ) -> Self {
         let envs: Vec<_> = phys
@@ -93,7 +93,7 @@ impl GpuBackend {
                 )
             })
             .collect();
-        let state = GpuPhysicsState::from_rapier(gpu, &envs);
+        let state = RbdState::from_rapier(gpu, &envs);
         let poses_cache = Self::read_poses(gpu, &state).await.unwrap_or_default();
         let timestamps = GpuTimestamps::new(gpu, 2048);
 
@@ -109,7 +109,7 @@ impl GpuBackend {
     /// Extracts the pipeline from this backend, consuming it.
     ///
     /// Useful for reusing the pipeline when switching demos.
-    pub fn into_pipeline(self) -> GpuPhysicsPipeline {
+    pub fn into_pipeline(self) -> RbdPipeline {
         self.pipeline
     }
 
@@ -165,7 +165,7 @@ impl SimulationBackend for GpuBackend {
         let mut run_stats = self
             .pipeline
             .step(gpu, &mut self.state, Some(&mut self.timestamps))
-            .await;
+            .unwrap();
 
         // Read back poses (synchronizes with the GPU when using WebGPU backend).
         gpu.synchronize().unwrap();

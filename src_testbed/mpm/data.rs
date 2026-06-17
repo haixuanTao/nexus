@@ -1,16 +1,16 @@
 use crate::mpm::step::SimulationStepResult;
 use khal::backend::GpuBackend;
-use nexus::mpm::pipeline::{MpmData, MpmPipeline};
-use nexus::mpm::solver::{GpuParticleModel, GpuParticleModelData};
+use nexus::mpm::pipeline::{MpmState, MpmPipeline};
+use nexus::mpm::solver::{GpuParticleModel};
 use rapier::prelude::{
     CCDSolver, ColliderSet, DefaultBroadPhase, ImpulseJointSet, IntegrationParameters,
     IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, RigidBodySet,
 };
 use std::any::Any;
 
-pub struct MpmAppState<GpuModel: GpuParticleModelData = GpuParticleModel> {
+pub struct MpmAppState {
     pub render_mode: RenderMode,
-    pub pipeline: MpmPipeline<GpuModel>,
+    pub pipeline: MpmPipeline,
     pub min_num_substeps: u32,
     pub max_num_substeps: u32,
     pub num_substeps: u32,
@@ -34,36 +34,22 @@ pub struct RapierData {
     pub islands: IslandManager,
 }
 
-pub trait PhysicsCallback<GpuModel: GpuParticleModelData> {
-    fn update(&mut self, state: &mut PhysicsState<'_, GpuModel>);
-}
-
-impl<GpuModel: GpuParticleModelData, F: FnMut(&mut PhysicsState<GpuModel>)>
-    PhysicsCallback<GpuModel> for F
-{
-    fn update(&mut self, state: &mut PhysicsState<'_, GpuModel>) {
-        (*self)(state);
-    }
-}
-
-pub struct PhysicsState<'a, GpuModel: GpuParticleModelData = GpuParticleModel> {
+pub struct PhysicsState<'a> {
     pub backend: &'a GpuBackend,
-    pub data: &'a mut MpmData<GpuModel>,
+    pub data: &'a mut MpmState,
     pub results: &'a SimulationStepResult,
     pub(crate) step_id: usize,
 }
 
-impl<GpuModel: GpuParticleModelData> PhysicsState<'_, GpuModel> {
+impl PhysicsState<'_> {
     pub fn step_id(&self) -> usize {
         self.step_id
     }
 }
 
-pub struct MpmPhysicsContext<GpuModel: GpuParticleModelData = GpuParticleModel> {
-    pub data: MpmData<GpuModel>,
+pub struct MpmPhysicsContext {
+    pub data: MpmState,
     pub rapier_data: RapierData,
-    pub callbacks: Vec<Box<dyn PhysicsCallback<GpuModel>>>,
-    pub hooks_state: Option<Box<dyn Any>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

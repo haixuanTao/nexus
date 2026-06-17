@@ -26,7 +26,7 @@ use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
 
 use khal::BufferUsages;
-use khal::backend::{Backend, Encoder, GpuBackend, GpuTimestamps};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuTimestamps};
 use std::time::Duration;
 use vortx::tensor::Tensor;
 
@@ -88,7 +88,7 @@ impl RunStats {
 ///
 /// The state can be initialized from CPU-side Rapier data structures and then updated
 /// entirely on the GPU each frame.
-pub struct GpuPhysicsState {
+pub struct RbdState {
     num_batches: u32,
     num_colliders_per_batch: u32,
     num_solver_iterations: u32,
@@ -180,10 +180,16 @@ pub struct GpuPhysicsState {
     prefix_sum_workspace: PrefixSumWorkspace,
     /// Maximum number of constraint colors the solver will iterate.
     max_colors: u32,
+    /// CPU-side mirror of the number of *active* colliders in each batch (the
+    /// per-batch values stored in `num_shapes`). Slots in
+    /// `[num_active_colliders[b] .. num_colliders_per_batch)` are reserved
+    /// padding. Kept in sync by the incremental [`Self::append_bodies`] /
+    /// [`Self::remove_bodies`] APIs.
+    num_active_colliders: Vec<u32>,
 }
 
 #[cfg(feature = "from_rapier")]
-impl GpuPhysicsState {
+impl RbdState {
     /// Creates a new GPU physics state from per-environment Rapier data structures.
     ///
     /// Environments with fewer colliders/joints are padded with dummy fixed bodies.
@@ -746,11 +752,481 @@ impl GpuPhysicsState {
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
             max_colors: 8,
+            num_active_colliders: all_num_shapes.clone(),
         }
     }
 }
 
-impl GpuPhysicsState {
+#[cfg(feature = "from_rapier")]
+impl RbdState {
+    /// Creates an empty rbd state preallocated for `num_batches` batches of up
+    /// to `capacity_per_batch` colliders each.
+    ///
+    /// No body is active initially (every slot is reserved padding). Bodies are
+    /// added later with [`Self::append_bodies`]; the simulation parameters use
+    /// neutral defaults ([`GpuSimParams::default`]) — adjust them via the usual
+    /// `sim_params` buffer if needed. Joints and multibodies start empty.
+    ///
+    /// NOTE: the per-batch collider count is fixed at `capacity_per_batch`;
+    /// inserting more than that into a single batch panics (the batched buffers
+    /// are not grown/restrided by the incremental path).
+    pub fn empty(backend: &GpuBackend, num_batches: u32, capacity_per_batch: u32) -> Self {
+        let num_colliders_per_batch = capacity_per_batch;
+        let num_bodies_total = (capacity_per_batch * num_batches) as usize;
+
+        let num_solver_iterations = 4u32;
+        let mut base_sim_params = GpuSimParams::default();
+        base_sim_params.dt /= num_solver_iterations as f32;
+        let all_sim_params = vec![base_sim_params; num_batches as usize];
+
+        // Inactive (padding) slots use empty collision groups so the broad-phase
+        // never matches them with anything.
+        let none_groups = crate::rapier::geometry::InteractionGroups::new(
+            crate::rapier::geometry::Group::NONE,
+            crate::rapier::geometry::Group::NONE,
+            crate::rapier::geometry::InteractionTestMode::And,
+        );
+        let dummy_shape = Shape::cuboid(Vector::splat(0.5));
+        let all_poses = vec![Pose::default(); num_bodies_total];
+        let all_collider_local_poses = vec![Pose::IDENTITY; num_bodies_total];
+        let all_local_mprops = vec![GpuLocalMassProperties::default(); num_bodies_total];
+        let all_mprops = vec![GpuWorldMassProperties::default(); num_bodies_total];
+        let all_shapes = vec![dummy_shape; num_bodies_total];
+        let all_collision_groups = vec![none_groups; num_bodies_total];
+        let all_num_shapes = vec![0u32; num_batches as usize];
+        let all_vels = vec![GpuVelocity::default(); num_bodies_total];
+
+        // body_group: per-batch local indices (free bodies map to themselves).
+        let mut all_body_group = Vec::with_capacity(num_bodies_total);
+        for _ in 0..num_batches {
+            for b in 0..capacity_per_batch {
+                all_body_group.push(b);
+            }
+        }
+
+        // Empty joints / multibodies, one (empty) environment per batch.
+        let empty_joints = ImpulseJointSet::new();
+        let empty_body_ids: HashMap<crate::rapier::dynamics::RigidBodyHandle, u32> = HashMap::new();
+        let joint_env_refs: Vec<_> = (0..num_batches as usize)
+            .map(|_| (&empty_joints, &empty_body_ids))
+            .collect();
+        let joints = GpuImpulseJointSet::from_rapier_filtered(backend, &joint_env_refs, &[], &[]);
+
+        #[cfg(feature = "dim3")]
+        let multibodies = {
+            let empty_mb = MultibodyJointSet::new();
+            let empty_bodies = RigidBodySet::new();
+            let mb_refs: Vec<_> = (0..num_batches as usize)
+                .map(|_| (&empty_mb, &empty_body_ids, &empty_bodies))
+                .collect();
+            GpuMultibodySet::from_rapier(backend, &mb_refs, [0.0, -9.81, 0.0], capacity_per_batch)
+        };
+
+        // Shared shape vertex/index buffers: dummy data to avoid empty bindings.
+        let vertex_buffers =
+            Tensor::vector(backend, &[Point::ZERO.into()], BufferUsages::STORAGE).unwrap();
+        let index_buffers =
+            Tensor::vector(backend, &[0u32, 0, 0], BufferUsages::STORAGE).unwrap();
+        let body_group = Tensor::vector(backend, &all_body_group, BufferUsages::STORAGE).unwrap();
+
+        // Per-body buffers carry COPY_DST | COPY_SRC so `append_bodies` /
+        // `remove_bodies` can write / relocate slots in place.
+        let rw = BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+
+        let shapes = Tensor::vector(backend, &all_shapes, rw).unwrap();
+        let collider_local_poses = Tensor::vector(backend, &all_collider_local_poses, rw).unwrap();
+        let collision_groups = Tensor::vector(backend, &all_collision_groups, rw).unwrap();
+
+        let num_shapes = Tensor::vector(
+            backend,
+            &all_num_shapes,
+            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        )
+        .unwrap();
+
+        let colliders_batch_capacity = Tensor::scalar(
+            backend,
+            num_colliders_per_batch,
+            BufferUsages::STORAGE | BufferUsages::UNIFORM,
+        )
+        .unwrap();
+
+        const DEFAULT_CONTACT_COUNTS: u32 = 32;
+        let collision_pairs =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let collision_pairs_len = Tensor::vector_uninit(
+            backend,
+            num_batches,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        )
+        .unwrap();
+        let collision_pairs_len_staging =
+            Tensor::scalar_uninit(backend, BufferUsages::MAP_READ | BufferUsages::COPY_DST).unwrap();
+        let collision_pairs_indirect =
+            Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
+        let collision_pairs_batch_capacity = Tensor::scalar(
+            backend,
+            DEFAULT_CONTACT_COUNTS,
+            BufferUsages::STORAGE | BufferUsages::UNIFORM,
+        )
+        .unwrap();
+        let contacts_batch_capacity = Tensor::scalar(
+            backend,
+            DEFAULT_CONTACT_COUNTS,
+            BufferUsages::STORAGE | BufferUsages::UNIFORM,
+        )
+        .unwrap();
+        let contacts =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let contacts_len = Tensor::vector_uninit(
+            backend,
+            num_batches,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        )
+        .unwrap();
+        let contacts_indirect =
+            Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
+        let pfm_pairs_indirect =
+            Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
+        let pfm_pairs =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let pfm_pairs_len = Tensor::vector_uninit(
+            backend,
+            num_batches,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        )
+        .unwrap();
+        let old_constraints =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let old_constraint_builders =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let new_constraints =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let new_constraint_builders =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let constraints_colors =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let colored =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let constraints_rands =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
+        let old_constraints_counts =
+            Tensor::vector_uninit(backend, num_colliders_per_batch * num_batches, storage).unwrap();
+        let new_constraints_counts =
+            Tensor::vector_uninit(backend, num_colliders_per_batch * num_batches, storage).unwrap();
+        let old_body_constraint_ids =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * 2 * num_batches, storage)
+                .unwrap();
+        let new_body_constraint_ids =
+            Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * 2 * num_batches, storage)
+                .unwrap();
+
+        let lbvh_usages = if crate::VALIDATE_LBVH_TOPOLOGY {
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC
+        } else {
+            BufferUsages::STORAGE
+        };
+
+        let contacts_per_batch_cpu = DEFAULT_CONTACT_COUNTS;
+        let collision_pairs_per_batch_cpu = DEFAULT_CONTACT_COUNTS;
+        let mut bi = BatchIndices::default();
+        bi.colliders_batch_capacity = num_colliders_per_batch;
+        bi.collision_pairs_batch_capacity = collision_pairs_per_batch_cpu;
+        bi.contacts_batch_capacity = contacts_per_batch_cpu;
+        bi.impulse_joints_batch_capacity = joints.joints_per_batch();
+        bi.color_groups_batch_capacity = joints.num_colors();
+        #[cfg(feature = "dim3")]
+        multibodies.fill_batch_indices(&mut bi);
+        let batch_indices = Tensor::scalar(
+            backend,
+            bi,
+            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        )
+        .unwrap();
+
+        Self {
+            num_batches,
+            num_colliders_per_batch,
+            num_solver_iterations,
+            sim_params: Tensor::vector(backend, &all_sim_params, BufferUsages::STORAGE).unwrap(),
+            vels: Tensor::vector(backend, &all_vels, rw).unwrap(),
+            solver_vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
+            solver_vels_out: Tensor::vector(backend, &all_vels, storage).unwrap(),
+            solver_vels_inc: Tensor::vector(backend, &all_vels, storage).unwrap(),
+            joints,
+            #[cfg(feature = "dim3")]
+            multibodies,
+            body_group,
+            local_mprops: Tensor::vector(backend, &all_local_mprops, rw).unwrap(),
+            mprops: Tensor::vector(backend, &all_mprops, rw).unwrap(),
+            body_poses: Tensor::vector(backend, &all_poses, rw).unwrap(),
+            solver_body_poses: Tensor::vector(backend, &all_poses, rw).unwrap(),
+            collider_world_poses: Tensor::vector(backend, &all_poses, rw).unwrap(),
+            vertex_buffers,
+            index_buffers,
+            shapes,
+            num_shapes,
+            collider_local_poses,
+            collision_groups,
+            collision_pairs,
+            collision_pairs_len,
+            collision_pairs_len_staging,
+            collision_pairs_indirect,
+            collision_pairs_batch_capacity,
+            contacts_batch_capacity,
+            colliders_batch_capacity,
+            contacts_per_batch_cpu,
+            collision_pairs_per_batch_cpu,
+            batch_indices,
+            contacts,
+            contacts_len,
+            contacts_indirect,
+            pfm_pairs,
+            pfm_pairs_len,
+            pfm_pairs_indirect,
+            old_constraints,
+            old_constraint_builders,
+            old_constraints_counts,
+            new_constraints,
+            new_constraint_builders,
+            new_constraints_counts,
+            constraints_colors,
+            colored,
+            constraints_rands,
+            curr_color: Tensor::scalar(
+                backend,
+                0u32,
+                BufferUsages::STORAGE
+                    | BufferUsages::UNIFORM
+                    | BufferUsages::COPY_DST
+                    | BufferUsages::COPY_SRC,
+            )
+            .unwrap(),
+            uncolored: Tensor::scalar(
+                backend,
+                0,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            )
+            .unwrap(),
+            uncolored_staging: Tensor::scalar(
+                backend,
+                0,
+                BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
+            old_body_constraint_ids,
+            new_body_constraint_ids,
+            prefix_sum_workspace: PrefixSumWorkspace::default(),
+            lbvh: LbvhState::with_usages(backend, lbvh_usages),
+            max_colors: 8,
+            num_active_colliders: vec![0; num_batches as usize],
+        }
+    }
+
+    /// Appends rigid-bodies (each given as a `(RigidBody, Collider)` pair) into
+    /// the simulation batch `batch_id`, returning their global slot indices.
+    ///
+    /// Only primitive (vertex-less) colliders are currently supported; mesh
+    /// colliders would require growing the shared vertex/index buffers.
+    ///
+    /// # Panics
+    /// Panics if `batch_id` is out of range, or if the batch would exceed
+    /// `num_colliders_per_batch`.
+    pub fn append_bodies(
+        &mut self,
+        backend: &GpuBackend,
+        bodies: &[(crate::rapier::dynamics::RigidBody, crate::rapier::geometry::Collider)],
+        batch_id: usize,
+    ) -> Result<Vec<u32>, GpuBackendError> {
+        assert!(batch_id < self.num_batches as usize, "batch_id out of range");
+        let cap = self.num_colliders_per_batch as usize;
+        let active = self.num_active_colliders[batch_id] as usize;
+        assert!(
+            active + bodies.len() <= cap,
+            "rbd batch {} capacity ({}) exceeded",
+            batch_id,
+            cap
+        );
+
+        let mut poses = Vec::with_capacity(bodies.len());
+        let mut collider_local_poses = Vec::with_capacity(bodies.len());
+        let mut local_mprops = Vec::with_capacity(bodies.len());
+        let mut mprops = Vec::with_capacity(bodies.len());
+        let mut shapes = Vec::with_capacity(bodies.len());
+        let mut collision_groups = Vec::with_capacity(bodies.len());
+        let mut vels = Vec::with_capacity(bodies.len());
+
+        for (rb, co) in bodies {
+            let body_pose = *rb.position();
+            let collider_local_pose = co.position_wrt_parent().copied().unwrap_or(Pose::IDENTITY);
+            let is_dynamic = rb.is_dynamic();
+            let (local, world) = if is_dynamic {
+                let m = rb.mass_properties();
+                let local = local_mprops_from_rapier(&m.local_mprops);
+                let world = world_mprops_from_local(&body_pose, &local);
+                (local, world)
+            } else {
+                let mut local = GpuLocalMassProperties::default();
+                let mut world = GpuWorldMassProperties {
+                    com: body_pose.translation,
+                    ..Default::default()
+                };
+                local.inv_mass = Vector::ZERO;
+                world.inv_mass = Vector::ZERO;
+                #[cfg(feature = "dim3")]
+                {
+                    local.inv_principal_inertia = glamx::Vec3::ZERO;
+                    world.inv_inertia = glamx::Mat4::ZERO;
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    local.inv_inertia = 0.0;
+                    world.inv_inertia = 0.0;
+                }
+                (local, world)
+            };
+
+            let mut shape_buffers = crate::shapes::ShapeBuffers::default();
+            let shape = shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape");
+            assert!(
+                shape_buffers.vertices.is_empty(),
+                "RbdState::append_bodies currently supports primitive (vertex-less) colliders only."
+            );
+
+            poses.push(body_pose);
+            collider_local_poses.push(collider_local_pose);
+            local_mprops.push(local);
+            mprops.push(world);
+            shapes.push(shape);
+            collision_groups.push(co.collision_groups());
+            vels.push(GpuVelocity::new(
+                rb.linvel(),
+                #[cfg(feature = "dim2")]
+                rb.angvel(),
+                #[cfg(feature = "dim3")]
+                rb.angvel(),
+            ));
+        }
+
+        let base = (batch_id * cap + active) as u64;
+        backend.write_buffer(self.body_poses.buffer_mut(), base, &poses)?;
+        backend.write_buffer(self.solver_body_poses.buffer_mut(), base, &poses)?;
+        backend.write_buffer(self.collider_world_poses.buffer_mut(), base, &poses)?;
+        backend.write_buffer(self.collider_local_poses.buffer_mut(), base, &collider_local_poses)?;
+        backend.write_buffer(self.local_mprops.buffer_mut(), base, &local_mprops)?;
+        backend.write_buffer(self.mprops.buffer_mut(), base, &mprops)?;
+        backend.write_buffer(self.shapes.buffer_mut(), base, &shapes)?;
+        backend.write_buffer(self.collision_groups.buffer_mut(), base, &collision_groups)?;
+        backend.write_buffer(self.vels.buffer_mut(), base, &vels)?;
+
+        let new_active = (active + bodies.len()) as u32;
+        self.num_active_colliders[batch_id] = new_active;
+        backend.write_buffer(self.num_shapes.buffer_mut(), batch_id as u64, &[new_active])?;
+
+        let start = (batch_id * cap + active) as u32;
+        Ok((start..start + bodies.len() as u32).collect())
+    }
+
+    /// Removes the bodies at the given global slot indices using a per-batch
+    /// swap-remove (the last active body of a batch is moved into the freed
+    /// slot). Returns the list of `(from, to)` relocations performed so callers
+    /// can patch their slot bookkeeping.
+    pub fn remove_bodies(
+        &mut self,
+        backend: &GpuBackend,
+        global_indices: &[u32],
+    ) -> Result<Vec<(u32, u32)>, GpuBackendError> {
+        let cap = self.num_colliders_per_batch as usize;
+        let mut remaps = Vec::new();
+
+        // Group local slots per batch, processed in descending order so removing
+        // one doesn't disturb the not-yet-removed (lower) slots.
+        let mut per_batch: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for &g in global_indices {
+            let g = g as usize;
+            per_batch.entry(g / cap).or_default().push(g % cap);
+        }
+
+        let none_groups = crate::rapier::geometry::InteractionGroups::new(
+            crate::rapier::geometry::Group::NONE,
+            crate::rapier::geometry::Group::NONE,
+            crate::rapier::geometry::InteractionTestMode::And,
+        );
+
+        for (batch, mut locals) in per_batch {
+            locals.sort_unstable_by(|a, b| b.cmp(a));
+            locals.dedup();
+
+            for local in locals {
+                let active = self.num_active_colliders[batch] as usize;
+                if active == 0 || local >= active {
+                    continue;
+                }
+                let last = active - 1;
+                let hole_global = batch * cap + local;
+                let last_global = batch * cap + last;
+
+                if local != last {
+                    // Relocate the last active body into the freed slot. A staging
+                    // buffer is used to avoid same-buffer overlapping copies.
+                    macro_rules! relocate {
+                        ($t:expr) => {{
+                            let mut staging = backend.uninit_buffer(
+                                1,
+                                BufferUsages::STORAGE
+                                    | BufferUsages::COPY_SRC
+                                    | BufferUsages::COPY_DST,
+                            )?;
+                            let mut enc = backend.begin_encoding();
+                            enc.copy_buffer_to_buffer($t.buffer(), last_global, &mut staging, 0, 1)?;
+                            enc.copy_buffer_to_buffer(&staging, 0, $t.buffer_mut(), hole_global, 1)?;
+                            backend.submit(enc)?;
+                        }};
+                    }
+                    relocate!(self.body_poses);
+                    relocate!(self.solver_body_poses);
+                    relocate!(self.collider_world_poses);
+                    relocate!(self.collider_local_poses);
+                    relocate!(self.local_mprops);
+                    relocate!(self.mprops);
+                    relocate!(self.vels);
+                    relocate!(self.shapes);
+                    relocate!(self.collision_groups);
+                    remaps.push((last_global as u32, hole_global as u32));
+                }
+
+                // The now-topmost slot becomes inactive padding: neutralize it so
+                // it never participates in collisions even if a kernel scans up
+                // to the per-batch capacity.
+                backend.write_buffer(
+                    self.collision_groups.buffer_mut(),
+                    last_global as u64,
+                    &[none_groups],
+                )?;
+                backend.write_buffer(
+                    self.local_mprops.buffer_mut(),
+                    last_global as u64,
+                    &[GpuLocalMassProperties::default()],
+                )?;
+                backend.write_buffer(
+                    self.mprops.buffer_mut(),
+                    last_global as u64,
+                    &[GpuWorldMassProperties::default()],
+                )?;
+
+                let new_active = (active - 1) as u32;
+                self.num_active_colliders[batch] = new_active;
+                backend.write_buffer(self.num_shapes.buffer_mut(), batch as u64, &[new_active])?;
+            }
+        }
+
+        Ok(remaps)
+    }
+}
+
+impl RbdState {
     /// Re-upload the shared `BatchIndices` uniform after any of its
     /// constituent per-batch capacities has changed (e.g. after the contacts
     /// buffer grows in [`Self::auto_resize_buffers`], or after multibody
@@ -792,7 +1268,7 @@ impl GpuPhysicsState {
     }
 }
 
-impl GpuPhysicsState {
+impl RbdState {
     /// Per-collider world pose (= `body_poses[i] * collider_local_poses[i]`).
     /// This is what rendering / debug tooling typically wants — the actual
     /// pose of each collider's shape in world space.
@@ -849,7 +1325,7 @@ impl GpuPhysicsState {
 }
 
 /// The main GPU physics pipeline coordinating all simulation stages.
-pub struct GpuPhysicsPipeline {
+pub struct RbdPipeline {
     mprops_update: GpuMpropsUpdate,
     sync_collider_poses: crate::dynamics::GpuSyncColliderPosesShader,
     narrow_phase: GpuNarrowPhase,
@@ -863,7 +1339,7 @@ pub struct GpuPhysicsPipeline {
     warmstart: GpuWarmstart,
 }
 
-impl GpuPhysicsPipeline {
+impl RbdPipeline {
     /// Creates a new physics pipeline from a GPU backend.
     ///
     /// This method loads all the compute shaders needed for the physics simulation.
@@ -887,12 +1363,12 @@ impl GpuPhysicsPipeline {
     /// Executes one physics simulation timestep on the GPU.
     ///
     /// Automatically resizes buffers (next power of two) if collision pair count exceeds capacity.
-    pub async fn step(
+    pub fn step(
         &self,
         backend: &GpuBackend,
-        state: &mut GpuPhysicsState,
+        state: &mut RbdState,
         mut timestamps: Option<&mut GpuTimestamps>,
-    ) -> RunStats {
+    ) -> Result<RunStats, GpuBackendError> {
         let mut stats = RunStats::default();
         let t_phase1 = web_time::Instant::now();
 
@@ -913,10 +1389,10 @@ impl GpuPhysicsPipeline {
                 };
                 self.multibody_solver
                     .init_step(&mut pass, &mut state.multibodies, &mut args)
-                    .unwrap();
+                    ?;
                 drop(pass);
                 drop(args);
-                backend.submit(encoder).unwrap();
+                backend.submit(encoder)?;
             }
         }
 
@@ -937,8 +1413,7 @@ impl GpuPhysicsPipeline {
                     &state.batch_indices,
                     state.num_colliders_per_batch,
                     state.num_batches,
-                )
-                .unwrap();
+                )?;
 
             // Update collider world-space poses from their parent rigid-body poses.
             self.sync_collider_poses
@@ -951,8 +1426,7 @@ impl GpuPhysicsPipeline {
                     &state.batch_indices,
                     state.num_colliders_per_batch,
                     state.num_batches,
-                )
-                .unwrap();
+                )?;
 
             drop(pass);
 
@@ -970,22 +1444,18 @@ impl GpuPhysicsPipeline {
                     &state.num_shapes,
                     &state.batch_indices,
                     timestamps.as_deref_mut(),
-                )
-                .unwrap();
+                )?;
 
             // Debug: validate LBVH topology after tree construction
             if crate::VALIDATE_LBVH_TOPOLOGY {
-                backend.submit(encoder).unwrap();
+                backend.submit(encoder)?;
 
                 let num_colliders = state.collider_world_poses.len() as u32;
-                let tree: Vec<LbvhNode> = backend
-                    .slow_read_vec(state.lbvh.tree().buffer())
-                    .await
-                    .unwrap();
-                let sorted_colliders: Vec<u32> = backend
-                    .slow_read_vec(state.lbvh.sorted_colliders().buffer())
-                    .await
-                    .unwrap();
+                let tree: Vec<LbvhNode> = futures::executor::block_on(backend
+                    .slow_read_vec(state.lbvh.tree().buffer()))?;
+                let sorted_colliders: Vec<u32> = futures::executor::block_on(backend
+                    .slow_read_vec(state.lbvh.sorted_colliders().buffer()))
+                    ?;
                 validate_lbvh_topology(&tree, &sorted_colliders, num_colliders);
 
                 encoder = backend.begin_encoding();
@@ -1005,11 +1475,10 @@ impl GpuPhysicsPipeline {
                     &mut state.collision_pairs_len,
                     &mut state.collision_pairs_indirect,
                     &state.collision_groups,
-                )
-                .unwrap();
+                )?;
 
             drop(pass);
-            backend.submit(encoder).unwrap();
+            backend.submit(encoder)?;
         }
 
         stats.start_to_pairs_count_time = t_phase1.elapsed();
@@ -1039,11 +1508,10 @@ impl GpuPhysicsPipeline {
                     &mut state.pfm_pairs_len,
                     &mut state.pfm_pairs_indirect,
                     &state.batch_indices,
-                )
-                .unwrap();
+                )?;
 
             drop(pass);
-            backend.submit(encoder).unwrap();
+            backend.submit(encoder)?;
         }
 
         // Phase 2b: solver-prep + warmstart + bounded coloring. Separate
@@ -1090,8 +1558,7 @@ impl GpuPhysicsPipeline {
                     &mut pass,
                     prepare_args,
                     &mut state.prefix_sum_workspace,
-                )
-                .unwrap();
+                )?;
 
             // Warmstart
             let warmstart_args = WarmstartArgs {
@@ -1108,7 +1575,7 @@ impl GpuPhysicsPipeline {
 
             self.warmstart
                 .transfer_warmstart_impulses(&mut pass, warmstart_args)
-                .unwrap();
+                ?;
 
             let coloring_args = ColoringArgs {
                 contacts_len_indirect: &state.contacts_indirect,
@@ -1127,14 +1594,14 @@ impl GpuPhysicsPipeline {
             };
             self.coloring
                 .dispatch_topo_gc_bounded(&mut pass, coloring_args, state.max_colors)
-                .unwrap();
+                ?;
 
             // `+1` because solver iterates 1..=max_colors (color 0 is unassigned).
             let num_colors = state.max_colors + 1;
             stats.num_colors = num_colors;
 
             drop(pass);
-            backend.submit(encoder).unwrap();
+            backend.submit(encoder)?;
         }
 
         let num_colors = stats.num_colors;
@@ -1198,15 +1665,14 @@ impl GpuPhysicsPipeline {
                     joint_solver_args,
                     #[cfg(feature = "dim3")]
                     mb,
-                )
-                .unwrap();
+                )?;
             drop(pass);
 
             // Resolve all accumulated timestamps before the final submit.
             if let Some(ts) = &timestamps {
                 ts.resolve(&mut encoder);
             }
-            backend.submit(encoder).unwrap();
+            backend.submit(encoder)?;
         }
 
         // Swap buffers for warm-starting next frame
@@ -1224,10 +1690,10 @@ impl GpuPhysicsPipeline {
             &mut state.new_constraints_counts,
         );
 
-        stats
+        Ok(stats)
     }
 
-    pub async fn auto_resize_buffers(&self, backend: &GpuBackend, state: &mut GpuPhysicsState) {
+    pub async fn auto_resize_buffers(&self, backend: &GpuBackend, state: &mut RbdState) {
         let mut encoder = backend.begin_encoding();
         encoder
             .copy_buffer_to_buffer(

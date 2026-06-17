@@ -6,7 +6,7 @@
 use crate::cast_tensor_mut;
 use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::p2g::{GpuP2g, GpuP2gCpic, IntegerImpulseAtomic};
-use crate::solver::{GpuImpulses, GpuMaterials, GpuParticleModelData, GpuParticles};
+use crate::solver::{GpuImpulses, GpuMaterials, GpuParticles};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
 use nexus_rbd::dynamics::GpuBodySet;
@@ -25,12 +25,12 @@ pub struct WgP2G {
 
 impl WgP2G {
     /// Launches the P2G kernel to transfer particle data to grid nodes.
-    pub fn launch<GpuModel: GpuParticleModelData>(
+    pub fn launch(
         &self,
         pass: &mut GpuPass,
         use_cpic: bool,
         grid: &mut GpuGrid,
-        particles: &GpuParticles<GpuModel>,
+        particles: &GpuParticles,
         impulses: &mut GpuImpulses,
         bodies: &GpuBodySet,
         body_materials: &GpuMaterials,

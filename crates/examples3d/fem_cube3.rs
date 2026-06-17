@@ -4,7 +4,7 @@ use nexus_testbed3d::{Viewer, nexus};
 
 use nexus::fem::{
     mesh::FemMesh,
-    pipeline::FemData,
+    pipeline::FemState,
     solver::{FemConfig, FemMaterial, MaterialModel, SolverMethod},
 };
 
@@ -17,7 +17,7 @@ pub async fn run(viewer: &mut Viewer) {
     scene.detach(viewer);
 }
 
-fn build(backend: &GpuBackend) -> FemData {
+fn build(backend: &GpuBackend) -> FemState {
     let mesh = FemMesh::generate_grid([8, 8, 8], vec3(0.3, 0.3, 0.3), vec3(0.7, 0.7, 0.7));
 
     let material = FemMaterial {
@@ -55,5 +55,5 @@ fn build(backend: &GpuBackend) -> FemData {
         }
     };
 
-    FemData::new(backend, &[(mesh, material)], &config).unwrap()
+    FemState::new(backend, &[(mesh, material)], &config).unwrap()
 }

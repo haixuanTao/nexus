@@ -305,9 +305,9 @@ pub async fn setup_graphics(
                         None,
                         Some(IndexBuffer::Unified(trimesh.indices().to_vec())),
                     );
-                    render.replicate_vertices();
+                    // render.replicate_vertices();
                     render.recompute_normals();
-                    let node = scene.add_render_mesh(render, Vec3::ONE);
+                    let node = scene.add_render_mesh(render, Vec3::ONE * 2.0);
                     let mut singleton = InstancedNode {
                         node,
                         entries: vec![],

@@ -5,7 +5,7 @@ use nexus_testbed3d::nexus;
 use glamx::{Pose3, vec3};
 use khal::backend::GpuBackend;
 use nexus::mpm::{
-    pipeline::MpmData,
+    pipeline::MpmState,
     solver::{Particle, ParticleModel, SimulationParams},
 };
 use rapier3d::parry::utils::Array2;
@@ -78,7 +78,7 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
             .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
     }
 
-    let data = MpmData::new(
+    let data = MpmState::new(
         backend,
         params,
         &particles,
@@ -93,7 +93,5 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
     MpmPhysicsContext {
         data,
         rapier_data,
-        callbacks: vec![],
-        hooks_state: None,
     }
 }

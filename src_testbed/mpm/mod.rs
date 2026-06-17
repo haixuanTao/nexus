@@ -7,8 +7,8 @@ use crate::RunState;
 use khal::Shader;
 use khal::backend::{GpuBackend as KhalGpuBackend, GpuTimestamps};
 use kiss3d::prelude::*;
-use nexus::mpm::pipeline::{MpmPipeline, MpmPipelineHooks};
-use nexus::mpm::solver::{GpuParticleModel, GpuParticleModelData};
+use nexus::mpm::pipeline::{MpmPipeline};
+use nexus::mpm::solver::{GpuParticleModel};
 use rapier::geometry::{ColliderHandle, Shape, ShapeType};
 use step::{GpuReadbackData, SimulationStepResult, WgPrepReadback};
 
@@ -23,17 +23,16 @@ type RenderNode = SceneNode2d;
 #[cfg(feature = "dim3")]
 type RenderNode = SceneNode3d;
 
-pub type MpmSceneBuilders<GpuModel> = Vec<(String, MpmSceneBuildFn<GpuModel>)>;
-pub type MpmSceneBuildFn<GpuModel> =
-    fn(&KhalGpuBackend, &mut MpmAppState<GpuModel>) -> MpmPhysicsContext<GpuModel>;
+pub type MpmSceneBuilders = Vec<(String, MpmSceneBuildFn)>;
+pub type MpmSceneBuildFn =
+    fn(&KhalGpuBackend, &mut MpmAppState) -> MpmPhysicsContext;
 
-pub struct MpmStage<GpuModel: GpuParticleModelData> {
+pub struct MpmStage {
     pub(crate) gpu: KhalGpuBackend,
     pub(crate) selected_demo: usize,
-    pub(crate) builders: MpmSceneBuilders<GpuModel>,
-    pub(crate) physics: MpmPhysicsContext<GpuModel>,
-    pub(crate) hooks: Box<dyn MpmPipelineHooks<GpuModel>>,
-    pub(crate) app_state: MpmAppState<GpuModel>,
+    pub(crate) builders: MpmSceneBuilders,
+    pub(crate) physics: MpmPhysicsContext,
+    pub(crate) app_state: MpmAppState,
     pub(crate) step_id: usize,
     pub(crate) step_result: SimulationStepResult,
     pub(crate) readback_shader: WgPrepReadback,
@@ -49,12 +48,11 @@ pub struct MpmStage<GpuModel: GpuParticleModelData> {
     pub(crate) rigid_instances: Vec<InstanceData3d>,
 }
 
-impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
+impl MpmStage {
     pub async fn new(
         gpu: KhalGpuBackend,
-        hooks: impl FnOnce(&KhalGpuBackend) -> Box<dyn MpmPipelineHooks<GpuModel>>,
-        builders: MpmSceneBuilders<GpuModel>,
-    ) -> MpmStage<GpuModel> {
+        builders: MpmSceneBuilders,
+    ) -> MpmStage {
         let mpm_pipeline = MpmPipeline::new(&gpu).unwrap();
         let mut app_state = MpmAppState {
             pipeline: mpm_pipeline,
@@ -67,7 +65,6 @@ impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
             show_rigid_particles: false,
             use_cpic: true,
         };
-        let hooks = hooks(&gpu);
         let physics = (builders[0].1)(&gpu, &mut app_state);
         app_state.num_substeps = 0;
 
@@ -98,7 +95,6 @@ impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
             timestamps,
             gpu,
             physics,
-            hooks,
             app_state,
             step_result,
             step_id: 0,
@@ -185,7 +181,7 @@ impl<GpuModel: GpuParticleModelData> MpmStage<GpuModel> {
 /// A MPM scene: the GPU MPM stage plus its rendering nodes (particles and the
 /// rapier boundary colliders). Built via [`crate::Viewer::set_mpm`].
 pub struct MpmScene {
-    pub stage: MpmStage<GpuParticleModel>,
+    pub stage: MpmStage,
     pub(crate) colliders_gfx: HashMap<ColliderHandle, RenderNode>,
     pub(crate) particle_node: RenderNode,
     pub(crate) rigid_particle_node: RenderNode,
@@ -235,8 +231,8 @@ impl MpmScene {
 
 // Collider rendering for MPM scenes (static/kinematic bodies).
 
-pub fn update_colliders<GpuModel: GpuParticleModelData>(
-    physics: &MpmPhysicsContext<GpuModel>,
+pub fn update_colliders(
+    physics: &MpmPhysicsContext,
     colliders: &mut HashMap<ColliderHandle, RenderNode>,
 ) {
     for (handle, node) in colliders.iter_mut() {
@@ -258,10 +254,10 @@ pub fn update_colliders<GpuModel: GpuParticleModelData>(
     }
 }
 
-pub fn render_colliders<GpuModel: GpuParticleModelData>(
+pub fn render_colliders(
     scene2d: &mut SceneNode2d,
     scene3d: &mut SceneNode3d,
-    physics: &MpmPhysicsContext<GpuModel>,
+    physics: &MpmPhysicsContext,
     colliders: &mut HashMap<ColliderHandle, RenderNode>,
 ) {
     for (handle, collider) in physics.rapier_data.colliders.iter() {

@@ -208,7 +208,7 @@ pub struct GpuMultibodySet {
     mb_imp_joint_max_color_group_len: u32,
     /// Per-batch capacities of the joint / contact constraint slabs (CPU-side
     /// mirror of the corresponding `*_batch_capacity` tensors). Stored so
-    /// `GpuPhysicsState` can rebuild its `BatchIndices` value when caps change.
+    /// `RbdState` can rebuild its `BatchIndices` value when caps change.
     joint_constraints_per_batch: u32,
     joint_constraint_columns_per_batch: u32,
     contact_constraints_per_batch: u32,
@@ -1388,7 +1388,7 @@ pub struct MultibodySolverArgs<'a> {
     /// Shared `BatchIndices` uniform — every multibody kernel reads its
     /// per-batch caps and packed-section offsets from this single tensor
     /// (replacing the 10+ individual `*_batch_capacity` / `*_section_offset`
-    /// uniforms each kernel used to take). Owned by `GpuPhysicsState`.
+    /// uniforms each kernel used to take). Owned by `RbdState`.
     pub batch_indices: &'a Tensor<BatchIndices>,
 }
 

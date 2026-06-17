@@ -6,14 +6,14 @@
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(all(feature = "from_rapier", feature = "dim2"))]
-use parry2d as parry;
+pub use parry2d as parry;
 #[cfg(all(feature = "from_rapier", feature = "dim3"))]
-use parry3d as parry;
+pub use parry3d as parry;
 
 #[cfg(all(feature = "from_rapier", feature = "dim2"))]
-use rapier2d as rapier;
+pub use rapier2d as rapier;
 #[cfg(all(feature = "from_rapier", feature = "dim3"))]
-use rapier3d as rapier;
+pub use rapier3d as rapier;
 
 // Re-export the shader crate
 #[cfg(feature = "dim2")]
@@ -35,7 +35,7 @@ pub use shaders::{Pad, PaddedVector};
 // Re-export glamx for users
 pub use glamx;
 
-const VALIDATE_LBVH_TOPOLOGY: bool = false;
+const VALIDATE_LBVH_TOPOLOGY: bool = true;
 
 pub mod dynamics;
 pub mod pipeline;

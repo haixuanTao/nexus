@@ -5,7 +5,7 @@
 
 use crate::grid::grid::{GpuGrid, indirect_dispatch_tensor};
 use crate::mpm_shaders::solver::g2p::{GpuG2p, GpuG2pCpic};
-use crate::solver::{GpuMaterials, GpuParticleModelData, GpuParticles, GpuSimulationParams};
+use crate::solver::{GpuMaterials, GpuParticles, GpuSimulationParams};
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
 use nexus_rbd::dynamics::GpuBodySet;
@@ -23,13 +23,13 @@ pub struct WgG2P {
 
 impl WgG2P {
     /// Launches the G2P kernel to update particle velocities from grid.
-    pub fn launch<GpuModel: GpuParticleModelData>(
+    pub fn launch(
         &self,
         pass: &mut GpuPass,
         use_cpic: bool,
         sim_params: &GpuSimulationParams,
         grid: &GpuGrid,
-        particles: &mut GpuParticles<GpuModel>,
+        particles: &mut GpuParticles,
         bodies: &GpuBodySet,
         body_materials: &GpuMaterials,
     ) -> Result<(), GpuBackendError> {

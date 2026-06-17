@@ -3,7 +3,7 @@ use nexus_testbed2d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed2d::{nexus, rapier};
 
 use khal::backend::GpuBackend;
-use nexus::mpm::pipeline::MpmData;
+use nexus::mpm::pipeline::MpmState;
 use nexus::mpm::solver::{
     BoundaryCondition, BoundaryConditionExt, Particle, ParticleModel, SimulationParams,
 };
@@ -64,7 +64,7 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
         .colliders
         .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
 
-    let data = MpmData::new(
+    let data = MpmState::new(
         backend,
         params,
         &particles,

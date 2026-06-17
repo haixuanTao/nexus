@@ -5,15 +5,26 @@ use nexus_testbed3d::nexus;
 use glamx::vec3;
 use khal::backend::GpuBackend;
 use nexus::mpm::{
-    pipeline::MpmData,
+    pipeline::MpmState,
     solver::{BoundaryCondition, BoundaryConditionExt, Particle, ParticleModel, SimulationParams},
 };
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder};
 
 pub async fn run(viewer: &mut Viewer) {
+    let mut all_time_max = 0.0;
+
     let mut scene = viewer.set_mpm(build).await;
     while viewer.render(&mut scene).await {
         scene.simulate(viewer).await;
+
+        // TODO: access state
+        // let mut max_diff = 0.0;
+        // for (init, now) in particles.iter().zip(state.results.instances.iter()) {
+        //     let diff = (init.position.y - now.position.y).abs();
+        //     max_diff = diff.max(max_diff);
+        // }
+        // all_time_max = max_diff.max(all_time_max);
+        // println!("max diff: {} (all time: {})", max_diff, all_time_max);
     }
     scene.detach(viewer);
 }
@@ -70,7 +81,7 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
             .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
     let co_boundary_condition = [(co_handle, BoundaryCondition::stick())];
 
-    let data = MpmData::new(
+    let data = MpmState::new(
         backend,
         params,
         &particles,
@@ -82,21 +93,9 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
     )
     .unwrap();
 
-    let mut all_time_max = 0.0;
-    let callback = move |state: &mut PhysicsState| {
-        let mut max_diff = 0.0;
-        for (init, now) in particles.iter().zip(state.results.instances.iter()) {
-            let diff = (init.position.y - now.position.y).abs();
-            max_diff = diff.max(max_diff);
-        }
-        all_time_max = max_diff.max(all_time_max);
-        println!("max diff: {} (all time: {})", max_diff, all_time_max);
-    };
 
     MpmPhysicsContext {
         data,
         rapier_data,
-        callbacks: vec![Box::new(callback)],
-        hooks_state: None,
     }
 }
