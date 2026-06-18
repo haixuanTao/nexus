@@ -4,6 +4,7 @@
 //! simulation step on the GPU. The pipeline manages collision detection, contact generation,
 //! constraint solving, and integration.
 
+use std::ops::Range;
 use crate::broad_phase::{GpuNarrowPhase, Lbvh, LbvhState};
 use crate::dynamics::{
     ColoringArgs, GpuColoring, GpuImpulseJointSet, GpuJointSolver, GpuMpropsUpdate, GpuSolver,
@@ -16,7 +17,7 @@ use crate::queries::GpuIndexedContact;
 use crate::shaders::PaddedVector;
 use crate::shaders::broad_phase::{LbvhNode, NarrowPhasePfmPair};
 use crate::shaders::dynamics::{
-    LocalMassProperties as GpuLocalMassProperties, SimParams as GpuSimParams, TwoBodyConstraint,
+    LocalMassProperties as GpuLocalMassProperties, RbdSimParams, TwoBodyConstraint,
     TwoBodyConstraintBuilder, Velocity as GpuVelocity,
     WorldMassProperties as GpuWorldMassProperties,
 };
@@ -30,7 +31,6 @@ use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuTimestamps
 use std::time::Duration;
 use vortx::tensor::Tensor;
 
-#[cfg(feature = "from_rapier")]
 use {
     crate::math::Point,
     crate::rapier::dynamics::{ImpulseJointSet, MultibodyJointSet, RigidBodySet},
@@ -45,7 +45,7 @@ use {
 /// This structure tracks timing and iteration counts for various stages of the physics pipeline,
 /// useful for profiling and optimization.
 #[derive(Default, Clone, Debug)]
-pub struct RunStats {
+pub struct RbdStats {
     /// Number of colors used in the graph coloring algorithm for parallel constraint solving.
     pub num_colors: u32,
     /// Duration from the start of the step until collision pair count is read back from GPU.
@@ -66,7 +66,7 @@ pub struct RunStats {
     pub gpu_total_time: f64,
 }
 
-impl RunStats {
+impl RbdStats {
     /// Returns the total simulation time in milliseconds.
     pub fn total_simulation_time_with_readback_ms(&self) -> f32 {
         self.total_simulation_time_with_readback.as_secs_f32() * 1000.0
@@ -92,7 +92,7 @@ pub struct RbdState {
     num_batches: u32,
     num_colliders_per_batch: u32,
     num_solver_iterations: u32,
-    sim_params: Tensor<GpuSimParams>,
+    sim_params: Tensor<RbdSimParams>,
     /// Per-body world-origin pose (matches rapier's `RigidBody::position`). This
     /// is the canonical pose stored between steps and the input to per-step
     /// mass-properties update and multibody FK. The substep loop does NOT
@@ -188,7 +188,6 @@ pub struct RbdState {
     num_active_colliders: Vec<u32>,
 }
 
-#[cfg(feature = "from_rapier")]
 impl RbdState {
     /// Creates a new GPU physics state from per-environment Rapier data structures.
     ///
@@ -201,7 +200,7 @@ impl RbdState {
             &ColliderSet,
             &ImpulseJointSet,
             &MultibodyJointSet,
-            &GpuSimParams,
+            &RbdSimParams,
         )],
     ) -> Self {
         let num_batches = environments.len() as u32;
@@ -230,7 +229,7 @@ impl RbdState {
             .map(|(_, _, _, _, sp)| sp.num_solver_iterations)
             .max()
             .unwrap_or(4);
-        let all_sim_params: Vec<GpuSimParams> = environments
+        let all_sim_params: Vec<RbdSimParams> = environments
             .iter()
             .map(|(_, _, _, _, sp)| {
                 let mut sp = **sp;
@@ -757,14 +756,13 @@ impl RbdState {
     }
 }
 
-#[cfg(feature = "from_rapier")]
 impl RbdState {
     /// Creates an empty rbd state preallocated for `num_batches` batches of up
     /// to `capacity_per_batch` colliders each.
     ///
     /// No body is active initially (every slot is reserved padding). Bodies are
     /// added later with [`Self::append_bodies`]; the simulation parameters use
-    /// neutral defaults ([`GpuSimParams::default`]) — adjust them via the usual
+    /// neutral defaults ([`RbdSimParams::default`]) — adjust them via the usual
     /// `sim_params` buffer if needed. Joints and multibodies start empty.
     ///
     /// NOTE: the per-batch collider count is fixed at `capacity_per_batch`;
@@ -775,7 +773,7 @@ impl RbdState {
         let num_bodies_total = (capacity_per_batch * num_batches) as usize;
 
         let num_solver_iterations = 4u32;
-        let mut base_sim_params = GpuSimParams::default();
+        let mut base_sim_params = RbdSimParams::default();
         base_sim_params.dt /= num_solver_iterations as f32;
         let all_sim_params = vec![base_sim_params; num_batches as usize];
 
@@ -1038,7 +1036,7 @@ impl RbdState {
         backend: &GpuBackend,
         bodies: &[(crate::rapier::dynamics::RigidBody, crate::rapier::geometry::Collider)],
         batch_id: usize,
-    ) -> Result<Vec<u32>, GpuBackendError> {
+    ) -> Result<Range<u32>, GpuBackendError> {
         assert!(batch_id < self.num_batches as usize, "batch_id out of range");
         let cap = self.num_colliders_per_batch as usize;
         let active = self.num_active_colliders[batch_id] as usize;
@@ -1125,7 +1123,7 @@ impl RbdState {
         backend.write_buffer(self.num_shapes.buffer_mut(), batch_id as u64, &[new_active])?;
 
         let start = (batch_id * cap + active) as u32;
-        Ok((start..start + bodies.len() as u32).collect())
+        Ok(start..start + bodies.len() as u32)
     }
 
     /// Removes the bodies at the given global slot indices using a per-batch
@@ -1368,8 +1366,8 @@ impl RbdPipeline {
         backend: &GpuBackend,
         state: &mut RbdState,
         mut timestamps: Option<&mut GpuTimestamps>,
-    ) -> Result<RunStats, GpuBackendError> {
-        let mut stats = RunStats::default();
+    ) -> Result<RbdStats, GpuBackendError> {
+        let mut stats = RbdStats::default();
         let t_phase1 = web_time::Instant::now();
 
         // Phase 0: Multibody once-per-visible-step setup (3D only for now).
@@ -2048,7 +2046,6 @@ fn validate_lbvh_topology(tree: &[LbvhNode], sorted_colliders: &[u32], num_colli
 /// Builds a GPU-side [`LocalMassProperties`] from a parry/rapier
 /// [`crate::rapier::prelude::MassProperties`]. The body-local COM, principal-axis
 /// frame, inverse mass and inverse principal inertia are copied verbatim.
-#[cfg(feature = "from_rapier")]
 fn local_mprops_from_rapier(
     mprops: &crate::rapier::prelude::MassProperties,
 ) -> GpuLocalMassProperties {
@@ -2078,7 +2075,6 @@ fn local_mprops_from_rapier(
 /// Computes the world-space mass properties of a body from its body-origin world
 /// pose and body-local mass properties. Mirrors the GPU `update_mprops` shader
 /// so the buffer is consistent the moment the simulation starts.
-#[cfg(feature = "from_rapier")]
 fn world_mprops_from_local(pose: &Pose, local: &GpuLocalMassProperties) -> GpuWorldMassProperties {
     #[cfg(feature = "dim2")]
     {

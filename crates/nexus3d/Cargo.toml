@@ -23,7 +23,6 @@ f32 = []
 f64 = []
 webgpu = ["nexus_rbd3d?/webgpu", "nexus_mpm3d?/webgpu", "nexus_fem3d?/webgpu"]
 metal = ["nexus_rbd3d?/metal", "nexus_mpm3d?/metal", "nexus_fem3d?/metal"]
-from_rapier = ["nexus_rbd3d?/from_rapier", "nexus_mpm3d?/from_rapier"]
 cpu = ["nexus_rbd3d?/cpu", "nexus_mpm3d?/cpu", "nexus_fem3d?/cpu"]
 cpu-parallel = ["cpu", "nexus_rbd3d?/cpu-parallel", "nexus_mpm3d?/cpu-parallel", "nexus_fem3d?/cpu-parallel"]
 cuda = ["nexus_rbd3d?/cuda", "nexus_mpm3d?/cuda", "nexus_fem3d?/cuda"]
@@ -34,6 +33,7 @@ fem = ["dep:nexus_fem3d"]
 
 [dependencies]
 bitflags = "2"
+web-time = "1"
 khal = { workspace = true }
 nexus_rbd3d = { path = "../nexus_rbd3d", optional = true }
 nexus_mpm3d = { path = "../nexus_mpm3d", optional = true }

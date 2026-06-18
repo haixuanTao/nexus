@@ -1,4 +1,4 @@
-use nexus_testbed3d::Viewer;
+use nexus_testbed3d::NexusViewer;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -11,7 +11,7 @@ use nexus::mpm::{
 use rapier3d::parry::utils::Array2;
 use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
-pub async fn run(viewer: &mut Viewer) {
+pub async fn run(viewer: &mut NexusViewer) {
     let mut scene = viewer.set_mpm(build).await;
     while viewer.render(&mut scene).await {
         scene.simulate(viewer).await;

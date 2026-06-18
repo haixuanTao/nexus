@@ -24,7 +24,7 @@ use super::joint::ImpulseJoint;
 use super::joint_constraint_builder::{
     JointConstraintBuilder, solve_joint_constraint, update_constraint,
 };
-use super::sim_params::SimParams;
+use super::sim_params::RbdSimParams;
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -272,7 +272,7 @@ pub fn gpu_update_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] joints_len: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] all_params: &[SimParams],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] all_params: &[RbdSimParams],
     #[spirv(uniform, descriptor_set = 0, binding = 6)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;

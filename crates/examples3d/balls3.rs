@@ -1,25 +1,18 @@
-use nexus_testbed3d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
-fn build() -> SimulationState {
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
     const NXZ: isize = 30;
     const NY: isize = 70;
-
-    let mut bodies = RigidBodySet::default();
-    let mut colliders = ColliderSet::default();
-    let impulse_joints = ImpulseJointSet::default();
 
     /*
      * Falling dynamic objects.
      */
+    let mut state = NexusState::default();
+    let no_coupling = RbdCoupling::NONE;
+
     for j in 0..NY {
         let max_ik = NXZ / 2;
         for i in -max_ik..max_ik {
@@ -29,8 +22,11 @@ fn build() -> SimulationState {
                 let z = k as f32 * 1.1;
                 let pos = Vec3::new(x, y, z);
 
-                let body = bodies.insert(RigidBodyBuilder::dynamic().translation(pos));
-                colliders.insert_with_parent(ColliderBuilder::ball(0.5), body, &mut bodies);
+                let body = RigidBodyBuilder::dynamic().translation(pos).build();
+                let collider = ColliderBuilder::ball(0.5).build();
+                let shape = collider.shared_shape().clone();
+                let handle = state.insert_rigid_body(body, collider.clone(), no_coupling);
+                viewer.insert_shape(handle, &shape);
             }
         }
     }
@@ -56,15 +52,24 @@ fn build() -> SimulationState {
         ];
 
         for (wall_pos, wall_sz) in walls {
-            colliders.insert(
-                ColliderBuilder::cuboid(wall_sz.x, wall_sz.y, wall_sz.z).translation(wall_pos),
-            );
+            let body = RigidBodyBuilder::fixed().build();
+            let collider = ColliderBuilder::cuboid(wall_sz.x, wall_sz.y, wall_sz.z).translation(wall_pos).build();
+            let shape = collider.shared_shape().clone();
+            let handle = state.insert_rigid_body(body, collider, no_coupling);
+            viewer.insert_shape(handle, &shape);
         }
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
-    // testbed.look_at(point![100.0, 100.0, 100.0], Point::origin());
+    // Optional, useful so we can render even before starting the simulation.
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

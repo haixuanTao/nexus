@@ -9,7 +9,6 @@ use nexus_rbd::math::{Matrix, Vector, DIM};
 use std::ops::RangeBounds;
 use vortx::tensor::Tensor;
 
-#[cfg(feature = "from_rapier")]
 use {
     crate::sampling::{self, SamplingBuffers, SamplingParams},
     nexus_rbd::dynamics::body::RapierBodyCouplingEntry,
@@ -217,7 +216,6 @@ impl GpuRigidParticles {
         })
     }
 
-    #[cfg(feature = "from_rapier")]
     fn from_buffers(
         backend: &GpuBackend,
         sampling_buffers: &SamplingBuffers,
@@ -252,7 +250,6 @@ impl GpuRigidParticles {
     }
 
     /// Samples particles from collider surfaces for MPM coupling.
-    #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
         colliders: &rapier::geometry::ColliderSet,

@@ -16,7 +16,7 @@ pub type FemSceneBuildFn = fn(&KhalGpuBackend) -> FemState;
 pub type FemSceneBuilders = Vec<(String, FemSceneBuildFn)>;
 
 /// A FEM scene: the GPU FEM stage plus its vertex render node. Built via
-/// [`crate::Viewer::set_fem`].
+/// [`crate::NexusViewer::set_fem`].
 pub struct FemScene {
     pub stage: FemStage,
     pub(crate) vertex_node: RenderNode,
@@ -35,7 +35,7 @@ impl FemScene {
 
     /// Advances the simulation for one render frame (honoring pause) and syncs
     /// graphics. Call this inside the example's loop body.
-    pub async fn simulate(&mut self, viewer: &mut crate::Viewer) {
+    pub async fn simulate(&mut self, viewer: &mut crate::NexusViewer) {
         if viewer.ui.run_state != RunState::Paused {
             self.stage.update().await;
         }
@@ -46,7 +46,7 @@ impl FemScene {
     }
 
     /// Detaches the vertex render node.
-    pub fn detach(self, _viewer: &mut crate::Viewer) {
+    pub fn detach(self, _viewer: &mut crate::NexusViewer) {
         let FemScene { mut vertex_node, .. } = self;
         vertex_node.detach();
     }

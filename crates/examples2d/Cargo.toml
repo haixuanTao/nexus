@@ -13,6 +13,7 @@ metal = ["nexus_testbed2d/metal"]
 
 [dependencies]
 glamx = { version = "0.3", default-features = false }
+nexus2d = { path = "../nexus2d", features = [ "rbd", "mpm", "fem" ] }
 nexus_testbed2d = { path = "../nexus_testbed2d" }
 nexus_rbd2d = { path = "../nexus_rbd2d" }
 rapier2d = "0.33"
@@ -21,6 +22,7 @@ Inflector = "0.11"
 kiss3d = "0.44"
 oorandom = "11"
 rand = "0.10"
+anyhow = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

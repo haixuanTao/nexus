@@ -2,16 +2,17 @@ pub mod backend;
 pub mod graphics;
 
 pub use backend::{BackendType, CpuBackend, GpuBackend, PhysicsBackend};
-pub use graphics::{RenderContext, setup_graphics, update_instances};
+pub use graphics::{RenderContext};
 
 use crate::RunState;
 use khal::backend::GpuBackend as KhalGpuBackend;
-use nexus::rbd::dynamics::GpuSimParams;
+use nexus::rbd::dynamics::RbdSimParams;
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::{RbdPipeline, RunStats};
+use nexus::rbd::pipeline::{RbdPipeline, RbdStats};
 use rapier::geometry::{ColliderHandle, ColliderSet, SharedShape};
 use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodySet};
 use std::collections::HashMap;
+use nexus::state::NexusState;
 
 /// Custom visual shape that overrides a collider's default rendering. The shape is
 /// drawn at the collider's world pose composed with [`Self::local_pose`] (handy when
@@ -41,7 +42,7 @@ pub struct BatchEnvironment {
     pub colliders: ColliderSet,
     pub impulse_joints: ImpulseJointSet,
     pub multibody_joints: MultibodyJointSet,
-    pub sim_params: GpuSimParams,
+    pub sim_params: RbdSimParams,
     /// Optional per-collider visual override. When a collider handle is present in
     /// this map its [`VisualShape`] is rendered instead of the collider's own shape.
     pub visuals: HashMap<ColliderHandle, VisualShape>,
@@ -96,7 +97,7 @@ impl SimulationState {
             colliders,
             impulse_joints,
             multibody_joints,
-            sim_params: GpuSimParams::default(),
+            sim_params: RbdSimParams::default(),
             visuals,
         }])
     }
@@ -128,7 +129,7 @@ impl PhysicsContext {
 
 /// A rigid-body scene: GPU/CPU physics state plus its rendering instances.
 ///
-/// Built via [`crate::Viewer::set_rbd`]. The example owns this and drives the
+/// Built via [`crate::NexusViewer::set_rbd`]. The example owns this and drives the
 /// loop with [`RbdScene::simulate`].
 pub struct RbdScene {
     pub physics: PhysicsContext,
@@ -152,33 +153,34 @@ impl RbdScene {
 
     /// Runs a single physics step. Self-contained (uses the backend's own GPU
     /// device); does not render. This is the headless/Python entry point.
-    pub async fn step(&mut self) -> RunStats {
+    pub async fn step(&mut self) -> RbdStats {
         self.physics.backend.step(None).await
     }
 
     /// Pushes the latest poses into the kiss3d render instances.
-    pub fn sync_graphics(&mut self) {
-        update_instances(&mut self.render_ctx, &self.physics.backend);
+    pub fn sync_graphics(&mut self, state: &NexusState) {
+        self.render_ctx.update_instances(state, &self.physics.backend);
     }
 
     /// Advances the simulation for one render frame (honoring pause/step) and
     /// syncs graphics. Call this inside the example's loop body.
-    pub async fn simulate(&mut self, viewer: &mut crate::Viewer) {
-        if viewer.ui.run_state != RunState::Paused {
-            for _ in 0..self.num_steps_per_frame {
-                viewer.ui.run_stats = self.step().await;
-                self.sim_time += self.dt as f64;
-            }
-        }
-        self.sync_graphics();
-        if viewer.ui.run_state == RunState::Step {
-            viewer.ui.run_state = RunState::Paused;
-        }
+    pub async fn simulate(&mut self, viewer: &mut crate::NexusViewer) {
+        todo!()
+        // if viewer.ui.run_state != RunState::Paused {
+        //     for _ in 0..self.num_steps_per_frame {
+        //         viewer.ui.run_stats = self.step().await;
+        //         self.sim_time += self.dt as f64;
+        //     }
+        // }
+        // self.sync_graphics();
+        // if viewer.ui.run_state == RunState::Step {
+        //     viewer.ui.run_state = RunState::Paused;
+        // }
     }
 
     /// Detaches the render nodes and, when the backend is unchanged, caches the
     /// compiled GPU pipeline in the viewer for reuse by the next RBD scene.
-    pub fn detach(self, viewer: &mut crate::Viewer) {
+    pub fn detach(self, viewer: &mut crate::NexusViewer) {
         let RbdScene {
             mut render_ctx,
             physics,

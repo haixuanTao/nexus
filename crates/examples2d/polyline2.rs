@@ -1,21 +1,11 @@
-use nexus_testbed2d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed2d::NexusViewer;
+use nexus2d::prelude::{NexusState, RbdCoupling};
 use rapier2d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
-fn build() -> SimulationState {
-    /*
-     * World
-     */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let impulse_joints = ImpulseJointSet::new();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
+    let no_coupling = RbdCoupling::NONE;
 
     /*
      * Ground
@@ -33,10 +23,11 @@ fn build() -> SimulationState {
     }
     points.push(Vec2::new(ground_size / 2.0, 240.0));
 
-    let rigid_body = RigidBodyBuilder::fixed();
-    let handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::polyline(points, None);
-    colliders.insert_with_parent(collider, handle, &mut bodies);
+    let body = RigidBodyBuilder::fixed().build();
+    let collider = ColliderBuilder::polyline(points, None).build();
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider, no_coupling);
+    viewer.insert_shape(handle, &shape);
 
     // Create 5 predefined convex polygon shapes (so we can render
     // them efficiently with instancing).
@@ -77,8 +68,7 @@ fn build() -> SimulationState {
             let y = j as f32 * shift + centery + 20.0;
 
             // Build the rigid body.
-            let rigid_body = RigidBodyBuilder::dynamic().translation(Vec2::new(x, y));
-            let handle = bodies.insert(rigid_body);
+            let body = RigidBodyBuilder::dynamic().translation(Vec2::new(x, y)).build();
             let collider = match j % 4 {
                 0 => ColliderBuilder::cuboid(rad, rad),
                 1 => ColliderBuilder::capsule_y(rad, rad),
@@ -88,14 +78,24 @@ fn build() -> SimulationState {
                     ColliderBuilder::new(polygon_shapes[shape_idx].clone())
                 }
                 _ => ColliderBuilder::ball(rad),
-            };
-            colliders.insert_with_parent(collider, handle, &mut bodies);
+            }
+            .build();
+            let shape = collider.shared_shape().clone();
+            let handle = state.insert_rigid_body(body, collider, no_coupling);
+            viewer.insert_shape(handle, &shape);
         }
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
-    // testbed.look_at(point![0.0, 50.0], 10.0);
+    // Optional, useful so we can render even before starting the simulation.
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

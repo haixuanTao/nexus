@@ -1,17 +1,24 @@
-use nexus_testbed3d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
+/// Inserts a body + collider into the state and registers its render shape.
+fn add_body(
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
+    body: RigidBody,
+    collider: Collider,
+) -> RigidBodyHandle {
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider, RbdCoupling::NONE);
+    viewer.insert_shape(handle, &shape);
+    handle
 }
 
 pub fn build_block(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     half_extents: Vector,
     shift: Vector,
     (mut numx, numy, mut numz): (usize, usize, usize),
@@ -46,14 +53,18 @@ pub fn build_block(
                 };
 
                 // Build the rigid body.
-                let rigid_body = RigidBodyBuilder::dynamic().translation(Vec3::new(
-                    x + dim.x + shift.x,
-                    y + dim.y + shift.y,
-                    z + dim.z + shift.z,
-                ));
-                let handle = bodies.insert(rigid_body);
-                let collider = ColliderBuilder::cuboid(dim.x, dim.y, dim.z);
-                colliders.insert_with_parent(collider, handle, bodies);
+                add_body(
+                    state,
+                    viewer,
+                    RigidBodyBuilder::dynamic()
+                        .translation(Vec3::new(
+                            x + dim.x + shift.x,
+                            y + dim.y + shift.y,
+                            z + dim.z + shift.z,
+                        ))
+                        .build(),
+                    ColliderBuilder::cuboid(dim.x, dim.y, dim.z).build(),
+                );
 
                 // testbed.set_initial_body_color(handle, color0);
                 std::mem::swap(&mut color0, &mut color1);
@@ -67,27 +78,26 @@ pub fn build_block(
     for i in 0..(block_width / (dim.x * 2.0)) as usize {
         for j in 0..(block_width / (dim.z * 2.0)) as usize {
             // Build the rigid body.
-            let rigid_body = RigidBodyBuilder::dynamic().translation(Vec3::new(
-                i as f32 * dim.x * 2.0 + dim.x + shift.x,
-                dim.y + shift.y + block_height,
-                j as f32 * dim.z * 2.0 + dim.z + shift.z,
-            ));
-            let handle = bodies.insert(rigid_body);
-            let collider = ColliderBuilder::cuboid(dim.x, dim.y, dim.z);
-            colliders.insert_with_parent(collider, handle, bodies);
+            add_body(
+                state,
+                viewer,
+                RigidBodyBuilder::dynamic()
+                    .translation(Vec3::new(
+                        i as f32 * dim.x * 2.0 + dim.x + shift.x,
+                        dim.y + shift.y + block_height,
+                        j as f32 * dim.z * 2.0 + dim.z + shift.z,
+                    ))
+                    .build(),
+                ColliderBuilder::cuboid(dim.x, dim.y, dim.z).build(),
+            );
             // testbed.set_initial_body_color(handle, color0);
             std::mem::swap(&mut color0, &mut color1);
         }
     }
 }
 
-fn build() -> SimulationState {
-    /*
-     * World
-     */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let impulse_joints = ImpulseJointSet::new();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
 
     /*
      * Ground
@@ -95,10 +105,14 @@ fn build() -> SimulationState {
     let ground_size = 70.0;
     let ground_height = 2.0;
 
-    let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height, 0.0));
-    let handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::cuboid(ground_size, ground_height, ground_size);
-    colliders.insert_with_parent(collider, handle, &mut bodies);
+    add_body(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::fixed()
+            .translation(Vec3::new(0.0, -ground_height, 0.0))
+            .build(),
+        ColliderBuilder::cuboid(ground_size, ground_height, ground_size).build(),
+    );
 
     /*
      * Create the cubes
@@ -115,8 +129,8 @@ fn build() -> SimulationState {
         let numz = numx * 3 + 1;
         let block_width = numx as f32 * half_extents.z * 2.0;
         build_block(
-            &mut bodies,
-            &mut colliders,
+            &mut state,
+            viewer,
             half_extents,
             Vec3::new(-block_width / 2.0, block_height, -block_width / 2.0),
             (numx, numy, numz),
@@ -124,9 +138,16 @@ fn build() -> SimulationState {
         block_height += numy as f32 * half_extents.y * 2.0 + half_extents.x * 2.0;
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
     // testbed.look_at(point![100.0, 100.0, 100.0], Point::origin());
 }

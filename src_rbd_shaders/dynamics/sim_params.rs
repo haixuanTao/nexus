@@ -10,7 +10,7 @@ pub const TWO_PI: f32 = core::f32::consts::TAU;
 #[derive(Clone, Copy)]
 #[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
-pub struct SimParams {
+pub struct RbdSimParams {
     /// The timestep length (default: `1.0 / 60.0`).
     pub dt: f32,
 
@@ -83,11 +83,11 @@ pub struct SimParams {
     pub num_solver_iterations: u32,
 }
 
-impl SimParams {
+impl RbdSimParams {
     /// Initialize the simulation parameters with settings matching the TGS-soft solver
     /// with warmstarting.
     ///
-    /// This is the default configuration, equivalent to [`SimParams::default()`].
+    /// This is the default configuration, equivalent to [`RbdSimParams::default()`].
     pub fn tgs_soft() -> Self {
         Self {
             dt: 1.0 / 60.0,
@@ -105,14 +105,14 @@ impl SimParams {
     }
 }
 
-impl Default for SimParams {
+impl Default for RbdSimParams {
     fn default() -> Self {
         Self::tgs_soft()
     }
 }
 
 /// Computes the inverse timestep (1/dt). Returns 0.0 if dt is zero.
-pub fn inv_dt(params: &SimParams) -> f32 {
+pub fn inv_dt(params: &RbdSimParams) -> f32 {
     if params.dt == 0.0 {
         0.0
     } else {
@@ -121,12 +121,12 @@ pub fn inv_dt(params: &SimParams) -> f32 {
 }
 
 /// Computes the contact constraint angular frequency (rad/s).
-pub fn contact_angular_frequency(params: &SimParams) -> f32 {
+pub fn contact_angular_frequency(params: &RbdSimParams) -> f32 {
     params.contact_natural_frequency * TWO_PI
 }
 
 /// The `contact_erp` coefficient, multiplied by the inverse timestep length.
-pub fn contact_erp_inv_dt(params: &SimParams) -> f32 {
+pub fn contact_erp_inv_dt(params: &RbdSimParams) -> f32 {
     let ang_freq = contact_angular_frequency(params);
     ang_freq / (params.dt * ang_freq + 2.0 * params.contact_damping_ratio)
 }
@@ -136,17 +136,17 @@ pub fn contact_erp_inv_dt(params: &SimParams) -> f32 {
 ///
 /// This parameter is computed automatically from `contact_natural_frequency`,
 /// `contact_damping_ratio` and the substep length.
-pub fn contact_erp(params: &SimParams) -> f32 {
+pub fn contact_erp(params: &RbdSimParams) -> f32 {
     params.dt * contact_erp_inv_dt(params)
 }
 
 /// The joint's spring angular frequency for constraint regularization.
-pub fn joint_angular_frequency(params: &SimParams) -> f32 {
+pub fn joint_angular_frequency(params: &RbdSimParams) -> f32 {
     params.joint_natural_frequency * TWO_PI
 }
 
 /// The `joint_erp` coefficient, multiplied by the inverse timestep length.
-pub fn joint_erp_inv_dt(params: &SimParams) -> f32 {
+pub fn joint_erp_inv_dt(params: &RbdSimParams) -> f32 {
     let ang_freq = joint_angular_frequency(params);
     ang_freq / (params.dt * ang_freq + 2.0 * params.joint_damping_ratio)
 }
@@ -156,7 +156,7 @@ pub fn joint_erp_inv_dt(params: &SimParams) -> f32 {
 ///
 /// This parameter is computed automatically from `joint_natural_frequency`,
 /// `joint_damping_ratio` and the substep length.
-pub fn joint_erp(params: &SimParams) -> f32 {
+pub fn joint_erp(params: &RbdSimParams) -> f32 {
     params.dt * joint_erp_inv_dt(params)
 }
 
@@ -164,7 +164,7 @@ pub fn joint_erp(params: &SimParams) -> f32 {
 ///
 /// This parameter is computed automatically from `contact_natural_frequency`,
 /// `contact_damping_ratio` and the substep length.
-pub fn contact_cfm_factor(params: &SimParams) -> f32 {
+pub fn contact_cfm_factor(params: &RbdSimParams) -> f32 {
     // Compute CFM assuming a critically damped spring multiplied by the damping ratio.
     // The logic is similar to `joint_cfm_coeff`.
     let contact_erp = contact_erp(params);
@@ -208,7 +208,7 @@ pub fn contact_cfm_factor(params: &SimParams) -> f32 {
 ///
 /// This parameter is computed automatically from `joint_natural_frequency`,
 /// `joint_damping_ratio` and the substep length.
-pub fn joint_cfm_coeff(params: &SimParams) -> f32 {
+pub fn joint_cfm_coeff(params: &RbdSimParams) -> f32 {
     // Compute CFM assuming a critically damped spring multiplied by the damping ratio.
     // The logic is similar to `contact_cfm_factor`.
     let joint_erp = joint_erp(params);
@@ -225,7 +225,7 @@ pub fn joint_cfm_coeff(params: &SimParams) -> f32 {
 
 /// Amount of penetration the engine won't attempt to correct (default: `0.001` multiplied by
 /// `length_unit`).
-pub fn allowed_linear_error(params: &SimParams) -> f32 {
+pub fn allowed_linear_error(params: &RbdSimParams) -> f32 {
     params.normalized_allowed_linear_error * params.length_unit
 }
 
@@ -233,7 +233,7 @@ pub fn allowed_linear_error(params: &SimParams) -> f32 {
 ///
 /// This is equal to `normalized_max_corrective_velocity` multiplied by
 /// `length_unit`.
-pub fn max_corrective_velocity(params: &SimParams) -> f32 {
+pub fn max_corrective_velocity(params: &RbdSimParams) -> f32 {
     if params.normalized_max_corrective_velocity != MAX_FLT {
         params.normalized_max_corrective_velocity * params.length_unit
     } else {
@@ -243,6 +243,6 @@ pub fn max_corrective_velocity(params: &SimParams) -> f32 {
 
 /// The maximal distance separating two objects that will generate predictive contacts
 /// (default: `0.002m` multiplied by `length_unit`).
-pub fn prediction_distance(params: &SimParams) -> f32 {
+pub fn prediction_distance(params: &RbdSimParams) -> f32 {
     params.normalized_prediction_distance * params.length_unit
 }

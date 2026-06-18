@@ -23,7 +23,7 @@ use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
 use nexus_testbed3d::SimulationState;
-use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
+use nexus_testbed3d::nexus::rbd::dynamics::RbdSimParams;
 use nexus_testbed3d::rbd::BatchEnvironment;
 use nexus_testbed3d::rbd::GpuBackend;
 use nexus_testbed3d::rbd::backend::SimulationBackend;
@@ -82,7 +82,7 @@ fn build_one_batch(path: &PathBuf, num_substeps: u32) -> Option<BatchEnvironment
         UrdfMultibodyOptions::DISABLE_SELF_CONTACTS,
     );
 
-    let mut sim_params = GpuSimParams::default();
+    let mut sim_params = RbdSimParams::default();
     sim_params.num_solver_iterations = num_substeps;
     Some(BatchEnvironment {
         bodies,

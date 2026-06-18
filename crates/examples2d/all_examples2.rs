@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use inflector::Inflector;
-use nexus_testbed2d::{DemoKind, Viewer};
+use nexus_testbed2d::{DemoKind, NexusViewer};
 
 mod balls2;
 mod boxes2;
@@ -34,9 +34,12 @@ macro_rules! demos {
             demos
         }
 
-        async fn dispatch(name: &str, viewer: &mut Viewer) {
+        async fn dispatch(name: &str, viewer: &mut NexusViewer) {
             match name {
-                $( $name => $module::run(viewer).await, )*
+                // `run` may return `()` (legacy demos) or a `Result` (demos
+                // migrated to the `NexusState` API); discard whatever it yields
+                // so every arm has the same `()` type.
+                $( $name => { let _ = $module::run(viewer).await; }, )*
                 _ => eprintln!("Unknown demo: '{name}'"),
             }
         }
@@ -118,7 +121,7 @@ pub async fn main() {
         }
     }
 
-    let mut viewer = Viewer::new(demos.clone()).await;
+    let mut viewer = NexusViewer::new(demos.clone()).await;
     viewer = viewer.with_selected_demo(selected);
     if opts.cpu {
         viewer = viewer.with_cpu();

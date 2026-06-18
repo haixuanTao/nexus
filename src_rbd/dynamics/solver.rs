@@ -22,7 +22,7 @@ use crate::shaders::dynamics::{
     GpuRemoveCfmAndBiasKernel, GpuSolverCleanup, GpuSolverFinalize, GpuSolverIncColor,
     GpuSolverInitConstraints, GpuSolverResetColor, GpuSolverSortConstraints,
     GpuSolverUpdateConstraints, GpuStepGaussSeidel, GpuWarmstart, GpuWarmstartWithoutColors,
-    LocalMassProperties, SimParams, TwoBodyConstraint, TwoBodyConstraintBuilder, Velocity,
+    LocalMassProperties, RbdSimParams, TwoBodyConstraint, TwoBodyConstraintBuilder, Velocity,
     WorldMassProperties,
 };
 use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
@@ -91,7 +91,7 @@ pub struct SolverArgs<'a> {
     /// Builder data for initializing constraints.
     pub constraint_builders: &'a mut Tensor<TwoBodyConstraintBuilder>,
     /// Global simulation parameters.
-    pub sim_params: &'a Tensor<SimParams>,
+    pub sim_params: &'a Tensor<RbdSimParams>,
     /// Number of colliders per batch (uniform scalar, used as loop bound).
     pub colliders_len: &'a Tensor<u32>,
     /// Rigid body world-origin poses. Mirrors rapier's `RigidBody::position`.

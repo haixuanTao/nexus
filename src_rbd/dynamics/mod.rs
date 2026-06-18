@@ -1,6 +1,6 @@
 //! Rigid-body dynamics: forces, velocities, constraints, and solvers.
 
-pub use crate::shaders::dynamics::SimParams as GpuSimParams;
+pub use crate::shaders::dynamics::RbdSimParams;
 pub use body::{BodyCoupling, BodyCouplingEntry, BodyDesc, GpuBodySet};
 pub use coloring::{ColoringArgs, GpuColoring};
 pub use joint::{GpuImpulseJointSet, GpuJointSolver, JointSolverArgs};

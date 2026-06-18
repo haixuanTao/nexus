@@ -14,9 +14,9 @@ pub extern crate nexus_rbd2d as nexus_rbd;
 #[cfg(feature = "dim3")]
 pub extern crate nexus_rbd3d as nexus_rbd;
 
-#[cfg(all(feature = "from_rapier", feature = "dim2"))]
+#[cfg(feature = "dim2")]
 pub extern crate rapier2d as rapier;
-#[cfg(all(feature = "from_rapier", feature = "dim3"))]
+#[cfg(feature = "dim3")]
 pub extern crate rapier3d as rapier;
 
 use khal::re_exports::include_dir::{Dir, include_dir};
@@ -27,10 +27,9 @@ pub static SPIRV_DIR: Dir<'static> = include_dir!("$OUT_DIR/shaders-spirv");
 pub mod grid;
 pub mod models;
 pub mod pipeline;
-#[cfg(feature = "from_rapier")]
 pub(crate) mod sampling;
 pub mod solver;
-#[cfg(all(feature = "from_rapier", feature = "dim3"))]
+#[cfg(feature = "dim3")]
 pub mod trimesh;
 
 /// Reinterprets a `&Tensor<T>` as `&Tensor<U>` when `T` and `U` have the same size.

@@ -1,21 +1,14 @@
-use nexus_testbed3d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
-fn build() -> SimulationState {
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
     /*
      * World
      */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let mut impulse_joints = ImpulseJointSet::new();
+    let mut state = NexusState::default();
+    let no_coupling = RbdCoupling::NONE;
 
     let rad = 0.4;
     let num = 10;
@@ -30,18 +23,24 @@ fn build() -> SimulationState {
             for j in 0..30 {
                 let x = j as f32 * shift * 4.0;
 
-                let ground = RigidBodyBuilder::fixed().translation(Vec3::new(x, y, z));
-                let mut curr_parent = bodies.insert(ground);
-                let collider = ColliderBuilder::cuboid(rad, rad, rad);
-                colliders.insert_with_parent(collider, curr_parent, &mut bodies);
+                let ground = RigidBodyBuilder::fixed()
+                    .translation(Vec3::new(x, y, z))
+                    .build();
+                let collider = ColliderBuilder::cuboid(rad, rad, rad).build();
+                let shape = collider.shared_shape().clone();
+                let mut curr_parent = state.insert_rigid_body(ground, collider, no_coupling);
+                viewer.insert_shape(curr_parent, &shape);
 
                 for i in 0..num {
                     let z = z + (i + 1) as f32 * shift;
                     let density = 1.0;
-                    let rigid_body = RigidBodyBuilder::dynamic().translation(Vec3::new(x, y, z));
-                    let curr_child = bodies.insert(rigid_body);
-                    let collider = ColliderBuilder::cuboid(rad, rad, rad).density(density);
-                    colliders.insert_with_parent(collider, curr_child, &mut bodies);
+                    let rigid_body = RigidBodyBuilder::dynamic()
+                        .translation(Vec3::new(x, y, z))
+                        .build();
+                    let collider = ColliderBuilder::cuboid(rad, rad, rad).density(density).build();
+                    let shape = collider.shared_shape().clone();
+                    let curr_child = state.insert_rigid_body(rigid_body, collider, no_coupling);
+                    viewer.insert_shape(curr_child, &shape);
 
                     let axis = if i % 2 == 0 {
                         Vec3::new(1.0, 1.0, 0.0).normalize()
@@ -52,7 +51,7 @@ fn build() -> SimulationState {
                     let prism = PrismaticJointBuilder::new(axis)
                         .local_anchor2(Vec3::new(0.0, 0.0, -shift))
                         .limits([-2.0, 0.0]);
-                    impulse_joints.insert(curr_parent, curr_child, prism, true);
+                    state.insert_impulse_joint(curr_parent, curr_child, prism);
 
                     curr_parent = curr_child;
                 }
@@ -60,9 +59,16 @@ fn build() -> SimulationState {
         }
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
-    // testbed.look_at(point![262.0, 63.0, 124.0], point![101.0, 4.0, -3.0]);
+    // Optional, useful so we can render even before starting the simulation.
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

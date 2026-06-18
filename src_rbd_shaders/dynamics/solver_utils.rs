@@ -13,7 +13,7 @@ use super::constraint::{
     TwoBodyConstraintTangentPart,
 };
 use super::sim_params::{
-    SimParams, allowed_linear_error, contact_cfm_factor, contact_erp_inv_dt, inv_dt,
+    RbdSimParams, allowed_linear_error, contact_cfm_factor, contact_erp_inv_dt, inv_dt,
     max_corrective_velocity,
 };
 use crate::{Pad, Pose, Vector, gcross, gdot};
@@ -136,7 +136,7 @@ pub fn contact_to_constraint(
     collider_world_poses: &Slice<Pose>,
     solver_body_poses: &Slice<Pose>,
     vels: &Slice<Velocity>,
-    params: &SimParams,
+    params: &RbdSimParams,
     constraint: &mut TwoBodyConstraint,
     builder: &mut TwoBodyConstraintBuilder,
 ) {
@@ -315,7 +315,7 @@ pub fn update_constraint(
     constraint: &mut TwoBodyConstraint,
     builder: &TwoBodyConstraintBuilder,
     poses: &Slice<Pose>,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) {
     let body1 = constraint.solver_body_a as usize;
     let body2 = constraint.solver_body_b as usize;

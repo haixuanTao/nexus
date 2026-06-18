@@ -1,44 +1,9 @@
-use nexus_testbed3d::{SimulationState, Viewer, VisualShape};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 use rapier3d_urdf::{UrdfLoaderOptions, UrdfMultibodyOptions, UrdfRobot};
-use std::collections::HashMap;
 use std::path::PathBuf;
-
-/// The example owns its loop. Every 5 simulated seconds it re-randomizes each
-/// multibody joint's angular-X motor target velocity within `[-0.6, 0.6]` rad/s
-/// so the robot stays in slow continuous motion with periodically changing
-/// direction. This is the per-frame control that used to live in an `RbdTick`.
-pub async fn run(viewer: &mut Viewer) {
-    use rand::RngExt;
-
-    let mut scene = viewer.set_rbd(build()).await;
-
-    let mut rng = rand::rng();
-    let mut next_change_at = 0.0_f64;
-    let interval = 5.0;
-
-    while viewer.render(&mut scene).await {
-        if scene.sim_time >= next_change_at {
-            next_change_at = scene.sim_time + interval;
-            let backend = scene.backend_mut();
-            let n = backend.num_bodies() as u32;
-            let num_batches = backend.num_batches() as u32;
-            for batch in 0..num_batches {
-                for link_id in 0..n {
-                    let target_vel: f32 = rng.random_range(-0.6f32..=0.6);
-                    backend.set_multibody_motor_velocity(
-                        batch,
-                        link_id,
-                        JointAxis::AngX,
-                        target_vel,
-                    );
-                }
-            }
-        }
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
 
 fn urdf_path() -> PathBuf {
     // let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -47,12 +12,15 @@ fn urdf_path() -> PathBuf {
     PathBuf::from("/Users/sebcrozet/work/nexus-demos/XoQ/js/examples/assets/openarm_v10.urdf")
 }
 
-fn build() -> SimulationState {
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let mut impulse_joints = ImpulseJointSet::new();
-    let mut multibody_joints = MultibodyJointSet::new();
-    let mut visuals: HashMap<ColliderHandle, VisualShape> = HashMap::new();
+/// The example owns its loop. Every 5 simulated seconds it re-randomizes each
+/// multibody joint's angular-X motor target velocity within `[-0.6, 0.6]` rad/s
+/// so the robot stays in slow continuous motion with periodically changing
+/// direction.
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    use rand::RngExt;
+
+    let mut state = NexusState::default();
+    let _ = RbdCoupling::NONE;
 
     /*
      * Robot loaded from URDF.
@@ -69,7 +37,7 @@ fn build() -> SimulationState {
         scale,
         // Use cheap oriented bounding boxes for physics. The loader keeps the
         // original triangle meshes attached to each collider as a `UrdfVisual`,
-        // which we forward to the testbed's per-collider visual override map.
+        // which we forward to the viewer as a per-body visual override.
         mesh_converter: None, // Some(MeshConverter::Obb),
         // Lift the robot above the ground. URDF is Z-up but the testbed is Y-up,
         // so rotate -90° around X so the robot stands upright.
@@ -81,12 +49,16 @@ fn build() -> SimulationState {
         ..UrdfLoaderOptions::default()
     };
 
+    // Per-body render shapes collected during loading and registered with the
+    // viewer once the rapier-world borrow has ended.
+    let mut render_shapes: Vec<(RigidBodyHandle, SharedShape, Pose)> = Vec::new();
+    let mut num_links = 0u32;
+
     match UrdfRobot::from_file(&path, options, None) {
         Ok((mut robot, _)) => {
             // Switch every joint's `AngX` motor to acceleration-based mode so the
-            // tick-driven motor target velocity feels right regardless of link
-            // mass. Initial target velocity is 0 — the per-step tick (registered
-            // via `with_rbd_tick` on the demo builder) re-randomizes it every
+            // per-frame motor target velocity feels right regardless of link mass.
+            // Initial target velocity is 0 — the loop below re-randomizes it every
             // 5 simulated seconds.
             for urdf_joint in &mut robot.joints {
                 urdf_joint
@@ -97,26 +69,28 @@ fn build() -> SimulationState {
                     .set_motor_velocity(JointAxis::AngX, 0.0, 1.0);
             }
 
-            // let handles = robot.insert_using_impulse_joints(
-            //     &mut bodies,
-            //     &mut colliders,
-            //     &mut impulse_joints,
-            // );
+            let world = state.rbd_world_mut(0);
             let handles = robot.insert_using_multibody_joints(
-                &mut bodies,
-                &mut colliders,
-                &mut multibody_joints,
+                &mut world.bodies,
+                &mut world.colliders,
+                &mut world.multibody_joints,
                 UrdfMultibodyOptions::DISABLE_SELF_CONTACTS,
             );
 
+            num_links = handles.links.len() as u32;
             for link in &handles.links {
                 for collider in &link.colliders {
-                    if let Some(visual) = &collider.visual {
-                        visuals.insert(
-                            collider.handle,
-                            VisualShape::with_local_pose(visual.shape.clone(), visual.local_pose),
-                        );
-                    }
+                    // Prefer the attached visual mesh; otherwise render the
+                    // collider's own shape. Render against the link's body, since
+                    // poses are body-keyed.
+                    let (shape, local_pose) = match &collider.visual {
+                        Some(visual) => (visual.shape.clone(), visual.local_pose),
+                        None => (
+                            world.colliders[collider.handle].shared_shape().clone(),
+                            Pose::IDENTITY,
+                        ),
+                    };
+                    render_shapes.push((link.body, shape, local_pose));
                 }
             }
         }
@@ -125,11 +99,43 @@ fn build() -> SimulationState {
         }
     }
 
-    SimulationState::single_with_multibody_and_visuals(
-        bodies,
-        colliders,
-        impulse_joints,
-        multibody_joints,
-        visuals,
-    )
+    for (body, shape, local_pose) in &render_shapes {
+        viewer.insert_visual_shape(0, *body, shape, *local_pose);
+    }
+
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    let mut rng = rand::rng();
+    let dt = 1.0 / 60.0_f64;
+    let mut sim_time = 0.0_f64;
+    let mut next_change_at = 0.0_f64;
+    let interval = 5.0;
+
+    while viewer.render_frame().await {
+        if sim_time >= next_change_at {
+            next_change_at = sim_time + interval;
+            let num_batches = state.rbd_num_batches();
+            for batch in 0..num_batches {
+                for link_id in 0..num_links {
+                    let target_vel: f32 = rng.random_range(-0.6f32..=0.6);
+                    let _ = state.set_multibody_motor_velocity(
+                        viewer.backend(),
+                        batch,
+                        link_id,
+                        JointAxis::AngX,
+                        target_vel,
+                    );
+                }
+            }
+        }
+
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+            sim_time += dt;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

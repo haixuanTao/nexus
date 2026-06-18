@@ -1,4 +1,4 @@
-use nexus_testbed3d::Viewer;
+use nexus_testbed3d::NexusViewer;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, PhysicsState, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -10,7 +10,7 @@ use nexus::mpm::{
 };
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder};
 
-pub async fn run(viewer: &mut Viewer) {
+pub async fn run(viewer: &mut NexusViewer) {
     let mut all_time_max = 0.0;
 
     let mut scene = viewer.set_mpm(build).await;

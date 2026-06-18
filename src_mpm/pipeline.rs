@@ -20,7 +20,6 @@ use std::any::Any;
 use std::marker::PhantomData;
 use vortx::tensor::Tensor;
 
-#[cfg(feature = "from_rapier")]
 use nexus_rbd::dynamics::body::{BodyCoupling, RapierBodyCouplingEntry};
 
 /// GPU compute pipeline for Material Point Method simulation.
@@ -69,7 +68,6 @@ pub struct MpmState {
     /// Staging buffer for reading the timestep bound estimate.
     pub timestep_bounds_staging: Tensor<GpuTimestepBounds>,
     prefix_sum: PrefixSumWorkspace,
-    #[cfg(feature = "from_rapier")]
     coupling: Vec<RapierBodyCouplingEntry>,
 }
 
@@ -124,13 +122,11 @@ impl MpmState {
             timestep_bounds,
             timestep_bounds_staging,
             prefix_sum,
-            #[cfg(feature = "from_rapier")]
             coupling: Vec::new(),
         })
     }
 }
 
-#[cfg(feature = "from_rapier")]
 impl MpmState {
     /// Creates new MPM simulation data with default two-way coupling for all colliders.
     pub fn new(

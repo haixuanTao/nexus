@@ -8,7 +8,7 @@ use super::joint::{
     ANG_AXES_MASK, GenericJoint, LIN_AXES_MASK, MotorParameters, SPATIAL_DIM, motor_params,
 };
 use super::joint_constraint::{JointConstraint, JointConstraintElement, JointSolverBody};
-use super::sim_params::{SimParams, TWO_PI, inv_dt, joint_cfm_coeff, joint_erp_inv_dt};
+use super::sim_params::{RbdSimParams, TWO_PI, inv_dt, joint_cfm_coeff, joint_erp_inv_dt};
 #[cfg(feature = "dim2")]
 use crate::Rotation;
 #[cfg(feature = "dim2")]
@@ -242,7 +242,7 @@ pub fn lock_linear(
     body1: &JointSolverBody,
     body2: &JointSolverBody,
     locked_axis: usize,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) -> JointConstraintElement {
     #[cfg(feature = "dim2")]
     let lin_jac = helper.basis.col(locked_axis);
@@ -293,7 +293,7 @@ pub fn lock_angular(
     body1: &JointSolverBody,
     body2: &JointSolverBody,
     _locked_axis: usize,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) -> JointConstraintElement {
     #[cfg(feature = "dim2")]
     let ang_jac = 1.0;
@@ -372,7 +372,7 @@ pub fn limit_linear(
     body2: &JointSolverBody,
     limited_axis: usize,
     limits: Vec2,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) -> JointConstraintElement {
     let mut constraint = lock_linear(helper, joint_id, body1, body2, limited_axis, params);
 
@@ -401,7 +401,7 @@ pub fn limit_linear_coupled(
     body2: &JointSolverBody,
     coupled_axes: u32,
     limits: Vec2,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) -> JointConstraintElement {
     let mut lin_jac = Vector::ZERO;
     let mut ang_jac1 = AngVector::default();
@@ -473,7 +473,7 @@ pub fn motor_linear(
     motor_axis: usize,
     motor_params: &MotorParameters,
     limits: Vec2,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) -> JointConstraintElement {
     let dt_inv = inv_dt(params);
     let mut constraint = lock_linear(helper, joint_id, body1, body2, motor_axis, params);
@@ -509,7 +509,7 @@ pub fn motor_linear_coupled(
     coupled_axes: u32,
     motor_params: &MotorParameters,
     limits: Vec2,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) -> JointConstraintElement {
     let dt_inv = inv_dt(params);
 
@@ -585,7 +585,7 @@ pub fn limit_angular(
     body2: &JointSolverBody,
     _limited_axis: usize,
     limits: Vec2,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) -> JointConstraintElement {
     let s_limits = Vec2::new(crate::sin(limits.x * 0.5), crate::sin(limits.y * 0.5));
 
@@ -694,7 +694,7 @@ pub fn update_constraint(
     constraint: &mut JointConstraint,
     poses: &Slice<Pose>,
     mprops: &Slice<WorldMassProperties>,
-    params: &SimParams,
+    params: &RbdSimParams,
 ) {
     // NOTE: right now, the "update", is basically reconstructing all the
     //       constraints entirely. Could we make this more incremental?

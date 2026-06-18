@@ -1,21 +1,14 @@
-use nexus_testbed3d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
-fn build() -> SimulationState {
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
     /*
      * World
      */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let mut impulse_joints = ImpulseJointSet::new();
+    let mut state = NexusState::default();
+    let no_coupling = RbdCoupling::NONE;
 
     let rad = 0.4;
     let ni = 200;
@@ -40,20 +33,22 @@ fn build() -> SimulationState {
             };
 
             let rigid_body = RigidBodyBuilder::new(status)
-                .translation(Vec3::new(fk * shift, 0.0, fi * shift) - center);
-            let child_handle = bodies.insert(rigid_body);
+                .translation(Vec3::new(fk * shift, 0.0, fi * shift) - center)
+                .build();
             let collider = if status == RigidBodyType::Fixed {
-                ColliderBuilder::cuboid(rad, rad, rad)
+                ColliderBuilder::cuboid(rad, rad, rad).build()
             } else {
-                ColliderBuilder::ball(rad)
+                ColliderBuilder::ball(rad).build()
             };
-            colliders.insert_with_parent(collider, child_handle, &mut bodies);
+            let shape = collider.shared_shape().clone();
+            let child_handle = state.insert_rigid_body(rigid_body, collider, no_coupling);
+            viewer.insert_shape(child_handle, &shape);
 
             // Vertical joint.
             if i > 0 {
                 let parent_handle = *body_handles.last().unwrap();
                 let joint = SphericalJointBuilder::new().local_anchor2(Vec3::new(0.0, 0.0, -shift));
-                impulse_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_impulse_joint(parent_handle, child_handle, joint);
             }
 
             // Horizontal joint.
@@ -61,7 +56,7 @@ fn build() -> SimulationState {
                 let parent_index = body_handles.len() - ni;
                 let parent_handle = body_handles[parent_index];
                 let joint = SphericalJointBuilder::new().local_anchor2(Vec3::new(-shift, 0.0, 0.0));
-                impulse_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_impulse_joint(parent_handle, child_handle, joint);
             }
 
             body_handles.push(child_handle);
@@ -77,21 +72,31 @@ fn build() -> SimulationState {
     for k in 0..nk {
         for i in 0..ni {
             for j in 0..nj {
-                let body = RigidBodyBuilder::dynamic().translation(Vec3::new(
-                    (k as f32 - nk as f32 / 2.0) * rad * 2.1,
-                    j as f32 * rad * 2.1 + 2.0,
-                    (i as f32 - ni as f32 / 2.0) * rad * 2.1,
-                ));
-                let handle = bodies.insert(body);
-                let collider = ColliderBuilder::cuboid(rad, rad, rad);
-                colliders.insert_with_parent(collider, handle, &mut bodies);
+                let body = RigidBodyBuilder::dynamic()
+                    .translation(Vec3::new(
+                        (k as f32 - nk as f32 / 2.0) * rad * 2.1,
+                        j as f32 * rad * 2.1 + 2.0,
+                        (i as f32 - ni as f32 / 2.0) * rad * 2.1,
+                    ))
+                    .build();
+                let collider = ColliderBuilder::cuboid(rad, rad, rad).build();
+                let shape = collider.shared_shape().clone();
+                let handle = state.insert_rigid_body(body, collider, no_coupling);
+                viewer.insert_shape(handle, &shape);
             }
         }
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
-    // testbed.look_at(point![-110.0, -46.0, 170.0], point![54.0, -38.0, 29.0]);
+    // Optional, useful so we can render even before starting the simulation.
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

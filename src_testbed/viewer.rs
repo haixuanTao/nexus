@@ -1,13 +1,13 @@
 //! Generic, scene-agnostic rendering/runtime resources.
 //!
-//! [`Viewer`] is the testbed analogue of kiss3d's `Window`: it owns the window,
+//! [`NexusViewer`] is the testbed analogue of kiss3d's `Window`: it owns the window,
 //! cameras, GPU backends and UI state, but knows nothing about a particular
 //! physics scene. Examples build a scene from rapier resources via
-//! [`Viewer::set_rbd`] / [`set_mpm`](Viewer::set_mpm) / [`set_fem`](Viewer::set_fem)
+//! [`NexusViewer::set_rbd`] / [`set_mpm`](NexusViewer::set_mpm) / [`set_fem`](NexusViewer::set_fem)
 //! and then own the loop:
 //!
 //! ```ignore
-//! let mut viewer = Viewer::new(vec![]).await;
+//! let mut viewer = NexusViewer::new(vec![]).await;
 //! let mut scene = viewer.set_rbd(state).await;
 //! while viewer.render(&mut scene).await {
 //!     scene.simulate(&mut viewer).await;
@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use khal::backend::{GpuBackend as KhalGpuBackend, WebGpu};
+use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps, WebGpu};
 use khal::re_exports::wgpu::Limits;
 
 use kiss3d::prelude::Color;
@@ -28,20 +28,24 @@ use kiss3d::window::Window;
 use kiss3d::camera::{FixedView2d, OrbitCamera3d};
 #[cfg(feature = "dim2")]
 use kiss3d::camera::{FixedView3d, PanZoomCamera2d};
-
+use rapier::prelude::{RigidBodyHandle, SharedShape};
 use nexus::mpm::solver::GpuParticleModel;
-use nexus::rbd::pipeline::{RbdPipeline, RunStats};
-
+use nexus::rbd::math::Pose;
+use nexus::rbd::pipeline::{RbdPipeline, RbdStats};
+use nexus::state::{NexusRbdHandle, NexusState, RbdCoupling};
 use crate::fem::{FemScene, FemSceneBuildFn};
 use crate::mpm::{self, MpmScene, MpmSceneBuildFn};
-use crate::rbd::{BackendType, RbdScene, SimulationState, setup_graphics, setup_physics};
-use crate::{DemoKind, RunState, Transition, UiSections};
+use crate::rapier::prelude::{Collider, ColliderSet, ImpulseJointSet, RigidBody, RigidBodySet};
+use crate::rbd::{
+    BackendType, RbdScene, RenderContext, SimulationState, setup_physics,
+};
+use crate::{DemoKind, RunState, Scene, Transition, UiSections};
 
 /// UI / runtime state that is independent from the GPU/window resources. Kept in
-/// its own struct so [`Viewer::render`] can split-borrow it from `window`.
+/// its own struct so [`NexusViewer::render`] can split-borrow it from `window`.
 pub struct UiState {
     pub run_state: RunState,
-    pub run_stats: RunStats,
+    pub run_stats: RbdStats,
     pub ui_sections: UiSections,
     pub backend_type: BackendType,
     pub gpu_init_error: Option<String>,
@@ -53,7 +57,28 @@ pub struct UiState {
     pub(crate) transition: Option<Transition>,
 }
 
-pub struct Viewer {
+/// Minimal [`Scene`] used to draw the UI panels for a viewer-owned
+/// [`NexusState`] scene, which (unlike [`RbdScene`]) has no scene object of its
+/// own to hand to [`NexusViewer::render_frame`].
+struct NexusSceneUi;
+
+impl Scene for NexusSceneUi {
+    fn is_rbd(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "dim2")]
+pub type SceneNode = SceneNode2d;
+#[cfg(feature = "dim3")]
+pub type SceneNode = SceneNode3d;
+
+pub struct ViewerNode {
+    node: SceneNode,
+    instance_id: usize,
+}
+
+pub struct NexusViewer {
     window: Window,
     scene2d: SceneNode2d,
     scene3d: SceneNode3d,
@@ -65,16 +90,19 @@ pub struct Viewer {
     camera3d: FixedView3d,
     #[cfg(feature = "dim2")]
     camera2d: PanZoomCamera2d,
+    // TODO: the backends shouldn’t be stored by the viewer.
     webgpu: Option<KhalGpuBackend>,
     #[cfg(feature = "cuda")]
     cuda: Option<KhalGpuBackend>,
     #[cfg(feature = "metal")]
     metal: Option<KhalGpuBackend>,
+    // TODO: the Rbdpipeline shouldn’t be stored by the viewer.
     cached_gpu_pipeline: Option<RbdPipeline>,
+    nexus_render: RenderContext,
     pub ui: UiState,
 }
 
-impl Viewer {
+impl NexusViewer {
     /// Creates a viewer, opening the window and probing the WebGPU backend.
     ///
     /// `demos` is the list of `(name, kind)` shown in the demo picker; pass an
@@ -117,9 +145,10 @@ impl Viewer {
             #[cfg(feature = "metal")]
             metal: None,
             cached_gpu_pipeline: None,
+            nexus_render: RenderContext::new(),
             ui: UiState {
                 run_state: RunState::Paused,
-                run_stats: RunStats::default(),
+                run_stats: RbdStats::default(),
                 ui_sections: UiSections {
                     show_examples: true,
                     show_settings: false,
@@ -256,6 +285,17 @@ impl Viewer {
         }
     }
 
+    pub fn backend(&self) -> &KhalGpuBackend {
+        match self.ui.backend_type {
+            BackendType::Gpu => self.webgpu.as_ref().unwrap(),
+            #[cfg(feature = "cuda")]
+            BackendType::Cuda => self.cuda.as_ref().unwrap(),
+            #[cfg(feature = "metal")]
+            BackendType::Metal => self.metal.as_ref().unwrap(),
+            _ => todo!(),
+        }
+    }
+
     /// Picks the khal backend for MPM/FEM scenes. `Rapier` is treated as `Cpu`
     /// so the user's Rapier choice for RBD scenes is preserved across switches.
     fn cpu_or_gpu_backend(&self, kind: &str) -> KhalGpuBackend {
@@ -309,8 +349,6 @@ impl Viewer {
         }
 
         let gpu_available = self.webgpu.is_some();
-        // Disjoint closure capture (edition 2024): the closure borrows `self.ui`
-        // and `scene` while `self.window` is the receiver.
         self.window.draw_ui(|ctx| {
             crate::ui::setup_custom_theme(ctx);
             crate::ui::main_panel(ctx, &mut self.ui, gpu_available, scene);
@@ -343,43 +381,157 @@ impl Viewer {
         }
     }
 
+    /// Ensures the GPU backend for the current backend type exists. Call once,
+    /// before the demo loop, so [`Self::backend`] is usable by the examples that
+    /// drive a [`NexusState`] directly.
+    pub fn init_backend(&mut self) {
+        self.ensure_backend_initialized();
+    }
+
+    /// Registers a render shape for a body in environment 0.
+    pub fn insert_shape(&mut self, handle: RigidBodyHandle, shape: &SharedShape) {
+        self.insert_shape_in(0, handle, shape)
+    }
+
+    /// Registers a render shape for a body in environment `env` (batch).
+    pub fn insert_shape_in(&mut self, env: u32, handle: RigidBodyHandle, shape: &SharedShape) {
+        self.nexus_render.insert_shape(
+            &mut self.scene2d,
+            &mut self.scene3d,
+            env,
+            handle,
+            shape,
+            Pose::IDENTITY,
+        )
+    }
+
+    /// Registers a render shape with a body-local pose offset (e.g. a URDF
+    /// visual mesh whose frame differs from its proxy collider).
+    pub fn insert_visual_shape(
+        &mut self,
+        env: u32,
+        handle: RigidBodyHandle,
+        shape: &SharedShape,
+        local_pose: Pose,
+    ) {
+        self.nexus_render.insert_shape(
+            &mut self.scene2d,
+            &mut self.scene3d,
+            env,
+            handle,
+            shape,
+            local_pose,
+        )
+    }
+
+    /// Reads the latest collider poses from a [`NexusState`] back from the GPU
+    /// and pushes them into the viewer-owned render instances.
+    pub async fn sync(&mut self, state: &NexusState) {
+        let Some(rbd) = state.rbd.as_ref() else {
+            return;
+        };
+        let poses = rbd.poses();
+        let mut cache = vec![Pose::default(); poses.len() as usize];
+        let _ = self.backend().slow_read_buffer(poses.buffer(), &mut cache).await;
+        self.nexus_render.update_instances_from_poses(state, &cache);
+        self.ui.run_stats = state.rbd_stats.clone();
+    }
+
+    /// Tears down the viewer-owned `NexusState` render nodes. A no-op for legacy
+    /// [`RbdScene`] demos (which detach their own nodes). Call between two runs.
+    pub fn clear_scene(&mut self) {
+        self.nexus_render.clear();
+    }
+
+    /// Whether the simulation should advance this frame, honoring the
+    /// run/pause/step UI state. A pending single-step (`Step`) is consumed: this
+    /// returns `true` once and then latches the run state back to `Paused`.
+    ///
+    /// Examples driving a [`NexusState`] gate their `simulate` call on this, the
+    /// way [`RbdScene::simulate`](crate::RbdScene::simulate) does internally for
+    /// legacy demos.
+    pub fn simulating(&mut self) -> bool {
+        match self.ui.run_state {
+            RunState::Paused => false,
+            RunState::Running => true,
+            RunState::Step => {
+                self.ui.run_state = RunState::Paused;
+                true
+            }
+        }
+    }
+
+    /// Renders one frame of the viewer-owned `NexusState` scene and the UI.
+    /// Returns `false` when the loop should end (window closed or a new demo
+    /// selected). This is the no-scene-argument counterpart of [`Self::render`].
+    pub async fn render_frame(&mut self) -> bool {
+        let cont = self
+            .window
+            .render(
+                Some(&mut self.scene3d),
+                Some(&mut self.scene2d),
+                Some(&mut self.camera3d),
+                Some(&mut self.camera2d),
+                None,
+                None,
+            )
+            .await;
+
+        if !cont {
+            self.ui.transition = Some(Transition::Quit);
+            return false;
+        }
+
+        let gpu_available = self.webgpu.is_some();
+        let mut scene_ui = NexusSceneUi;
+        // Disjoint closure capture (edition 2024): the closure borrows `self.ui`
+        // and `scene_ui` while `self.window` is the receiver.
+        self.window.draw_ui(|ctx| {
+            crate::ui::setup_custom_theme(ctx);
+            crate::ui::main_panel(ctx, &mut self.ui, gpu_available, &mut scene_ui);
+        });
+
+        self.ui.transition.is_none()
+    }
+
     /// Builds a rigid-body scene from rapier resources.
     pub async fn set_rbd(&mut self, phys: SimulationState) -> RbdScene {
-        self.ensure_backend_initialized();
-        self.maybe_show_compiling().await;
-
-        let dt = phys.environments[0].sim_params.dt;
-        let num_steps_per_frame = phys.num_steps_per_frame.max(1);
-        let created_backend = self.ui.backend_type;
-
-        // Inline GPU selection so the borrow only touches the relevant fields,
-        // leaving `gpu_init_error` and `cached_gpu_pipeline` free to be borrowed.
-        let gpu = match created_backend {
-            BackendType::Gpu => self.webgpu.as_ref(),
-            #[cfg(feature = "cuda")]
-            BackendType::Cuda => self.cuda.as_ref(),
-            #[cfg(feature = "metal")]
-            BackendType::Metal => self.metal.as_ref(),
-            _ => None,
-        };
-        let physics = setup_physics(
-            gpu,
-            &phys,
-            created_backend,
-            &mut self.ui.gpu_init_error,
-            &mut self.cached_gpu_pipeline,
-        )
-        .await;
-        let render_ctx = setup_graphics(&mut self.scene2d, &mut self.scene3d, &phys).await;
-
-        RbdScene {
-            physics,
-            render_ctx,
-            sim_time: 0.0,
-            dt,
-            num_steps_per_frame,
-            created_backend,
-        }
+        todo!()
+        // self.ensure_backend_initialized();
+        // self.maybe_show_compiling().await;
+        //
+        // let dt = phys.environments[0].sim_params.dt;
+        // let num_steps_per_frame = phys.num_steps_per_frame.max(1);
+        // let created_backend = self.ui.backend_type;
+        //
+        // // Inline GPU selection so the borrow only touches the relevant fields,
+        // // leaving `gpu_init_error` and `cached_gpu_pipeline` free to be borrowed.
+        // let gpu = match created_backend {
+        //     BackendType::Gpu => self.webgpu.as_ref(),
+        //     #[cfg(feature = "cuda")]
+        //     BackendType::Cuda => self.cuda.as_ref(),
+        //     #[cfg(feature = "metal")]
+        //     BackendType::Metal => self.metal.as_ref(),
+        //     _ => None,
+        // };
+        // let physics = setup_physics(
+        //     gpu,
+        //     &phys,
+        //     created_backend,
+        //     &mut self.ui.gpu_init_error,
+        //     &mut self.cached_gpu_pipeline,
+        // )
+        // .await;
+        // self.nexus_render.setup_graphics(&mut self.scene2d, &mut self.scene3d, &phys);
+        //
+        // RbdScene {
+        //     physics,
+        //     render_ctx,
+        //     sim_time: 0.0,
+        //     dt,
+        //     num_steps_per_frame,
+        //     created_backend,
+        // }
     }
 
     /// Caches the GPU pipeline extracted from a finished RBD scene so the next

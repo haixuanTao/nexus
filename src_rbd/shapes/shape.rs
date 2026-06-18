@@ -13,8 +13,6 @@
 use crate::math::Point;
 use crate::shaders::PaddedVector;
 use crate::shaders::shapes::Shape;
-
-#[cfg(feature = "from_rapier")]
 use crate::parry::shape::{Shape as ParryShape, TypedShape};
 
 /// Auxiliary buffers for complex shape types like polylines and triangle meshes.
@@ -47,7 +45,6 @@ pub struct ShapeBuffers {
 ///
 /// - `Some(Shape)` if the shape type is supported
 /// - `None` if the shape type is not yet supported on GPU
-#[cfg(feature = "from_rapier")]
 pub fn shape_from_parry(
     shape: &(impl ParryShape + ?Sized),
     buffers: &mut ShapeBuffers,
@@ -278,7 +275,6 @@ pub fn shape_from_parry(
 }
 
 /// Convert parry point to bvh Point3 (glam::Vec3)
-#[cfg(feature = "from_rapier")]
 fn parry_to_bvh_point(p: Point) -> bvh::Point3 {
     #[cfg(feature = "dim2")]
     return bvh::Point3::new(p.x, p.y, 0.0);
@@ -287,7 +283,6 @@ fn parry_to_bvh_point(p: Point) -> bvh::Point3 {
 }
 
 /// Convert bvh Point3 (glam::Vec3) to our Point type
-#[cfg(feature = "from_rapier")]
 fn bvh_to_point(p: bvh::Point3) -> Point {
     #[cfg(feature = "dim2")]
     return glamx::Vec2::new(p.x, p.y);

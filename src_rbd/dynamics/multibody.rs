@@ -63,7 +63,6 @@ const MB_GRAV_LANES: u32 = 32;
 /// `gpu_mb_lu_solve`.
 const MB_LU_LANES: u32 = 32;
 
-#[cfg(feature = "from_rapier")]
 use {
     crate::rapier::dynamics::{ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodySet},
     crate::shaders::dynamics::{GenericJoint, JointLimits, JointMotor},
@@ -381,7 +380,6 @@ impl GpuMultibodySet {
     ///
     /// Root links must be the first link in their multibody (rapier guarantees
     /// this via assembly ids being assigned in traversal order).
-    #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
         environments: &[(
@@ -968,7 +966,6 @@ impl GpuMultibodySet {
     /// one entry per batch, in the same order as the multibody envs that
     /// were passed to `from_rapier`. Free-only joints are silently
     /// skipped here.
-    #[cfg(feature = "from_rapier")]
     pub fn set_impulse_joints(
         &mut self,
         backend: &GpuBackend,
@@ -1263,7 +1260,6 @@ impl GpuMultibodySet {
     }
 }
 
-#[cfg(feature = "from_rapier")]
 fn convert_link_mprops(m: &crate::rapier::prelude::MassProperties) -> LocalMassProperties {
     LocalMassProperties {
         inertia_ref_frame: m.principal_inertia_local_frame,
@@ -1280,7 +1276,6 @@ fn convert_link_mprops(m: &crate::rapier::prelude::MassProperties) -> LocalMassP
 /// every free angular DOF, 0 elsewhere. The returned array is packed in
 /// generalized-velocity order — free linear DOFs first (in axis order), then
 /// free angular DOFs.
-#[cfg(feature = "from_rapier")]
 fn joint_default_damping(locked_axes: u32) -> [f32; 6] {
     let mut out = [0.0f32; 6];
     // Index of the first free angular DOF in the joint's generalized-velocity slice.
@@ -1295,7 +1290,6 @@ fn joint_default_damping(locked_axes: u32) -> [f32; 6] {
     out
 }
 
-#[cfg(feature = "from_rapier")]
 fn convert_generic_joint(j: crate::rapier::dynamics::GenericJoint) -> GenericJoint {
     GenericJoint {
         local_frame_a: j.local_frame1,
@@ -1328,7 +1322,6 @@ fn convert_generic_joint(j: crate::rapier::dynamics::GenericJoint) -> GenericJoi
 // Zero-initialised workspaces would leave `joint_rot` as the all-zero quaternion, which
 // is not a valid rotation — seed it with the identity instead.
 //
-#[cfg(feature = "from_rapier")]
 fn make_workspace_init() -> MultibodyLinkWorkspace {
     let mut w: MultibodyLinkWorkspace = bytemuck::Zeroable::zeroed();
     w.joint_rot = glamx::Quat::IDENTITY;

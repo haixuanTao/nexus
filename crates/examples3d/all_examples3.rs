@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use inflector::Inflector;
-use nexus_testbed3d::{DemoKind, Viewer};
+use nexus_testbed3d::{DemoKind, NexusViewer};
 
 mod balls3;
 mod boxes3;
@@ -47,9 +47,12 @@ macro_rules! demos {
             demos
         }
 
-        async fn dispatch(name: &str, viewer: &mut Viewer) {
+        async fn dispatch(name: &str, viewer: &mut NexusViewer) {
             match name {
-                $( $name => $module::run(viewer).await, )*
+                // `run` may return `()` (legacy demos) or a `Result` (demos
+                // migrated to the `NexusState` API); discard whatever it yields
+                // so every arm has the same `()` type.
+                $( $name => { let _ = $module::run(viewer).await; }, )*
                 _ => eprintln!("Unknown demo: '{name}'"),
             }
         }
@@ -146,7 +149,7 @@ pub async fn main() {
         }
     }
 
-    let mut viewer = Viewer::new(demos.clone()).await;
+    let mut viewer = NexusViewer::new(demos.clone()).await;
     viewer = viewer.with_selected_demo(selected);
     if opts.cpu {
         viewer = viewer.with_cpu();
@@ -163,6 +166,8 @@ pub async fn main() {
         viewer = viewer.with_running();
     }
 
+    viewer.init_backend();
+
     // Each selected demo owns its own loop (`run`); it returns when the user
     // closes the window or picks another demo (via the picker, which makes
     // `viewer.render()` return false).
@@ -172,6 +177,7 @@ pub async fn main() {
         if viewer.quitting() {
             break;
         }
+        viewer.clear_scene();
         viewer.clear_transition();
     }
 }

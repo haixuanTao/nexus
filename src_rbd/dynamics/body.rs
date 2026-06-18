@@ -19,7 +19,6 @@ pub use crate::shaders::dynamics::{
     Force, Impulse, LocalMassProperties as GpuLocalMassProperties, Velocity as GpuVelocity,
     WorldMassProperties as GpuWorldMassProperties,
 };
-#[cfg(feature = "from_rapier")]
 use {
     crate::rapier::dynamics::{RigidBodyHandle, RigidBodySet},
     crate::rapier::geometry::{ColliderHandle, ColliderSet},
@@ -108,7 +107,6 @@ pub struct BodyCouplingEntry {
     pub mode: BodyCoupling,
 }
 
-#[cfg(feature = "from_rapier")]
 /// Associates a Rapier body/collider pair with a coupling mode.
 ///
 /// Used when creating a [`GpuBodySet`] from Rapier data structures to specify
@@ -135,7 +133,6 @@ impl GpuBodySet {
     }
 
     /// Creates a new GPU body set from Rapier rigid bodies and colliders.
-    #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
         bodies: &RigidBodySet,
@@ -338,7 +335,6 @@ impl GpuBodySet {
     }
 }
 
-#[cfg(feature = "from_rapier")]
 impl GpuBodySet {
     /// Appends rigid-bodies (converted from rapier) to this set and returns the
     /// indices of the newly inserted bodies.
@@ -404,7 +400,6 @@ impl GpuBodySet {
     }
 }
 
-#[cfg(feature = "from_rapier")]
 fn convert_local_mprops(mprops: &MassProperties) -> LocalMassProperties {
     #[cfg(feature = "dim2")]
     {

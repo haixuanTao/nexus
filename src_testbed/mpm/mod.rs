@@ -179,7 +179,7 @@ impl MpmStage {
 }
 
 /// A MPM scene: the GPU MPM stage plus its rendering nodes (particles and the
-/// rapier boundary colliders). Built via [`crate::Viewer::set_mpm`].
+/// rapier boundary colliders). Built via [`crate::NexusViewer::set_mpm`].
 pub struct MpmScene {
     pub stage: MpmStage,
     pub(crate) colliders_gfx: HashMap<ColliderHandle, RenderNode>,
@@ -203,7 +203,7 @@ impl MpmScene {
 
     /// Advances the simulation for one render frame (honoring pause) and syncs
     /// graphics. Call this inside the example's loop body.
-    pub async fn simulate(&mut self, viewer: &mut crate::Viewer) {
+    pub async fn simulate(&mut self, viewer: &mut crate::NexusViewer) {
         if viewer.ui.run_state != RunState::Paused {
             self.stage.update().await;
         }
@@ -214,7 +214,7 @@ impl MpmScene {
     }
 
     /// Detaches all render nodes owned by this scene.
-    pub fn detach(self, _viewer: &mut crate::Viewer) {
+    pub fn detach(self, _viewer: &mut crate::NexusViewer) {
         let MpmScene {
             mut colliders_gfx,
             mut particle_node,

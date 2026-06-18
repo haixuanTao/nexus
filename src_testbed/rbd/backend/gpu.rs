@@ -2,7 +2,7 @@ use super::SimulationBackend;
 use crate::rbd::SimulationState;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps};
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::{RbdPipeline, RbdState, RunStats};
+use nexus::rbd::pipeline::{RbdPipeline, RbdState, RbdStats};
 use rapier::prelude::JointAxis;
 
 /// GPU-based physics backend using nexus
@@ -156,7 +156,7 @@ impl SimulationBackend for GpuBackend {
         self.state.num_batches() as usize
     }
 
-    async fn step(&mut self, _gpu: Option<&KhalGpuBackend>) -> RunStats {
+    async fn step(&mut self, _gpu: Option<&KhalGpuBackend>) -> RbdStats {
         let gpu = &self.gpu;
 
         self.timestamps.reset();

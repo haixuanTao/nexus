@@ -1,17 +1,12 @@
-use nexus_testbed3d::{BatchEnvironment, SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
 fn create_pyramid(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
+    env: usize,
     offset: Vector,
     stack_height: usize,
     rad: f32,
@@ -26,25 +21,29 @@ fn create_pyramid(
             let y = fi * shift;
 
             // Build the rigid body.
-            let rigid_body = RigidBodyBuilder::dynamic().translation(Vec3::new(x, y, 0.0) + offset);
-            let handle = bodies.insert(rigid_body);
-            let collider = ColliderBuilder::cuboid(rad, rad, rad);
-            colliders.insert_with_parent(collider, handle, bodies);
+            let body = RigidBodyBuilder::dynamic()
+                .translation(Vec3::new(x, y, 0.0) + offset)
+                .build();
+            let collider = ColliderBuilder::cuboid(rad, rad, rad).build();
+            let shape = collider.shared_shape().clone();
+            let handle = state.insert_rigid_body_in(env, body, collider, RbdCoupling::NONE);
+            viewer.insert_shape_in(env as u32, handle, &shape);
         }
     }
 }
 
-fn build() -> SimulationState {
-    let mut environments = vec![];
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
+    let no_coupling = RbdCoupling::NONE;
     let pyramid_count = 40;
 
     for pyramid_index in 0..pyramid_count {
-        /*
-         * World
-         */
-        let mut bodies = RigidBodySet::new();
-        let mut colliders = ColliderSet::new();
-        let impulse_joints = ImpulseJointSet::new();
+        // Environment 0 already exists; allocate a fresh one for the rest.
+        let env = if pyramid_index == 0 {
+            0
+        } else {
+            state.add_environment()
+        };
 
         let rad = 0.5;
         let spacing = 4.0;
@@ -55,22 +54,27 @@ fn build() -> SimulationState {
         let ground_size = 100.0;
         let ground_height = 0.1;
 
-        let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height, 0.0));
-        let ground_handle = bodies.insert(rigid_body);
+        let body = RigidBodyBuilder::fixed()
+            .translation(Vec3::new(0.0, -ground_height, 0.0))
+            .build();
         let collider = ColliderBuilder::cuboid(
             ground_size,
             ground_height,
             pyramid_count as f32 * spacing / 2.0 + ground_size,
-        );
-        colliders.insert_with_parent(collider, ground_handle, &mut bodies);
+        )
+        .build();
+        let shape = collider.shared_shape().clone();
+        let ground_handle = state.insert_rigid_body_in(env, body, collider, no_coupling);
+        viewer.insert_shape_in(env as u32, ground_handle, &shape);
 
         /*
          * Create the cubes
          */
         let bottomy = rad;
         create_pyramid(
-            &mut bodies,
-            &mut colliders,
+            &mut state,
+            viewer,
+            env,
             Vec3::new(
                 0.0,
                 bottomy,
@@ -81,8 +85,9 @@ fn build() -> SimulationState {
         );
 
         create_pyramid(
-            &mut bodies,
-            &mut colliders,
+            &mut state,
+            viewer,
+            env,
             Vec3::new(
                 -75.0,
                 bottomy,
@@ -91,20 +96,17 @@ fn build() -> SimulationState {
             60,
             rad,
         );
-
-        environments.push(BatchEnvironment {
-            bodies,
-            colliders,
-            impulse_joints,
-            multibody_joints: rapier3d::prelude::MultibodyJointSet::new(),
-            sim_params: Default::default(),
-            visuals: Default::default(),
-        });
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::from_environments(environments)
-    // testbed.look_at(point![100.0, 100.0, 100.0], Point::origin());
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

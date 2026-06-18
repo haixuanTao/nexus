@@ -24,7 +24,6 @@ f32 = []
 f64 = []
 webgpu = ["khal/webgpu"]
 metal = ["khal/metal", "nexus_rbd3d/metal"]
-from_rapier = ["rapier3d", "parry3d", "nexus_rbd3d/from_rapier"]
 cpu = ["nexus_mpm_shaders3d/cpu", "nexus_rbd3d/cpu", "vortx/cpu"]
 cpu-parallel = ["cpu", "nexus_mpm_shaders3d/cpu-parallel", "nexus_rbd3d/cpu-parallel", "vortx/cpu-parallel"]
 cuda = ["khal/cuda", "khal-builder/cuda", "nexus_mpm_shaders3d/cuda"]
@@ -42,8 +41,8 @@ static_assertions = { workspace = true }
 bvh = "0.7"
 
 # Optional dependencies for rapier/parry interop
-rapier3d = { version = "0.33", optional = true }
-parry3d = { version = "0.28", optional = true }
+rapier3d = { version = "0.33" }
+parry3d = { version = "0.28" }
 
 [dev-dependencies]
 futures-test = "0.3"

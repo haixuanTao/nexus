@@ -10,7 +10,7 @@ use khal_std::{index::MaybeIndexUnchecked, iter::StepRng, sync::atomic_add_u32};
 
 use super::body::{LocalMassProperties, Velocity, WorldMassProperties};
 use super::constraint::{TwoBodyConstraint, TwoBodyConstraintBuilder};
-use super::sim_params::SimParams;
+use super::sim_params::RbdSimParams;
 use super::solver_utils::{
     contact_to_constraint, remove_cfm_and_bias, solve_constraint_gauss_seidel, update_constraint,
     warmstart_body, warmstart_constraint,
@@ -71,7 +71,7 @@ pub fn gpu_solver_init_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] solver_body_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] mprops: &[WorldMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[SimParams],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[RbdSimParams],
     #[spirv(uniform, descriptor_set = 1, binding = 5)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
@@ -143,7 +143,7 @@ pub fn gpu_solver_update_constraints(
     constraint_builders: &[TwoBodyConstraintBuilder],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] solver_body_poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] all_params: &[SimParams],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] all_params: &[RbdSimParams],
     #[spirv(uniform, descriptor_set = 1, binding = 2)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
@@ -254,7 +254,7 @@ pub fn gpu_init_solver_vels_inc(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] solver_vels_inc: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_params: &[SimParams],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_params: &[RbdSimParams],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
@@ -431,7 +431,7 @@ pub fn gpu_integrate_linearized(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_params: &[SimParams],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_params: &[RbdSimParams],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;

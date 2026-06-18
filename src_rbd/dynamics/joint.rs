@@ -7,14 +7,13 @@ use crate::math::Pose;
 use crate::shaders::dynamics::{
     GpuIncJointColor, GpuInitJointConstraints, GpuRemoveJointBias, GpuResetJointColor,
     GpuSolveJointConstraints, GpuUpdateJointConstraints, ImpulseJoint, JointConstraint,
-    JointConstraintBuilder, LocalMassProperties, SimParams, Velocity, WorldMassProperties,
+    JointConstraintBuilder, LocalMassProperties, RbdSimParams, Velocity, WorldMassProperties,
 };
 use bytemuck::Zeroable;
 use khal::Shader;
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use vortx::tensor::Tensor;
 
-#[cfg(feature = "from_rapier")]
 use {
     crate::rapier::dynamics::{
         GenericJoint as RapierGenericJoint, ImpulseJoint as RapierImpulseJoint, ImpulseJointSet,
@@ -26,7 +25,6 @@ use {
     std::collections::HashMap,
 };
 
-#[cfg(feature = "from_rapier")]
 fn convert_joint_limits(limits: RapierJointLimits<f32>) -> JointLimits {
     JointLimits {
         min: limits.min,
@@ -35,7 +33,6 @@ fn convert_joint_limits(limits: RapierJointLimits<f32>) -> JointLimits {
     }
 }
 
-#[cfg(feature = "from_rapier")]
 fn convert_joint_motor(motor: RapierJointMotor) -> JointMotor {
     JointMotor {
         target_vel: motor.target_vel,
@@ -51,7 +48,6 @@ fn convert_joint_motor(motor: RapierJointMotor) -> JointMotor {
     }
 }
 
-#[cfg(feature = "from_rapier")]
 fn convert_generic_joint(joint: RapierGenericJoint) -> GenericJoint {
     GenericJoint {
         local_frame_a: joint.local_frame1,
@@ -65,7 +61,6 @@ fn convert_generic_joint(joint: RapierGenericJoint) -> GenericJoint {
     }
 }
 
-#[cfg(feature = "from_rapier")]
 fn convert_impulse_joint(
     joint: &RapierImpulseJoint,
     body_ids: &HashMap<RigidBodyHandle, u32>,
@@ -109,7 +104,6 @@ impl GpuImpulseJointSet {
     /// the same group act as a single node for graph coloring, mirroring rapier:
     /// no two impulse-joint constraints sharing the same multibody group can be
     /// solved in parallel.
-    #[cfg(feature = "from_rapier")]
     pub fn from_rapier(
         backend: &GpuBackend,
         environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
@@ -119,7 +113,6 @@ impl GpuImpulseJointSet {
 
     /// Same as [`from_rapier`](Self::from_rapier) but with a per-environment
     /// multibody-grouping table (see method-level docs for the rule).
-    #[cfg(feature = "from_rapier")]
     pub fn from_rapier_with_groups(
         backend: &GpuBackend,
         environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
@@ -138,7 +131,6 @@ impl GpuImpulseJointSet {
     /// `is_mb_body[env][body_local_id]` should be `true` iff the body is
     /// part of any multibody. Empty (or shorter-than-`environments`) skip
     /// vector means "no skip" and falls back to the old behavior.
-    #[cfg(feature = "from_rapier")]
     pub fn from_rapier_filtered(
         backend: &GpuBackend,
         environments: &[(&ImpulseJointSet, &HashMap<RigidBodyHandle, u32>)],
@@ -357,7 +349,7 @@ pub struct JointSolverArgs<'a> {
     /// Number of constraint solving batches (iterations).
     pub num_batches: u32,
     /// The simulation parameters.
-    pub sim_params: &'a Tensor<SimParams>,
+    pub sim_params: &'a Tensor<RbdSimParams>,
     /// The set of joints to solve.
     pub joints: &'a mut GpuImpulseJointSet,
     /// World-space mass properties.

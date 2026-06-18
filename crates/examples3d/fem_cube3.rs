@@ -1,6 +1,6 @@
 use glamx::vec3;
 use khal::backend::GpuBackend;
-use nexus_testbed3d::{Viewer, nexus};
+use nexus_testbed3d::{NexusViewer, nexus};
 
 use nexus::fem::{
     mesh::FemMesh,
@@ -8,7 +8,7 @@ use nexus::fem::{
     solver::{FemConfig, FemMaterial, MaterialModel, SolverMethod},
 };
 
-pub async fn run(viewer: &mut Viewer) {
+pub async fn run(viewer: &mut NexusViewer) {
     viewer.set_camera(vec3(2.0, 2.0, 2.0), vec3(0.5, 0.3, 0.5));
     let mut scene = viewer.set_fem(build).await;
     while viewer.render(&mut scene).await {

@@ -1,17 +1,24 @@
-use nexus_testbed3d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
+/// Inserts a body + collider into the state and registers its render shape.
+fn add_body(
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
+    body: RigidBody,
+    collider: Collider,
+) -> RigidBodyHandle {
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider, RbdCoupling::NONE);
+    viewer.insert_shape(handle, &shape);
+    handle
 }
 
 fn create_pyramid(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     offset: Vector,
     stack_height: usize,
     half_extents: Vector,
@@ -30,24 +37,19 @@ fn create_pyramid(
                     - stack_height as f32 * half_extents.z;
 
                 // Build the rigid body.
-                let rigid_body = RigidBodyBuilder::dynamic().translation(Vec3::new(x, y, z));
-                let rigid_body_handle = bodies.insert(rigid_body);
-
-                let collider =
-                    ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z);
-                colliders.insert_with_parent(collider, rigid_body_handle, bodies);
+                add_body(
+                    state,
+                    viewer,
+                    RigidBodyBuilder::dynamic().translation(Vec3::new(x, y, z)).build(),
+                    ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).build(),
+                );
             }
         }
     }
 }
 
-fn build() -> SimulationState {
-    /*
-     * World
-     */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let impulse_joints = ImpulseJointSet::new();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
 
     /*
      * Ground
@@ -55,10 +57,14 @@ fn build() -> SimulationState {
     let ground_size = 200.0;
     let ground_height = 0.1;
 
-    let rigid_body = RigidBodyBuilder::fixed().translation(Vec3::new(0.0, -ground_height, 0.0));
-    let ground_handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::cuboid(ground_size, ground_height, ground_size);
-    colliders.insert_with_parent(collider, ground_handle, &mut bodies);
+    add_body(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::fixed()
+            .translation(Vec3::new(0.0, -ground_height, 0.0))
+            .build(),
+        ColliderBuilder::cuboid(ground_size, ground_height, ground_size).build(),
+    );
 
     /*
      * Create the cubes
@@ -67,16 +73,23 @@ fn build() -> SimulationState {
     let hext = Vec3::splat(cube_size);
     let bottomy = cube_size;
     create_pyramid(
-        &mut bodies,
-        &mut colliders,
+        &mut state,
+        viewer,
         Vec3::new(0.0, bottomy, 0.0),
         50,
         hext,
     );
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
     // testbed.look_at(point![100.0, 100.0, 100.0], Point::origin());
 }

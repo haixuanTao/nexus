@@ -16,14 +16,14 @@ pub mod rbd;
 pub mod viewer;
 mod ui;
 
-use nexus::rbd::pipeline::RunStats;
+use nexus::rbd::pipeline::RbdStats;
 
 pub use rbd::BackendType;
 pub use rbd::{BatchEnvironment, PhysicsBackend, RbdScene, SimulationState, VisualShape};
 
 pub use fem::FemScene;
 pub use mpm::MpmScene;
-pub use viewer::{UiState, Viewer};
+pub use viewer::{UiState, NexusViewer};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum RunState {
@@ -58,7 +58,7 @@ pub(crate) enum Transition {
 }
 
 /// Implemented by every scene type ([`RbdScene`], [`MpmScene`], [`FemScene`]) so
-/// the generic [`Viewer::render`] can draw scene-specific settings/performance
+/// the generic [`NexusViewer::render`] can draw scene-specific settings/performance
 /// widgets without knowing the concrete type.
 pub trait Scene {
     /// Whether this is a rigid-body scene (controls whether the backend selector
@@ -74,7 +74,7 @@ pub trait Scene {
     fn performance_ui(
         &mut self,
         _ui: &mut kiss3d::egui::Ui,
-        _run_stats: &RunStats,
+        _run_stats: &RbdStats,
         _backend_type: BackendType,
     ) {
     }

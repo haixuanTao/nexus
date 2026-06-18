@@ -1,19 +1,24 @@
-use nexus_testbed3d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed3d::NexusViewer;
+use nexus3d::prelude::{NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
+/// Inserts a body + collider into the state and registers its render shape.
+fn add_body(
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
+    body: RigidBody,
+    collider: Collider,
+) -> RigidBodyHandle {
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider, RbdCoupling::NONE);
+    viewer.insert_shape(handle, &shape);
+    handle
 }
 
 fn create_prismatic_joints(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     num: usize,
     use_articulations: bool,
@@ -21,18 +26,23 @@ fn create_prismatic_joints(
     let rad = 0.4;
     let shift = 2.0;
 
-    let ground = RigidBodyBuilder::fixed().translation(origin);
-    let mut curr_parent = bodies.insert(ground);
-    let collider = ColliderBuilder::cuboid(rad, rad, rad);
-    colliders.insert_with_parent(collider, curr_parent, bodies);
+    let mut curr_parent = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::fixed().translation(origin).build(),
+        ColliderBuilder::cuboid(rad, rad, rad).build(),
+    );
 
     for i in 0..num {
         let z = origin.z + (i + 1) as f32 * shift;
-        let rigid_body =
-            RigidBodyBuilder::dynamic().translation(Vector::new(origin.x, origin.y, z));
-        let curr_child = bodies.insert(rigid_body);
-        let collider = ColliderBuilder::cuboid(rad, rad, rad);
-        colliders.insert_with_parent(collider, curr_child, bodies);
+        let curr_child = add_body(
+            state,
+            viewer,
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(origin.x, origin.y, z))
+                .build(),
+            ColliderBuilder::cuboid(rad, rad, rad).build(),
+        );
 
         let axis = if i % 2 == 0 {
             Vector::new(1.0f32, 1.0, 0.0).normalize()
@@ -46,19 +56,17 @@ fn create_prismatic_joints(
             .limits([-2.0, 2.0]);
 
         if use_articulations {
-            multibody_joints.insert(curr_parent, curr_child, prism, true);
+            state.insert_multibody_joint(curr_parent, curr_child, prism);
         } else {
-            impulse_joints.insert(curr_parent, curr_child, prism, true);
+            state.insert_impulse_joint(curr_parent, curr_child, prism);
         }
         curr_parent = curr_child;
     }
 }
 
 fn create_actuated_prismatic_joints(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     num: usize,
     use_articulations: bool,
@@ -66,18 +74,23 @@ fn create_actuated_prismatic_joints(
     let rad = 0.4;
     let shift = 2.0;
 
-    let ground = RigidBodyBuilder::fixed().translation(origin);
-    let mut curr_parent = bodies.insert(ground);
-    let collider = ColliderBuilder::cuboid(rad, rad, rad);
-    colliders.insert_with_parent(collider, curr_parent, bodies);
+    let mut curr_parent = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::fixed().translation(origin).build(),
+        ColliderBuilder::cuboid(rad, rad, rad).build(),
+    );
 
     for i in 0..num {
         let z = origin.z + (i + 1) as f32 * shift;
-        let rigid_body =
-            RigidBodyBuilder::dynamic().translation(Vector::new(origin.x, origin.y, z));
-        let curr_child = bodies.insert(rigid_body);
-        let collider = ColliderBuilder::cuboid(rad, rad, rad);
-        colliders.insert_with_parent(collider, curr_child, bodies);
+        let curr_child = add_body(
+            state,
+            viewer,
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(origin.x, origin.y, z))
+                .build(),
+            ColliderBuilder::cuboid(rad, rad, rad).build(),
+        );
 
         let axis = if i % 2 == 0 {
             Vector::new(1.0, 1.0, 0.0).normalize()
@@ -111,9 +124,9 @@ fn create_actuated_prismatic_joints(
         }
 
         if use_articulations {
-            multibody_joints.insert(curr_parent, curr_child, prism, true);
+            state.insert_multibody_joint(curr_parent, curr_child, prism);
         } else {
-            impulse_joints.insert(curr_parent, curr_child, prism, true);
+            state.insert_impulse_joint(curr_parent, curr_child, prism);
         }
 
         curr_parent = curr_child;
@@ -121,10 +134,8 @@ fn create_actuated_prismatic_joints(
 }
 
 fn create_revolute_joints(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     num: usize,
     use_articulations: bool,
@@ -132,10 +143,14 @@ fn create_revolute_joints(
     let rad = 0.4;
     let shift = 2.0;
 
-    let ground = RigidBodyBuilder::fixed().translation(Vector::new(origin.x, origin.y, 0.0));
-    let mut curr_parent = bodies.insert(ground);
-    let collider = ColliderBuilder::cuboid(rad, rad, rad);
-    colliders.insert_with_parent(collider, curr_parent, bodies);
+    let mut curr_parent = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::fixed()
+            .translation(Vector::new(origin.x, origin.y, 0.0))
+            .build(),
+        ColliderBuilder::cuboid(rad, rad, rad).build(),
+    );
 
     for i in 0..num {
         // Create four bodies.
@@ -149,10 +164,12 @@ fn create_revolute_joints(
 
         let mut handles = [curr_parent; 4];
         for k in 0..4 {
-            let rigid_body = RigidBodyBuilder::dynamic().pose(positions[k]);
-            handles[k] = bodies.insert(rigid_body);
-            let collider = ColliderBuilder::cuboid(rad, rad, rad);
-            colliders.insert_with_parent(collider, handles[k], bodies);
+            handles[k] = add_body(
+                state,
+                viewer,
+                RigidBodyBuilder::dynamic().pose(positions[k]).build(),
+                ColliderBuilder::cuboid(rad, rad, rad).build(),
+            );
         }
 
         // Setup four impulse_joints.
@@ -166,15 +183,15 @@ fn create_revolute_joints(
         ];
 
         if use_articulations {
-            multibody_joints.insert(curr_parent, handles[0], revs[0], true);
-            multibody_joints.insert(handles[0], handles[1], revs[1], true);
-            multibody_joints.insert(handles[1], handles[2], revs[2], true);
-            multibody_joints.insert(handles[2], handles[3], revs[3], true);
+            state.insert_multibody_joint(curr_parent, handles[0], revs[0]);
+            state.insert_multibody_joint(handles[0], handles[1], revs[1]);
+            state.insert_multibody_joint(handles[1], handles[2], revs[2]);
+            state.insert_multibody_joint(handles[2], handles[3], revs[3]);
         } else {
-            impulse_joints.insert(curr_parent, handles[0], revs[0], true);
-            impulse_joints.insert(handles[0], handles[1], revs[1], true);
-            impulse_joints.insert(handles[1], handles[2], revs[2], true);
-            impulse_joints.insert(handles[2], handles[3], revs[3], true);
+            state.insert_impulse_joint(curr_parent, handles[0], revs[0]);
+            state.insert_impulse_joint(handles[0], handles[1], revs[1]);
+            state.insert_impulse_joint(handles[1], handles[2], revs[2]);
+            state.insert_impulse_joint(handles[2], handles[3], revs[3]);
         }
 
         curr_parent = handles[3];
@@ -182,23 +199,35 @@ fn create_revolute_joints(
 }
 
 fn create_revolute_joints_with_limits(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     use_articulations: bool,
 ) {
     let origin_v = origin;
-    let ground = bodies.insert(RigidBodyBuilder::fixed().translation(origin_v));
-    colliders.insert_with_parent(ColliderBuilder::cuboid(0.1, 0.1, 0.1), ground, bodies);
+    let ground = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::fixed().translation(origin_v).build(),
+        ColliderBuilder::cuboid(0.1, 0.1, 0.1).build(),
+    );
 
     let shift = Vector::new(0.0, 0.0, 6.0);
-    let platform1 = bodies.insert(RigidBodyBuilder::dynamic().translation(origin_v + shift));
-    colliders.insert_with_parent(ColliderBuilder::cuboid(4.0, 0.2, 2.0), platform1, bodies);
+    let platform1 = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::dynamic().translation(origin_v + shift).build(),
+        ColliderBuilder::cuboid(4.0, 0.2, 2.0).build(),
+    );
 
-    let platform2 = bodies.insert(RigidBodyBuilder::dynamic().translation(origin_v + shift * 2.0));
-    colliders.insert_with_parent(ColliderBuilder::cuboid(4.0, 0.2, 2.0), platform2, bodies);
+    let platform2 = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::dynamic()
+            .translation(origin_v + shift * 2.0)
+            .build(),
+        ColliderBuilder::cuboid(4.0, 0.2, 2.0).build(),
+    );
 
     let z = Vector::Z;
     let joint1 = RevoluteJointBuilder::new(z)
@@ -213,9 +242,9 @@ fn create_revolute_joints_with_limits(
     //     .coupled_axes(JointAxesMask::ANG_Y | JointAxesMask::ANG_Z);
 
     if use_articulations {
-        multibody_joints.insert(ground, platform1, joint1, true);
+        state.insert_multibody_joint(ground, platform1, joint1);
     } else {
-        impulse_joints.insert(ground, platform1, joint1, true);
+        state.insert_impulse_joint(ground, platform1, joint1);
     }
 
     let joint2 = RevoluteJointBuilder::new(z)
@@ -232,37 +261,34 @@ fn create_revolute_joints_with_limits(
     //     .coupled_axes(JointAxesMask::ANG_Y | JointAxesMask::ANG_Z);
 
     if use_articulations {
-        multibody_joints.insert(platform1, platform2, joint2, true);
+        state.insert_multibody_joint(platform1, platform2, joint2);
     } else {
-        impulse_joints.insert(platform1, platform2, joint2, true);
+        state.insert_impulse_joint(platform1, platform2, joint2);
     }
 
     // Let's add a couple of cuboids that will fall on the platforms, triggering the joint limits.
-    let cuboid_body1 = bodies.insert(
-        RigidBodyBuilder::dynamic().translation(origin_v + shift + Vector::new(-2.0, 4.0, 0.0)),
-    );
-    colliders.insert_with_parent(
-        ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0),
-        cuboid_body1,
-        bodies,
+    add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::dynamic()
+            .translation(origin_v + shift + Vector::new(-2.0, 4.0, 0.0))
+            .build(),
+        ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0).build(),
     );
 
-    let cuboid_body2 = bodies.insert(
+    add_body(
+        state,
+        viewer,
         RigidBodyBuilder::dynamic()
-            .translation(origin_v + shift * 2.0 + Vector::new(2.0, 16.0, 0.0)),
-    );
-    colliders.insert_with_parent(
-        ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0),
-        cuboid_body2,
-        bodies,
+            .translation(origin_v + shift * 2.0 + Vector::new(2.0, 16.0, 0.0))
+            .build(),
+        ColliderBuilder::cuboid(0.6, 0.6, 0.6).friction(1.0).build(),
     );
 }
 
 fn create_fixed_joints(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     num: usize,
     use_articulations: bool,
@@ -286,14 +312,18 @@ fn create_fixed_joints(
                 RigidBodyType::Dynamic
             };
 
-            let rigid_body = RigidBodyBuilder::new(status).translation(Vector::new(
-                origin.x + fk * shift,
-                origin.y,
-                origin.z + fi * shift,
-            ));
-            let child_handle = bodies.insert(rigid_body);
-            let collider = ColliderBuilder::ball(rad);
-            colliders.insert_with_parent(collider, child_handle, bodies);
+            let child_handle = add_body(
+                state,
+                viewer,
+                RigidBodyBuilder::new(status)
+                    .translation(Vector::new(
+                        origin.x + fk * shift,
+                        origin.y,
+                        origin.z + fi * shift,
+                    ))
+                    .build(),
+                ColliderBuilder::ball(rad).build(),
+            );
 
             // Vertical joint.
             if i > 0 {
@@ -302,9 +332,9 @@ fn create_fixed_joints(
                 let joint = FixedJointBuilder::new().local_anchor2(Vector::new(0.0, 0.0, -shift));
 
                 if use_articulations {
-                    multibody_joints.insert(parent_handle, child_handle, joint, true);
+                    state.insert_multibody_joint(parent_handle, child_handle, joint);
                 } else {
-                    impulse_joints.insert(parent_handle, child_handle, joint, true);
+                    state.insert_impulse_joint(parent_handle, child_handle, joint);
                 }
             }
 
@@ -313,7 +343,7 @@ fn create_fixed_joints(
                 let parent_index = body_handles.len() - 1;
                 let parent_handle = body_handles[parent_index];
                 let joint = FixedJointBuilder::new().local_anchor2(Vector::new(-shift, 0.0, 0.0));
-                impulse_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_impulse_joint(parent_handle, child_handle, joint);
             }
 
             body_handles.push(child_handle);
@@ -322,10 +352,8 @@ fn create_fixed_joints(
 }
 
 fn create_spherical_joints(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     num: usize,
     use_articulations: bool,
 ) {
@@ -345,14 +373,14 @@ fn create_spherical_joints(
                 RigidBodyType::Dynamic
             };
 
-            let rigid_body = RigidBodyBuilder::new(status).translation(Vector::new(
-                fk * shift,
-                0.0,
-                fi * shift * 2.0,
-            ));
-            let child_handle = bodies.insert(rigid_body);
-            let collider = ColliderBuilder::capsule_z(rad * 1.25, rad);
-            colliders.insert_with_parent(collider, child_handle, bodies);
+            let child_handle = add_body(
+                state,
+                viewer,
+                RigidBodyBuilder::new(status)
+                    .translation(Vector::new(fk * shift, 0.0, fi * shift * 2.0))
+                    .build(),
+                ColliderBuilder::capsule_z(rad * 1.25, rad).build(),
+            );
 
             // Vertical joint.
             if i > 0 {
@@ -361,9 +389,9 @@ fn create_spherical_joints(
                     SphericalJointBuilder::new().local_anchor2(Vector::new(0.0, 0.0, -shift * 2.0));
 
                 if use_articulations {
-                    multibody_joints.insert(parent_handle, child_handle, joint, true);
+                    state.insert_multibody_joint(parent_handle, child_handle, joint);
                 } else {
-                    impulse_joints.insert(parent_handle, child_handle, joint, true);
+                    state.insert_impulse_joint(parent_handle, child_handle, joint);
                 }
             }
 
@@ -373,7 +401,7 @@ fn create_spherical_joints(
                 let parent_handle = body_handles[parent_index];
                 let joint =
                     SphericalJointBuilder::new().local_anchor2(Vector::new(-shift, 0.0, 0.0));
-                impulse_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_impulse_joint(parent_handle, child_handle, joint);
             }
 
             body_handles.push(child_handle);
@@ -382,28 +410,39 @@ fn create_spherical_joints(
 }
 
 fn create_spherical_joints_with_limits(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     use_articulations: bool,
 ) {
     let shift = Vector::new(0.0, 0.0, 3.0);
     let origin_v = origin;
 
-    let ground = bodies.insert(RigidBodyBuilder::fixed().translation(origin_v));
-    colliders.insert_with_parent(ColliderBuilder::cuboid(0.1, 0.1, 0.1), ground, bodies);
+    let ground = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::fixed().translation(origin_v).build(),
+        ColliderBuilder::cuboid(0.1, 0.1, 0.1).build(),
+    );
 
-    let ball1 = bodies.insert(
+    let ball1 = add_body(
+        state,
+        viewer,
         RigidBodyBuilder::dynamic()
             .translation(origin_v + shift)
-            .linvel(Vector::new(20.0, 20.0, 0.0)),
+            .linvel(Vector::new(20.0, 20.0, 0.0))
+            .build(),
+        ColliderBuilder::cuboid(1.0, 1.0, 1.0).build(),
     );
-    colliders.insert_with_parent(ColliderBuilder::cuboid(1.0, 1.0, 1.0), ball1, bodies);
 
-    let ball2 = bodies.insert(RigidBodyBuilder::dynamic().translation(origin_v + shift * 2.0));
-    colliders.insert_with_parent(ColliderBuilder::cuboid(1.0, 1.0, 1.0), ball2, bodies);
+    let ball2 = add_body(
+        state,
+        viewer,
+        RigidBodyBuilder::dynamic()
+            .translation(origin_v + shift * 2.0)
+            .build(),
+        ColliderBuilder::cuboid(1.0, 1.0, 1.0).build(),
+    );
 
     let joint1 = SphericalJointBuilder::new()
         .local_anchor2(-shift)
@@ -416,19 +455,17 @@ fn create_spherical_joints_with_limits(
         .limits(JointAxis::LinY, [-0.3, 0.3]);
 
     if use_articulations {
-        multibody_joints.insert(ground, ball1, joint1, true);
-        multibody_joints.insert(ball1, ball2, joint2, true);
+        state.insert_multibody_joint(ground, ball1, joint1);
+        state.insert_multibody_joint(ball1, ball2, joint2);
     } else {
-        impulse_joints.insert(ground, ball1, joint1, true);
-        impulse_joints.insert(ball1, ball2, joint2, true);
+        state.insert_impulse_joint(ground, ball1, joint1);
+        state.insert_impulse_joint(ball1, ball2, joint2);
     }
 }
 
 fn create_actuated_revolute_joints(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     num: usize,
     use_articulations: bool,
@@ -456,14 +493,15 @@ fn create_actuated_revolute_joints(
 
         let shifty = (i >= 1) as u32 as f32 * -2.0;
 
-        let rigid_body = RigidBodyBuilder::new(status)
-            .translation(Vector::new(origin.x, origin.y + shifty, origin.z + fi * shift))
-            // .rotation(Vector3::new(0.0, fi * 1.1, 0.0))
-            ;
-
-        let child_handle = bodies.insert(rigid_body);
-        let collider = ColliderBuilder::cuboid(rad * 2.0, rad * 6.0 / (fi + 1.0), rad);
-        colliders.insert_with_parent(collider, child_handle, bodies);
+        let child_handle = add_body(
+            state,
+            viewer,
+            RigidBodyBuilder::new(status)
+                .translation(Vector::new(origin.x, origin.y + shifty, origin.z + fi * shift))
+                // .rotation(Vector3::new(0.0, fi * 1.1, 0.0))
+                .build(),
+            ColliderBuilder::cuboid(rad * 2.0, rad * 6.0 / (fi + 1.0), rad).build(),
+        );
 
         if i > 0 {
             let mut joint = joint_template.motor_model(MotorModel::AccelerationBased);
@@ -483,9 +521,9 @@ fn create_actuated_revolute_joints(
             }
 
             if use_articulations {
-                multibody_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_multibody_joint(parent_handle, child_handle, joint);
             } else {
-                impulse_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_impulse_joint(parent_handle, child_handle, joint);
             }
         }
 
@@ -494,10 +532,8 @@ fn create_actuated_revolute_joints(
 }
 
 fn create_actuated_spherical_joints(
-    bodies: &mut RigidBodySet,
-    colliders: &mut ColliderSet,
-    impulse_joints: &mut ImpulseJointSet,
-    multibody_joints: &mut MultibodyJointSet,
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
     origin: Vector,
     num: usize,
     use_articulations: bool,
@@ -522,14 +558,15 @@ fn create_actuated_spherical_joints(
             RigidBodyType::Dynamic
         };
 
-        let rigid_body = RigidBodyBuilder::new(status)
-            .translation(Vector::new(origin.x, origin.y, origin.z + fi * shift))
-            // .rotation(Vector3::new(0.0, fi * 1.1, 0.0))
-            ;
-
-        let child_handle = bodies.insert(rigid_body);
-        let collider = ColliderBuilder::capsule_y(rad * 2.0 / (fi + 1.0), rad);
-        colliders.insert_with_parent(collider, child_handle, bodies);
+        let child_handle = add_body(
+            state,
+            viewer,
+            RigidBodyBuilder::new(status)
+                .translation(Vector::new(origin.x, origin.y, origin.z + fi * shift))
+                // .rotation(Vector3::new(0.0, fi * 1.1, 0.0))
+                .build(),
+            ColliderBuilder::capsule_y(rad * 2.0 / (fi + 1.0), rad).build(),
+        );
 
         if i > 0 {
             let mut joint = joint_template;
@@ -554,9 +591,9 @@ fn create_actuated_spherical_joints(
             }
 
             if use_articulations {
-                multibody_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_multibody_joint(parent_handle, child_handle, joint);
             } else {
-                impulse_joints.insert(parent_handle, child_handle, joint, true);
+                state.insert_impulse_joint(parent_handle, child_handle, joint);
             }
         }
 
@@ -564,98 +601,77 @@ fn create_actuated_spherical_joints(
     }
 }
 
-fn build_variant(use_articulations: bool) -> SimulationState {
-    /*
-     * World
-     */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let mut impulse_joints = ImpulseJointSet::new();
-    let mut multibody_joints = MultibodyJointSet::new();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let use_articulations = true;
+
+    let mut state = NexusState::default();
 
     create_prismatic_joints(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(20.0, 5.0, 0.0),
         4,
         use_articulations,
     );
     create_actuated_prismatic_joints(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(25.0, 5.0, 0.0),
         4,
         use_articulations,
     );
     create_revolute_joints(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(20.0, 0.0, 0.0),
         3,
         use_articulations,
     );
     create_revolute_joints_with_limits(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(34.0, 0.0, 0.0),
         use_articulations,
     );
     create_fixed_joints(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(0.0, 10.0, 0.0),
         10,
         use_articulations,
     );
     create_actuated_revolute_joints(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(20.0, 10.0, 0.0),
         6,
         use_articulations,
     );
     create_actuated_spherical_joints(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(13.0, 10.0, 0.0),
         3,
         use_articulations,
     );
 
-    create_spherical_joints(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
-        9,
-        use_articulations,
-    );
+    create_spherical_joints(&mut state, viewer, 9, use_articulations);
     create_spherical_joints_with_limits(
-        &mut bodies,
-        &mut colliders,
-        &mut impulse_joints,
-        &mut multibody_joints,
+        &mut state,
+        viewer,
         Vector::new(-5.0, 0.0, 0.0),
         use_articulations,
     );
 
-    SimulationState::single_with_multibody(bodies, colliders, impulse_joints, multibody_joints)
-}
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
 
-fn build() -> SimulationState {
-    build_variant(true)
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

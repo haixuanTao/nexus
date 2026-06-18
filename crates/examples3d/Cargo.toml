@@ -13,8 +13,9 @@ metal = ["nexus_testbed3d/metal"]
 
 [dependencies]
 glamx = { version = "0.3", default-features = false }
+nexus3d = { path = "../nexus3d", features = [ "rbd", "mpm", "fem" ] }
 nexus_testbed3d = { path = "../nexus_testbed3d" }
-nexus_rbd3d = { path = "../nexus_rbd3d" }
+nexus_rbd3d = { path = "../nexus_rbd3d" } # TODO: remove this
 rapier3d = "0.33"
 rapier3d-urdf = { version = "0.33", features = ["stl"] }
 khal = { workspace = true }
@@ -24,6 +25,7 @@ oorandom = "11"
 rand = "0.10"
 pollster = "0.4"
 env_logger = "0.11"
+anyhow = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
@@ -43,7 +45,3 @@ path = "bench_urdf3.rs"
 [[bin]]
 name = "bench_joints3"
 path = "bench_joints3.rs"
-
-[[bin]]
-name = "bench_sort3"
-path = "bench_sort3.rs"

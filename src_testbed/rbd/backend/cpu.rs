@@ -2,7 +2,7 @@ use super::SimulationBackend;
 use crate::rbd::SimulationState;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::RunStats;
+use nexus::rbd::pipeline::RbdStats;
 use rapier::dynamics::{CCDSolver, IntegrationParameters, IslandManager};
 use rapier::geometry::{BroadPhaseBvh, ColliderSet, NarrowPhase};
 use rapier::prelude::{
@@ -99,7 +99,7 @@ impl SimulationBackend for CpuBackend {
         1
     }
 
-    async fn step(&mut self, _gpu: Option<&KhalGpuBackend>) -> RunStats {
+    async fn step(&mut self, _gpu: Option<&KhalGpuBackend>) -> RbdStats {
         let t0 = web_time::Instant::now();
 
         #[cfg(feature = "dim2")]
@@ -129,7 +129,7 @@ impl SimulationBackend for CpuBackend {
             self.poses_cache.push(*co.position());
         }
 
-        RunStats {
+        RbdStats {
             total_simulation_time_with_readback: total_sim_time,
             ..Default::default()
         }

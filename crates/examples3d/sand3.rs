@@ -1,4 +1,4 @@
-use nexus_testbed3d::Viewer;
+use nexus_testbed3d::NexusViewer;
 use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
 use nexus_testbed3d::nexus;
 
@@ -14,7 +14,7 @@ const DENSITY: f32 = 2700.0;
 const YOUNG_MODULUS: f32 = 2.0e9;
 const POISSON_RATIO: f32 = 0.2;
 
-pub async fn run(viewer: &mut Viewer) {
+pub async fn run(viewer: &mut NexusViewer) {
     let mut scene = viewer.set_mpm(build).await;
     while viewer.render(&mut scene).await {
         scene.simulate(viewer).await;

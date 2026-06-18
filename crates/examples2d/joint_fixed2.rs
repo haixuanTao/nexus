@@ -1,22 +1,12 @@
 use glamx::Pose2;
-use nexus_testbed2d::{SimulationState, Viewer};
+use khal::backend::GpuTimestamps;
+use nexus_testbed2d::NexusViewer;
+use nexus2d::prelude::{NexusState, RbdCoupling};
 use rapier2d::prelude::*;
 
-pub async fn run(viewer: &mut Viewer) {
-    let mut scene = viewer.set_rbd(build()).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
-fn build() -> SimulationState {
-    /*
-     * World
-     */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let mut impulse_joints = ImpulseJointSet::new();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
+    let no_coupling = RbdCoupling::NONE;
 
     /*
      * Create the balls
@@ -45,18 +35,20 @@ fn build() -> SimulationState {
                         RigidBodyType::Dynamic
                     };
 
-                    let rigid_body = RigidBodyBuilder::new(status)
-                        .translation(Vec2::new(x + fk * shift, y - fi * shift));
-                    let child_handle = bodies.insert(rigid_body);
-                    let collider = ColliderBuilder::ball(rad);
-                    colliders.insert_with_parent(collider, child_handle, &mut bodies);
+                    let body = RigidBodyBuilder::new(status)
+                        .translation(Vec2::new(x + fk * shift, y - fi * shift))
+                        .build();
+                    let collider = ColliderBuilder::ball(rad).build();
+                    let shape = collider.shared_shape().clone();
+                    let child_handle = state.insert_rigid_body(body, collider, no_coupling);
+                    viewer.insert_shape(child_handle, &shape);
 
                     // Vertical joint.
                     if i > 0 {
                         let parent_handle = *body_handles.last().unwrap();
                         let joint =
                             FixedJointBuilder::new().local_frame2(Pose2::translation(0.0, shift));
-                        impulse_joints.insert(parent_handle, child_handle, joint, true);
+                        state.insert_impulse_joint(parent_handle, child_handle, joint);
                     }
 
                     // Horizontal joint.
@@ -65,7 +57,7 @@ fn build() -> SimulationState {
                         let parent_handle = body_handles[parent_index];
                         let joint =
                             FixedJointBuilder::new().local_frame2(Pose2::translation(-shift, 0.0));
-                        impulse_joints.insert(parent_handle, child_handle, joint, true);
+                        state.insert_impulse_joint(parent_handle, child_handle, joint);
                     }
 
                     body_handles.push(child_handle);
@@ -74,9 +66,16 @@ fn build() -> SimulationState {
         }
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
-    // testbed.look_at(point![50.0, 50.0], 5.0);
+    // Optional, useful so we can render even before starting the simulation.
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
+    }
+
+    Ok(state)
 }

@@ -6,7 +6,7 @@ use crate::{DemoKind, RunState, Scene, Transition};
 use khal::backend::Backend;
 use kiss3d::egui;
 use kiss3d::window::Window;
-use nexus::rbd::pipeline::RunStats;
+use nexus::rbd::pipeline::RbdStats;
 
 use egui::{Button, CollapsingHeader, Color32, ComboBox, CornerRadius, RichText, Stroke};
 
@@ -143,7 +143,7 @@ pub fn main_panel<S: Scene>(
 
                     if state.ui_sections.show_performance {
                         ui.separator();
-                        scene.performance_ui(ui, &state.run_stats, state.backend_type);
+                        performance_ui(ui, &state.run_stats, state.backend_type);
                     }
 
                     if state.ui_sections.show_examples && !state.demos.is_empty() {
@@ -183,6 +183,105 @@ pub fn main_panel<S: Scene>(
                 }
             });
         });
+}
+
+fn performance_ui(ui: &mut egui::Ui, rbd_stats: &RbdStats, backend: BackendType) {
+    // // Scene info.
+    // ui.label(RichText::new("Scene").strong());
+    // ui.add_space(2.0);
+    //
+    // egui::Grid::new("rbd_scene_grid")
+    //     .num_columns(2)
+    //     .spacing([20.0, 2.0])
+    //     .show(ui, |ui| {
+    //         ui.label("Bodies:");
+    //         ui.label(format!("{}", physics.backend.num_bodies()));
+    //         ui.end_row();
+    //
+    //         ui.label("Joints:");
+    //         ui.label(format!("{}", physics.backend.num_joints()));
+    //         ui.end_row();
+    //
+    //         ui.label("Batches:");
+    //         ui.label(format!("{}", physics.backend.num_batches()));
+    //         ui.end_row();
+    //     });
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    // Timing.
+    let total_ms_with_readback = rbd_stats.total_simulation_time_with_readback_ms();
+    let total_ms_without_readback = rbd_stats.total_simulation_time_without_readback_ms();
+    let total_readback_time = total_ms_with_readback - total_ms_without_readback;
+    let fps = if total_ms_with_readback > 0.0 {
+        (1000.0f32 / total_ms_with_readback).round()
+    } else {
+        0.0
+    };
+
+    ui.label(
+        RichText::new(format!(
+            "Total: {:.2}ms (+ readback: {:.2}ms) - {:.0} FPS",
+            total_ms_without_readback, total_readback_time, fps
+        ))
+            .strong(),
+    );
+    ui.add_space(4.0);
+
+    CollapsingHeader::new("Simulation details")
+        .id_salt("rbd_sim_details")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(format!("Colors: {}", rbd_stats.num_colors));
+            ui.label(format!(
+                "Coloring: {:.2}ms",
+                rbd_stats.coloring_time.as_secs_f32() * 1000.0
+            ));
+            ui.label(format!(
+                "Coloring iterations: {} x 10",
+                rbd_stats.coloring_iterations
+            ));
+            ui.label(format!(
+                "Start to pairs count: {:.2}ms",
+                rbd_stats.start_to_pairs_count_time.as_secs_f32() * 1000.0
+            ));
+            ui.label(format!(
+                "Coloring fallback: {:.2}ms",
+                rbd_stats.coloring_fallback_time.as_secs_f32() * 1000.0
+            ));
+        });
+
+    if !rbd_stats.gpu_pass_times.is_empty() {
+        CollapsingHeader::new(format!("GPU passes: {:.2}ms", rbd_stats.gpu_total_time))
+            .id_salt("rbd_gpu_passes")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("rbd_timestamp_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 2.0])
+                    .show(ui, |ui| {
+                        for (label, ms) in &rbd_stats.gpu_pass_times {
+                            ui.label(format!("{}:", label));
+                            ui.label(format!("{:.2}ms", ms));
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+
+    // Slow performance warning.
+    if rbd_stats.total_simulation_time_with_readback.as_secs_f32() > 0.1 {
+        ui.add_space(4.0);
+        ui.colored_label(
+            Color32::from_rgb(180, 120, 60),
+            #[cfg(not(target_arch = "wasm32"))]
+            "Running slow? If you have both an integrated and discrete GPU, ensure the discrete GPU is in use.",
+            #[cfg(target_arch = "wasm32")]
+            "Running slow? If you have both an integrated and discrete GPU, ensure your browser runs exclusively on the discrete GPU.",
+        );
+    }
 }
 
 fn examples_section(ui: &mut egui::Ui, state: &mut UiState) {
@@ -340,7 +439,7 @@ impl Scene for crate::rbd::RbdScene {
         true
     }
 
-    fn performance_ui(&mut self, ui: &mut egui::Ui, run_stats: &RunStats, backend_type: BackendType) {
+    fn performance_ui(&mut self, ui: &mut egui::Ui, run_stats: &RbdStats, backend_type: BackendType) {
         let physics = &self.physics;
 
         // Scene info.
@@ -492,7 +591,7 @@ impl Scene for crate::mpm::MpmScene {
     fn performance_ui(
         &mut self,
         ui: &mut egui::Ui,
-        _run_stats: &RunStats,
+        _run_stats: &RbdStats,
         _backend_type: BackendType,
     ) {
         let stage = &self.stage;
@@ -593,7 +692,7 @@ impl Scene for crate::fem::FemScene {
     fn performance_ui(
         &mut self,
         ui: &mut egui::Ui,
-        _run_stats: &RunStats,
+        _run_stats: &RbdStats,
         _backend_type: BackendType,
     ) {
         let stage = &self.stage;

@@ -35,7 +35,7 @@
 //! - Slower convergence.
 //! - May produce more colors (less parallelism for constraints resolution).
 
-use crate::pipeline::RunStats;
+use crate::pipeline::RbdStats;
 use crate::shaders::dynamics::TwoBodyConstraint;
 use crate::shaders::dynamics::{
     GpuFixConflictsTopoGc, GpuResetCompletionFlagTopoGc, GpuResetLuby, GpuResetTopoGc,
@@ -206,7 +206,7 @@ impl GpuColoring {
         &self,
         backend: &GpuBackend,
         mut args: ColoringArgs<'a>,
-        stats: &mut RunStats,
+        stats: &mut RbdStats,
     ) -> u32 {
         let t0 = web_time::Instant::now();
 
@@ -279,7 +279,7 @@ impl GpuColoring {
         &self,
         backend: &GpuBackend,
         mut args: ColoringArgs<'a>,
-        stats: &mut RunStats,
+        stats: &mut RbdStats,
         mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Option<u32> {
         let t0 = web_time::Instant::now();
