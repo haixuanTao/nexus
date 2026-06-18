@@ -135,11 +135,15 @@ pub async fn main() {
     }
 
     loop {
+        // Initialize the currently-selected backend (it may have just changed
+        // via the UI backend selector). Idempotent for already-created backends.
+        viewer.init_backend();
         let sel = viewer.selected_demo();
         dispatch(&demos[sel].0, &mut viewer).await;
         if viewer.quitting() {
             break;
         }
+        viewer.clear_scene();
         viewer.clear_transition();
     }
 }

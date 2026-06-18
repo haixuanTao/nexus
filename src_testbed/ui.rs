@@ -284,27 +284,47 @@ fn performance_ui(ui: &mut egui::Ui, rbd_stats: &RbdStats, backend: BackendType)
     }
 }
 
+/// Order in which demos appear in the picker: grouped by kind (Rbd, Mpm, Fem),
+/// preserving each group's listing order. Prev/Next walks this sequence so it
+/// matches the visible list rather than the raw (lexicographically-sorted)
+/// `demos` index order.
+fn demo_display_order(state: &UiState) -> Vec<usize> {
+    let mut order = Vec::with_capacity(state.demos.len());
+    for kind in [DemoKind::Rbd, DemoKind::Mpm, DemoKind::Fem] {
+        for (i, (_, k)) in state.demos.iter().enumerate() {
+            if *k == kind {
+                order.push(i);
+            }
+        }
+    }
+    order
+}
+
 fn examples_section(ui: &mut egui::Ui, state: &mut UiState) {
-    // Previous/Next navigation + current demo name.
+    // Previous/Next navigation + current demo name. Navigation follows the
+    // grouped listing order (see `demo_display_order`), not the raw index.
+    let order = demo_display_order(state);
+    let pos = order
+        .iter()
+        .position(|&i| i == state.selected_demo)
+        .unwrap_or(0);
+
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(state.selected_demo > 0, Button::new("<"))
+            .add_enabled(pos > 0, Button::new("<"))
             .on_hover_text("Previous example")
             .clicked()
         {
-            state.selected_demo -= 1;
+            state.selected_demo = order[pos - 1];
             state.transition = Some(Transition::Switch);
         }
 
         if ui
-            .add_enabled(
-                state.selected_demo + 1 < state.demos.len(),
-                Button::new(">"),
-            )
+            .add_enabled(pos + 1 < order.len(), Button::new(">"))
             .on_hover_text("Next example")
             .clicked()
         {
-            state.selected_demo += 1;
+            state.selected_demo = order[pos + 1];
             state.transition = Some(Transition::Switch);
         }
 

@@ -166,12 +166,13 @@ pub async fn main() {
         viewer = viewer.with_running();
     }
 
-    viewer.init_backend();
-
     // Each selected demo owns its own loop (`run`); it returns when the user
     // closes the window or picks another demo (via the picker, which makes
     // `viewer.render()` return false).
     loop {
+        // Initialize the currently-selected backend (it may have just changed
+        // via the UI backend selector). Idempotent for already-created backends.
+        viewer.init_backend();
         let sel = viewer.selected_demo();
         dispatch(&demos[sel].0, &mut viewer).await;
         if viewer.quitting() {

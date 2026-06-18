@@ -96,6 +96,9 @@ pub struct NexusViewer {
     cuda: Option<KhalGpuBackend>,
     #[cfg(feature = "metal")]
     metal: Option<KhalGpuBackend>,
+    /// CPU backend, stored so [`Self::backend`] can hand out a reference for the
+    /// `Cpu`/`Rapier` selections. `None` when compiled without the `cpu` feature.
+    cpu: Option<KhalGpuBackend>,
     // TODO: the Rbdpipeline shouldn’t be stored by the viewer.
     cached_gpu_pipeline: Option<RbdPipeline>,
     nexus_render: RenderContext,
@@ -144,6 +147,16 @@ impl NexusViewer {
             cuda: None,
             #[cfg(feature = "metal")]
             metal: None,
+            cpu: {
+                #[cfg(feature = "cpu")]
+                {
+                    Some(KhalGpuBackend::Cpu)
+                }
+                #[cfg(not(feature = "cpu"))]
+                {
+                    None
+                }
+            },
             cached_gpu_pipeline: None,
             nexus_render: RenderContext::new(),
             ui: UiState {
@@ -292,7 +305,13 @@ impl NexusViewer {
             BackendType::Cuda => self.cuda.as_ref().unwrap(),
             #[cfg(feature = "metal")]
             BackendType::Metal => self.metal.as_ref().unwrap(),
-            _ => todo!(),
+            // Both CPU selections run the nexus pipeline on the CPU backend.
+            BackendType::Cpu | BackendType::Rapier => self
+                .cpu
+                .as_ref()
+                .expect("CPU backend unavailable: compile with the 'cpu' feature"),
+            #[allow(unreachable_patterns)]
+            _ => panic!("selected backend is not available in this build"),
         }
     }
 
