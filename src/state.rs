@@ -1,20 +1,26 @@
+use crate::fem::mesh::FemMesh;
 use crate::fem::pipeline::{FemPipeline, FemState};
+use crate::fem::solver::{FemConfig, FemMaterial};
 use crate::mpm::pipeline::{MpmPipeline, MpmState};
-use crate::mpm::solver::Particle;
+use crate::mpm::solver::{BoundaryCondition, BoundaryConditionExt, Particle, SimulationParams};
 use crate::rapier::data::{Arena, Coarena, Index};
 use crate::rapier::prelude::{Collider, ColliderHandle, GenericJoint, ImpulseJointHandle, MultibodyJointHandle, PhysicsWorld, RigidBody, RigidBodyHandle};
-use crate::rbd::dynamics::{body::BodyCoupling, RbdSimParams};
+use crate::rbd::dynamics::{body::{BodyCoupling, RapierBodyCouplingEntry}, RbdSimParams};
 use crate::rbd::pipeline::{RbdPipeline, RbdState, RbdStats};
 use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuTimestamps};
-use std::ops::RangeBounds;
 
 /// Handle referencing a rigid-body managed by a [`NexusState`].
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct NexusRbdHandle(Index);
 
-/// Handle referencing an MPM particle managed by a [`NexusState`].
+/// Handle referencing a *chunk* of MPM particles managed by a [`NexusState`].
+///
+/// Particles are addressed by chunk rather than individually (a per-particle
+/// handle map would be prohibitive at MPM scale). A chunk is mutable: particles
+/// can be appended to it ([`NexusState::extend_chunk`]) or removed from it
+/// ([`NexusState::remove_particles_from_chunk`] / [`NexusState::remove_chunk`]).
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
-pub struct NexusParticleHandle(Index);
+pub struct NexusParticleChunk(Index);
 
 bitflags::bitflags! {
     /// A bit mask describing how a rigid-body interacts with the MPM continuum.
@@ -80,6 +86,21 @@ impl Default for GpuRigidBodyRef {
     }
 }
 
+/// Entity counts for the current scene, surfaced in the testbed UI. Rigid-body
+/// counts are summed across all environments (batches).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct NexusCounts {
+    pub num_environments: usize,
+    pub rigid_bodies: usize,
+    pub colliders: usize,
+    pub impulse_joints: usize,
+    pub multibodies: usize,
+    pub multibody_dofs: usize,
+    pub particles: usize,
+    pub fem_vertices: usize,
+    pub fem_elements: usize,
+}
+
 /// High-level, GPU-resident state of a multiphysics simulation.
 ///
 /// Each sub-state (`rbd`/`mpm`/`fem`) is lazily allocated the first time content
@@ -104,11 +125,29 @@ pub struct NexusState {
     multibody2gpu: Coarena<u32>,
     mpm_body2gpu: Arena<u32>,
 
+    /// Live particle count per MPM chunk (the arena key is the public
+    /// [`NexusParticleChunk`] handle).
+    mpm_chunks: Arena<usize>,
+    /// Owning chunk for each GPU particle slot, kept in sync under the
+    /// swap-removal performed by [`Self::remove_chunk`] /
+    /// [`Self::remove_particles_from_chunk`].
+    slot2chunk: Vec<Index>,
+    /// MPM simulation params / grid cell width requested before the MPM
+    /// sub-state is lazily created. Applied in [`Self::mpm_or_insert`].
+    mpm_params: Option<SimulationParams>,
+    mpm_cell_width: f32,
+    /// Number of MPM substeps run per [`Self::simulate`] call.
+    mpm_substeps: u32,
+    /// Set when particles or MPM-coupled bodies change; consumed by
+    /// [`Self::finalize`] to rebuild the MPM↔rapier coupling.
+    mpm_dirty: bool,
+
     // Initial capacities used to allocate the states lazily.
     capacities: NexusCapacities,
 
     // GPU compute pipelines, lazily created the first time the matching sub-state
     // is stepped in [`Self::simulate`].
+    // TODO: move these to a separate NexusPipeline struct?
     rbd_pipeline: Option<RbdPipeline>,
     mpm_pipeline: Option<MpmPipeline>,
     fem_pipeline: Option<FemPipeline>,
@@ -122,6 +161,8 @@ pub struct NexusState {
     /// Set whenever the rapier worlds change; consumed by [`Self::finalize`] to
     /// decide whether the GPU [`RbdState`] needs rebuilding.
     rbd_dirty: bool,
+    /// Number of rigid-body solver steps advanced per [`Self::simulate`] call.
+    rbd_steps_per_frame: u32,
 
     // TODO: keep track of whether there is any non-fixed rigid-body (if there isn’t, we can
     //       skip the rbd pipeline entirely).
@@ -145,9 +186,16 @@ impl NexusState {
             rbd_envs: vec![PhysicsWorld::default()],
             rbd_sim_params: vec![RbdSimParams::tgs_soft()],
             rbd_dirty: false,
+            rbd_steps_per_frame: 1,
             rbd2gpu: vec![Coarena::new()],
             mpm_body2gpu: Arena::new(),
             multibody2gpu: Coarena::new(),
+            mpm_chunks: Arena::new(),
+            slot2chunk: Vec::new(),
+            mpm_params: None,
+            mpm_cell_width: 1.0,
+            mpm_substeps: 20,
+            mpm_dirty: false,
             capacities,
             rbd_pipeline: None,
             mpm_pipeline: None,
@@ -167,14 +215,169 @@ impl NexusState {
         // TODO: resize the GPU buffers too.
     }
 
+    /// Sets the MPM simulation parameters (gravity, timestep) and grid cell
+    /// width. Call before the first [`Self::add_particles`]; the values are
+    /// applied when the MPM sub-state is created. If MPM already exists they are
+    /// applied immediately (the grid is reset, so prefer calling this first).
+    pub fn set_mpm_params(
+        &mut self,
+        backend: &GpuBackend,
+        params: SimulationParams,
+        cell_width: f32,
+    ) -> Result<(), GpuBackendError> {
+        self.mpm_params = Some(params);
+        self.mpm_cell_width = cell_width;
+        if let Some(mpm) = self.mpm.as_mut() {
+            mpm.set_cell_width(backend, cell_width, self.capacities.mpm_grid_size as u32)?;
+            mpm.set_simulation_params(backend, params)?;
+        }
+        Ok(())
+    }
+
+    /// Sets the number of MPM substeps run per [`Self::simulate`] call (default
+    /// 20). More substeps → smaller timestep → more stable but slower.
+    pub fn set_mpm_substeps(&mut self, substeps: u32) {
+        self.mpm_substeps = substeps.max(1);
+    }
+
+    /// Number of MPM substeps run per [`Self::simulate`] call.
+    pub fn mpm_substeps(&self) -> u32 {
+        self.mpm_substeps
+    }
+
+    /// Enables/disables CPIC (compatible particle-in-cell) rigid coupling. No-op
+    /// if MPM isn't allocated yet. Not overwritten by [`Self::finalize`] unless
+    /// the coupling set changes.
+    pub fn set_mpm_use_cpic(&mut self, enabled: bool) {
+        if let Some(mpm) = self.mpm.as_mut() {
+            mpm.use_cpic = enabled;
+        }
+    }
+
+    /// Whether CPIC rigid coupling is enabled (false if MPM isn't allocated).
+    pub fn mpm_use_cpic(&self) -> bool {
+        self.mpm.as_ref().map(|m| m.use_cpic).unwrap_or(false)
+    }
+
+    /// Sets the MPM gravity vector. Applied on the next [`Self::simulate`] (the
+    /// per-substep params are re-uploaded each frame), so this is cheap.
+    pub fn set_mpm_gravity(&mut self, gravity: crate::rbd::math::Vector) {
+        if let Some(mpm) = self.mpm.as_mut() {
+            mpm.gravity = gravity;
+        }
+    }
+
+    /// Current MPM gravity vector (zero if MPM isn't allocated).
+    pub fn mpm_gravity(&self) -> crate::rbd::math::Vector {
+        self.mpm
+            .as_ref()
+            .map(|m| m.gravity)
+            .unwrap_or(crate::rbd::math::Vector::ZERO)
+    }
+
+    // ── FEM runtime settings ────────────────────────────────────────────
+
+    /// Sets the number of FEM substeps run per [`Self::simulate`] call.
+    pub fn set_fem_substeps(&mut self, substeps: u32) {
+        if let Some(fem) = self.fem.as_mut() {
+            fem.num_substeps = substeps.max(1);
+        }
+    }
+
+    /// Number of FEM substeps per [`Self::simulate`] call (1 if FEM is absent).
+    pub fn fem_substeps(&self) -> u32 {
+        self.fem.as_ref().map(|f| f.num_substeps).unwrap_or(1)
+    }
+
+    /// Sets the FEM gravity vector (no-op if FEM isn't allocated).
+    pub fn set_fem_gravity(
+        &mut self,
+        backend: &GpuBackend,
+        gravity: crate::rbd::math::Vector,
+    ) -> Result<(), GpuBackendError> {
+        if let Some(fem) = self.fem.as_mut() {
+            fem.set_gravity(backend, gravity)?;
+        }
+        Ok(())
+    }
+
+    /// Current FEM gravity vector (zero if FEM isn't allocated).
+    pub fn fem_gravity(&self) -> crate::rbd::math::Vector {
+        self.fem
+            .as_ref()
+            .map(|f| f.gravity())
+            .unwrap_or(crate::rbd::math::Vector::ZERO)
+    }
+
+    /// Sets the FEM (mass-proportional) damping coefficient.
+    pub fn set_fem_damping(
+        &mut self,
+        backend: &GpuBackend,
+        damping: f32,
+    ) -> Result<(), GpuBackendError> {
+        if let Some(fem) = self.fem.as_mut() {
+            fem.set_damping(backend, damping)?;
+        }
+        Ok(())
+    }
+
+    /// Current FEM damping coefficient (0 if FEM isn't allocated).
+    pub fn fem_damping(&self) -> f32 {
+        self.fem.as_ref().map(|f| f.damping()).unwrap_or(0.0)
+    }
+
+    // ── Rigid-body runtime settings ─────────────────────────────────────
+
+    /// Sets the number of rigid-body solver steps advanced per
+    /// [`Self::simulate`] call (default 1). Acts as a simulation-speed control.
+    pub fn set_rbd_steps_per_frame(&mut self, steps: u32) {
+        self.rbd_steps_per_frame = steps.max(1);
+    }
+
+    /// Number of rigid-body solver steps per [`Self::simulate`] call.
+    pub fn rbd_steps_per_frame(&self) -> u32 {
+        self.rbd_steps_per_frame
+    }
+
+    /// Current entity counts (rigid bodies, colliders, joints, multibody DOFs,
+    /// particles, FEM vertices/elements) for display in the UI. Rigid-body
+    /// counts are summed across all environments.
+    pub fn counts(&self) -> NexusCounts {
+        let mut c = NexusCounts {
+            num_environments: self.rbd_envs.len(),
+            ..Default::default()
+        };
+        for world in &self.rbd_envs {
+            c.rigid_bodies += world.bodies.len();
+            c.colliders += world.colliders.len();
+            c.impulse_joints += world.impulse_joints.len();
+            for mb in world.multibody_joints.multibodies() {
+                c.multibodies += 1;
+                c.multibody_dofs += mb.ndofs();
+            }
+        }
+        if let Some(mpm) = self.mpm.as_ref() {
+            c.particles = mpm.particles.len();
+        }
+        if let Some(fem) = self.fem.as_ref() {
+            c.fem_vertices = fem.num_vertices as usize;
+            c.fem_elements = fem.num_elements as usize;
+        }
+        c
+    }
+
     /// Returns a mutable reference to the MPM sub-state, allocating an empty one
-    /// (sized from the stored capacities) if it doesn’t exist yet.
+    /// (sized from the stored capacities, configured from [`Self::set_mpm_params`])
+    /// if it doesn’t exist yet.
     fn mpm_or_insert(&mut self, backend: &GpuBackend) -> Result<&mut MpmState, GpuBackendError> {
         if self.mpm.is_none() {
-            self.mpm = Some(MpmState::empty(
-                backend,
-                self.capacities.mpm_grid_size as u32,
-            )?);
+            let grid_capacity = self.capacities.mpm_grid_size as u32;
+            let mut mpm = MpmState::empty(backend, grid_capacity)?;
+            mpm.set_cell_width(backend, self.mpm_cell_width, grid_capacity)?;
+            if let Some(params) = self.mpm_params {
+                mpm.set_simulation_params(backend, params)?;
+            }
+            self.mpm = Some(mpm);
         }
         Ok(self.mpm.as_mut().unwrap())
     }
@@ -231,6 +434,11 @@ impl NexusState {
             gpu_id: u32::MAX
         });
         self.rbd_dirty = true;
+        // MPM-coupled boundary colliders live only in environment 0 and feed the
+        // MPM coupling rebuild in `finalize`.
+        if env == 0 && coupling.body_coupling().is_some() {
+            self.mpm_dirty = true;
+        }
         handle
     }
 
@@ -327,26 +535,134 @@ impl NexusState {
         Ok(())
     }
 
-    /// Appends MPM particles to the simulation and returns their handles.
+    /// Appends a new chunk of MPM particles (`O(added)`) and returns its handle.
     pub fn add_particles(
         &mut self,
         backend: &GpuBackend,
         particles: Vec<Particle>,
-    ) -> Result<Vec<NexusParticleHandle>, GpuBackendError> {
-        // let mpm = self.mpm_or_insert(backend)?;
-        // // 1. Append to the particle buffer.
-        // let base = mpm.particles.len() as u32;
-        // mpm.particles.append(backend, &particles)?;
-        //
-        // // 2. Update particle2gpu and return the handles.
-        // let handles = (0..particles.len() as u32)
-        //     .map(|i| NexusParticleHandle(self.particle2gpu.insert(base + i)))
-        //     .collect();
-        // Ok(handles)
-        todo!()
+    ) -> Result<NexusParticleChunk, GpuBackendError> {
+        let n = particles.len();
+        let chunk = self.mpm_chunks.insert(n);
+        {
+            let mpm = self.mpm_or_insert(backend)?;
+            mpm.particles.append(backend, &particles)?;
+        }
+        self.slot2chunk.extend(std::iter::repeat(chunk).take(n));
+        self.mpm_dirty = true;
+        Ok(NexusParticleChunk(chunk))
+    }
+
+    /// Appends more particles to an existing chunk (`O(added)`).
+    pub fn extend_chunk(
+        &mut self,
+        backend: &GpuBackend,
+        chunk: NexusParticleChunk,
+        particles: Vec<Particle>,
+    ) -> Result<(), GpuBackendError> {
+        let n = particles.len();
+        {
+            let mpm = self.mpm_or_insert(backend)?;
+            mpm.particles.append(backend, &particles)?;
+        }
+        self.slot2chunk.extend(std::iter::repeat(chunk.0).take(n));
+        if let Some(c) = self.mpm_chunks.get_mut(chunk.0) {
+            *c += n;
+        }
+        self.mpm_dirty = true;
+        Ok(())
+    }
+
+    /// Inserts a FEM soft body (one or more `(mesh, material)` pairs solved
+    /// together) into the simulation. There is at most one FEM sub-state; a
+    /// second call replaces it.
+    pub fn insert_fem(
+        &mut self,
+        backend: &GpuBackend,
+        meshes: &[(FemMesh, FemMaterial)],
+        config: &FemConfig,
+    ) -> Result<(), GpuBackendError> {
+        self.fem = Some(FemState::new(backend, meshes, config)?);
+        Ok(())
+    }
+
+    /// MPM background-grid cell width (used by the viewer to size rendered
+    /// particles).
+    pub fn mpm_cell_width(&self) -> f32 {
+        self.mpm_cell_width
+    }
+
+    /// Removes every particle of a chunk (`O(removed)`) and drops the handle.
+    pub fn remove_chunk(
+        &mut self,
+        backend: &GpuBackend,
+        chunk: NexusParticleChunk,
+    ) -> Result<(), GpuBackendError> {
+        let slots: Vec<u32> = self
+            .slot2chunk
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c == chunk.0)
+            .map(|(i, _)| i as u32)
+            .collect();
+        self.swap_remove_particle_slots(backend, &slots)?;
+        self.mpm_chunks.remove(chunk.0);
+        Ok(())
+    }
+
+    /// Removes up to `count` particles from a chunk (`O(removed)`), returning the
+    /// number actually removed. The chunk itself is kept (even if emptied).
+    pub fn remove_particles_from_chunk(
+        &mut self,
+        backend: &GpuBackend,
+        chunk: NexusParticleChunk,
+        count: usize,
+    ) -> Result<usize, GpuBackendError> {
+        let mut slots: Vec<u32> = self
+            .slot2chunk
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c == chunk.0)
+            .map(|(i, _)| i as u32)
+            .collect();
+        // Remove the highest GPU slots first — keeps the swap-removal cheap.
+        slots.sort_unstable_by(|a, b| b.cmp(a));
+        slots.truncate(count);
+        let removed = slots.len();
+        self.swap_remove_particle_slots(backend, &slots)?;
+        if let Some(c) = self.mpm_chunks.get_mut(chunk.0) {
+            *c = c.saturating_sub(removed);
+        }
+        Ok(removed)
+    }
+
+    /// Swap-removes the given GPU particle slots and patches `slot2chunk` to
+    /// follow the relocations the GPU performed.
+    fn swap_remove_particle_slots(
+        &mut self,
+        backend: &GpuBackend,
+        slots: &[u32],
+    ) -> Result<(), GpuBackendError> {
+        if slots.is_empty() {
+            return Ok(());
+        }
+        let remaps = {
+            let Some(mpm) = self.mpm.as_mut() else {
+                return Ok(());
+            };
+            mpm.particles.swap_remove(backend, slots)?
+        };
+        // Each `(from, to)`: the tail particle at `from` was moved down to the
+        // freed slot `to`, so its chunk ownership moves with it.
+        for (from, to) in remaps {
+            self.slot2chunk[to as usize] = self.slot2chunk[from as usize];
+        }
+        let new_len = self.mpm.as_ref().unwrap().particles.len();
+        self.slot2chunk.truncate(new_len);
+        Ok(())
     }
 
     pub async fn finalize(&mut self, backend: &GpuBackend) -> Result<(), GpuBackendError> {
+        let rbd_was_dirty = self.rbd_dirty;
         if self.rbd_dirty {
             // NOTE: this rebuilds the whole GPU rbd state from the rapier worlds
             //       (one per environment / batch). It is correct to call more
@@ -395,6 +711,48 @@ impl NexusState {
             self.rbd = Some(rbd_state);
             self.rbd_dirty = false;
         }
+
+        // MPM ↔ rapier coupling. Boundary/coupled colliders are inserted into
+        // environment 0 as rigid bodies tagged `RbdCoupling::MPM_*`; rebuild the
+        // coupling (sampled rigid particles + uploaded body set) whenever those
+        // bodies — or the particle set — changed.
+        if (rbd_was_dirty || self.mpm_dirty) && self.mpm.is_some() {
+            let world = &self.rbd_envs[0];
+            let mut coupling = Vec::new();
+            let mut materials = Vec::new();
+            for (collider_handle, collider) in world.colliders.iter() {
+                let Some(body_handle) = collider.parent() else {
+                    continue;
+                };
+                let Some(gpu_ref) = self.rbd2gpu[0].get(body_handle.0) else {
+                    continue;
+                };
+                let Some(mode) = gpu_ref.coupling.body_coupling() else {
+                    continue;
+                };
+                coupling.push(RapierBodyCouplingEntry {
+                    body: body_handle,
+                    collider: collider_handle,
+                    mode,
+                });
+                // Default boundary behavior; a richer per-collider material API
+                // can be layered on later.
+                materials.push(BoundaryCondition::stick());
+            }
+            if !coupling.is_empty() {
+                let cell_width = self.mpm_cell_width;
+                let mpm = self.mpm.as_mut().unwrap();
+                mpm.set_coupling(
+                    backend,
+                    &world.bodies,
+                    &world.colliders,
+                    coupling,
+                    &materials,
+                    cell_width,
+                )?;
+            }
+            self.mpm_dirty = false;
+        }
         Ok(())
     }
 
@@ -422,7 +780,10 @@ impl NexusState {
             let pipeline = self
                 .rbd_pipeline
                 .get_or_insert_with(|| RbdPipeline::from_backend(backend));
-            self.rbd_stats = pipeline.step(backend, rbd, timestamps.as_deref_mut())?;
+            let steps = self.rbd_steps_per_frame.max(1);
+            for _ in 0..steps {
+                self.rbd_stats = pipeline.step(backend, rbd, timestamps.as_deref_mut())?;
+            }
             let _ = backend.synchronize();
             self.rbd_stats.total_simulation_time_without_readback = t0.elapsed();
             pipeline.auto_resize_buffers(backend, rbd).await;
@@ -436,7 +797,13 @@ impl NexusState {
                 }
             }
             if let Some(pipeline) = self.mpm_pipeline.as_ref() {
-                let _ = pipeline.step(backend, mpm, timestamps.as_deref_mut());
+                // MPM needs many small substeps per visible frame for stability.
+                // Upload the per-substep dt once, then run the substep loop.
+                let substeps = self.mpm_substeps.max(1);
+                let _ = mpm.write_substep_params(backend, substeps);
+                for _ in 0..substeps {
+                    let _ = pipeline.step(backend, mpm, timestamps.as_deref_mut());
+                }
                 let _ = backend.synchronize();
             }
         }
@@ -449,7 +816,9 @@ impl NexusState {
                 }
             }
             if let Some(pipeline) = self.fem_pipeline.as_ref() {
-                let _ = pipeline.step(backend, fem, timestamps.as_deref_mut());
+                for _ in 0..fem.num_substeps {
+                    let _ = pipeline.step(backend, fem, timestamps.as_deref_mut());
+                }
                 let _ = backend.synchronize();
             }
         }
@@ -547,79 +916,4 @@ impl NexusState {
         Ok(())
     }
 
-    /// Removes the given particles from the simulation.
-    pub fn remove_particles(
-        &mut self,
-        backend: &GpuBackend,
-        particles: &[NexusParticleHandle],
-    ) -> Result<(), GpuBackendError> {
-        // let Some(mpm) = self.mpm.as_mut() else {
-        //     return Ok(());
-        // };
-        //
-        // // 1. Resolve the GPU slots, sorted descending so that each removal
-        // //    doesn’t shift the slots of the not-yet-removed particles.
-        // let mut gpu_ids: Vec<u32> = particles
-        //     .iter()
-        //     .filter_map(|h| self.particle2gpu.get(h.0).copied())
-        //     .collect();
-        // gpu_ids.sort_unstable_by(|a, b| b.cmp(a));
-        // gpu_ids.dedup();
-        //
-        // // Drop the handles from the map up-front.
-        // for h in particles {
-        //     self.particle2gpu.remove(h.0);
-        // }
-        //
-        // // 2. Shift-remove from the GPU buffers and patch the remaining slots.
-        // for gpu_id in gpu_ids {
-        //     mpm.particles
-        //         .shift_remove(backend, gpu_id as usize..gpu_id as usize + 1)?;
-        //     // 3. Every particle above the removed slot shifted down by one.
-        //     for (_, slot) in self.particle2gpu.iter_mut() {
-        //         if *slot > gpu_id {
-        //             *slot -= 1;
-        //         }
-        //     }
-        // }
-
-        Ok(())
-    }
-
-    /// Removes a contiguous range of particle slots from the simulation.
-    ///
-    /// This is the cheaper bulk variant of [`Self::remove_particles`] when the
-    /// GPU slot range is known directly (e.g. a whole emitted chunk).
-    pub fn remove_particles_range(
-        &mut self,
-        backend: &GpuBackend,
-        range: impl RangeBounds<usize> + Clone,
-    ) -> Result<(), GpuBackendError> {
-        // let Some(mpm) = self.mpm.as_mut() else {
-        //     return Ok(());
-        // };
-        //
-        // let start = match range.start_bound() {
-        //     std::ops::Bound::Included(i) => *i,
-        //     std::ops::Bound::Excluded(i) => *i + 1,
-        //     std::ops::Bound::Unbounded => 0,
-        // };
-        // let removed = mpm.particles.shift_remove(backend, range)?;
-        //
-        // // Update particle2gpu: drop the handles that fell inside the removed
-        // // range, and shift down every handle that pointed past it.
-        // self.particle2gpu.retain(|_, slot| {
-        //     let s = *slot as usize;
-        //     if s < start {
-        //         true
-        //     } else if s < start + removed {
-        //         false
-        //     } else {
-        //         *slot -= removed as u32;
-        //         true
-        //     }
-        // });
-
-        Ok(())
-    }
 }

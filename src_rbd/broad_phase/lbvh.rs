@@ -150,7 +150,7 @@ impl Lbvh {
 
         let colliders_per_batch = colliders_len / num_batches;
 
-        let mut pass = encoder.begin_pass("lbvh-compute-domain", timestamps.as_deref_mut());
+        let mut pass = encoder.begin_pass("[RBD] lbvh-compute-domain", timestamps.as_deref_mut());
         self.shaders.compute_domain.call(
             &mut pass,
             [1u32, num_batches, 1],
@@ -161,7 +161,7 @@ impl Lbvh {
         )?;
         drop(pass);
 
-        let mut pass = encoder.begin_pass("lbvh-compute-morton", timestamps.as_deref_mut());
+        let mut pass = encoder.begin_pass("[RBD] lbvh-compute-morton", timestamps.as_deref_mut());
         self.shaders.compute_morton.call(
             &mut pass,
             [colliders_per_batch, num_batches, 1],
@@ -173,7 +173,7 @@ impl Lbvh {
         )?;
         drop(pass);
 
-        let mut pass = encoder.begin_pass("lbvh-sort-dispatch", timestamps.as_deref_mut());
+        let mut pass = encoder.begin_pass("[RBD] lbvh-sort-dispatch", timestamps.as_deref_mut());
         self.sort.dispatch(
             backend,
             &mut pass,
@@ -188,7 +188,7 @@ impl Lbvh {
         )?;
         drop(pass);
 
-        let mut pass = encoder.begin_pass("lbvh-build", timestamps.as_deref_mut());
+        let mut pass = encoder.begin_pass("[RBD] lbvh-build", timestamps.as_deref_mut());
         self.shaders.build.call(
             &mut pass,
             [colliders_per_batch.saturating_sub(1), num_batches, 1],
@@ -199,7 +199,7 @@ impl Lbvh {
         )?;
         drop(pass);
 
-        let mut pass = encoder.begin_pass("lbvh-refit_leaves", timestamps.as_deref_mut());
+        let mut pass = encoder.begin_pass("[RBD] lbvh-refit_leaves", timestamps.as_deref_mut());
         self.shaders.refit_leaves.call(
             &mut pass,
             [colliders_per_batch, num_batches, 1],
@@ -213,7 +213,7 @@ impl Lbvh {
         )?;
         drop(pass);
 
-        let mut pass = encoder.begin_pass("lbvh-refit-internal", timestamps.as_deref_mut());
+        let mut pass = encoder.begin_pass("[RBD] lbvh-refit-internal", timestamps.as_deref_mut());
         self.shaders.refit_internal.call(
             &mut pass,
             [1u32, num_batches, 1],

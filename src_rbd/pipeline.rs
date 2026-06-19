@@ -1375,7 +1375,7 @@ impl RbdPipeline {
         {
             if !state.multibodies.is_empty() {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass("multibody-init-step", timestamps.as_deref_mut());
+                let mut pass = encoder.begin_pass("[RBD] multibody-init-step", timestamps.as_deref_mut());
                 let mut args = crate::dynamics::MultibodySolverArgs {
                     poses: &mut state.body_poses,
                     collider_world_poses: &state.collider_world_poses,
@@ -1397,7 +1397,7 @@ impl RbdPipeline {
         // Phase 1: Update mass properties, build LBVH, and find collision pairs.
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("update-mprops", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[RBD] update-mprops", timestamps.as_deref_mut());
 
             // Update mass properties — uses body world poses to compute the
             // world COM and inertia tensor.
@@ -1457,10 +1457,10 @@ impl RbdPipeline {
                 validate_lbvh_topology(&tree, &sorted_colliders, num_colliders);
 
                 encoder = backend.begin_encoding();
-                let _pass = encoder.begin_pass("broad-phase-find-pairs", timestamps.as_deref_mut());
+                let _pass = encoder.begin_pass("[RBD] broad-phase-find-pairs", timestamps.as_deref_mut());
             }
 
-            let mut pass = encoder.begin_pass("lbvh-find-pairs", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[RBD] lbvh-find-pairs", timestamps.as_deref_mut());
             self.lbvh
                 .find_pairs(
                     &mut pass,
@@ -1486,7 +1486,7 @@ impl RbdPipeline {
         // own GPU work overlaps with Phase 2b's CPU encoding.
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("narrow-phase", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[RBD] narrow-phase", timestamps.as_deref_mut());
 
             self.narrow_phase
                 .dispatch(
@@ -1517,7 +1517,7 @@ impl RbdPipeline {
         // upcoming Phase 3 solver substep loop.
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("solver-prep", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[RBD] solver-prep", timestamps.as_deref_mut());
 
             // Solver preparation - create args here to avoid borrow conflicts
             let prepare_args = SolverArgs {
@@ -1648,7 +1648,7 @@ impl RbdPipeline {
 
         {
             let mut encoder = backend.begin_encoding();
-            let mut pass = encoder.begin_pass("solver", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[RBD] solver", timestamps.as_deref_mut());
             #[cfg(feature = "dim3")]
             let mb = if state.multibodies.is_empty() {
                 None

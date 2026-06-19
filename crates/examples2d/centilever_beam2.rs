@@ -1,24 +1,12 @@
+use khal::backend::GpuTimestamps;
 use nexus_testbed2d::NexusViewer;
-use nexus_testbed2d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
-use nexus_testbed2d::{nexus, rapier};
+use nexus2d::mpm::solver::{Particle, ParticleModel, SimulationParams};
+use nexus2d::prelude::{NexusState, RbdCoupling};
 
-use khal::backend::GpuBackend;
-use nexus::mpm::pipeline::MpmState;
-use nexus::mpm::solver::{
-    BoundaryCondition, BoundaryConditionExt, Particle, ParticleModel, SimulationParams,
-};
-use rapier::prelude::{ColliderBuilder, RigidBodyBuilder};
+use rapier2d::prelude::{ColliderBuilder, RigidBodyBuilder};
 
-pub async fn run(viewer: &mut NexusViewer) {
-    let mut scene = viewer.set_mpm(build).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
-fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
-    let mut rapier_data = RapierData::default();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
 
     let width = 10.0;
     let height = 2.0;
@@ -43,42 +31,34 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
         }
     }
 
-    if !app_state.restarting {
-        app_state.min_num_substeps = 150;
-        app_state.max_num_substeps = 150;
-        app_state.gravity_factor = 1.0;
-    };
-
     let params = SimulationParams {
-        gravity: glamx::vec2(0.0, -9.81) * app_state.gravity_factor,
+        gravity: glamx::vec2(0.0, -9.81),
         padding: 0.0,
         dt: 1.0 / 60.0,
     };
+    state.set_mpm_params(viewer.backend(), params, cell_width)?;
+    state.set_mpm_substeps(150);
+    state.add_particles(viewer.backend(), particles)?;
 
-    let rb = RigidBodyBuilder::fixed()
+    // Fixed anchor the beam is cantilevered from (boundary coupled to the MPM
+    // continuum).
+    let body = RigidBodyBuilder::fixed()
         .translation(glamx::vec2(0.0, height / 2.0))
         .build();
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(fixed_part, height);
-    let ground = rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
+    let collider = ColliderBuilder::cuboid(fixed_part, height).build();
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider, RbdCoupling::MPM_ONE_WAY_COUPLING);
+    viewer.insert_shape(handle, &shape);
 
-    let data = MpmState::new(
-        backend,
-        params,
-        &particles,
-        &rapier_data.bodies,
-        &rapier_data.colliders,
-        &[(ground, BoundaryCondition::stick())],
-        cell_width,
-        30_000,
-    )
-    .unwrap();
-    MpmPhysicsContext {
-        data,
-        rapier_data,
-        callbacks: vec![],
-        hooks_state: None,
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
     }
+
+    Ok(state)
 }

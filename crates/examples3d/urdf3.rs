@@ -103,7 +103,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
         viewer.insert_visual_shape(0, *body, shape, *local_pose);
     }
 
-    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
     state.finalize(viewer.backend()).await?;
 
     let mut rng = rand::rng();

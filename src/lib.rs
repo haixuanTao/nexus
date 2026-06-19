@@ -1,4 +1,3 @@
-pub mod pipeline;
 pub mod state;
 
 #[cfg(all(feature = "dim2", feature = "rbd"))]
@@ -19,6 +18,5 @@ pub use nexus_fem3d as fem;
 pub use rbd::{rapier, parry};
 
 pub mod prelude {
-    pub use crate::pipeline::*;
     pub use crate::state::*;
 }

@@ -1,5 +1,3 @@
-use super::SimulationState;
-use super::backend::PhysicsBackend;
 use glamx::Vec3;
 use nexus::rbd::math::Pose;
 
@@ -440,11 +438,6 @@ fn pose_to_render_data(pose: &Pose, scale: &[f32; 3]) -> (Vec3, Mat3) {
 
 
 impl RenderContext {
-    /// Update rendering instances with current physics poses
-    pub fn update_instances(&mut self, state: &NexusState, physics_backend: &PhysicsBackend) {
-        self.update_instances_from_poses(state, physics_backend.poses());
-    }
-
     /// Update rendering instances from a slice of collider world poses, indexed by
     /// the collider slot stored in each [`InstancedNodeEntry::pose_index`].
     ///

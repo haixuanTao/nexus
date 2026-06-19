@@ -61,7 +61,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
     }
 
     // Optional, useful so we can render even before starting the simulation.
-    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
     state.finalize(viewer.backend()).await?;
 
     while viewer.render_frame().await {

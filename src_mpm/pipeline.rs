@@ -125,6 +125,83 @@ impl MpmState {
             coupling: Vec::new(),
         })
     }
+
+    /// Updates the global simulation parameters (gravity, timestep) and uploads
+    /// them to the GPU. Used by the lazy `NexusState` path to apply the params
+    /// requested before any particle was added.
+    pub fn set_simulation_params(
+        &mut self,
+        backend: &GpuBackend,
+        params: SimulationParams,
+    ) -> Result<(), GpuBackendError> {
+        self.gravity = params.gravity;
+        self.base_dt = params.dt;
+        self.sim_params = GpuSimulationParams::new(backend, params)?;
+        Ok(())
+    }
+
+    /// Uploads the per-substep parameters: the visible timestep `base_dt` divided
+    /// by `num_substeps`, keeping the current gravity. Cheap (one buffer write),
+    /// called each frame by the `NexusState` substep loop.
+    pub fn write_substep_params(
+        &mut self,
+        backend: &GpuBackend,
+        num_substeps: u32,
+    ) -> Result<(), GpuBackendError> {
+        let params = SimulationParams {
+            gravity: self.gravity,
+            dt: self.base_dt / num_substeps.max(1) as f32,
+            #[cfg(feature = "dim2")]
+            padding: 0.0,
+        };
+        backend.write_buffer(self.sim_params.params.buffer_mut(), 0, &[params])?;
+        Ok(())
+    }
+
+    /// Reallocates the background grid with a new cell width (and capacity). Must
+    /// be called before particles are added, since it discards grid state.
+    pub fn set_cell_width(
+        &mut self,
+        backend: &GpuBackend,
+        cell_width: f32,
+        grid_capacity: u32,
+    ) -> Result<(), GpuBackendError> {
+        self.grid = GpuGrid::with_capacity(backend, grid_capacity, cell_width)?;
+        self.prefix_sum = PrefixSumWorkspace::with_capacity(backend, grid_capacity);
+        Ok(())
+    }
+
+    /// (Re)builds the rigid-body coupling: uploads the coupled bodies, samples
+    /// rigid particles from their collider surfaces, and stores the per-collider
+    /// boundary materials. Used by the `NexusState` path, where coupled boundary
+    /// colliders are inserted as rigid bodies tagged `RbdCoupling::MPM_*`.
+    ///
+    /// Leaves the MPM particles / grid / sim-params untouched.
+    pub fn set_coupling(
+        &mut self,
+        backend: &GpuBackend,
+        bodies: &rapier::dynamics::RigidBodySet,
+        colliders: &rapier::geometry::ColliderSet,
+        coupling: Vec<RapierBodyCouplingEntry>,
+        materials: &[BoundaryCondition],
+        cell_width: f32,
+    ) -> Result<(), GpuBackendError> {
+        assert_eq!(coupling.len(), materials.len());
+        let gpu_bodies = GpuBodySet::from_rapier(backend, bodies, colliders, &coupling);
+        let rigid_particles =
+            GpuRigidParticles::from_rapier(backend, colliders, &gpu_bodies, &coupling, cell_width)?;
+        self.body_materials = GpuMaterials::new(backend, materials)?;
+        self.poses_staging = Tensor::vector_uninit(
+            backend,
+            gpu_bodies.len(),
+            BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        )?;
+        self.use_cpic = !coupling.is_empty();
+        self.bodies = gpu_bodies;
+        self.rigid_particles = rigid_particles;
+        self.coupling = coupling;
+        Ok(())
+    }
 }
 
 impl MpmState {
@@ -269,7 +346,7 @@ impl MpmPipeline {
         let mut encoder = backend.begin_encoding();
 
         {
-            let mut pass = encoder.begin_pass("Rigid update", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[MPM] Rigid update", timestamps.as_deref_mut());
             self.integrate_bodies.launch_update_world_mass_properties(
                 &mut pass,
                 &mut data.impulses,
@@ -283,7 +360,7 @@ impl MpmPipeline {
         }
 
         {
-            let mut pass = encoder.begin_pass("Grid sort", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[MPM] Grid sort", timestamps.as_deref_mut());
             data.grid.swap_buffers();
             self.grid.launch_sort(
                 backend,
@@ -310,13 +387,13 @@ impl MpmPipeline {
 
         if data.use_cpic {
             {
-                let mut pass = encoder.begin_pass("CDF grid update", timestamps.as_deref_mut());
+                let mut pass = encoder.begin_pass("[MPM] CDF grid update", timestamps.as_deref_mut());
                 self.grid_update_cdf
                     .launch(&mut pass, &mut data.grid, &data.bodies)?;
             }
 
             {
-                let mut pass = encoder.begin_pass("CDF P2G", timestamps.as_deref_mut());
+                let mut pass = encoder.begin_pass("[MPM] CDF P2G", timestamps.as_deref_mut());
                 self.p2g_cdf.launch(
                     &mut pass,
                     &mut data.grid,
@@ -326,7 +403,7 @@ impl MpmPipeline {
             }
 
             {
-                let mut pass = encoder.begin_pass("CDF G2P", timestamps.as_deref_mut());
+                let mut pass = encoder.begin_pass("[MPM] CDF G2P", timestamps.as_deref_mut());
                 self.g2p_cdf.launch(
                     &mut pass,
                     &data.sim_params,
@@ -337,7 +414,7 @@ impl MpmPipeline {
         }
 
         {
-            let mut pass = encoder.begin_pass("P2G", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[MPM] P2G", timestamps.as_deref_mut());
             self.p2g.launch(
                 &mut pass,
                 data.use_cpic,
@@ -350,7 +427,7 @@ impl MpmPipeline {
         }
 
         {
-            let mut pass = encoder.begin_pass("Grid update", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[MPM] Grid update", timestamps.as_deref_mut());
             self.grid_update.launch(
                 &mut pass,
                 data.use_cpic,
@@ -362,7 +439,7 @@ impl MpmPipeline {
         }
 
         {
-            let mut pass = encoder.begin_pass("G2P", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[MPM] G2P", timestamps.as_deref_mut());
             self.g2p.launch(
                 &mut pass,
                 data.use_cpic,
@@ -375,7 +452,7 @@ impl MpmPipeline {
         }
 
         {
-            let mut pass = encoder.begin_pass("Particle update", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[MPM] Particle update", timestamps.as_deref_mut());
             self.particles_update.launch(
                 &mut pass,
                 &data.sim_params,
@@ -385,7 +462,7 @@ impl MpmPipeline {
         }
 
         {
-            let mut pass = encoder.begin_pass("Integrate bodies", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[MPM] Integrate bodies", timestamps.as_deref_mut());
             self.integrate_bodies.launch(
                 &mut pass,
                 &data.grid,
@@ -393,6 +470,10 @@ impl MpmPipeline {
                 &mut data.impulses,
                 &mut data.bodies,
             )?;
+        }
+
+        if let Some(timestamps) = timestamps {
+            timestamps.resolve(&mut encoder);
         }
 
         backend.submit(encoder)

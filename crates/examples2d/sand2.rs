@@ -1,27 +1,31 @@
+use khal::backend::GpuTimestamps;
 use nexus_testbed2d::NexusViewer;
-use nexus_testbed2d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
-use nexus_testbed2d::{nexus, rapier};
+use nexus2d::mpm::solver::{Particle, ParticleModel, SimulationParams};
+use nexus2d::prelude::{NexusState, RbdCoupling};
 
 use glamx::Vec2;
-use khal::backend::GpuBackend;
-use nexus::mpm::pipeline::MpmState;
-use nexus::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use rapier::prelude::{ColliderBuilder, RigidBodyBuilder};
+use rapier2d::prelude::{Collider, ColliderBuilder, RigidBody, RigidBodyBuilder};
 
-pub async fn run(viewer: &mut NexusViewer) {
-    let mut scene = viewer.set_mpm(build).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
+/// Inserts a boundary collider coupled (one-way) to the MPM continuum and
+/// registers it for rendering.
+fn insert_boundary(
+    state: &mut NexusState,
+    viewer: &mut NexusViewer,
+    body: RigidBody,
+    collider: Collider,
+) {
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider, RbdCoupling::MPM_ONE_WAY_COUPLING);
+    viewer.insert_shape(handle, &shape);
 }
 
-fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
-    let mut rapier_data = RapierData::default();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
 
     let offset_y = 46.0;
     // let cell_width = 0.1;
     let cell_width = 0.2;
+
     let mut particles = vec![];
     for i in 0..700 {
         for j in 0..700 {
@@ -37,111 +41,103 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
         }
     }
 
-    if !app_state.restarting {
-        app_state.min_num_substeps = 10;
-        app_state.max_num_substeps = 10;
-        app_state.gravity_factor = 1.0;
-    };
-
     let params = SimulationParams {
-        gravity: glamx::vec2(0.0, -9.81) * app_state.gravity_factor,
+        gravity: glamx::vec2(0.0, -9.81),
         padding: 0.0,
         dt: 1.0 / 60.0,
     };
+    state.set_mpm_params(viewer.backend(), params, cell_width)?;
+    state.set_mpm_substeps(10);
+    state.add_particles(viewer.backend(), particles)?;
 
     const ANGVEL: f32 = 2.0;
 
     /*
      * Static platforms.
      */
-    let rb = RigidBodyBuilder::fixed().translation(glamx::vec2(35.0, -1.0));
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(42.0, 1.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
-
-    let rb = RigidBodyBuilder::fixed()
-        .translation(glamx::vec2(-25.0, 45.0))
-        .rotation(0.5);
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(1.0, 52.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
-
-    let rb = RigidBodyBuilder::fixed()
-        .translation(glamx::vec2(95.0, 45.0))
-        .rotation(-0.5);
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(1.0, 52.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::fixed().translation(glamx::vec2(35.0, -1.0)).build(),
+        ColliderBuilder::cuboid(42.0, 1.0).build(),
+    );
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::fixed()
+            .translation(glamx::vec2(-25.0, 45.0))
+            .rotation(0.5)
+            .build(),
+        ColliderBuilder::cuboid(1.0, 52.0).build(),
+    );
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::fixed()
+            .translation(glamx::vec2(95.0, 45.0))
+            .rotation(-0.5)
+            .build(),
+        ColliderBuilder::cuboid(1.0, 52.0).build(),
+    );
 
     /*
      * Rotating platforms.
      */
-    let rb = RigidBodyBuilder::kinematic_velocity_based()
-        .translation(glamx::vec2(5.0, 35.0))
-        .angvel(ANGVEL);
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(1.0, 10.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::kinematic_velocity_based()
+            .translation(glamx::vec2(5.0, 35.0))
+            .angvel(ANGVEL)
+            .build(),
+        ColliderBuilder::cuboid(1.0, 10.0).build(),
+    );
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::kinematic_velocity_based()
+            .translation(glamx::vec2(35.0, 35.0))
+            .angvel(-ANGVEL)
+            .build(),
+        ColliderBuilder::cuboid(10.0, 1.0).build(),
+    );
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::kinematic_velocity_based()
+            .translation(glamx::vec2(65.0, 35.0))
+            .angvel(ANGVEL)
+            .build(),
+        ColliderBuilder::cuboid(1.0, 10.0).build(),
+    );
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::kinematic_velocity_based()
+            .translation(glamx::vec2(20.0, 20.0))
+            .angvel(-ANGVEL)
+            .build(),
+        ColliderBuilder::ball(5.0).build(),
+    );
+    insert_boundary(
+        &mut state,
+        viewer,
+        RigidBodyBuilder::kinematic_velocity_based()
+            .translation(glamx::vec2(50.0, 20.0))
+            .angvel(-ANGVEL)
+            .build(),
+        ColliderBuilder::capsule_y(5.0, 3.0).build(),
+    );
 
-    let rb = RigidBodyBuilder::kinematic_velocity_based()
-        .translation(glamx::vec2(35.0, 35.0))
-        .angvel(-ANGVEL);
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(10.0, 1.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
+    state.finalize(viewer.backend()).await?;
 
-    let rb = RigidBodyBuilder::kinematic_velocity_based()
-        .translation(glamx::vec2(65.0, 35.0))
-        .angvel(ANGVEL);
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::cuboid(1.0, 10.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
-
-    let rb = RigidBodyBuilder::kinematic_velocity_based()
-        .translation(glamx::vec2(20.0, 20.0))
-        .angvel(-ANGVEL);
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::ball(5.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
-
-    let rb = RigidBodyBuilder::kinematic_velocity_based()
-        .translation(glamx::vec2(50.0, 20.0))
-        .angvel(-ANGVEL);
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::capsule_y(5.0, 3.0);
-    rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
-
-    let data = MpmState::new(
-        backend,
-        params,
-        &particles,
-        &rapier_data.bodies,
-        &rapier_data.colliders,
-        &[],
-        cell_width,
-        30_000,
-    )
-    .unwrap();
-    MpmPhysicsContext {
-        data,
-        rapier_data,
-        callbacks: vec![],
-        hooks_state: None,
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
     }
+
+    Ok(state)
 }

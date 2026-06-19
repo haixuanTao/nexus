@@ -75,7 +75,7 @@ impl FemPipeline {
 
         // 1. Compute elastic forces (per-element → scatter to vertices)
         {
-            let mut pass = encoder.begin_pass("FEM: elastic forces", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] elastic forces", timestamps.as_deref_mut());
             self.explicit.compute_elastic_forces.call(
                 &mut pass,
                 ne,
@@ -88,7 +88,7 @@ impl FemPipeline {
 
         // 2. Apply accumulated dv, gravity, damping (per-vertex)
         {
-            let mut pass = encoder.begin_pass("FEM: dv+gravity+damping", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] dv+gravity+damping", timestamps.as_deref_mut());
             self.explicit.apply_forces_gravity_damping.call(
                 &mut pass,
                 nv,
@@ -100,7 +100,7 @@ impl FemPipeline {
 
         // 3. Apply soft constraints (per-vertex)
         {
-            let mut pass = encoder.begin_pass("FEM: soft constraints", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] soft constraints", timestamps.as_deref_mut());
             self.explicit.apply_soft_constraints.call(
                 &mut pass,
                 nv,
@@ -113,7 +113,7 @@ impl FemPipeline {
 
         // 4. Integrate positions: x += dt * v (per-vertex)
         {
-            let mut pass = encoder.begin_pass("FEM: integrate", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] integrate", timestamps.as_deref_mut());
             self.explicit.integrate_positions.call(
                 &mut pass,
                 nv,
@@ -124,7 +124,7 @@ impl FemPipeline {
 
         // 5. Apply hard constraints (per-vertex)
         {
-            let mut pass = encoder.begin_pass("FEM: hard constraints", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] hard constraints", timestamps.as_deref_mut());
             self.explicit.apply_hard_constraints.call(
                 &mut pass,
                 nv,
@@ -136,13 +136,17 @@ impl FemPipeline {
 
         // 6. Boundary conditions — floor collision (per-vertex)
         {
-            let mut pass = encoder.begin_pass("FEM: boundary", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] boundary", timestamps.as_deref_mut());
             self.explicit.boundary_conditions.call(
                 &mut pass,
                 nv,
                 &data.sim_params,
                 &mut data.vertex_state,
             )?;
+        }
+
+        if let Some(timestamps) = timestamps.as_deref_mut() {
+            timestamps.resolve(&mut encoder);
         }
 
         gpu.submit(encoder)?;
@@ -162,7 +166,7 @@ impl FemPipeline {
         // ── Init: save x_prev, compute inertia target y ──
         let mut encoder = gpu.begin_encoding();
         {
-            let mut pass = encoder.begin_pass("FEM: init implicit", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] init implicit", timestamps.as_deref_mut());
             self.implicit.init_implicit_step.call(
                 &mut pass,
                 nv,
@@ -181,7 +185,7 @@ impl FemPipeline {
             // Precompute material (SVD for corotated)
             {
                 let mut pass =
-                    encoder.begin_pass("FEM: precompute material", timestamps.as_deref_mut());
+                    encoder.begin_pass("[FEM] precompute material", timestamps.as_deref_mut());
                 self.implicit.precompute_material.call(
                     &mut pass,
                     ne,
@@ -194,7 +198,7 @@ impl FemPipeline {
 
             // Compute energy, gradient, Hessian (per-element)
             {
-                let mut pass = encoder.begin_pass("FEM: EGH", timestamps.as_deref_mut());
+                let mut pass = encoder.begin_pass("[FEM] EGH", timestamps.as_deref_mut());
                 self.implicit.compute_egh.call(
                     &mut pass,
                     ne,
@@ -210,7 +214,7 @@ impl FemPipeline {
             // Scatter elastic force + diagonal Hessian (per-element → vertices)
             {
                 let mut pass =
-                    encoder.begin_pass("FEM: scatter force+diag", timestamps.as_deref_mut());
+                    encoder.begin_pass("[FEM] scatter force+diag", timestamps.as_deref_mut());
                 self.implicit.scatter_elastic_force_diag.call(
                     &mut pass,
                     ne,
@@ -226,7 +230,7 @@ impl FemPipeline {
             // Assemble total force, compute preconditioner, init PCG
             {
                 let mut pass =
-                    encoder.begin_pass("FEM: assemble+PCG init", timestamps.as_deref_mut());
+                    encoder.begin_pass("[FEM] assemble+PCG init", timestamps.as_deref_mut());
                 self.implicit.assemble_and_pcg_init.call(
                     &mut pass,
                     nv,
@@ -244,7 +248,7 @@ impl FemPipeline {
             // Finalize initial rTz
             {
                 let mut pass =
-                    encoder.begin_pass("FEM: PCG reduce init", timestamps.as_deref_mut());
+                    encoder.begin_pass("[FEM] PCG reduce init", timestamps.as_deref_mut());
                 self.implicit.pcg_reduce_init.call(
                     &mut pass,
                     1u32,
@@ -259,7 +263,7 @@ impl FemPipeline {
                 let mut encoder = gpu.begin_encoding();
                 // Compute A*p via element scatter
                 {
-                    let mut pass = encoder.begin_pass("FEM: PCG Ap", timestamps.as_deref_mut());
+                    let mut pass = encoder.begin_pass("[FEM] PCG Ap", timestamps.as_deref_mut());
                     self.implicit.pcg_scatter_ap.call(
                         &mut pass,
                         ne,
@@ -274,7 +278,7 @@ impl FemPipeline {
                 // Finalize Ap + accumulate p·Ap
                 {
                     let mut pass =
-                        encoder.begin_pass("FEM: PCG finalize Ap", timestamps.as_deref_mut());
+                        encoder.begin_pass("[FEM] PCG finalize Ap", timestamps.as_deref_mut());
                     self.implicit.pcg_finalize_ap_dot.call(
                         &mut pass,
                         nv,
@@ -289,7 +293,7 @@ impl FemPipeline {
 
                 // α = rTz / pTAp
                 {
-                    let mut pass = encoder.begin_pass("FEM: PCG alpha", timestamps.as_deref_mut());
+                    let mut pass = encoder.begin_pass("[FEM] PCG alpha", timestamps.as_deref_mut());
                     self.implicit.pcg_compute_alpha.call(
                         &mut pass,
                         1u32,
@@ -301,7 +305,7 @@ impl FemPipeline {
                 // x += α*p, r -= α*Ap, z = M⁻¹r
                 {
                     let mut pass =
-                        encoder.begin_pass("FEM: PCG update xrz", timestamps.as_deref_mut());
+                        encoder.begin_pass("[FEM] PCG update xrz", timestamps.as_deref_mut());
                     self.implicit.pcg_update_x_r_z.call(
                         &mut pass,
                         nv,
@@ -314,7 +318,7 @@ impl FemPipeline {
 
                 // β = rTz_new / rTz
                 {
-                    let mut pass = encoder.begin_pass("FEM: PCG beta", timestamps.as_deref_mut());
+                    let mut pass = encoder.begin_pass("[FEM] PCG beta", timestamps.as_deref_mut());
                     self.implicit.pcg_compute_beta.call(
                         &mut pass,
                         1u32,
@@ -326,7 +330,7 @@ impl FemPipeline {
                 // p = z + β*p
                 {
                     let mut pass =
-                        encoder.begin_pass("FEM: PCG update p", timestamps.as_deref_mut());
+                        encoder.begin_pass("[FEM] PCG update p", timestamps.as_deref_mut());
                     self.implicit.pcg_update_p.call(
                         &mut pass,
                         nv,
@@ -343,7 +347,7 @@ impl FemPipeline {
             let mut encoder = gpu.begin_encoding();
             // Init: save position, compute directional derivative m, vertex energy
             {
-                let mut pass = encoder.begin_pass("FEM: LS init", timestamps.as_deref_mut());
+                let mut pass = encoder.begin_pass("[FEM] LS init", timestamps.as_deref_mut());
                 self.implicit.ls_init.call(
                     &mut pass,
                     nv,
@@ -360,7 +364,7 @@ impl FemPipeline {
             // Element energy at initial position
             {
                 let mut pass =
-                    encoder.begin_pass("FEM: LS energy elem 0", timestamps.as_deref_mut());
+                    encoder.begin_pass("[FEM] LS energy elem 0", timestamps.as_deref_mut());
                 self.implicit.ls_energy_element.call(
                     &mut pass,
                     ne,
@@ -375,7 +379,7 @@ impl FemPipeline {
             // Finalize: set prev_energy, step_size = 1
             {
                 let mut pass =
-                    encoder.begin_pass("FEM: LS finalize init", timestamps.as_deref_mut());
+                    encoder.begin_pass("[FEM] LS finalize init", timestamps.as_deref_mut());
                 self.implicit.ls_finalize_init.call(
                     &mut pass,
                     1u32,
@@ -391,7 +395,7 @@ impl FemPipeline {
                 // Trial position: x = prev + step * dx
                 {
                     let mut pass =
-                        encoder.begin_pass("FEM: LS update pos", timestamps.as_deref_mut());
+                        encoder.begin_pass("[FEM] LS update pos", timestamps.as_deref_mut());
                     self.implicit.ls_update_pos.call(
                         &mut pass,
                         nv,
@@ -407,7 +411,7 @@ impl FemPipeline {
                 // Vertex energy at trial position
                 {
                     let mut pass =
-                        encoder.begin_pass("FEM: LS energy vtx", timestamps.as_deref_mut());
+                        encoder.begin_pass("[FEM] LS energy vtx", timestamps.as_deref_mut());
                     self.implicit.ls_energy_vertex.call(
                         &mut pass,
                         nv,
@@ -424,7 +428,7 @@ impl FemPipeline {
                 // Element energy at trial position
                 {
                     let mut pass =
-                        encoder.begin_pass("FEM: LS energy elem", timestamps.as_deref_mut());
+                        encoder.begin_pass("[FEM] LS energy elem", timestamps.as_deref_mut());
                     self.implicit.ls_energy_element.call(
                         &mut pass,
                         ne,
@@ -438,7 +442,7 @@ impl FemPipeline {
 
                 // Check Armijo condition, reduce step if needed
                 {
-                    let mut pass = encoder.begin_pass("FEM: LS check", timestamps.as_deref_mut());
+                    let mut pass = encoder.begin_pass("[FEM] LS check", timestamps.as_deref_mut());
                     self.implicit.ls_check_armijo.call(
                         &mut pass,
                         1u32,
@@ -455,7 +459,7 @@ impl FemPipeline {
         let mut encoder = gpu.begin_encoding();
         // Compute velocity: v = (x - x_prev) / dt
         {
-            let mut pass = encoder.begin_pass("FEM: compute velocity", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] compute velocity", timestamps.as_deref_mut());
             self.implicit.compute_velocity.call(
                 &mut pass,
                 nv,
@@ -467,7 +471,7 @@ impl FemPipeline {
 
         // Boundary conditions
         {
-            let mut pass = encoder.begin_pass("FEM: boundary", timestamps.as_deref_mut());
+            let mut pass = encoder.begin_pass("[FEM] boundary", timestamps.as_deref_mut());
             self.implicit.boundary_conditions.call(
                 &mut pass,
                 nv,
@@ -497,6 +501,9 @@ pub struct FemState {
     pub num_vertices: u32,
     pub num_elements: u32,
     pub entities: Vec<EntityHandle>,
+    /// CPU mirror of `sim_params`, so runtime tweaks (gravity, damping) can be
+    /// applied with a single buffer write and read back without a GPU round-trip.
+    pub sim_params_cpu: FemSimParams,
 
     // Core GPU buffers
     pub sim_params: Tensor<FemSimParams>,
@@ -726,6 +733,7 @@ impl FemState {
             num_vertices,
             num_elements,
             entities,
+            sim_params_cpu: params,
             sim_params,
             vertex_state,
             vertex_info,
@@ -744,6 +752,36 @@ impl FemState {
             ls_scalars,
             vertex_staging,
         })
+    }
+
+    /// Sets the gravity applied to the soft body and uploads the change.
+    pub fn set_gravity(
+        &mut self,
+        backend: &GpuBackend,
+        gravity: Vector,
+    ) -> Result<(), GpuBackendError> {
+        self.sim_params_cpu.gravity = pad_vec(gravity);
+        backend.write_buffer(self.sim_params.buffer_mut(), 0, &[self.sim_params_cpu])
+    }
+
+    /// Current gravity vector.
+    pub fn gravity(&self) -> Vector {
+        unpad_vec(self.sim_params_cpu.gravity)
+    }
+
+    /// Sets the (mass-proportional) damping coefficient and uploads the change.
+    pub fn set_damping(
+        &mut self,
+        backend: &GpuBackend,
+        damping: f32,
+    ) -> Result<(), GpuBackendError> {
+        self.sim_params_cpu.damping = damping;
+        backend.write_buffer(self.sim_params.buffer_mut(), 0, &[self.sim_params_cpu])
+    }
+
+    /// Current damping coefficient.
+    pub fn damping(&self) -> f32 {
+        self.sim_params_cpu.damping
     }
 
     /// Copy vertex state to staging buffer for CPU readback.

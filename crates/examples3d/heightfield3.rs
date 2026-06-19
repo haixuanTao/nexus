@@ -1,29 +1,19 @@
+use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
-use nexus_testbed3d::mpm::{MpmAppState, MpmPhysicsContext, RapierData};
-use nexus_testbed3d::nexus;
+use nexus3d::mpm::solver::{Particle, ParticleModel, SimulationParams};
+use nexus3d::prelude::{NexusState, RbdCoupling};
 
 use glamx::vec3;
-use khal::backend::GpuBackend;
-use nexus::mpm::{
-    pipeline::MpmState,
-    solver::{BoundaryCondition, BoundaryConditionExt, Particle, ParticleModel, SimulationParams},
-};
 use rapier3d::parry::utils::Array2;
 use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
-pub async fn run(viewer: &mut NexusViewer) {
-    let mut scene = viewer.set_mpm(build).await;
-    while viewer.render(&mut scene).await {
-        scene.simulate(viewer).await;
-    }
-    scene.detach(viewer);
-}
-
-fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext {
-    let mut rapier_data = RapierData::default();
+pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
+    let coupling = RbdCoupling::MPM_ONE_WAY_COUPLING;
 
     let nxz = 45;
     let cell_width = 1.0;
+
     let mut particles = vec![];
     for i in 0..nxz {
         for j in 0..100 {
@@ -42,44 +32,36 @@ fn build(backend: &GpuBackend, app_state: &mut MpmAppState) -> MpmPhysicsContext
         }
     }
 
-    if !app_state.restarting {
-        app_state.min_num_substeps = 20;
-        app_state.max_num_substeps = 20;
-        app_state.gravity_factor = 1.0;
-    };
-
     let params = SimulationParams {
-        gravity: vec3(0.0, -9.81, 0.0) * app_state.gravity_factor,
+        gravity: vec3(0.0, -9.81, 0.0),
         dt: 1.0 / 60.0,
     };
+    state.set_mpm_params(viewer.backend(), params, cell_width)?;
+    state.set_mpm_substeps(20);
+    state.add_particles(viewer.backend(), particles)?;
 
-    // Sinusoidal heightfield terrain
+    // Sinusoidal heightfield terrain (rendered as the converted trimesh).
     let heights = Array2::from_fn(200, 200, |i, j| {
         (i as f32 / 10.0).sin() * (j as f32 / 10.0).cos()
     });
     let heightfield = HeightField::new(heights, vec3(100.0, 5.0, 100.0));
     let (vtx, idx) = heightfield.to_trimesh();
-    let rb = RigidBodyBuilder::fixed();
-    let rb_handle = rapier_data.bodies.insert(rb);
-    let co = ColliderBuilder::trimesh_with_flags(vtx, idx, TriMeshFlags::ORIENTED).unwrap();
-    let floor = rapier_data
-        .colliders
-        .insert_with_parent(co, rb_handle, &mut rapier_data.bodies);
+    let body = RigidBodyBuilder::fixed().build();
+    let collider =
+        ColliderBuilder::trimesh_with_flags(vtx, idx, TriMeshFlags::ORIENTED).unwrap().build();
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider, coupling);
+    viewer.insert_shape(handle, &shape);
 
-    let data = MpmState::new(
-        backend,
-        params,
-        &particles,
-        &rapier_data.bodies,
-        &rapier_data.colliders,
-        &[(floor, BoundaryCondition::stick())],
-        cell_width,
-        30_000,
-    )
-    .unwrap();
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
+    state.finalize(viewer.backend()).await?;
 
-    MpmPhysicsContext {
-        data,
-        rapier_data,
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+        }
+        viewer.sync(&mut state).await;
     }
+
+    Ok(state)
 }

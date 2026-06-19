@@ -138,7 +138,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
         block_height += numy as f32 * half_extents.y * 2.0 + half_extents.x * 2.0;
     }
 
-    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
     state.finalize(viewer.backend()).await?;
 
     while viewer.render_frame().await {

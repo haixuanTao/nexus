@@ -3,7 +3,7 @@ use crate::mpm_shaders::solver::particle::{
 };
 use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use khal::BufferUsages;
-use khal::backend::{Backend, GpuBackend, GpuBackendError};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError};
 use nexus_rbd::dynamics::GpuBodySet;
 use nexus_rbd::math::{Matrix, Vector, DIM};
 use std::ops::RangeBounds;
@@ -475,7 +475,10 @@ impl GpuParticles {
         } = self;
 
         let data = SoAParticles::new(particles);
-        let zeros = vec![0u32; particles.len()];
+        // `sorted_ids` is the spatial-sort scratch; it must stay sized
+        // `total_particles * 2^DIM` to match `from_particles` (one entry per
+        // particle per touched grid node). Undersizing it corrupts the sort.
+        let zeros = vec![0u32; particles.len() * 2usize.pow(DIM as u32)];
 
         positions.append(backend, &data.positions)?;
         kinematics.append(backend, &data.kinematics)?;
@@ -487,5 +490,88 @@ impl GpuParticles {
         *len += particles.len();
         backend.write_buffer(gpu_len.buffer_mut(), 0, &[*len as u32])?;
         Ok(())
+    }
+
+    /// Removes the given particle slots by *swap-removing* them: the live tail
+    /// particles are moved into the freed slots and the buffers are truncated.
+    /// This is `O(number of removed slots)` — no full-buffer shift — which makes
+    /// runtime removal cheap. The physical reordering is invisible to the solver
+    /// because particles are spatially re-sorted at the start of every step.
+    ///
+    /// Returns the relocations performed as `(from, to)` pairs (a tail particle
+    /// moved from slot `from` down to freed slot `to`) so callers can patch any
+    /// slot→handle maps. `from` is always a now-truncated tail slot and `to` a
+    /// freed slot below the new length.
+    pub fn swap_remove(
+        &mut self,
+        backend: &GpuBackend,
+        slots: &[u32],
+    ) -> Result<Vec<(u32, u32)>, GpuBackendError> {
+        // Process descending so truncating the tail never disturbs a
+        // not-yet-processed (lower) slot.
+        let mut targets: Vec<u32> = slots.to_vec();
+        targets.sort_unstable_by(|a, b| b.cmp(a));
+        targets.dedup();
+
+        let mut remaps = Vec::new();
+        for slot in targets {
+            let slot = slot as usize;
+            if slot >= self.len {
+                continue;
+            }
+            let last = self.len - 1;
+            if slot != last {
+                // Relocate the live tail particle into the freed slot. A staging
+                // buffer avoids same-buffer overlapping copies.
+                macro_rules! relocate {
+                    ($t:expr) => {{
+                        let mut staging = backend.uninit_buffer(
+                            1,
+                            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+                        )?;
+                        let mut enc = backend.begin_encoding();
+                        enc.copy_buffer_to_buffer($t.buffer(), last, &mut staging, 0, 1)?;
+                        enc.copy_buffer_to_buffer(&staging, 0, $t.buffer_mut(), slot, 1)?;
+                        backend.submit(enc)?;
+                    }};
+                }
+                relocate!(self.positions);
+                relocate!(self.kinematics);
+                relocate!(self.def_grad);
+                relocate!(self.properties);
+                relocate!(self.models);
+                remaps.push((last as u32, slot as u32));
+            }
+
+            // Drop the (now-duplicated) tail element. Removing the last element
+            // shifts nothing, so this is O(1). `sorted_ids` is solver scratch
+            // (resized by the spatial sort) and is left untouched.
+            self.positions.shift_remove(backend, last..)?;
+            self.kinematics.shift_remove(backend, last..)?;
+            self.def_grad.shift_remove(backend, last..)?;
+            self.properties.shift_remove(backend, last..)?;
+            self.models.shift_remove(backend, last..)?;
+            self.len -= 1;
+        }
+
+        backend.write_buffer(self.gpu_len.buffer_mut(), 0, &[self.len as u32])?;
+        Ok(remaps)
+    }
+
+    /// Reads the current particle world positions back to the CPU. Used by the
+    /// viewer to render the particles as a point cloud.
+    pub async fn read_positions(
+        &self,
+        backend: &GpuBackend,
+    ) -> Result<Vec<Vector>, GpuBackendError> {
+        // The positions buffer is grown to a power-of-two *capacity* by `append`,
+        // and `slow_read_buffer` reads the whole buffer — so size the destination
+        // to the capacity, then keep only the `len` live particles.
+        let mut data = vec![Position::default(); self.positions.capacity() as usize];
+        backend
+            .slow_read_buffer(self.positions.buffer(), &mut data)
+            .await?;
+        data.truncate(self.len);
+        Ok(data.iter().map(|p| p.pt).collect())
     }
 }

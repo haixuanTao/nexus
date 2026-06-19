@@ -38,7 +38,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
             let collider = if status == RigidBodyType::Fixed {
                 ColliderBuilder::cuboid(rad, rad, rad).build()
             } else {
-                ColliderBuilder::ball(rad).build()
+                ColliderBuilder::ball(rad).density(10.0).build()
             };
             let shape = collider.shared_shape().clone();
             let child_handle = state.insert_rigid_body(rigid_body, collider, no_coupling);
@@ -88,7 +88,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
     }
 
     // Optional, useful so we can render even before starting the simulation.
-    let mut timestamps = GpuTimestamps::new(viewer.backend(), 1024);
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
     state.finalize(viewer.backend()).await?;
 
     while viewer.render_frame().await {
