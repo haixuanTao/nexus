@@ -142,7 +142,6 @@ impl Lbvh {
         poses: &Tensor<Pose>,
         vertex_buffers: &Tensor<PaddedVector>,
         shapes: &Tensor<Shape>,
-        num_shapes: &Tensor<u32>,
         batch_indices: &Tensor<crate::shaders::utils::BatchIndices>,
         mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Result<(), GpuBackendError> {
@@ -156,7 +155,6 @@ impl Lbvh {
             [1u32, num_batches, 1],
             poses,
             &mut state.domain_aabb,
-            num_shapes,
             batch_indices,
         )?;
         drop(pass);
@@ -168,7 +166,6 @@ impl Lbvh {
             poses,
             &state.domain_aabb,
             &mut state.unsorted_morton_keys,
-            num_shapes,
             batch_indices,
         )?;
         drop(pass);
@@ -194,7 +191,6 @@ impl Lbvh {
             [colliders_per_batch.saturating_sub(1), num_batches, 1],
             &state.sorted_morton_keys,
             &mut state.tree,
-            num_shapes,
             batch_indices,
         )?;
         drop(pass);
@@ -207,7 +203,6 @@ impl Lbvh {
             shapes,
             &state.sorted_colliders,
             &mut state.tree,
-            num_shapes,
             batch_indices,
             vertex_buffers,
         )?;
@@ -218,7 +213,6 @@ impl Lbvh {
             &mut pass,
             [1u32, num_batches, 1],
             &mut state.tree,
-            num_shapes,
             batch_indices,
         )?;
         drop(pass);
@@ -236,7 +230,6 @@ impl Lbvh {
         state: &mut LbvhState,
         colliders_len: u32,
         num_batches: u32,
-        num_shapes: &Tensor<u32>,
         batch_indices: &Tensor<crate::shaders::utils::BatchIndices>,
         collision_pairs: &mut Tensor<[u32; 2]>,
         collision_pairs_len: &mut Tensor<u32>,
@@ -256,7 +249,6 @@ impl Lbvh {
             &state.tree,
             collision_pairs,
             collision_pairs_len,
-            num_shapes,
             batch_indices,
             collision_groups,
         )?;

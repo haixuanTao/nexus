@@ -56,9 +56,8 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] lu_pivots: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] gravity: &Vec4,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] gravity: &Vec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
     // Mass-matrix tile in shared memory.
     #[spirv(workgroup)] mat: &mut [f32; (MAX_MB_DOFS * MAX_MB_DOFS) as usize],
     // RHS / solution vector.

@@ -76,12 +76,14 @@ fn convert_impulse_joint(
 
 /// A set of impulse joints simulated on the GPU.
 pub struct GpuImpulseJointSet {
+    /// Per-batch buffer stride (capacity) of the `joints` / `builders` /
+    /// `constraints` slabs.
     len: u32,
+    /// Number of *active* impulse joints per batch (the kernel loop bound).
+    /// Identical across batches by the equal-topology invariant.
+    num_active_joints: u32,
     num_colors: u32,
     max_color_group_len: u32,
-    num_joints: Tensor<u32>,
-    joints_batch_capacity: Tensor<u32>,
-    color_groups_batch_capacity: Tensor<u32>,
     curr_color: Tensor<u32>,
     color_groups: Tensor<u32>,
     joints: Tensor<ImpulseJoint>,
@@ -170,15 +172,20 @@ impl GpuImpulseJointSet {
 
         let mut global_num_colors = 0u32;
         let mut global_max_color_group_len = 0u32;
-        let mut all_num_joints = Vec::with_capacity(num_batches as usize);
 
         // Per-environment sorted joints and color groups.
         let mut per_env_sorted_joints: Vec<Vec<ImpulseJoint>> = Vec::new();
         let mut per_env_color_groups: Vec<Vec<u32>> = Vec::new();
+        // Per-environment structural signature (connectivity + locked/limit/
+        // motor/coupled axis masks, in joint order) and coloring, used to
+        // assert that every environment shares the same impulse-joint topology,
+        // DOFs and coloring — the precondition for the single-batch color-group
+        // buffer below.
+        let mut per_env_structure: Vec<Vec<[u32; 6]>> = Vec::new();
+        let mut per_env_colors: Vec<Vec<u32>> = Vec::new();
 
         for (env_idx, (joints, body_ids)) in environments.iter().enumerate() {
-            let len = filtered_lens[env_idx];
-            all_num_joints.push(len);
+            let _len = filtered_lens[env_idx];
 
             // Convert joints, dropping any with at least one multibody side.
             let mut unsorted_gpu_joints = vec![];
@@ -192,6 +199,22 @@ impl GpuImpulseJointSet {
                 }
                 unsorted_gpu_joints.push(convert_impulse_joint(joint, body_ids));
             }
+
+            per_env_structure.push(
+                unsorted_gpu_joints
+                    .iter()
+                    .map(|j| {
+                        [
+                            j.body_a,
+                            j.body_b,
+                            j.data.locked_axes,
+                            j.data.limit_axes,
+                            j.data.motor_axes,
+                            j.data.coupled_axes,
+                        ]
+                    })
+                    .collect(),
+            );
 
             // Build the body-id → graph-group lookup. Without a multibody group
             // table, every body is its own node. With one, bodies that share a
@@ -255,6 +278,34 @@ impl GpuImpulseJointSet {
 
             per_env_sorted_joints.push(sorted_gpu_joints);
             per_env_color_groups.push(color_groups);
+            per_env_colors.push(colors);
+        }
+
+        // Enforce identical impulse-joint structure across environments: same
+        // connectivity + DOFs (axis masks) and therefore the same graph
+        // coloring. This lets the color-group prefix sums be stored once
+        // (single batch) and read at offset 0 by every batch in the solver.
+        if let Some((first_struct, rest)) = per_env_structure.split_first() {
+            for (i, s) in rest.iter().enumerate() {
+                assert_eq!(
+                    s,
+                    first_struct,
+                    "batched rbd requires identical impulse-joint topology/DOFs in every \
+                     environment (env {} differs from env 0)",
+                    i + 1
+                );
+            }
+        }
+        if let Some((first_colors, rest)) = per_env_colors.split_first() {
+            for (i, c) in rest.iter().enumerate() {
+                assert_eq!(
+                    c,
+                    first_colors,
+                    "batched rbd requires identical impulse-joint coloring in every \
+                     environment (env {} differs from env 0)",
+                    i + 1
+                );
+            }
         }
 
         // Build flat joint buffer [num_batches * max_joints], padded with zeroed joints.
@@ -268,37 +319,18 @@ impl GpuImpulseJointSet {
             }
         }
 
-        // Build flat color_groups buffer [num_batches * global_num_colors].
-        // Environments with fewer colors get extra entries where end == prev_end (no-op).
-        let mut all_color_groups =
-            Vec::with_capacity(num_batches as usize * global_num_colors as usize);
-        for env_cg in &per_env_color_groups {
-            let last = env_cg.last().copied().unwrap_or(0);
-            all_color_groups.extend_from_slice(env_cg);
-            // Pad remaining colors with the last value (so start == end, no-op iterations).
-            for _ in env_cg.len()..global_num_colors as usize {
-                all_color_groups.push(last);
-            }
-        }
+        // Single-batch color_groups buffer [global_num_colors]: every
+        // environment has identical coloring (asserted above), so the prefix
+        // sums are stored once and read at offset 0 by all batches.
+        let all_color_groups = per_env_color_groups.first().cloned().unwrap_or_default();
 
         Self {
             len: max_joints,
+            // All environments have the same joint count by the equal-topology
+            // invariant, so the per-batch active count is any env's count.
+            num_active_joints: filtered_lens.first().copied().unwrap_or(0),
             num_colors: global_num_colors,
             max_color_group_len: global_max_color_group_len,
-            num_joints: Tensor::vector(backend, &all_num_joints, usage | BufferUsages::UNIFORM)
-                .unwrap(),
-            joints_batch_capacity: Tensor::scalar(
-                backend,
-                max_joints,
-                usage | BufferUsages::UNIFORM,
-            )
-            .unwrap(),
-            color_groups_batch_capacity: Tensor::scalar(
-                backend,
-                global_num_colors,
-                usage | BufferUsages::UNIFORM,
-            )
-            .unwrap(),
             curr_color: Tensor::scalar(backend, 0u32, usage | BufferUsages::UNIFORM).unwrap(),
             color_groups: Tensor::vector(backend, &all_color_groups, usage).unwrap(),
             joints: Tensor::vector(backend, &all_joints, usage).unwrap(),
@@ -321,6 +353,11 @@ impl GpuImpulseJointSet {
     /// `joints`, `builders`, `constraints` buffers.
     pub fn joints_per_batch(&self) -> u32 {
         self.len
+    }
+
+    /// Number of *active* impulse joints per batch (the kernel loop bound).
+    pub fn num_active_joints(&self) -> u32 {
+        self.num_active_joints
     }
 
     /// Number of color groups (also the per-batch stride of `color_groups`).
@@ -378,7 +415,6 @@ impl GpuJointSolver {
             &mut args.joints.builders,
             &mut args.joints.constraints,
             args.local_mprops,
-            &args.joints.num_joints,
             args.batch_indices,
         )?;
         Ok(())
@@ -402,7 +438,6 @@ impl GpuJointSolver {
             &mut args.joints.constraints,
             poses,
             args.mprops,
-            &args.joints.num_joints,
             args.sim_params,
             args.batch_indices,
         )?;
@@ -426,7 +461,6 @@ impl GpuJointSolver {
                 pass,
                 [args.joints.len, args.num_batches, 1],
                 &mut args.joints.constraints,
-                &args.joints.num_joints,
                 args.batch_indices,
             )?;
         }

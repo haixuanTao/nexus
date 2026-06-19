@@ -129,8 +129,7 @@ pub fn gpu_lbvh_compute_domain(
     #[spirv(global_invocation_id)] global_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] domain_aabb: &mut [Aabb],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
     #[spirv(workgroup)] workspace_mins: &mut [Vector; 128],
     #[spirv(workgroup)] workspace_maxs: &mut [Vector; 128],
 ) {
@@ -139,7 +138,7 @@ pub fn gpu_lbvh_compute_domain(
     *workspace_mins.at_mut(thread_id as usize) = Vector::splat(1.0e20);
     *workspace_maxs.at_mut(thread_id as usize) = Vector::splat(-1.0e20);
     let colliders_start = batch_ids.coll_start(batch_id) as u32;
-    let colliders_end = colliders_start + colliders_len.read(batch_id as usize);
+    let colliders_end = colliders_start + batch_ids.colliders_len;
 
     for i in StepRng::new(
         colliders_start + thread_id..colliders_end,
@@ -189,8 +188,7 @@ pub fn gpu_lbvh_compute_morton(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] domain_aabb: &[Aabb],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] morton_keys: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     // NOTE: for simplicity we compute the morton key of the collider position instead of
     //       the collider shape's AABB center. We might want to revisit that in the future
@@ -199,7 +197,7 @@ pub fn gpu_lbvh_compute_morton(
     let batch_id = invocation_id.y;
     let domain_aabb = domain_aabb.read(batch_id as usize);
     let colliders_start = batch_ids.coll_start(batch_id) as u32;
-    let colliders_end = colliders_start + colliders_len.read(batch_id as usize);
+    let colliders_end = colliders_start + batch_ids.colliders_len;
 
     for i in StepRng::new(
         colliders_start + invocation_id.x..colliders_end,
@@ -223,13 +221,12 @@ pub fn gpu_lbvh_build(
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] morton_keys: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] tree: &mut [LbvhNode],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let colliders_start = batch_ids.coll_start(batch_id) as u32;
-    let num_bodies = colliders_len.read(batch_id as usize);
+    let num_bodies = batch_ids.colliders_len;
     let num_internal_nodes = num_bodies - 1;
     let first_leaf_id = num_internal_nodes;
 
@@ -328,8 +325,7 @@ pub fn gpu_lbvh_refit_leaves(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] shapes: &[Shape],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sorted_colliders: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] tree: &mut [LbvhNode],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
@@ -338,7 +334,7 @@ pub fn gpu_lbvh_refit_leaves(
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let colliders_start = batch_ids.coll_start(batch_id) as u32;
-    let num_colliders = colliders_len.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
     let first_leaf_id = num_colliders - 1;
 
     let poses = batch_ids.coll_batch(batch_id, poses);
@@ -365,8 +361,7 @@ pub fn gpu_lbvh_refit_internal(
     #[spirv(local_invocation_id)] local_id: UVec3,
     #[spirv(workgroup_id)] workgroup_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] tree: &mut [LbvhNode],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 1)] batch_ids: &BatchIndices,
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
     //            workgroup.
@@ -374,7 +369,7 @@ pub fn gpu_lbvh_refit_internal(
     let num_threads = 256u32;
     let batch_id = workgroup_id.y;
     let colliders_start = batch_ids.coll_start(batch_id) as u32;
-    let num_bodies = colliders_len.read(batch_id as usize);
+    let num_bodies = batch_ids.colliders_len;
     let first_leaf_id = num_bodies - 1;
 
     let mut tree = SliceMut(tree, root_id(colliders_start) as usize);
@@ -456,8 +451,7 @@ pub fn gpu_lbvh_refit(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] shapes: &[Shape],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sorted_colliders: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] tree: &mut [LbvhNode],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
 ) {
     // TODO PERF: we could use shared memory atomics between threads belonging to the same
@@ -466,7 +460,7 @@ pub fn gpu_lbvh_refit(
     let batch_id = invocation_id.y;
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let colliders_start = batch_ids.coll_start(batch_id) as u32;
-    let num_bodies = colliders_len.read(batch_id as usize);
+    let num_bodies = batch_ids.colliders_len;
     let first_leaf_id = num_bodies - 1;
 
     let poses = batch_ids.coll_batch(batch_id, poses);
@@ -526,17 +520,16 @@ pub fn gpu_lbvh_find_collision_pairs(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] tree: &[LbvhNode],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] collision_pairs: &mut [[u32; 2]],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collision_pairs_len: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] colliders_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
     // Per-collider groups, used to authorize
     // (or skip) a collision pair before it ever reaches the narrow phase.
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
     collision_groups: &[InteractionGroups],
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let colliders_start = batch_ids.coll_start(batch_id) as u32;
-    let num_bodies = colliders_len.read(batch_id as usize);
+    let num_bodies = batch_ids.colliders_len;
     let first_leaf_id = num_bodies - 1;
 
     let mut collision_pairs = batch_ids.collision_pairs_batch_mut(batch_id, collision_pairs);

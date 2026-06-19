@@ -112,7 +112,6 @@ pub struct RbdState {
     vertex_buffers: Tensor<PaddedVector>,
     index_buffers: Tensor<u32>,
     shapes: Tensor<Shape>,
-    num_shapes: Tensor<u32>,
     /// Per-collider local pose, expressed in the parent rigid-body's frame. The
     /// world pose of the collider's shape is `poses[i] * collider_local_poses[i]`,
     /// matching rapier's `Collider::position()` semantics. Set to identity for
@@ -128,12 +127,9 @@ pub struct RbdState {
     collision_pairs_len: Tensor<u32>,
     collision_pairs_len_staging: Tensor<u32>,
     collision_pairs_indirect: Tensor<[u32; 3]>,
-    collision_pairs_batch_capacity: Tensor<u32>,
-    contacts_batch_capacity: Tensor<u32>,
-    colliders_batch_capacity: Tensor<u32>,
-    /// CPU-side mirrors of the dynamic batch capacities above. Kept in sync
-    /// with the `*_batch_capacity` tensors so [`Self::batch_indices`] can be
-    /// rebuilt whenever any of them grows.
+    /// CPU-side mirrors of the dynamic batch capacities. The capacity values
+    /// live in the [`BatchIndices`] uniform; these mirrors let
+    /// [`Self::rebuild_batch_indices`] re-emit it whenever a buffer grows.
     contacts_per_batch_cpu: u32,
     collision_pairs_per_batch_cpu: u32,
     /// Single uniform aggregating every per-batch capacity and packed-buffer
@@ -180,12 +176,12 @@ pub struct RbdState {
     prefix_sum_workspace: PrefixSumWorkspace,
     /// Maximum number of constraint colors the solver will iterate.
     max_colors: u32,
-    /// CPU-side mirror of the number of *active* colliders in each batch (the
-    /// per-batch values stored in `num_shapes`). Slots in
-    /// `[num_active_colliders[b] .. num_colliders_per_batch)` are reserved
-    /// padding. Kept in sync by the incremental [`Self::append_bodies`] /
-    /// [`Self::remove_bodies`] APIs.
-    num_active_colliders: Vec<u32>,
+    /// CPU-side mirror of the number of *active* colliders per batch. Identical
+    /// across all batches by the equal-topology invariant; slots in
+    /// `[num_active_colliders .. num_colliders_per_batch)` are reserved padding.
+    /// Mirrors `BatchIndices::colliders_len` and is kept in sync by
+    /// the incremental [`Self::append_bodies`] / [`Self::remove_bodies`] APIs.
+    num_active_colliders: u32,
 }
 
 impl RbdState {
@@ -204,17 +200,68 @@ impl RbdState {
         )],
     ) -> Self {
         let num_batches = environments.len() as u32;
-        let max_colliders = environments
-            .iter()
+
+        // Equal-topology invariant: every environment must share the same
+        // collider count, joint count, multibody count and solver-iteration
+        // count. Only collider shapes and dynamic state may differ. This lets
+        // the per-batch topology counts collapse to scalar uniforms instead of
+        // padded per-batch storage arrays.
+        if let Some(((b0, c0, ij0, mj0, sp0), rest)) = environments.split_first() {
+            for (i, (b, c, ij, mj, sp)) in rest.iter().enumerate() {
+                let env = i + 1;
+                assert_eq!(
+                    c.len(),
+                    c0.len(),
+                    "batched rbd requires the same collider count in every environment \
+                     (env 0 has {}, env {env} has {})",
+                    c0.len(),
+                    c.len()
+                );
+                assert_eq!(
+                    b.len(),
+                    b0.len(),
+                    "batched rbd requires the same rigid-body count in every environment \
+                     (env 0 has {}, env {env} has {})",
+                    b0.len(),
+                    b.len()
+                );
+                assert_eq!(
+                    ij.len(),
+                    ij0.len(),
+                    "batched rbd requires the same impulse-joint count in every environment \
+                     (env 0 has {}, env {env} has {})",
+                    ij0.len(),
+                    ij.len()
+                );
+                assert_eq!(
+                    mj.multibodies().count(),
+                    mj0.multibodies().count(),
+                    "batched rbd requires the same multibody count in every environment"
+                );
+                assert_eq!(
+                    sp.num_solver_iterations, sp0.num_solver_iterations,
+                    "batched rbd requires the same solver-iteration count in every environment \
+                     (env 0 has {}, env {env} has {})",
+                    sp0.num_solver_iterations, sp.num_solver_iterations
+                );
+            }
+        }
+
+        // Equal across all environments by the invariant above, so the
+        // first environment's collider count is the per-batch count and there
+        // is no padding.
+        let num_colliders = environments
+            .first()
             .map(|(_, c, _, _, _)| c.len())
-            .max()
             .unwrap_or(0);
+        // The collider count is identical across batches (no padding), so the
+        // historical "max across batches" is just the per-batch count.
+        let max_colliders = num_colliders;
 
         let mut all_poses = Vec::new();
         let mut all_local_mprops = Vec::new();
         let mut all_mprops = Vec::new();
         let mut all_shapes = Vec::new();
-        let mut all_num_shapes = Vec::new();
         let mut all_collision_groups: Vec<crate::rapier::geometry::InteractionGroups> = Vec::new();
         let mut all_collider_local_poses: Vec<Pose> = Vec::new();
         let mut shape_buffers = ShapeBuffers::default();
@@ -257,7 +304,6 @@ impl RbdState {
 
         for (bodies, colliders, impulse_joints, multibody_joints, _sim_params) in environments {
             let env_collider_count = colliders.len();
-            all_num_shapes.push(env_collider_count as u32);
             let mut body_ids = HashMap::new();
             let mut env_collider_idx = 0u32;
 
@@ -538,20 +584,6 @@ impl RbdState {
             Tensor::vector(backend, &all_collider_local_poses, storage).unwrap();
         let collision_groups = Tensor::vector(backend, &all_collision_groups, storage).unwrap();
 
-        let num_shapes = Tensor::vector(
-            backend,
-            &all_num_shapes,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM,
-        )
-        .unwrap();
-
-        let colliders_batch_capacity = Tensor::scalar(
-            backend,
-            num_colliders_per_batch as u32,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM,
-        )
-        .unwrap();
-
         const DEFAULT_CONTACT_COUNTS: u32 = 32; // 1024;
         let collision_pairs =
             Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
@@ -566,18 +598,6 @@ impl RbdState {
                 .unwrap();
         let collision_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
-        let collision_pairs_batch_capacity = Tensor::scalar(
-            backend,
-            DEFAULT_CONTACT_COUNTS,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM,
-        )
-        .unwrap();
-        let contacts_batch_capacity = Tensor::scalar(
-            backend,
-            DEFAULT_CONTACT_COUNTS,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM,
-        )
-        .unwrap();
 
         let contacts =
             Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
@@ -642,10 +662,11 @@ impl RbdState {
         let collision_pairs_per_batch_cpu = DEFAULT_CONTACT_COUNTS;
         let mut bi = BatchIndices::default();
         bi.colliders_batch_capacity = num_colliders_per_batch as u32;
+        bi.colliders_len = num_colliders as u32;
         bi.collision_pairs_batch_capacity = collision_pairs_per_batch_cpu;
         bi.contacts_batch_capacity = contacts_per_batch_cpu;
         bi.impulse_joints_batch_capacity = joints.joints_per_batch();
-        bi.color_groups_batch_capacity = joints.num_colors();
+        bi.impulse_joints_len = joints.num_active_joints();
         #[cfg(feature = "dim3")]
         multibodies.fill_batch_indices(&mut bi);
         let batch_indices = Tensor::scalar(
@@ -697,16 +718,12 @@ impl RbdState {
             vertex_buffers,
             index_buffers,
             shapes,
-            num_shapes,
             collider_local_poses,
             collision_groups,
             collision_pairs,
             collision_pairs_len,
             collision_pairs_len_staging,
             collision_pairs_indirect,
-            collision_pairs_batch_capacity,
-            contacts_batch_capacity,
-            colliders_batch_capacity,
             contacts_per_batch_cpu,
             collision_pairs_per_batch_cpu,
             batch_indices,
@@ -751,7 +768,7 @@ impl RbdState {
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
             max_colors: 8,
-            num_active_colliders: all_num_shapes.clone(),
+            num_active_colliders: num_colliders as u32,
         }
     }
 }
@@ -791,7 +808,6 @@ impl RbdState {
         let all_mprops = vec![GpuWorldMassProperties::default(); num_bodies_total];
         let all_shapes = vec![dummy_shape; num_bodies_total];
         let all_collision_groups = vec![none_groups; num_bodies_total];
-        let all_num_shapes = vec![0u32; num_batches as usize];
         let all_vels = vec![GpuVelocity::default(); num_bodies_total];
 
         // body_group: per-batch local indices (free bodies map to themselves).
@@ -836,20 +852,6 @@ impl RbdState {
         let collider_local_poses = Tensor::vector(backend, &all_collider_local_poses, rw).unwrap();
         let collision_groups = Tensor::vector(backend, &all_collision_groups, rw).unwrap();
 
-        let num_shapes = Tensor::vector(
-            backend,
-            &all_num_shapes,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        )
-        .unwrap();
-
-        let colliders_batch_capacity = Tensor::scalar(
-            backend,
-            num_colliders_per_batch,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM,
-        )
-        .unwrap();
-
         const DEFAULT_CONTACT_COUNTS: u32 = 32;
         let collision_pairs =
             Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
@@ -863,18 +865,6 @@ impl RbdState {
             Tensor::scalar_uninit(backend, BufferUsages::MAP_READ | BufferUsages::COPY_DST).unwrap();
         let collision_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
-        let collision_pairs_batch_capacity = Tensor::scalar(
-            backend,
-            DEFAULT_CONTACT_COUNTS,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM,
-        )
-        .unwrap();
-        let contacts_batch_capacity = Tensor::scalar(
-            backend,
-            DEFAULT_CONTACT_COUNTS,
-            BufferUsages::STORAGE | BufferUsages::UNIFORM,
-        )
-        .unwrap();
         let contacts =
             Tensor::vector_uninit(backend, DEFAULT_CONTACT_COUNTS * num_batches, storage).unwrap();
         let contacts_len = Tensor::vector_uninit(
@@ -930,10 +920,12 @@ impl RbdState {
         let collision_pairs_per_batch_cpu = DEFAULT_CONTACT_COUNTS;
         let mut bi = BatchIndices::default();
         bi.colliders_batch_capacity = num_colliders_per_batch;
+        // No body is active initially; bodies are added later via `append_bodies`.
+        bi.colliders_len = 0;
         bi.collision_pairs_batch_capacity = collision_pairs_per_batch_cpu;
         bi.contacts_batch_capacity = contacts_per_batch_cpu;
         bi.impulse_joints_batch_capacity = joints.joints_per_batch();
-        bi.color_groups_batch_capacity = joints.num_colors();
+        bi.impulse_joints_len = joints.num_active_joints();
         #[cfg(feature = "dim3")]
         multibodies.fill_batch_indices(&mut bi);
         let batch_indices = Tensor::scalar(
@@ -964,16 +956,12 @@ impl RbdState {
             vertex_buffers,
             index_buffers,
             shapes,
-            num_shapes,
             collider_local_poses,
             collision_groups,
             collision_pairs,
             collision_pairs_len,
             collision_pairs_len_staging,
             collision_pairs_indirect,
-            collision_pairs_batch_capacity,
-            contacts_batch_capacity,
-            colliders_batch_capacity,
             contacts_per_batch_cpu,
             collision_pairs_per_batch_cpu,
             batch_indices,
@@ -1018,32 +1006,31 @@ impl RbdState {
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
             max_colors: 8,
-            num_active_colliders: vec![0; num_batches as usize],
+            num_active_colliders: 0,
         }
     }
 
     /// Appends rigid-bodies (each given as a `(RigidBody, Collider)` pair) into
-    /// the simulation batch `batch_id`, returning their global slot indices.
+    /// *every* simulation batch, returning the per-batch local slot range the
+    /// new bodies occupy (identical across batches). The same topology is added
+    /// to all environments, preserving the equal-topology invariant; per-batch
+    /// dynamic divergence can be applied afterwards via the usual buffers.
     ///
     /// Only primitive (vertex-less) colliders are currently supported; mesh
     /// colliders would require growing the shared vertex/index buffers.
     ///
     /// # Panics
-    /// Panics if `batch_id` is out of range, or if the batch would exceed
-    /// `num_colliders_per_batch`.
+    /// Panics if any batch would exceed `num_colliders_per_batch`.
     pub fn append_bodies(
         &mut self,
         backend: &GpuBackend,
         bodies: &[(crate::rapier::dynamics::RigidBody, crate::rapier::geometry::Collider)],
-        batch_id: usize,
     ) -> Result<Range<u32>, GpuBackendError> {
-        assert!(batch_id < self.num_batches as usize, "batch_id out of range");
         let cap = self.num_colliders_per_batch as usize;
-        let active = self.num_active_colliders[batch_id] as usize;
+        let active = self.num_active_colliders as usize;
         assert!(
             active + bodies.len() <= cap,
-            "rbd batch {} capacity ({}) exceeded",
-            batch_id,
+            "rbd batch capacity ({}) exceeded",
             cap
         );
 
@@ -1107,45 +1094,50 @@ impl RbdState {
             ));
         }
 
-        let base = (batch_id * cap + active) as u64;
-        backend.write_buffer(self.body_poses.buffer_mut(), base, &poses)?;
-        backend.write_buffer(self.solver_body_poses.buffer_mut(), base, &poses)?;
-        backend.write_buffer(self.collider_world_poses.buffer_mut(), base, &poses)?;
-        backend.write_buffer(self.collider_local_poses.buffer_mut(), base, &collider_local_poses)?;
-        backend.write_buffer(self.local_mprops.buffer_mut(), base, &local_mprops)?;
-        backend.write_buffer(self.mprops.buffer_mut(), base, &mprops)?;
-        backend.write_buffer(self.shapes.buffer_mut(), base, &shapes)?;
-        backend.write_buffer(self.collision_groups.buffer_mut(), base, &collision_groups)?;
-        backend.write_buffer(self.vels.buffer_mut(), base, &vels)?;
+        // Write the same body data into every batch's slot range so all
+        // environments share the same topology.
+        for batch_id in 0..self.num_batches as usize {
+            let base = (batch_id * cap + active) as u64;
+            backend.write_buffer(self.body_poses.buffer_mut(), base, &poses)?;
+            backend.write_buffer(self.solver_body_poses.buffer_mut(), base, &poses)?;
+            backend.write_buffer(self.collider_world_poses.buffer_mut(), base, &poses)?;
+            backend.write_buffer(
+                self.collider_local_poses.buffer_mut(),
+                base,
+                &collider_local_poses,
+            )?;
+            backend.write_buffer(self.local_mprops.buffer_mut(), base, &local_mprops)?;
+            backend.write_buffer(self.mprops.buffer_mut(), base, &mprops)?;
+            backend.write_buffer(self.shapes.buffer_mut(), base, &shapes)?;
+            backend.write_buffer(self.collision_groups.buffer_mut(), base, &collision_groups)?;
+            backend.write_buffer(self.vels.buffer_mut(), base, &vels)?;
+        }
 
         let new_active = (active + bodies.len()) as u32;
-        self.num_active_colliders[batch_id] = new_active;
-        backend.write_buffer(self.num_shapes.buffer_mut(), batch_id as u64, &[new_active])?;
+        self.num_active_colliders = new_active;
+        self.rebuild_batch_indices(backend);
 
-        let start = (batch_id * cap + active) as u32;
-        Ok(start..start + bodies.len() as u32)
+        Ok(active as u32..new_active)
     }
 
-    /// Removes the bodies at the given global slot indices using a per-batch
-    /// swap-remove (the last active body of a batch is moved into the freed
-    /// slot). Returns the list of `(from, to)` relocations performed so callers
-    /// can patch their slot bookkeeping.
+    /// Removes the bodies at the given per-batch local slot indices using a
+    /// swap-remove (the last active body is moved into the freed slot). The
+    /// removal is applied identically to every batch, preserving the
+    /// equal-topology invariant. Returns the list of `(from, to)` local-slot
+    /// relocations performed so callers can patch their slot bookkeeping.
     pub fn remove_bodies(
         &mut self,
         backend: &GpuBackend,
-        global_indices: &[u32],
+        local_indices: &[u32],
     ) -> Result<Vec<(u32, u32)>, GpuBackendError> {
         let cap = self.num_colliders_per_batch as usize;
         let mut remaps = Vec::new();
 
-        // Group local slots per batch, processed in descending order so removing
-        // one doesn't disturb the not-yet-removed (lower) slots.
-        let mut per_batch: std::collections::BTreeMap<usize, Vec<usize>> =
-            std::collections::BTreeMap::new();
-        for &g in global_indices {
-            let g = g as usize;
-            per_batch.entry(g / cap).or_default().push(g % cap);
-        }
+        // Process local slots in descending order so removing one doesn't
+        // disturb the not-yet-removed (lower) slots.
+        let mut locals: Vec<usize> = local_indices.iter().map(|&l| l as usize).collect();
+        locals.sort_unstable_by(|a, b| b.cmp(a));
+        locals.dedup();
 
         let none_groups = crate::rapier::geometry::InteractionGroups::new(
             crate::rapier::geometry::Group::NONE,
@@ -1153,16 +1145,14 @@ impl RbdState {
             crate::rapier::geometry::InteractionTestMode::And,
         );
 
-        for (batch, mut locals) in per_batch {
-            locals.sort_unstable_by(|a, b| b.cmp(a));
-            locals.dedup();
+        for local in locals {
+            let active = self.num_active_colliders as usize;
+            if active == 0 || local >= active {
+                continue;
+            }
+            let last = active - 1;
 
-            for local in locals {
-                let active = self.num_active_colliders[batch] as usize;
-                if active == 0 || local >= active {
-                    continue;
-                }
-                let last = active - 1;
+            for batch in 0..self.num_batches as usize {
                 let hole_global = batch * cap + local;
                 let last_global = batch * cap + last;
 
@@ -1192,7 +1182,6 @@ impl RbdState {
                     relocate!(self.vels);
                     relocate!(self.shapes);
                     relocate!(self.collision_groups);
-                    remaps.push((last_global as u32, hole_global as u32));
                 }
 
                 // The now-topmost slot becomes inactive padding: neutralize it so
@@ -1213,13 +1202,15 @@ impl RbdState {
                     last_global as u64,
                     &[GpuWorldMassProperties::default()],
                 )?;
-
-                let new_active = (active - 1) as u32;
-                self.num_active_colliders[batch] = new_active;
-                backend.write_buffer(self.num_shapes.buffer_mut(), batch as u64, &[new_active])?;
             }
+
+            if local != last {
+                remaps.push((last as u32, local as u32));
+            }
+            self.num_active_colliders = (active - 1) as u32;
         }
 
+        self.rebuild_batch_indices(backend);
         Ok(remaps)
     }
 }
@@ -1234,10 +1225,11 @@ impl RbdState {
     fn rebuild_batch_indices(&mut self, backend: &GpuBackend) {
         let mut bi = BatchIndices::default();
         bi.colliders_batch_capacity = self.num_colliders_per_batch;
+        bi.colliders_len = self.num_active_colliders;
         bi.collision_pairs_batch_capacity = self.collision_pairs_per_batch_cpu;
         bi.contacts_batch_capacity = self.contacts_per_batch_cpu;
         bi.impulse_joints_batch_capacity = self.joints.joints_per_batch();
-        bi.color_groups_batch_capacity = self.joints.num_colors();
+        bi.impulse_joints_len = self.joints.num_active_joints();
         #[cfg(feature = "dim3")]
         self.multibodies.fill_batch_indices(&mut bi);
         self.batch_indices = Tensor::scalar(
@@ -1407,7 +1399,6 @@ impl RbdPipeline {
                     &mut state.mprops,
                     &state.local_mprops,
                     &state.body_poses,
-                    &state.num_shapes,
                     &state.batch_indices,
                     state.num_colliders_per_batch,
                     state.num_batches,
@@ -1420,7 +1411,6 @@ impl RbdPipeline {
                     &state.body_poses,
                     &state.collider_local_poses,
                     &mut state.collider_world_poses,
-                    &state.num_shapes,
                     &state.batch_indices,
                     state.num_colliders_per_batch,
                     state.num_batches,
@@ -1439,7 +1429,6 @@ impl RbdPipeline {
                     &state.collider_world_poses,
                     &state.vertex_buffers,
                     &state.shapes,
-                    &state.num_shapes,
                     &state.batch_indices,
                     timestamps.as_deref_mut(),
                 )?;
@@ -1467,7 +1456,6 @@ impl RbdPipeline {
                     &mut state.lbvh,
                     state.body_poses.len() as u32,
                     state.num_batches,
-                    &state.num_shapes,
                     &state.batch_indices,
                     &mut state.collision_pairs,
                     &mut state.collision_pairs_len,
@@ -1527,7 +1515,6 @@ impl RbdPipeline {
                 constraints: &mut state.new_constraints,
                 constraint_builders: &mut state.new_constraint_builders,
                 sim_params: &state.sim_params,
-                colliders_len: &state.num_shapes,
                 body_poses: &mut state.body_poses,
                 solver_body_poses: &mut state.solver_body_poses,
                 collider_local_poses: &state.collider_local_poses,
@@ -1612,7 +1599,6 @@ impl RbdPipeline {
             constraints: &mut state.new_constraints,
             constraint_builders: &mut state.new_constraint_builders,
             sim_params: &state.sim_params,
-            colliders_len: &state.num_shapes,
             body_poses: &mut state.body_poses,
             solver_body_poses: &mut state.solver_body_poses,
             collider_local_poses: &state.collider_local_poses,
@@ -1748,18 +1734,6 @@ impl RbdPipeline {
 
                 state.collision_pairs =
                     Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
-                state.collision_pairs_batch_capacity = Tensor::scalar(
-                    backend,
-                    desired_len,
-                    BufferUsages::STORAGE | BufferUsages::UNIFORM,
-                )
-                .unwrap();
-                state.contacts_batch_capacity = Tensor::scalar(
-                    backend,
-                    desired_len,
-                    BufferUsages::STORAGE | BufferUsages::UNIFORM,
-                )
-                .unwrap();
                 state.contacts = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
                 state.pfm_pairs =
                     Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();

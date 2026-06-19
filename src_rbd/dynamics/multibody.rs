@@ -72,10 +72,16 @@ use {
 /// GPU-resident articulated multibody set, packed across simulation batches.
 ///
 /// Every buffer is a flat tensor with per-batch capacity (`*_batch_capacity`) and
-/// a per-batch length (`num_multibodies`, `num_links`).
+/// a per-batch length. The multibody/link counts are identical across batches
+/// (equal-topology invariant) and read from the `BatchIndices` uniform.
 pub struct GpuMultibodySet {
     num_batches: u32,
     multibodies_per_batch: u32,
+    /// Number of *active* multibodies per batch (the kernel loop bound).
+    /// Identical across batches by the equal-topology invariant; differs from
+    /// `multibodies_per_batch` when the latter is padded to ≥1 to avoid
+    /// size-zero buffers (e.g. an environment with no multibody).
+    num_active_multibodies: u32,
     links_per_batch: u32,
     #[allow(dead_code)]
     dofs_per_batch: u32,
@@ -98,8 +104,6 @@ pub struct GpuMultibodySet {
     /// host side — saves O(substeps × #kernels) WebGPU dispatches per frame.
     has_joint_constraints: bool,
 
-    /// Per-batch number of multibodies.
-    num_multibodies: Tensor<u32>,
     /// Per-batch multibody descriptors.
     multibody_info: Tensor<MultibodyInfo>,
     /// Per-batch static link data.
@@ -186,9 +190,7 @@ pub struct GpuMultibodySet {
     mb_imp_joint_jacobians: Tensor<f32>,
 
     /// Capacities (per-batch strides) for the impulse-joint slabs above.
-    mb_imp_joints_batch_capacity: Tensor<u32>,
-    mb_imp_joint_constraints_batch_capacity: Tensor<u32>,
-    mb_imp_joint_jacobians_batch_capacity: Tensor<u32>,
+    /// Mirrored into `BatchIndices` via [`Self::fill_batch_indices`].
     mb_imp_joints_per_batch: u32,
     mb_imp_joint_constraints_per_batch: u32,
     mb_imp_joint_jacobians_per_batch: u32,
@@ -215,29 +217,6 @@ pub struct GpuMultibodySet {
 
     /// Number of solver iterations to run on `joint_constraints` per `step()`.
     num_solver_iterations: u32,
-
-    multibodies_batch_capacity: Tensor<u32>,
-    links_batch_capacity: Tensor<u32>,
-    dof_batch_capacity: Tensor<u32>,
-    jacobians_batch_capacity: Tensor<u32>,
-    mass_matrix_batch_capacity: Tensor<u32>,
-    coriolis_batch_capacity: Tensor<u32>,
-    i_coriolis_dt_batch_capacity: Tensor<u32>,
-    /// Offset (in `f32` units) of the damping section inside `dof_state`.
-    /// Equals `dof_batch_capacity * num_batches`.
-    dof_damping_section_offset: Tensor<u32>,
-    /// Offset (in `f32` units) of the `coriolis_w` section inside
-    /// `coriolis_packed`. Equals `coriolis_batch_capacity * num_batches`.
-    coriolis_w_section_offset: Tensor<u32>,
-    /// Offset (in `f32` units) of the `i_coriolis_dt` section inside
-    /// `coriolis_packed`. Equals `2 * coriolis_batch_capacity * num_batches`.
-    i_coriolis_dt_section_offset: Tensor<u32>,
-    joint_constraints_batch_capacity: Tensor<u32>,
-    joint_constraint_columns_batch_capacity: Tensor<u32>,
-    contact_constraints_batch_capacity: Tensor<u32>,
-    contact_constraint_columns_batch_capacity: Tensor<u32>,
-    /// Stride (per-batch capacity) for `body_to_link` — same as colliders.
-    contacts_batch_capacity_for_mb: Tensor<u32>,
 
     /// Gravity vector. Stored as a `Vec4` so it can be bound as a uniform
     /// (std140 requires arrays of scalars to use 16-byte stride; a single
@@ -668,15 +647,12 @@ impl GpuMultibodySet {
         let mut all_dof_vals: Vec<f32> = Vec::with_capacity((dofs_cap * num_batches) as usize);
         let mut all_dof_vels: Vec<f32> = Vec::with_capacity((dofs_cap * num_batches) as usize);
         let mut all_dof_damping: Vec<f32> = Vec::with_capacity((dofs_cap * num_batches) as usize);
-        let mut all_num_mb: Vec<u32> = Vec::with_capacity(num_batches as usize);
 
         let dummy_info = MultibodyInfo::default();
         let dummy_stat: MultibodyLinkStatic = bytemuck::Zeroable::zeroed();
         let dummy_ws = make_workspace_init();
 
         for i in 0..num_batches as usize {
-            all_num_mb.push(per_env_infos[i].len() as u32);
-
             all_infos.extend_from_slice(&per_env_infos[i]);
             for _ in per_env_infos[i].len()..mb_cap as usize {
                 all_infos.push(dummy_info);
@@ -717,6 +693,7 @@ impl GpuMultibodySet {
         Self {
             num_batches,
             multibodies_per_batch: mb_cap,
+            num_active_multibodies: global_max_mb,
             links_per_batch: links_cap,
             dofs_per_batch: dofs_cap,
             jacobian_entries_per_batch: jac_cap,
@@ -726,7 +703,6 @@ impl GpuMultibodySet {
             implicit_coriolis: true,
             has_joint_constraints: all_infos.iter().any(|info| info.max_constraints > 0),
 
-            num_multibodies: Tensor::vector(backend, &all_num_mb, usage_u).unwrap(),
             multibody_info: Tensor::vector(backend, &all_infos, storage).unwrap(),
             links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
                 .unwrap(),
@@ -850,14 +826,6 @@ impl GpuMultibodySet {
                 storage,
             )
             .unwrap(),
-            mb_imp_joints_batch_capacity: Tensor::scalar(backend, 1u32, usage_u).unwrap(),
-            mb_imp_joint_constraints_batch_capacity: Tensor::scalar(
-                backend,
-                MAX_AXIS_CONSTRAINTS,
-                usage_u,
-            )
-            .unwrap(),
-            mb_imp_joint_jacobians_batch_capacity: Tensor::scalar(backend, 1u32, usage_u).unwrap(),
             mb_imp_joints_per_batch: 0,
             mb_imp_joint_constraints_per_batch: MAX_AXIS_CONSTRAINTS,
             mb_imp_joint_jacobians_per_batch: 1,
@@ -876,37 +844,6 @@ impl GpuMultibodySet {
             contact_constraint_columns_per_batch: contact_cons_col_cap,
 
             num_solver_iterations: 4,
-
-            multibodies_batch_capacity: Tensor::scalar(backend, mb_cap, usage_u).unwrap(),
-            links_batch_capacity: Tensor::scalar(backend, links_cap, usage_u).unwrap(),
-            dof_batch_capacity: Tensor::scalar(backend, dofs_cap, usage_u).unwrap(),
-            jacobians_batch_capacity: Tensor::scalar(backend, jac_cap, usage_u).unwrap(),
-            mass_matrix_batch_capacity: Tensor::scalar(backend, mm_cap, usage_u).unwrap(),
-            coriolis_batch_capacity: Tensor::scalar(backend, cor_cap, usage_u).unwrap(),
-            i_coriolis_dt_batch_capacity: Tensor::scalar(backend, icdt_cap, usage_u).unwrap(),
-            dof_damping_section_offset: Tensor::scalar(backend, dofs_cap * num_batches, usage_u)
-                .unwrap(),
-            coriolis_w_section_offset: Tensor::scalar(backend, cor_cap * num_batches, usage_u)
-                .unwrap(),
-            i_coriolis_dt_section_offset: Tensor::scalar(
-                backend,
-                2 * cor_cap * num_batches,
-                usage_u,
-            )
-            .unwrap(),
-            joint_constraints_batch_capacity: Tensor::scalar(backend, cons_cap, usage_u).unwrap(),
-            joint_constraint_columns_batch_capacity: Tensor::scalar(backend, cons_col_cap, usage_u)
-                .unwrap(),
-            contact_constraints_batch_capacity: Tensor::scalar(backend, contact_cons_cap, usage_u)
-                .unwrap(),
-            contact_constraint_columns_batch_capacity: Tensor::scalar(
-                backend,
-                contact_cons_col_cap,
-                usage_u,
-            )
-            .unwrap(),
-            contacts_batch_capacity_for_mb: Tensor::scalar(backend, body_to_link_cap, usage_u)
-                .unwrap(),
 
             // FIXME: should be read from the simulation settings.
             gravity: Tensor::scalar(
@@ -935,6 +872,7 @@ impl GpuMultibodySet {
     /// `color_groups_batch_capacity`) untouched — the caller fills those.
     pub(crate) fn fill_batch_indices(&self, dst: &mut BatchIndices) {
         dst.multibodies_batch_capacity = self.multibodies_per_batch;
+        dst.multibodies_len = self.num_active_multibodies;
         dst.links_batch_capacity = self.links_per_batch;
         dst.jacobians_batch_capacity = self.jacobian_entries_per_batch;
         dst.mass_matrix_batch_capacity = self.mass_matrix_entries_per_batch;
@@ -1219,11 +1157,6 @@ impl GpuMultibodySet {
             storage,
         )
         .unwrap();
-        self.mb_imp_joints_batch_capacity = Tensor::scalar(backend, joints_cap, usage_u).unwrap();
-        self.mb_imp_joint_constraints_batch_capacity =
-            Tensor::scalar(backend, cons_cap, usage_u).unwrap();
-        self.mb_imp_joint_jacobians_batch_capacity =
-            Tensor::scalar(backend, jac_cap, usage_u).unwrap();
         self.mb_imp_joints_per_batch = joints_cap;
         self.mb_imp_joint_constraints_per_batch = cons_cap;
         self.mb_imp_joint_jacobians_per_batch = jac_cap;
@@ -1418,9 +1351,7 @@ impl GpuMultibodySolver {
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
                 &mut mb.coriolis_packed,
-                &mb.dof_state,
-                &mb.num_multibodies,
-                &mb.dt,
+                &mb.dof_state,                &mb.dt,
                 args.batch_indices,
             )?;
         } else {
@@ -1434,9 +1365,7 @@ impl GpuMultibodySolver {
                 args.poses,
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
-                &mb.dof_state,
-                &mb.num_multibodies,
-                &mb.dt,
+                &mb.dof_state,                &mb.dt,
                 args.batch_indices,
             )?;
         }
@@ -1457,9 +1386,7 @@ impl GpuMultibodySolver {
             &mut mb.gen_forces,
             &mut mb.mass_matrices,
             &mut mb.lu_pivots,
-            &mb.dof_state,
-            &mb.num_multibodies,
-            &mb.gravity,
+            &mb.dof_state,            &mb.gravity,
             args.batch_indices,
         )?;
 
@@ -1527,9 +1454,7 @@ impl GpuMultibodySolver {
             dispatch,
             &mb.multibody_info,
             &mut mb.dof_state,
-            &mb.gen_forces,
-            &mb.num_multibodies,
-            &mb.dt,
+            &mb.gen_forces,            &mb.dt,
             args.batch_indices,
         )?;
 
@@ -1552,9 +1477,7 @@ impl GpuMultibodySolver {
                 &mb.mass_matrices,
                 &mb.lu_pivots,
                 &mut mb.joint_constraints,
-                &mut mb.joint_constraint_columns,
-                &mb.num_multibodies,
-                &mb.dt,
+                &mut mb.joint_constraint_columns,                &mb.dt,
                 args.batch_indices,
             )?;
             self.solve_joint_with_bias.call(
@@ -1562,9 +1485,7 @@ impl GpuMultibodySolver {
                 dispatch,
                 &mb.multibody_info,
                 &mut mb.joint_constraints,
-                &mut mb.joint_constraint_columns,
-                &mb.num_multibodies,
-                &mut mb.dof_state,
+                &mut mb.joint_constraint_columns,                &mut mb.dof_state,
                 args.batch_indices,
             )?;
         }
@@ -1598,9 +1519,7 @@ impl GpuMultibodySolver {
             &mut mb.contact_constraints,
             &mb.contact_constraint_jacs,
             &mut mb.contact_constraint_columns,
-            &mb.contact_constraint_count,
-            &mb.num_multibodies,
-            args.batch_indices,
+            &mb.contact_constraint_count,            args.batch_indices,
         )?;
 
         self.solve_contact_constraints.call(
@@ -1612,9 +1531,7 @@ impl GpuMultibodySolver {
             &mb.contact_constraint_columns,
             &mb.contact_constraint_count,
             &mut mb.dof_state,
-            args.solver_vels,
-            &mb.num_multibodies,
-            args.batch_indices,
+            args.solver_vels,            args.batch_indices,
         )?;
 
         // 3c. Multibody-touching impulse joints — generic (rb-mb / mb-mb)
@@ -1676,9 +1593,7 @@ impl GpuMultibodySolver {
             &mb.links_static,
             &mut mb.links_workspace,
             &mut mb.dof_values,
-            &mb.dof_state,
-            &mb.num_multibodies,
-            &mb.dt,
+            &mb.dof_state,            &mb.dt,
             args.batch_indices,
         )?;
 
@@ -1703,18 +1618,14 @@ impl GpuMultibodySolver {
                 &mb.multibody_info,
                 &mut mb.joint_constraints,
                 &mb.joint_constraint_columns,
-                &mut mb.dof_state,
-                &mb.num_multibodies,
-                args.batch_indices,
+                &mut mb.dof_state,                args.batch_indices,
             )?;
         }
         self.remove_contact_constraint_bias.call(
             pass,
             dispatch,
             &mut mb.contact_constraints,
-            &mb.contact_constraint_count,
-            &mb.num_multibodies,
-            args.batch_indices,
+            &mb.contact_constraint_count,            args.batch_indices,
         )?;
         if mb.mb_imp_joints_per_batch > 0 {
             let imp_dispatch = [mb.mb_imp_joints_per_batch, mb.num_batches, 1];
@@ -1738,9 +1649,7 @@ impl GpuMultibodySolver {
             &mb.contact_constraint_columns,
             &mb.contact_constraint_count,
             &mut mb.dof_state,
-            args.solver_vels,
-            &mb.num_multibodies,
-            args.batch_indices,
+            args.solver_vels,            args.batch_indices,
         )?;
         if mb.mb_imp_joints_per_batch > 0 {
             // Final stabilization sweep WITHOUT bias — colored, one
@@ -1801,9 +1710,7 @@ impl GpuMultibodySolver {
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
                 &mut mb.coriolis_packed,
-                &mb.dof_state,
-                &mb.num_multibodies,
-                &mb.dt,
+                &mb.dof_state,                &mb.dt,
                 args.batch_indices,
             )?;
         } else {
@@ -1817,9 +1724,7 @@ impl GpuMultibodySolver {
                 args.poses,
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
-                &mb.dof_state,
-                &mb.num_multibodies,
-                &mb.dt,
+                &mb.dof_state,                &mb.dt,
                 args.batch_indices,
             )?;
         }
@@ -1837,9 +1742,7 @@ impl GpuMultibodySolver {
             &mut mb.gen_forces,
             &mut mb.mass_matrices,
             &mut mb.lu_pivots,
-            &mb.dof_state,
-            &mb.num_multibodies,
-            &mb.gravity,
+            &mb.dof_state,            &mb.gravity,
             args.batch_indices,
         )?;
 

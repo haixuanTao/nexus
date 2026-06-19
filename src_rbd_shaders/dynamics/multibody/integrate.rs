@@ -40,13 +40,12 @@ pub fn gpu_mb_integrate_velocities(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] gen_accelerations: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }
@@ -77,13 +76,12 @@ pub fn gpu_mb_integrate(
     links_workspace: &mut [MultibodyLinkWorkspace],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_values: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_state: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }

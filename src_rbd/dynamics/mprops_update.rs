@@ -23,7 +23,6 @@ impl GpuMpropsUpdate {
         mprops: &mut Tensor<WorldMassProperties>,
         local_mprops: &Tensor<LocalMassProperties>,
         body_poses: &Tensor<Pose>,
-        num_shapes: &Tensor<u32>,
         batch_indices: &Tensor<BatchIndices>,
         num_bodies: u32,
         num_batches: u32,
@@ -34,7 +33,6 @@ impl GpuMpropsUpdate {
             mprops,
             local_mprops,
             body_poses,
-            num_shapes,
             batch_indices,
         )?;
         Ok(())
@@ -62,7 +60,6 @@ impl GpuSyncColliderPosesShader {
         body_poses: &Tensor<Pose>,
         collider_local_poses: &Tensor<Pose>,
         collider_world_poses: &mut Tensor<Pose>,
-        num_shapes: &Tensor<u32>,
         batch_indices: &Tensor<BatchIndices>,
         num_bodies: u32,
         num_batches: u32,
@@ -73,7 +70,6 @@ impl GpuSyncColliderPosesShader {
             body_poses,
             collider_local_poses,
             collider_world_poses,
-            num_shapes,
             batch_indices,
         )?;
         Ok(())

@@ -512,13 +512,12 @@ pub fn gpu_mb_init_joint_constraints(
     joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     joint_constraint_columns: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }
@@ -549,13 +548,12 @@ pub fn gpu_mb_solve_joint_constraints(
     joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     joint_constraint_columns: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_multibodies: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_state: &mut [f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }
@@ -582,12 +580,11 @@ pub fn gpu_mb_remove_solve_joint_no_bias(
     joint_constraints: &mut [MultibodyJointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] joint_constraint_columns: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_state: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }

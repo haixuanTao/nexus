@@ -16,7 +16,7 @@ use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::Pose;
-use crate::utils::BatchIndices;
+use crate::utils::{BatchIndices, Slice};
 use khal_std::index::MaybeIndexUnchecked;
 
 use super::body::{LocalMassProperties, Velocity, WorldMassProperties};
@@ -219,8 +219,7 @@ pub fn gpu_init_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] constraints: &mut [JointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
     local_mprops: &[LocalMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] joints_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
@@ -230,7 +229,7 @@ pub fn gpu_init_joint_constraints(
     let mut constraints = batch_ids.impulse_joints_batch_mut(batch_id, constraints);
     let local_mprops = batch_ids.coll_batch(batch_id, local_mprops);
 
-    let len = joints_len.read(batch_id as usize);
+    let len = batch_ids.impulse_joints_len;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let idx = i as usize;
@@ -271,9 +270,8 @@ pub fn gpu_update_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] constraints: &mut [JointConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] mprops: &[WorldMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] joints_len: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] all_params: &[RbdSimParams],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] all_params: &[RbdSimParams],
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
@@ -284,7 +282,7 @@ pub fn gpu_update_joint_constraints(
     let poses = batch_ids.coll_batch(batch_id, poses);
     let mprops = batch_ids.coll_batch(batch_id, mprops);
 
-    let len = joints_len.read(batch_id as usize);
+    let len = batch_ids.impulse_joints_len;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let idx = i as usize;
@@ -305,14 +303,13 @@ pub fn gpu_remove_joint_bias(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(num_workgroups)] num_workgroups: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] constraints: &mut [JointConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] joints_len: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 1)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let mut constraints = batch_ids.impulse_joints_batch_mut(batch_id, constraints);
 
-    let len = joints_len.read(batch_id as usize);
+    let len = batch_ids.impulse_joints_len;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let idx = i as usize;
@@ -341,7 +338,9 @@ pub fn gpu_solve_joint_constraints(
     let mut solver_vels = batch_ids.coll_batch_mut(batch_id, solver_vels);
 
     let color = *curr_color as usize;
-    let color_groups = batch_ids.color_groups_batch(batch_id, all_color_groups);
+    // Coloring is identical across batches (enforced on the host), so the
+    // color-group prefix sums live in a single-batch buffer read at offset 0.
+    let color_groups = Slice(all_color_groups, 0);
 
     let start = if color > 0 {
         color_groups[color - 1]

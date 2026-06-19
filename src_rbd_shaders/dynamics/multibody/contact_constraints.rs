@@ -543,12 +543,11 @@ pub fn gpu_mb_finalize_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
     contact_constraint_columns: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] contact_constraint_count: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }
@@ -626,12 +625,11 @@ pub fn gpu_mb_solve_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_count: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] dof_state: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] solver_vels: &mut [Velocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }
@@ -729,12 +727,11 @@ pub fn gpu_mb_remove_contact_constraint_bias(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
     contact_constraints: &mut [MultibodyContactConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contact_constraint_count: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
-    let num_mb = num_multibodies.read(batch_id as usize);
+    let num_mb = batch_ids.multibodies_len;
     if mb_idx >= num_mb {
         return;
     }

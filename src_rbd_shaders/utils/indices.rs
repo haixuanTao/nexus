@@ -13,17 +13,29 @@ pub struct BatchIndices {
      * RBD / collision-detection capacities.
      */
     pub colliders_batch_capacity: u32,
+    /// Number of *active* colliders per batch (the loop bound for body-keyed
+    /// kernels). Identical across all batches by the equal-topology invariant.
+    /// May be smaller than `colliders_batch_capacity` when the state was
+    /// preallocated with spare capacity (see `RbdState::new`).
+    pub colliders_len: u32,
     pub collision_pairs_batch_capacity: u32,
     pub contacts_batch_capacity: u32,
-    /// Free-body impulse joints.
+    /// Free-body impulse joints — buffer stride (capacity) per batch.
     pub impulse_joints_batch_capacity: u32,
-    /// Free-body color groups slab.
-    pub color_groups_batch_capacity: u32,
+    /// Number of *active* free-body impulse joints per batch (the loop bound).
+    /// Identical across batches by the equal-topology invariant; may be smaller
+    /// than `impulse_joints_batch_capacity` if the slab was over-allocated.
+    pub impulse_joints_len: u32,
 
     /*
      * Multibody core capacities.
      */
     pub multibodies_batch_capacity: u32,
+    /// Number of *active* multibodies per batch (the loop bound for
+    /// per-multibody kernels). Identical across batches by the equal-topology
+    /// invariant; may be smaller than `multibodies_batch_capacity` if the slab
+    /// was over-allocated.
+    pub multibodies_len: u32,
     pub links_batch_capacity: u32,
     pub jacobians_batch_capacity: u32,
     pub mass_matrix_batch_capacity: u32,
@@ -42,8 +54,9 @@ pub struct BatchIndices {
     pub mb_imp_joint_constraints_batch_capacity: u32,
     pub mb_imp_joint_jacobians_batch_capacity: u32,
     /// Multibody-touching impulse-joint color-group slab (per-batch stride
-    /// = number of colors). Mirrors `color_groups_batch_capacity` for the
-    /// free-body impulse joints.
+    /// = number of colors). The free-body impulse-joint color groups, by
+    /// contrast, are stored single-batch (identical coloring across batches)
+    /// and read at offset 0.
     pub mb_imp_joint_color_groups_batch_capacity: u32,
 
     /*
@@ -81,11 +94,6 @@ impl BatchIndices {
     #[inline]
     pub fn impulse_joints_start(&self, batch_id: u32) -> usize {
         batch_id as usize * self.impulse_joints_batch_capacity as usize
-    }
-
-    #[inline]
-    pub fn color_groups_start(&self, batch_id: u32) -> usize {
-        batch_id as usize * self.color_groups_batch_capacity as usize
     }
 
     #[inline]
@@ -213,20 +221,6 @@ impl BatchIndices {
         slice: &'s mut [T],
     ) -> SliceMut<'s, T> {
         SliceMut(slice, self.impulse_joints_start(batch_id))
-    }
-
-    #[inline]
-    pub fn color_groups_batch<'s, T>(&self, batch_id: u32, slice: &'s [T]) -> Slice<'s, T> {
-        Slice(slice, self.color_groups_start(batch_id))
-    }
-
-    #[inline]
-    pub fn color_groups_batch_mut<'s, T>(
-        &self,
-        batch_id: u32,
-        slice: &'s mut [T],
-    ) -> SliceMut<'s, T> {
-        SliceMut(slice, self.color_groups_start(batch_id))
     }
 
     #[inline]

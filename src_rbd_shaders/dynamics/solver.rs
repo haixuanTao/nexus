@@ -219,12 +219,11 @@ pub fn gpu_solver_cleanup(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] mprops: &[WorldMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 1, binding = 3)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 1, binding = 2)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
-    let num_bodies = num_colliders.read(batch_id as usize);
+    let num_bodies = batch_ids.colliders_len;
 
     let mut body_constraint_counts = batch_ids.coll_batch_mut(batch_id, body_constraint_counts);
     let mut solver_vels = batch_ids.coll_batch_mut(batch_id, solver_vels);
@@ -253,15 +252,14 @@ pub fn gpu_init_solver_vels_inc(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] solver_vels_inc: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] mprops: &[WorldMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_params: &[RbdSimParams],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] all_params: &[RbdSimParams],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let params = all_params.at(batch_id as usize);
     let i = invocation_id.x;
 
-    let num_colliders = num_colliders.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
     let mut solver_vels_inc = batch_ids.coll_batch_mut(batch_id, solver_vels_inc);
     let mprops = batch_ids.coll_batch(batch_id, mprops);
 
@@ -287,13 +285,12 @@ pub fn gpu_apply_solver_vels_inc(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] solver_vels: &mut [Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels_inc: &[Velocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let i = invocation_id.x;
 
-    let num_colliders = num_colliders.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
     let mut solver_vels = batch_ids.coll_batch_mut(batch_id, solver_vels);
     let solver_vels_inc = batch_ids.coll_batch(batch_id, solver_vels_inc);
 
@@ -314,13 +311,12 @@ pub fn gpu_warmstart_without_colors(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_constraint_ids: &[u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] constraints: &[TwoBodyConstraint],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] solver_vels: &mut [Velocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let bci_start = batch_id as usize * 2 * batch_ids.contacts_batch_capacity as usize;
-    let num_bodies = num_colliders.read(batch_id as usize);
+    let num_bodies = batch_ids.colliders_len;
 
     let body_constraint_counts = batch_ids.coll_batch(batch_id, body_constraint_counts);
     let body_constraint_ids = Slice(body_constraint_ids, bci_start);
@@ -430,15 +426,14 @@ pub fn gpu_integrate_linearized(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] solver_vels: &[Velocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_colliders: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] all_params: &[RbdSimParams],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] all_params: &[RbdSimParams],
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let params = all_params.at(batch_id as usize);
     let i = invocation_id.x;
 
-    let num_colliders = num_colliders.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
     let mut poses = batch_ids.coll_batch_mut(batch_id, poses);
     let solver_vels = batch_ids.coll_batch(batch_id, solver_vels);
 
@@ -465,13 +460,12 @@ pub fn gpu_init_solver_bodies(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] solver_body_poses: &mut [Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let i = invocation_id.x;
 
-    let num_colliders = num_colliders.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
     let body_poses = batch_ids.coll_batch(batch_id, body_poses);
     let local_mprops = batch_ids.coll_batch(batch_id, local_mprops);
     let mut solver_body_poses = batch_ids.coll_batch_mut(batch_id, solver_body_poses);
@@ -498,13 +492,12 @@ pub fn gpu_solver_finalize(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] solver_body_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
     local_mprops: &[LocalMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let i = invocation_id.x;
 
-    let num_colliders = num_colliders.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
     let mut vels = batch_ids.coll_batch_mut(batch_id, vels);
     let solver_vels = batch_ids.coll_batch(batch_id, solver_vels);
     let mut body_poses = batch_ids.coll_batch_mut(batch_id, body_poses);

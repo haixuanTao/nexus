@@ -24,13 +24,12 @@ pub fn gpu_update_mprops(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     local_mprops: &[LocalMassProperties],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
 
-    let num_colliders = num_colliders.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
     let mut mprops = batch_ids.coll_batch_mut(batch_id, mprops);
     let local_mprops = batch_ids.coll_batch(batch_id, local_mprops);
     let poses = batch_ids.coll_batch(batch_id, poses);
@@ -58,12 +57,11 @@ pub fn gpu_sync_collider_poses(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] body_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] collider_local_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] collider_world_poses: &mut [Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] num_colliders: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
-    let num_colliders = num_colliders.read(batch_id as usize);
+    let num_colliders = batch_ids.colliders_len;
 
     let body_poses = batch_ids.coll_batch(batch_id, body_poses);
     let collider_local_poses = batch_ids.coll_batch(batch_id, collider_local_poses);

@@ -72,9 +72,8 @@ pub fn gpu_mb_compute_dynamics_pre(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] coriolis_packed: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 11)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
     // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
@@ -89,7 +88,6 @@ pub fn gpu_mb_compute_dynamics_pre(
     // uniform across the workgroup, so any subsequent `workgroupBarrier()`
     // would be flagged "called from non-uniform control flow". See
     // `gpu_mb_lu_decompose` for the rationale.
-    let _ = num_multibodies;
 
     let dt = *dt_uniform;
 
@@ -510,9 +508,8 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
     // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
@@ -524,7 +521,6 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     // No early-return on out-of-range `mb_idx` — see `gpu_mb_lu_decompose`
     // for the WGSL uniformity rationale. Dummy multibody slots have zero
     // links / DOFs, so all per-link loops below iterate zero times.
-    let _ = num_multibodies;
 
     let dt = *dt_uniform;
 
