@@ -25,6 +25,7 @@ mod urdf3;
 mod centilever_beam3;
 mod elastic_cut3;
 mod heightfield3;
+mod mpm_emitter3;
 mod sand3;
 
 // FEM examples.
@@ -80,6 +81,7 @@ demos! {
     // MPM demos.
     "Cantilever beam" => Mpm : centilever_beam3,
     "Sand" => Mpm : sand3,
+    "Sand emitter" => Mpm : mpm_emitter3,
     "Heightfield" => Mpm : heightfield3,
     "Elastic cut" => Mpm : elastic_cut3,
     // FEM demos.

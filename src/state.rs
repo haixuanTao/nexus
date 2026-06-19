@@ -138,6 +138,10 @@ pub struct NexusState {
     mpm_cell_width: f32,
     /// Number of MPM substeps run per [`Self::simulate`] call.
     mpm_substeps: u32,
+    /// Desired CPIC rigid-coupling flag, kept here so it survives until the MPM
+    /// sub-state is lazily created (and is what [`Self::mpm_use_cpic`] reports
+    /// meanwhile). Applied in [`Self::mpm_or_insert`].
+    mpm_use_cpic: bool,
     /// Set when particles or MPM-coupled bodies change; consumed by
     /// [`Self::finalize`] to rebuild the MPM↔rapier coupling.
     mpm_dirty: bool,
@@ -195,6 +199,7 @@ impl NexusState {
             mpm_params: None,
             mpm_cell_width: 1.0,
             mpm_substeps: 20,
+            mpm_use_cpic: true,
             mpm_dirty: false,
             capacities,
             rbd_pipeline: None,
@@ -245,33 +250,51 @@ impl NexusState {
         self.mpm_substeps
     }
 
-    /// Enables/disables CPIC (compatible particle-in-cell) rigid coupling. No-op
-    /// if MPM isn't allocated yet. Not overwritten by [`Self::finalize`] unless
-    /// the coupling set changes.
+    /// Enables/disables CPIC (compatible particle-in-cell) rigid coupling. The
+    /// preference is stored so it survives until MPM is lazily allocated. Not
+    /// overwritten by [`Self::finalize`] unless the coupling set changes.
     pub fn set_mpm_use_cpic(&mut self, enabled: bool) {
+        self.mpm_use_cpic = enabled;
         if let Some(mpm) = self.mpm.as_mut() {
             mpm.use_cpic = enabled;
         }
     }
 
-    /// Whether CPIC rigid coupling is enabled (false if MPM isn't allocated).
+    /// Whether CPIC rigid coupling is enabled. Falls back to the stored
+    /// preference before MPM is lazily allocated.
     pub fn mpm_use_cpic(&self) -> bool {
-        self.mpm.as_ref().map(|m| m.use_cpic).unwrap_or(false)
+        self.mpm.as_ref().map(|m| m.use_cpic).unwrap_or(self.mpm_use_cpic)
+    }
+
+    /// Whether this state uses the MPM solver. True once MPM has been configured
+    /// via [`Self::set_mpm_params`], even before the sub-state is lazily
+    /// allocated on the first [`Self::add_particles`] — so a particle emitter
+    /// that starts empty still reports its MPM usage (e.g. to the testbed UI).
+    pub fn has_mpm(&self) -> bool {
+        self.mpm.is_some() || self.mpm_params.is_some()
     }
 
     /// Sets the MPM gravity vector. Applied on the next [`Self::simulate`] (the
     /// per-substep params are re-uploaded each frame), so this is cheap.
     pub fn set_mpm_gravity(&mut self, gravity: crate::rbd::math::Vector) {
+        // Keep the stored params authoritative so the gravity survives until MPM
+        // is lazily allocated (and is what `mpm_gravity` reports meanwhile).
+        if let Some(params) = self.mpm_params.as_mut() {
+            params.gravity = gravity;
+        }
         if let Some(mpm) = self.mpm.as_mut() {
             mpm.gravity = gravity;
         }
     }
 
-    /// Current MPM gravity vector (zero if MPM isn't allocated).
+    /// Current MPM gravity vector. Falls back to the gravity configured via
+    /// [`Self::set_mpm_params`] before MPM is lazily allocated, and only to zero
+    /// if no params were ever set.
     pub fn mpm_gravity(&self) -> crate::rbd::math::Vector {
         self.mpm
             .as_ref()
             .map(|m| m.gravity)
+            .or_else(|| self.mpm_params.map(|p| p.gravity))
             .unwrap_or(crate::rbd::math::Vector::ZERO)
     }
 
@@ -377,6 +400,7 @@ impl NexusState {
             if let Some(params) = self.mpm_params {
                 mpm.set_simulation_params(backend, params)?;
             }
+            mpm.use_cpic = self.mpm_use_cpic;
             self.mpm = Some(mpm);
         }
         Ok(self.mpm.as_mut().unwrap())

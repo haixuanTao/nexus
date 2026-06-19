@@ -17,6 +17,7 @@ mod pyramid2;
 mod centilever_beam2;
 mod elastic_cut2;
 mod elasticity2;
+mod mpm_emitter2;
 mod sand2;
 
 /// Declares the demo registry: a `(name, kind)` list for the picker UI and a
@@ -59,6 +60,7 @@ demos! {
     // MPM demos.
     "Cantilever beam" => Mpm : centilever_beam2,
     "Sand" => Mpm : sand2,
+    "Sand emitter" => Mpm : mpm_emitter2,
     "Elasticity" => Mpm : elasticity2,
     "Elastic cut" => Mpm : elastic_cut2,
 }

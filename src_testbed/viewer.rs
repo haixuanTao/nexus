@@ -478,7 +478,10 @@ impl NexusViewer {
         // current settings and push them back into the freshly-built scene.
         if self.ui.settings_demo != Some(self.ui.selected_demo) {
             self.ui.has_rbd = state.rbd.is_some();
-            self.ui.has_mpm = state.mpm.is_some();
+            // Use `has_mpm()` (not `mpm.is_some()`) so emitters that start with
+            // no particles — MPM allocated lazily on the first emit — still
+            // surface their MPM settings in the UI.
+            self.ui.has_mpm = state.has_mpm();
             self.ui.has_fem = state.fem.is_some();
             self.ui.sim_settings.mpm_substeps = state.mpm_substeps();
             self.ui.sim_settings.mpm_use_cpic = state.mpm_use_cpic();
