@@ -1,6 +1,6 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
 /// Inserts a body + collider into the state and registers its render shape.
@@ -96,7 +96,10 @@ pub fn build_block(
     }
 }
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
 
     /*
@@ -143,7 +146,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

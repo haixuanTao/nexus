@@ -8,8 +8,8 @@ use kiss3d::egui;
 use nexus::rbd::pipeline::RunStats;
 use nexus::state::NexusCounts;
 
-use egui::{Button, CollapsingHeader, Color32, ComboBox, CornerRadius, RichText, Stroke};
 use crate::backend::BackendType;
+use egui::{Button, CollapsingHeader, Color32, ComboBox, CornerRadius, RichText, Stroke};
 
 /// Sets up a custom warm theme that complements the app's off-white background.
 pub fn setup_custom_theme(ctx: &egui::Context) {
@@ -117,17 +117,16 @@ pub fn compiling_overlay(ctx: &egui::Context) {
 
 /// Builds the testbed control panel. Mutates `state` in place (run state, demo
 /// selection, backend choice) and queries the scene for scene-specific widgets.
-pub fn main_panel(
-    ctx: &egui::Context,
-    state: &mut UiState,
-    gpu_available: bool,
-) {
+pub fn main_panel(ctx: &egui::Context, state: &mut UiState, gpu_available: bool) {
     egui::Window::new("Nexus Testbed")
         .default_width(300.0)
         .show(ctx, |ui| {
             // GPU error banner.
             if let Some(error_msg) = &state.gpu_init_error {
-                ui.colored_label(Color32::from_rgb(180, 70, 70), format!("GPU: {}", error_msg));
+                ui.colored_label(
+                    Color32::from_rgb(180, 70, 70),
+                    format!("GPU: {}", error_msg),
+                );
                 ui.separator();
             }
 
@@ -306,7 +305,7 @@ fn performance_ui(
             "Total: {:.2}ms (+ readback: {:.2}ms) - {:.0} FPS",
             total_ms_without_readback, total_readback_time, fps
         ))
-            .strong(),
+        .strong(),
     );
     ui.add_space(4.0);
 

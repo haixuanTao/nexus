@@ -1,9 +1,12 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed2d::NexusViewer;
-use nexus2d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus2d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier2d::prelude::*;
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
     let no_coupling = RbdCoupling::NONE;
 
@@ -52,7 +55,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
             let y = j as f32 * shift + centery + 20.0;
 
             // Build the rigid body.
-            let body = RigidBodyBuilder::dynamic().translation(Vec2::new(x, y)).build();
+            let body = RigidBodyBuilder::dynamic()
+                .translation(Vec2::new(x, y))
+                .build();
             let collider = if j % 2 == 0 {
                 ColliderBuilder::cuboid(rad, rad)
             } else {
@@ -71,7 +76,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

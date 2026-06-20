@@ -1,6 +1,6 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
 /// Inserts a body + collider into the state and registers its render shape.
@@ -216,7 +216,9 @@ fn create_revolute_joints_with_limits(
     let platform1 = add_body(
         state,
         viewer,
-        RigidBodyBuilder::dynamic().translation(origin_v + shift).build(),
+        RigidBodyBuilder::dynamic()
+            .translation(origin_v + shift)
+            .build(),
         ColliderBuilder::cuboid(4.0, 0.2, 2.0).build(),
     );
 
@@ -497,7 +499,11 @@ fn create_actuated_revolute_joints(
             state,
             viewer,
             RigidBodyBuilder::new(status)
-                .translation(Vector::new(origin.x, origin.y + shifty, origin.z + fi * shift))
+                .translation(Vector::new(
+                    origin.x,
+                    origin.y + shifty,
+                    origin.z + fi * shift,
+                ))
                 // .rotation(Vector3::new(0.0, fi * 1.1, 0.0))
                 .build(),
             ColliderBuilder::cuboid(rad * 2.0, rad * 6.0 / (fi + 1.0), rad).build(),
@@ -601,7 +607,10 @@ fn create_actuated_spherical_joints(
     }
 }
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let use_articulations = true;
 
     let mut state = NexusState::default();
@@ -668,7 +677,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

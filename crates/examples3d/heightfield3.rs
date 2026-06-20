@@ -1,13 +1,16 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
 use nexus3d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 
 use glamx::vec3;
 use rapier3d::parry::utils::Array2;
 use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
     let coupling = RbdCoupling::MPM_ONE_WAY_COUPLING;
 
@@ -47,8 +50,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
     let heightfield = HeightField::new(heights, vec3(100.0, 5.0, 100.0));
     let (vtx, idx) = heightfield.to_trimesh();
     let body = RigidBodyBuilder::fixed().build();
-    let collider =
-        ColliderBuilder::trimesh_with_flags(vtx, idx, TriMeshFlags::ORIENTED).unwrap().build();
+    let collider = ColliderBuilder::trimesh_with_flags(vtx, idx, TriMeshFlags::ORIENTED)
+        .unwrap()
+        .build();
     let shape = collider.shared_shape().clone();
     let handle = state.insert_rigid_body(body, collider, coupling);
     viewer.insert_shape(handle, &shape);
@@ -58,7 +62,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

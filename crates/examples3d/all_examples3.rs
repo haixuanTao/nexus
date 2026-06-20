@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use inflector::Inflector;
-use nexus3d::prelude::{NexusPipeline, NexusPipelineMask};
 use nexus_testbed3d::{BackendType, DemoKind, NexusViewer};
+use nexus3d::prelude::{NexusPipeline, NexusPipelineMask};
 
 mod balls3;
 mod boxes3;
@@ -193,8 +193,7 @@ pub async fn main() {
             if backend_type != BackendType::Cpu {
                 viewer.show_compile_banner().await;
             }
-            if let Err(err) =
-                pipeline.preload_pipelines(viewer.backend(), NexusPipelineMask::all())
+            if let Err(err) = pipeline.preload_pipelines(viewer.backend(), NexusPipelineMask::all())
             {
                 eprintln!("Failed to preload GPU pipelines: {err:?}");
             }

@@ -33,6 +33,10 @@ use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 #[cfg(feature = "dim3")]
 use glamx::{Mat3, Vec3};
 
+use super::jacobian::{joint_jacobian_accumulate_par, joint_jacobian_column};
+use super::mass_matrix::link_world_inertia;
+use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
+use super::utils::body_to_parent;
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
 #[cfg(feature = "dim3")]
@@ -42,14 +46,10 @@ use crate::utils::linalg::{
     gemm_omega_skew_tr_cross_buf_par, gemm_skew_tr_lhs_cross_buf_par, gemm_skew_tr_lhs_par,
     gemm_tr_par, quadform_spatial_par,
 };
+use crate::utils::radix_sort::num_workgroups;
 use crate::utils::{BatchIndices, Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross_av};
 use parry::math::VectorExt;
-use crate::utils::radix_sort::num_workgroups;
-use super::jacobian::{joint_jacobian_accumulate_par, joint_jacobian_column};
-use super::mass_matrix::link_world_inertia;
-use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
-use super::utils::body_to_parent;
 
 const LANES: u32 = 32;
 
@@ -123,16 +123,37 @@ pub fn gpu_mb_compute_dynamics_pre(
 
     // 1) Forward Kinematics (single-threaded)
     if lane == 0 {
-        forward_kinematics(&mb, &stat_slice, &mut poses_slice, &mut ws_slice, &local_mprops_slice, num_links);
+        forward_kinematics(
+            &mb,
+            &stat_slice,
+            &mut poses_slice,
+            &mut ws_slice,
+            &local_mprops_slice,
+            num_links,
+        );
     }
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
+    update_body_jacobians(
+        lane,
+        mb_jac_base,
+        ndofs,
+        num_links,
+        &stat_slice,
+        &ws_slice.as_ref(),
+        body_jacobians,
+    );
 
     // 3) Propagate velocities (single-threaded)
     if lane == 0 {
-        propagate_velocities(num_links, &stat_slice, &local_mprops_slice, &vel_slice, &mut ws_slice);
+        propagate_velocities(
+            num_links,
+            &stat_slice,
+            &local_mprops_slice,
+            &vel_slice,
+            &mut ws_slice,
+        );
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -551,16 +572,37 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
 
     // 1) Forward Kinematics (single-threaded)
     if lane == 0 {
-        forward_kinematics(&mb, &stat_slice, &mut poses_slice, &mut ws_slice, &local_mprops_slice, num_links);
+        forward_kinematics(
+            &mb,
+            &stat_slice,
+            &mut poses_slice,
+            &mut ws_slice,
+            &local_mprops_slice,
+            num_links,
+        );
     }
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
+    update_body_jacobians(
+        lane,
+        mb_jac_base,
+        ndofs,
+        num_links,
+        &stat_slice,
+        &ws_slice.as_ref(),
+        body_jacobians,
+    );
 
     // 3) Velocities propagation (single-threaded)
     if lane == 0 {
-        propagate_velocities(num_links, &stat_slice, &local_mprops_slice, &vel_slice, &mut ws_slice);
+        propagate_velocities(
+            num_links,
+            &stat_slice,
+            &local_mprops_slice,
+            &vel_slice,
+            &mut ws_slice,
+        );
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -730,7 +772,6 @@ fn update_body_jacobians(
     ws_slice: &Slice<MultibodyLinkWorkspace>,
     body_jacobians: &mut [f32],
 ) {
-
     // TODO(PERF): on non-web platforms we could just use `mb.num_links` as the upper bound.
     // TODO(PERF): instead of copying the body jacobian over and over for each body, we should
     //             precompute a bit set that indicates which dofs are part of the kinematic tree
@@ -817,7 +858,7 @@ fn propagate_velocities(
     stat_slice: &Slice<MultibodyLinkStatic>,
     local_mprops_slice: &Slice<LocalMassProperties>,
     vel_slice: &Slice<f32>,
-    ws_slice: &mut SliceMut <MultibodyLinkWorkspace>,
+    ws_slice: &mut SliceMut<MultibodyLinkWorkspace>,
 ) {
     for k in 0..num_links {
         let k_usize = k as usize;

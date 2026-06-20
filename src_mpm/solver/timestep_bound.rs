@@ -10,7 +10,7 @@ use crate::mpm_shaders::models::default::GpuParticleModel;
 use crate::mpm_shaders::solver::timestep_bound::{
     GpuEstimateTimestepBound, GpuResetTimestepBound, GpuTimestepBounds,
 };
-use crate::solver::{GpuParticles};
+use crate::solver::GpuParticles;
 use khal::Shader;
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuPass, GpuTimestamps};
 use vortx::tensor::Tensor;

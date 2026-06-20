@@ -1,8 +1,11 @@
 //! Grid data structures and GPU kernels for sparse grid management.
 
 use crate::grid::sort::WgSort;
-use crate::mpm_shaders::grid::grid::{GpuResetHmap, GpuCaptureNumActiveBlocks, GpuInitIndirectWorkgroups, ActiveBlockHeader, Grid, GridHashMapEntry, Node};
-use crate::solver::{ GpuParticles, GpuRigidParticles};
+use crate::mpm_shaders::grid::grid::{
+    ActiveBlockHeader, GpuCaptureNumActiveBlocks, GpuInitIndirectWorkgroups, GpuResetHmap, Grid,
+    GridHashMapEntry, Node,
+};
+use crate::solver::{GpuParticles, GpuRigidParticles};
 use khal::backend::{Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuPass, GpuTimestamps};
 use khal::{BufferUsages, Shader};
 use nexus_rbd::utils::{GpuPrefixSum, PrefixSumWorkspace};
@@ -279,8 +282,12 @@ impl WgGrid {
 
         {
             let mut pass = encoder.begin_pass("sort:reset_hmap", Some(timestamps));
-            self.reset_hmap
-                .call(&mut pass, hmap_capacity, &mut grid.meta, &mut grid.hmap_entries)?;
+            self.reset_hmap.call(
+                &mut pass,
+                hmap_capacity,
+                &mut grid.meta,
+                &mut grid.hmap_entries,
+            )?;
         }
         {
             let mut pass = encoder.begin_pass("sort:touch_primary_blocks", Some(timestamps));

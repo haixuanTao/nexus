@@ -219,10 +219,12 @@ impl GpuBodySet {
             vels: Tensor::vector(backend, &vels, resizeable).unwrap(),
             poses: Tensor::vector(backend, &poses, resizeable).unwrap(),
             shapes: Tensor::vector(backend, &shapes_data, resizeable).unwrap(),
-            shapes_local_vertex_buffers: Tensor::vector(backend, vertex_buffer, resizeable).unwrap(),
+            shapes_local_vertex_buffers: Tensor::vector(backend, vertex_buffer, resizeable)
+                .unwrap(),
             shapes_vertex_buffers: Tensor::vector(backend, vertex_buffer, resizeable).unwrap(),
             shapes_index_buffers: Tensor::vector(backend, index_buffer, resizeable).unwrap(),
-            shapes_vertex_collider_id: Tensor::vector(backend, pt_collider_ids, resizeable).unwrap(),
+            shapes_vertex_collider_id: Tensor::vector(backend, pt_collider_ids, resizeable)
+                .unwrap(),
             shapes_data,
         }
     }
@@ -361,8 +363,8 @@ impl GpuBodySet {
 
         for (rb, co, coupling) in bodies {
             let mut shape_buffers = ShapeBuffers::default();
-            let shape = shape_from_parry(co.shape(), &mut shape_buffers)
-                .expect("Unsupported shape type");
+            let shape =
+                shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape type");
             assert!(
                 shape_buffers.vertices.is_empty(),
                 "GpuBodySet::append_rapier currently supports primitive (vertex-less) colliders only."

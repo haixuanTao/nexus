@@ -117,7 +117,9 @@ pub fn gpu_p2g_cdf(
     let mut node_cdf = nodes.at(gid).cdf;
 
     let first = active_blocks.at(bid as usize).first_rigid_particle;
-    let num = active_blocks.at(bid as usize).num_rigid_particles_with_extras;
+    let num = active_blocks
+        .at(bid as usize)
+        .num_rigid_particles_with_extras;
     let last = first + num;
 
     // Number of workgroup-sized chunks. Capped on the web (bounded loop with a per-chunk

@@ -1,13 +1,16 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
 use nexus3d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 
 use glamx::{Pose3, vec3};
 use rapier3d::parry::utils::Array2;
 use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
     let coupling = RbdCoupling::MPM_ONE_WAY_COUPLING;
 
@@ -41,7 +44,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
     state.add_particles(viewer.backend(), particles)?;
 
     // Floor
-    let body = RigidBodyBuilder::fixed().translation(vec3(0.0, -4.0, 0.0)).build();
+    let body = RigidBodyBuilder::fixed()
+        .translation(vec3(0.0, -4.0, 0.0))
+        .build();
     let collider = ColliderBuilder::cuboid(100.0, 1.0, 100.0).build();
     let shape = collider.shared_shape().clone();
     let handle = state.insert_rigid_body(body, collider, coupling);
@@ -57,8 +62,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
                 Pose3::rotation(vec3(1.3, 0.0, 0.0)) * *pt + vec3(0.0, 10.0, k as f32 * 10.0 - 10.0)
         });
         let body = RigidBodyBuilder::fixed().build();
-        let collider =
-            ColliderBuilder::trimesh_with_flags(vtx, idx, TriMeshFlags::ORIENTED).unwrap().build();
+        let collider = ColliderBuilder::trimesh_with_flags(vtx, idx, TriMeshFlags::ORIENTED)
+            .unwrap()
+            .build();
         let shape = collider.shared_shape().clone();
         let handle = state.insert_rigid_body(body, collider, coupling);
         viewer.insert_shape(handle, &shape);
@@ -69,7 +75,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

@@ -164,7 +164,8 @@ impl GpuSolver {
             args.body_constraint_counts,
             args.solver_vels,
             args.vels,
-            args.mprops,            args.batch_indices,
+            args.mprops,
+            args.batch_indices,
         )?;
 
         // Seed `solver_body_poses` from `body_poses`: rapier's
@@ -177,7 +178,8 @@ impl GpuSolver {
             [args.num_colliders, args.num_batches, 1],
             args.body_poses,
             args.local_mprops,
-            args.solver_body_poses,            args.batch_indices,
+            args.solver_body_poses,
+            args.batch_indices,
         )?;
 
         self.init_constraints.call(
@@ -247,7 +249,8 @@ impl GpuSolver {
             pass,
             [args.num_colliders, args.num_batches, 1],
             args.solver_vels_inc,
-            args.mprops,            args.sim_params,
+            args.mprops,
+            args.sim_params,
             args.batch_indices,
         )?;
 
@@ -286,7 +289,8 @@ impl GpuSolver {
                 pass,
                 [args.num_colliders, args.num_batches, 1],
                 args.solver_vels,
-                args.solver_vels_inc,                args.batch_indices,
+                args.solver_vels_inc,
+                args.batch_indices,
             )?;
 
             /*
@@ -349,7 +353,8 @@ impl GpuSolver {
                 pass,
                 [args.num_colliders, args.num_batches, 1],
                 args.solver_body_poses,
-                args.solver_vels,                args.sim_params,
+                args.solver_vels,
+                args.sim_params,
                 args.batch_indices,
             )?;
 
@@ -393,7 +398,8 @@ impl GpuSolver {
             args.solver_vels,
             args.body_poses,
             args.solver_body_poses,
-            args.local_mprops,            args.batch_indices,
+            args.local_mprops,
+            args.batch_indices,
         )?;
 
         Ok(())

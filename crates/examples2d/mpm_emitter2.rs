@@ -3,7 +3,7 @@ use nexus_testbed2d::NexusViewer;
 use nexus2d::mpm::solver::{Particle, ParticleModel, SimulationParams};
 use nexus2d::prelude::{NexusParticleChunk, NexusPipeline, NexusState, RbdCoupling};
 
-use glamx::{vec2, Vec2};
+use glamx::{Vec2, vec2};
 use rapier2d::prelude::{Collider, ColliderBuilder, RigidBody, RigidBodyBuilder};
 
 use std::collections::VecDeque;
@@ -34,7 +34,10 @@ fn insert_boundary(
     viewer.insert_shape(handle, &shape);
 }
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
 
     let cell_width = 0.2;
@@ -56,31 +59,43 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
     insert_boundary(
         &mut state,
         viewer,
-        RigidBodyBuilder::fixed().translation(vec2(40.0, -1.0)).build(),
+        RigidBodyBuilder::fixed()
+            .translation(vec2(40.0, -1.0))
+            .build(),
         ColliderBuilder::cuboid(45.0, 1.0).build(),
     );
     insert_boundary(
         &mut state,
         viewer,
-        RigidBodyBuilder::fixed().translation(vec2(-4.0, 30.0)).build(),
+        RigidBodyBuilder::fixed()
+            .translation(vec2(-4.0, 30.0))
+            .build(),
         ColliderBuilder::cuboid(1.0, 32.0).build(),
     );
     insert_boundary(
         &mut state,
         viewer,
-        RigidBodyBuilder::fixed().translation(vec2(84.0, 30.0)).build(),
+        RigidBodyBuilder::fixed()
+            .translation(vec2(84.0, 30.0))
+            .build(),
         ColliderBuilder::cuboid(1.0, 32.0).build(),
     );
     insert_boundary(
         &mut state,
         viewer,
-        RigidBodyBuilder::fixed().translation(vec2(25.0, 20.0)).rotation(-0.5).build(),
+        RigidBodyBuilder::fixed()
+            .translation(vec2(25.0, 20.0))
+            .rotation(-0.5)
+            .build(),
         ColliderBuilder::cuboid(12.0, 0.8).build(),
     );
     insert_boundary(
         &mut state,
         viewer,
-        RigidBodyBuilder::fixed().translation(vec2(58.0, 12.0)).rotation(0.5).build(),
+        RigidBodyBuilder::fixed()
+            .translation(vec2(58.0, 12.0))
+            .rotation(0.5)
+            .build(),
         ColliderBuilder::cuboid(12.0, 0.8).build(),
     );
 
@@ -116,10 +131,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
                 let mut particles = Vec::with_capacity((EMIT_BLOCK * EMIT_BLOCK_Y) as usize);
                 for i in 0..EMIT_BLOCK {
                     for j in 0..EMIT_BLOCK_Y {
-                        let offset = vec2(
-                            (i - EMIT_BLOCK / 2) as f32,
-                            (j - EMIT_BLOCK_Y / 2) as f32,
-                        ) * spacing;
+                        let offset =
+                            vec2((i - EMIT_BLOCK / 2) as f32, (j - EMIT_BLOCK_Y / 2) as f32)
+                                * spacing;
                         let mut particle = Particle::new(center + offset, radius, DENSITY, model);
                         particle.dynamics.velocity = velocity;
                         particles.push(particle);
@@ -131,7 +145,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
                 total_particles += n;
             }
 
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
             t += dt;
             step += 1;
         }

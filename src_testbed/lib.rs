@@ -10,13 +10,13 @@ pub extern crate rapier2d as rapier;
 #[cfg(feature = "dim3")]
 pub extern crate rapier3d as rapier;
 
-pub mod viewer;
-mod ui;
 mod backend;
 mod graphics;
+mod ui;
+pub mod viewer;
 
-pub use viewer::{UiState, NexusViewer};
 pub use backend::BackendType;
+pub use viewer::{NexusViewer, UiState};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum RunState {

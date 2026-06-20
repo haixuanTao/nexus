@@ -5,11 +5,11 @@ use nexus::rbd::math::Pose;
 use kiss3d::color::Color;
 use kiss3d::procedural::IndexBuffer;
 use kiss3d::scene::{SceneNode2d, SceneNode3d};
+use rapier::data::{Coarena, Index};
 use rapier::math::DIM;
 use rapier::parry::shape::ShapeType;
-use std::collections::HashMap;
-use rapier::data::{Coarena, Index};
 use rapier::prelude::{RigidBodyHandle, SharedShape};
+use std::collections::HashMap;
 #[cfg(feature = "dim2")]
 use {
     glamx::{Mat2, Vec2},
@@ -19,9 +19,9 @@ use {
     std::rc::Rc,
 };
 
+use nexus::prelude::NexusState;
 #[cfg(feature = "dim3")]
 use {glamx::Mat3, kiss3d::scene::InstanceData3d};
-use nexus::prelude::NexusState;
 
 pub struct InstancedNodeEntry {
     pub pose_index: u32,
@@ -81,7 +81,10 @@ pub struct InstanceEntry {
 
 impl Default for InstanceEntry {
     fn default() -> Self {
-        Self {instance: u32::MAX, entry: u32::MAX}
+        Self {
+            instance: u32::MAX,
+            entry: u32::MAX,
+        }
     }
 }
 
@@ -133,10 +136,13 @@ impl RenderContext {
             local_pose,
             scale,
         });
-        self.body2instance.insert(handle.0, InstanceEntry {
-            instance: instance_id as u32,
-            entry: instanced_node.entries.len() as u32 - 1,
-        });
+        self.body2instance.insert(
+            handle.0,
+            InstanceEntry {
+                instance: instance_id as u32,
+                entry: instanced_node.entries.len() as u32 - 1,
+            },
+        );
     }
 
     pub fn insert_shape(
@@ -169,45 +175,62 @@ impl RenderContext {
 
         match shape.shape_type() {
             ShapeType::Ball => {
-                let instance_id = *self.shape2instance.entry(ShapeType::Ball).or_insert_with(|| {
-                    #[cfg(feature = "dim2")]
-                    let node = scene.add_circle(0.5);
-                    #[cfg(feature = "dim3")]
-                    let node = {
-                        let lowres_sphere = kiss3d::procedural::sphere(1.0, 10, 10, true);
-                        scene.add_render_mesh(lowres_sphere, Vec3::ONE)
-                    };
-                    self.instances.push(InstancedNode {
-                        node,
-                        entries: vec![],
-                        data: vec![],
-                    });
-                    self.instances.len() - 1
-                });
+                let instance_id =
+                    *self
+                        .shape2instance
+                        .entry(ShapeType::Ball)
+                        .or_insert_with(|| {
+                            #[cfg(feature = "dim2")]
+                            let node = scene.add_circle(0.5);
+                            #[cfg(feature = "dim3")]
+                            let node = {
+                                let lowres_sphere = kiss3d::procedural::sphere(1.0, 10, 10, true);
+                                scene.add_render_mesh(lowres_sphere, Vec3::ONE)
+                            };
+                            self.instances.push(InstancedNode {
+                                node,
+                                entries: vec![],
+                                data: vec![],
+                            });
+                            self.instances.len() - 1
+                        });
                 let ball = shape.as_ball().unwrap();
-                self.push_entry(instance_id, env, handle, color, local_pose, [ball.radius * 2.0; DIM]);
+                self.push_entry(
+                    instance_id,
+                    env,
+                    handle,
+                    color,
+                    local_pose,
+                    [ball.radius * 2.0; DIM],
+                );
             }
             ShapeType::Cuboid => {
-                let instance_id = *self.shape2instance.entry(ShapeType::Cuboid).or_insert_with(|| {
-                    #[cfg(feature = "dim2")]
-                    let node = scene.add_rectangle(1.0, 1.0);
-                    #[cfg(feature = "dim3")]
-                    let node = scene.add_cube(1.0, 1.0, 1.0);
-                    self.instances.push(InstancedNode {
-                        node,
-                        entries: vec![],
-                        data: vec![],
-                    });
-                    self.instances.len() - 1
-                });
+                let instance_id =
+                    *self
+                        .shape2instance
+                        .entry(ShapeType::Cuboid)
+                        .or_insert_with(|| {
+                            #[cfg(feature = "dim2")]
+                            let node = scene.add_rectangle(1.0, 1.0);
+                            #[cfg(feature = "dim3")]
+                            let node = scene.add_cube(1.0, 1.0, 1.0);
+                            self.instances.push(InstancedNode {
+                                node,
+                                entries: vec![],
+                                data: vec![],
+                            });
+                            self.instances.len() - 1
+                        });
                 let cuboid = shape.as_cuboid().unwrap();
                 let scale = (cuboid.half_extents * 2.0).into();
                 self.push_entry(instance_id, env, handle, color, local_pose, scale);
             }
             #[cfg(feature = "dim3")]
             ShapeType::Cylinder => {
-                let instance_id =
-                    *self.shape2instance.entry(ShapeType::Cylinder).or_insert_with(|| {
+                let instance_id = *self
+                    .shape2instance
+                    .entry(ShapeType::Cylinder)
+                    .or_insert_with(|| {
                         let node = scene.add_cylinder(1.0, 1.0);
                         self.instances.push(InstancedNode {
                             node,
@@ -228,15 +251,19 @@ impl RenderContext {
             }
             #[cfg(feature = "dim3")]
             ShapeType::Cone => {
-                let instance_id = *self.shape2instance.entry(ShapeType::Cone).or_insert_with(|| {
-                    let node = scene.add_cone(1.0, 1.0);
-                    self.instances.push(InstancedNode {
-                        node,
-                        entries: vec![],
-                        data: vec![],
-                    });
-                    self.instances.len() - 1
-                });
+                let instance_id =
+                    *self
+                        .shape2instance
+                        .entry(ShapeType::Cone)
+                        .or_insert_with(|| {
+                            let node = scene.add_cone(1.0, 1.0);
+                            self.instances.push(InstancedNode {
+                                node,
+                                entries: vec![],
+                                data: vec![],
+                            });
+                            self.instances.len() - 1
+                        });
                 let c = shape.as_cone().unwrap();
                 self.push_entry(
                     instance_id,
@@ -248,18 +275,21 @@ impl RenderContext {
                 );
             }
             ShapeType::Capsule => {
-                let instance_id = *self.shape2instance.entry(ShapeType::Capsule).or_insert_with(|| {
-                    #[cfg(feature = "dim2")]
-                    let node = scene.add_capsule(0.5, 1.0);
-                    #[cfg(feature = "dim3")]
-                    let node = scene.add_capsule(0.5, 1.0);
-                    self.instances.push(InstancedNode {
-                        node,
-                        entries: vec![],
-                        data: vec![],
+                let instance_id = *self
+                    .shape2instance
+                    .entry(ShapeType::Capsule)
+                    .or_insert_with(|| {
+                        #[cfg(feature = "dim2")]
+                        let node = scene.add_capsule(0.5, 1.0);
+                        #[cfg(feature = "dim3")]
+                        let node = scene.add_capsule(0.5, 1.0);
+                        self.instances.push(InstancedNode {
+                            node,
+                            entries: vec![],
+                            data: vec![],
+                        });
+                        self.instances.len() - 1
                     });
-                    self.instances.len() - 1
-                });
                 let c = shape.as_capsule().unwrap();
                 #[cfg(feature = "dim2")]
                 let scale = [c.radius * 2.0, c.segment.length()];
@@ -435,7 +465,6 @@ fn pose_to_render_data(pose: &Pose, scale: &[f32; 3]) -> (Vec3, Mat3) {
     );
     (position, deformation)
 }
-
 
 impl RenderContext {
     /// Update rendering instances from a slice of collider world poses, indexed by

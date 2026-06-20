@@ -1,6 +1,6 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
 /// Inserts a body + collider into the state and registers its render shape.
@@ -40,7 +40,9 @@ fn create_pyramid(
                 add_body(
                     state,
                     viewer,
-                    RigidBodyBuilder::dynamic().translation(Vec3::new(x, y, z)).build(),
+                    RigidBodyBuilder::dynamic()
+                        .translation(Vec3::new(x, y, z))
+                        .build(),
                     ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).build(),
                 );
             }
@@ -48,7 +50,10 @@ fn create_pyramid(
     }
 }
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
 
     /*
@@ -72,20 +77,16 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
     let cube_size = 1.0;
     let hext = Vec3::splat(cube_size);
     let bottomy = cube_size;
-    create_pyramid(
-        &mut state,
-        viewer,
-        Vec3::new(0.0, bottomy, 0.0),
-        50,
-        hext,
-    );
+    create_pyramid(&mut state, viewer, Vec3::new(0.0, bottomy, 0.0), 50, hext);
 
     let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
     state.finalize(viewer.backend()).await?;
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

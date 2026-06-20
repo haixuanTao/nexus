@@ -280,7 +280,8 @@ pub fn gpu_update_nbh_block_ids(
     #[spirv(global_invocation_id)] invocation_id: khal_std::glamx::UVec3,
     #[spirv(uniform, descriptor_set = 0, binding = 0)] grid: &Grid,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] hmap_entries: &[GridHashMapEntry],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] active_blocks: &mut [ActiveBlockHeader],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    active_blocks: &mut [ActiveBlockHeader],
 ) {
     let id = invocation_id.x;
     if id < grid.num_active_blocks {
@@ -338,7 +339,8 @@ pub fn gpu_update_block_particle_count(
         for i in 1..NUM_ASSOC_BLOCKS {
             let bshift = blocks[i].id - id0;
             #[cfg(feature = "dim2")]
-            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
+            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
             #[cfg(feature = "dim3")]
             let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
                 && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
@@ -349,7 +351,10 @@ pub fn gpu_update_block_particle_count(
                 // instead of doing a hashmap lookup per particle. Only the extra slab
                 // bucket is incremented; the neighbour's `num_particles_with_extras` is
                 // recovered as the sum of its buckets in the copy passes.
-                let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
+                let block_i = active_blocks
+                    .at(block0.id as usize)
+                    .nbh_block_ids
+                    .read(i - 1);
                 atomic_add_u32(
                     active_blocks
                         .at_mut(block_i.id as usize)
@@ -423,7 +428,10 @@ pub fn gpu_copy_scan_values_to_first_particles(
                 active_blocks.at_mut(idx).num_particles = running - first;
             }
             let count = active_blocks.at(idx).sort_bucket_cursors.read(k);
-            active_blocks.at_mut(idx).sort_bucket_cursors.write(k, running);
+            active_blocks
+                .at_mut(idx)
+                .sort_bucket_cursors
+                .write(k, running);
             running += count;
         }
         active_blocks.at_mut(idx).num_particles_with_extras = running - first;
@@ -475,7 +483,8 @@ pub fn gpu_finalize_particles_sort(
         for i in 1..NUM_ASSOC_BLOCKS {
             let bshift = blocks[i].id - id0;
             #[cfg(feature = "dim2")]
-            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
+            let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
             #[cfg(feature = "dim3")]
             let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
                 && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
@@ -483,7 +492,10 @@ pub fn gpu_finalize_particles_sort(
             if spills {
                 // Reuse the neighbour header IDs precomputed by `gpu_update_nbh_block_ids`
                 // rather than re-querying the hashmap.
-                let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
+                let block_i = active_blocks
+                    .at(block0.id as usize)
+                    .nbh_block_ids
+                    .read(i - 1);
                 let slot_i = atomic_add_u32(
                     active_blocks
                         .at_mut(block_i.id as usize)
@@ -535,7 +547,8 @@ pub fn gpu_update_block_rigid_particle_count(
             for i in 1..NUM_ASSOC_BLOCKS {
                 let bshift = blocks[i].id - id0;
                 #[cfg(feature = "dim2")]
-                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
+                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                    && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
                 #[cfg(feature = "dim3")]
                 let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
                     && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
@@ -543,7 +556,10 @@ pub fn gpu_update_block_rigid_particle_count(
                 if spills {
                     // The neighbour header IDs (or NONE for inactive neighbours) were
                     // precomputed by `gpu_update_nbh_block_ids`.
-                    let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
+                    let block_i = active_blocks
+                        .at(block0.id as usize)
+                        .nbh_block_ids
+                        .read(i - 1);
                     if block_i.id != NONE {
                         atomic_add_u32(
                             &mut active_blocks
@@ -574,7 +590,9 @@ pub fn gpu_copy_rigid_particles_len_to_scan_value(
     if id < grid.num_active_blocks {
         scan_values.write(
             id as usize,
-            active_blocks.at(id as usize).num_rigid_particles_with_extras,
+            active_blocks
+                .at(id as usize)
+                .num_rigid_particles_with_extras,
         );
     }
 }
@@ -639,14 +657,18 @@ pub fn gpu_finalize_rigid_particles_sort(
             for i in 1..NUM_ASSOC_BLOCKS {
                 let bshift = blocks[i].id - id0;
                 #[cfg(feature = "dim2")]
-                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT) && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
+                let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
+                    && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT);
                 #[cfg(feature = "dim3")]
                 let spills = (bshift.x == 0 || assoc.x >= EXTRA_PARTICLE_MIN_SHIFT)
                     && (bshift.y == 0 || assoc.y >= EXTRA_PARTICLE_MIN_SHIFT)
                     && (bshift.z == 0 || assoc.z >= EXTRA_PARTICLE_MIN_SHIFT);
                 if spills {
                     // Reuse the neighbour header IDs precomputed by `gpu_update_nbh_block_ids`.
-                    let block_i = active_blocks.at(block0.id as usize).nbh_block_ids.read(i - 1);
+                    let block_i = active_blocks
+                        .at(block0.id as usize)
+                        .nbh_block_ids
+                        .read(i - 1);
                     if block_i.id != NONE {
                         let first_i = active_blocks.at(block_i.id as usize).first_rigid_particle;
                         let slot_i = atomic_add_u32(

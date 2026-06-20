@@ -1,9 +1,12 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     const NXZ: isize = 30;
     const NY: isize = 70;
 
@@ -53,7 +56,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
         for (wall_pos, wall_sz) in walls {
             let body = RigidBodyBuilder::fixed().build();
-            let collider = ColliderBuilder::cuboid(wall_sz.x, wall_sz.y, wall_sz.z).translation(wall_pos).build();
+            let collider = ColliderBuilder::cuboid(wall_sz.x, wall_sz.y, wall_sz.z)
+                .translation(wall_pos)
+                .build();
             let shape = collider.shared_shape().clone();
             let handle = state.insert_rigid_body(body, collider, no_coupling);
             viewer.insert_shape(handle, &shape);
@@ -66,7 +71,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

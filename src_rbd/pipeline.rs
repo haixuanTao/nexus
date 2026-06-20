@@ -4,7 +4,6 @@
 //! simulation step on the GPU. The pipeline manages collision detection, contact generation,
 //! constraint solving, and integration.
 
-use std::ops::Range;
 use crate::broad_phase::{GpuNarrowPhase, Lbvh, LbvhState};
 use crate::dynamics::{
     ColoringArgs, GpuColoring, GpuImpulseJointSet, GpuJointSolver, GpuMpropsUpdate, GpuSolver,
@@ -25,6 +24,7 @@ use crate::shaders::shapes::Shape;
 use crate::shaders::utils::BatchIndices;
 use crate::utils::{GpuPrefixSum, PrefixSumWorkspace};
 use khal::Shader;
+use std::ops::Range;
 
 use khal::BufferUsages;
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuTimestamps};
@@ -839,8 +839,7 @@ impl RbdState {
         // Shared shape vertex/index buffers: dummy data to avoid empty bindings.
         let vertex_buffers =
             Tensor::vector(backend, &[Point::ZERO.into()], BufferUsages::STORAGE).unwrap();
-        let index_buffers =
-            Tensor::vector(backend, &[0u32, 0, 0], BufferUsages::STORAGE).unwrap();
+        let index_buffers = Tensor::vector(backend, &[0u32, 0, 0], BufferUsages::STORAGE).unwrap();
         let body_group = Tensor::vector(backend, &all_body_group, BufferUsages::STORAGE).unwrap();
 
         // Per-body buffers carry COPY_DST | COPY_SRC so `append_bodies` /
@@ -862,7 +861,8 @@ impl RbdState {
         )
         .unwrap();
         let collision_pairs_len_staging =
-            Tensor::scalar_uninit(backend, BufferUsages::MAP_READ | BufferUsages::COPY_DST).unwrap();
+            Tensor::scalar_uninit(backend, BufferUsages::MAP_READ | BufferUsages::COPY_DST)
+                .unwrap();
         let collision_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
         let contacts =
@@ -1024,7 +1024,10 @@ impl RbdState {
     pub fn append_bodies(
         &mut self,
         backend: &GpuBackend,
-        bodies: &[(crate::rapier::dynamics::RigidBody, crate::rapier::geometry::Collider)],
+        bodies: &[(
+            crate::rapier::dynamics::RigidBody,
+            crate::rapier::geometry::Collider,
+        )],
     ) -> Result<Range<u32>, GpuBackendError> {
         let cap = self.num_colliders_per_batch as usize;
         let active = self.num_active_colliders as usize;
@@ -1073,7 +1076,8 @@ impl RbdState {
             };
 
             let mut shape_buffers = crate::shapes::ShapeBuffers::default();
-            let shape = shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape");
+            let shape =
+                shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape");
             assert!(
                 shape_buffers.vertices.is_empty(),
                 "RbdState::append_bodies currently supports primitive (vertex-less) colliders only."
@@ -1168,8 +1172,20 @@ impl RbdState {
                                     | BufferUsages::COPY_DST,
                             )?;
                             let mut enc = backend.begin_encoding();
-                            enc.copy_buffer_to_buffer($t.buffer(), last_global, &mut staging, 0, 1)?;
-                            enc.copy_buffer_to_buffer(&staging, 0, $t.buffer_mut(), hole_global, 1)?;
+                            enc.copy_buffer_to_buffer(
+                                $t.buffer(),
+                                last_global,
+                                &mut staging,
+                                0,
+                                1,
+                            )?;
+                            enc.copy_buffer_to_buffer(
+                                &staging,
+                                0,
+                                $t.buffer_mut(),
+                                hole_global,
+                                1,
+                            )?;
                             backend.submit(enc)?;
                         }};
                     }
@@ -1336,8 +1352,9 @@ impl RbdPipeline {
     pub fn new(backend: &GpuBackend) -> Result<Self, GpuBackendError> {
         Ok(Self {
             mprops_update: GpuMpropsUpdate::from_backend(backend)?,
-            sync_collider_poses: crate::dynamics::GpuSyncColliderPosesShader::from_backend(backend)
-                ?,
+            sync_collider_poses: crate::dynamics::GpuSyncColliderPosesShader::from_backend(
+                backend,
+            )?,
             narrow_phase: GpuNarrowPhase::from_backend(backend)?,
             solver: GpuSolver::from_backend(backend)?,
             joint_solver: GpuJointSolver::from_backend(backend)?,
@@ -1367,7 +1384,8 @@ impl RbdPipeline {
         {
             if !state.multibodies.is_empty() {
                 let mut encoder = backend.begin_encoding();
-                let mut pass = encoder.begin_pass("[RBD] multibody-init-step", timestamps.as_deref_mut());
+                let mut pass =
+                    encoder.begin_pass("[RBD] multibody-init-step", timestamps.as_deref_mut());
                 let mut args = crate::dynamics::MultibodySolverArgs {
                     poses: &mut state.body_poses,
                     collider_world_poses: &state.collider_world_poses,
@@ -1378,8 +1396,7 @@ impl RbdPipeline {
                     batch_indices: &state.batch_indices,
                 };
                 self.multibody_solver
-                    .init_step(&mut pass, &mut state.multibodies, &mut args)
-                    ?;
+                    .init_step(&mut pass, &mut state.multibodies, &mut args)?;
                 drop(pass);
                 drop(args);
                 backend.submit(encoder)?;
@@ -1393,75 +1410,72 @@ impl RbdPipeline {
 
             // Update mass properties — uses body world poses to compute the
             // world COM and inertia tensor.
-            self.mprops_update
-                .dispatch(
-                    &mut pass,
-                    &mut state.mprops,
-                    &state.local_mprops,
-                    &state.body_poses,
-                    &state.batch_indices,
-                    state.num_colliders_per_batch,
-                    state.num_batches,
-                )?;
+            self.mprops_update.dispatch(
+                &mut pass,
+                &mut state.mprops,
+                &state.local_mprops,
+                &state.body_poses,
+                &state.batch_indices,
+                state.num_colliders_per_batch,
+                state.num_batches,
+            )?;
 
             // Update collider world-space poses from their parent rigid-body poses.
-            self.sync_collider_poses
-                .dispatch(
-                    &mut pass,
-                    &state.body_poses,
-                    &state.collider_local_poses,
-                    &mut state.collider_world_poses,
-                    &state.batch_indices,
-                    state.num_colliders_per_batch,
-                    state.num_batches,
-                )?;
+            self.sync_collider_poses.dispatch(
+                &mut pass,
+                &state.body_poses,
+                &state.collider_local_poses,
+                &mut state.collider_world_poses,
+                &state.batch_indices,
+                state.num_colliders_per_batch,
+                state.num_batches,
+            )?;
 
             drop(pass);
 
             // Build LBVH and find collision pairs.
-            self.lbvh
-                .update_tree(
-                    backend,
-                    &mut encoder,
-                    &mut state.lbvh,
-                    state.collider_local_poses.len() as u32,
-                    state.num_batches,
-                    &state.collider_world_poses,
-                    &state.vertex_buffers,
-                    &state.shapes,
-                    &state.batch_indices,
-                    timestamps.as_deref_mut(),
-                )?;
+            self.lbvh.update_tree(
+                backend,
+                &mut encoder,
+                &mut state.lbvh,
+                state.collider_local_poses.len() as u32,
+                state.num_batches,
+                &state.collider_world_poses,
+                &state.vertex_buffers,
+                &state.shapes,
+                &state.batch_indices,
+                timestamps.as_deref_mut(),
+            )?;
 
             // Debug: validate LBVH topology after tree construction
             if crate::VALIDATE_LBVH_TOPOLOGY {
                 backend.submit(encoder)?;
 
                 let num_colliders = state.collider_world_poses.len() as u32;
-                let tree: Vec<LbvhNode> = futures::executor::block_on(backend
-                    .slow_read_vec(state.lbvh.tree().buffer()))?;
-                let sorted_colliders: Vec<u32> = futures::executor::block_on(backend
-                    .slow_read_vec(state.lbvh.sorted_colliders().buffer()))
-                    ?;
+                let tree: Vec<LbvhNode> =
+                    futures::executor::block_on(backend.slow_read_vec(state.lbvh.tree().buffer()))?;
+                let sorted_colliders: Vec<u32> = futures::executor::block_on(
+                    backend.slow_read_vec(state.lbvh.sorted_colliders().buffer()),
+                )?;
                 validate_lbvh_topology(&tree, &sorted_colliders, num_colliders);
 
                 encoder = backend.begin_encoding();
-                let _pass = encoder.begin_pass("[RBD] broad-phase-find-pairs", timestamps.as_deref_mut());
+                let _pass =
+                    encoder.begin_pass("[RBD] broad-phase-find-pairs", timestamps.as_deref_mut());
             }
 
             let mut pass = encoder.begin_pass("[RBD] lbvh-find-pairs", timestamps.as_deref_mut());
-            self.lbvh
-                .find_pairs(
-                    &mut pass,
-                    &mut state.lbvh,
-                    state.body_poses.len() as u32,
-                    state.num_batches,
-                    &state.batch_indices,
-                    &mut state.collision_pairs,
-                    &mut state.collision_pairs_len,
-                    &mut state.collision_pairs_indirect,
-                    &state.collision_groups,
-                )?;
+            self.lbvh.find_pairs(
+                &mut pass,
+                &mut state.lbvh,
+                state.body_poses.len() as u32,
+                state.num_batches,
+                &state.batch_indices,
+                &mut state.collision_pairs,
+                &mut state.collision_pairs_len,
+                &mut state.collision_pairs_indirect,
+                &state.collision_groups,
+            )?;
 
             drop(pass);
             backend.submit(encoder)?;
@@ -1476,25 +1490,24 @@ impl RbdPipeline {
             let mut encoder = backend.begin_encoding();
             let mut pass = encoder.begin_pass("[RBD] narrow-phase", timestamps.as_deref_mut());
 
-            self.narrow_phase
-                .dispatch(
-                    &mut pass,
-                    state.body_poses.len() as u32,
-                    &state.collider_world_poses,
-                    &state.shapes,
-                    &state.vertex_buffers,
-                    &state.index_buffers,
-                    &state.collision_pairs,
-                    &state.collision_pairs_len,
-                    &state.collision_pairs_indirect,
-                    &mut state.contacts,
-                    &mut state.contacts_len,
-                    &mut state.contacts_indirect,
-                    &mut state.pfm_pairs,
-                    &mut state.pfm_pairs_len,
-                    &mut state.pfm_pairs_indirect,
-                    &state.batch_indices,
-                )?;
+            self.narrow_phase.dispatch(
+                &mut pass,
+                state.body_poses.len() as u32,
+                &state.collider_world_poses,
+                &state.shapes,
+                &state.vertex_buffers,
+                &state.index_buffers,
+                &state.collision_pairs,
+                &state.collision_pairs_len,
+                &state.collision_pairs_indirect,
+                &mut state.contacts,
+                &mut state.contacts_len,
+                &mut state.contacts_indirect,
+                &mut state.pfm_pairs,
+                &mut state.pfm_pairs_len,
+                &mut state.pfm_pairs_indirect,
+                &state.batch_indices,
+            )?;
 
             drop(pass);
             backend.submit(encoder)?;
@@ -1537,13 +1550,12 @@ impl RbdPipeline {
                 body_group: &state.body_group,
                 batch_indices: &state.batch_indices,
             };
-            self.solver
-                .prepare(
-                    backend,
-                    &mut pass,
-                    prepare_args,
-                    &mut state.prefix_sum_workspace,
-                )?;
+            self.solver.prepare(
+                backend,
+                &mut pass,
+                prepare_args,
+                &mut state.prefix_sum_workspace,
+            )?;
 
             // Warmstart
             let warmstart_args = WarmstartArgs {
@@ -1559,8 +1571,7 @@ impl RbdPipeline {
             };
 
             self.warmstart
-                .transfer_warmstart_impulses(&mut pass, warmstart_args)
-                ?;
+                .transfer_warmstart_impulses(&mut pass, warmstart_args)?;
 
             let coloring_args = ColoringArgs {
                 contacts_len_indirect: &state.contacts_indirect,
@@ -1578,8 +1589,7 @@ impl RbdPipeline {
                 body_group: &state.body_group,
             };
             self.coloring
-                .dispatch_topo_gc_bounded(&mut pass, coloring_args, state.max_colors)
-                ?;
+                .dispatch_topo_gc_bounded(&mut pass, coloring_args, state.max_colors)?;
 
             // `+1` because solver iterates 1..=max_colors (color 0 is unassigned).
             let num_colors = state.max_colors + 1;
@@ -1641,15 +1651,14 @@ impl RbdPipeline {
             } else {
                 Some((&self.multibody_solver, &mut state.multibodies))
             };
-            self.solver
-                .solve_tgs(
-                    &mut pass,
-                    &self.joint_solver,
-                    solver_args,
-                    joint_solver_args,
-                    #[cfg(feature = "dim3")]
-                    mb,
-                )?;
+            self.solver.solve_tgs(
+                &mut pass,
+                &self.joint_solver,
+                solver_args,
+                joint_solver_args,
+                #[cfg(feature = "dim3")]
+                mb,
+            )?;
             drop(pass);
 
             // Resolve all accumulated timestamps before the final submit.

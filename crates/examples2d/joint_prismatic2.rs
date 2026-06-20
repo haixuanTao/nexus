@@ -1,9 +1,12 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed2d::NexusViewer;
-use nexus2d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus2d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier2d::prelude::*;
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
     let no_coupling = RbdCoupling::NONE;
 
@@ -21,7 +24,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
         for j in 0..300 {
             let x = j as f32 * shift * 4.0;
 
-            let body = RigidBodyBuilder::fixed().translation(Vec2::new(x, y)).build();
+            let body = RigidBodyBuilder::fixed()
+                .translation(Vec2::new(x, y))
+                .build();
             let collider = ColliderBuilder::cuboid(rad, rad).build();
             let shape = collider.shared_shape().clone();
             let mut curr_parent = state.insert_rigid_body(body, collider, no_coupling);
@@ -30,7 +35,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
             for i in 0..num {
                 let y = y - (i + 1) as f32 * shift;
                 let density = 1.0;
-                let body = RigidBodyBuilder::dynamic().translation(Vec2::new(x, y)).build();
+                let body = RigidBodyBuilder::dynamic()
+                    .translation(Vec2::new(x, y))
+                    .build();
                 let collider = ColliderBuilder::cuboid(rad, rad).density(density).build();
                 let shape = collider.shared_shape().clone();
                 let curr_child = state.insert_rigid_body(body, collider, no_coupling);
@@ -58,7 +65,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

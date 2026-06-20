@@ -5,15 +5,15 @@ use crate::mpm_shaders::{PaddedMatrix, PaddingExt};
 use khal::BufferUsages;
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError};
 use nexus_rbd::dynamics::GpuBodySet;
-use nexus_rbd::math::{Matrix, Vector, DIM};
+use nexus_rbd::math::{DIM, Matrix, Vector};
 use std::ops::RangeBounds;
 use vortx::tensor::Tensor;
 
+use crate::solver::{GpuParticleModel, ParticleModel};
 use {
     crate::sampling::{self, SamplingBuffers, SamplingParams},
     nexus_rbd::dynamics::body::RapierBodyCouplingEntry,
 };
-use crate::solver::{ParticleModel, GpuParticleModel};
 
 /// Particle position type used on the GPU.
 ///
@@ -363,7 +363,11 @@ impl GpuParticles {
             def_grad: Tensor::vector(backend, &data.def_grad, resizeable)?,
             properties: Tensor::vector(backend, &data.properties, resizeable)?,
             models: Tensor::vector(backend, &data.models, resizeable)?,
-            sorted_ids: Tensor::vector_uninit(backend, particles.len() as u32 * 2_u32.pow(DIM as u32), resizeable)?,
+            sorted_ids: Tensor::vector_uninit(
+                backend,
+                particles.len() as u32 * 2_u32.pow(DIM as u32),
+                resizeable,
+            )?,
         })
     }
 

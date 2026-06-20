@@ -4,8 +4,14 @@ use crate::fem::solver::{FemConfig, FemMaterial};
 use crate::mpm::pipeline::{MpmPipeline, MpmState};
 use crate::mpm::solver::{BoundaryCondition, BoundaryConditionExt, Particle, SimulationParams};
 use crate::rapier::data::{Arena, Coarena, Index};
-use crate::rapier::prelude::{Collider, ColliderHandle, GenericJoint, ImpulseJointHandle, MultibodyJointHandle, PhysicsWorld, RigidBody, RigidBodyHandle};
-use crate::rbd::dynamics::{body::{BodyCoupling, RapierBodyCouplingEntry}, RbdSimParams};
+use crate::rapier::prelude::{
+    Collider, ColliderHandle, GenericJoint, ImpulseJointHandle, MultibodyJointHandle, PhysicsWorld,
+    RigidBody, RigidBodyHandle,
+};
+use crate::rbd::dynamics::{
+    RbdSimParams,
+    body::{BodyCoupling, RapierBodyCouplingEntry},
+};
 use crate::rbd::pipeline::{RbdPipeline, RbdState, RunStats};
 use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuTimestamps};
 
@@ -81,7 +87,7 @@ impl Default for GpuRigidBodyRef {
     fn default() -> Self {
         Self {
             coupling: RbdCoupling::NONE,
-            gpu_id: u32::MAX
+            gpu_id: u32::MAX,
         }
     }
 }
@@ -160,7 +166,6 @@ pub struct NexusState {
     rbd_dirty: bool,
     /// Number of rigid-body solver steps advanced per [`Self::simulate`] call.
     pub rbd_steps_per_frame: u32,
-
     // TODO: keep track of whether there is any non-fixed rigid-body (if there isn’t, we can
     //       skip the rbd pipeline entirely).
 }
@@ -253,7 +258,10 @@ impl NexusState {
     /// Whether CPIC rigid coupling is enabled. Falls back to the stored
     /// preference before MPM is lazily allocated.
     pub fn mpm_use_cpic(&self) -> bool {
-        self.mpm.as_ref().map(|m| m.use_cpic).unwrap_or(self.mpm_use_cpic)
+        self.mpm
+            .as_ref()
+            .map(|m| m.use_cpic)
+            .unwrap_or(self.mpm_use_cpic)
     }
 
     /// Whether this state uses the MPM solver. True once MPM has been configured
@@ -436,17 +444,31 @@ impl NexusState {
         &mut self.rbd_envs[env]
     }
 
-    pub fn insert_rigid_body(&mut self, body: RigidBody, collider: Collider, coupling: RbdCoupling) -> RigidBodyHandle {
+    pub fn insert_rigid_body(
+        &mut self,
+        body: RigidBody,
+        collider: Collider,
+        coupling: RbdCoupling,
+    ) -> RigidBodyHandle {
         self.insert_rigid_body_in(0, body, collider, coupling)
     }
 
     /// Inserts a body + collider into environment `env`.
-    pub fn insert_rigid_body_in(&mut self, env: usize, body: RigidBody, collider: Collider, coupling: RbdCoupling) -> RigidBodyHandle {
+    pub fn insert_rigid_body_in(
+        &mut self,
+        env: usize,
+        body: RigidBody,
+        collider: Collider,
+        coupling: RbdCoupling,
+    ) -> RigidBodyHandle {
         let (handle, _) = self.rbd_envs[env].insert(body, collider);
-        self.rbd2gpu[env].insert(handle.0, GpuRigidBodyRef {
-            coupling,
-            gpu_id: u32::MAX
-        });
+        self.rbd2gpu[env].insert(
+            handle.0,
+            GpuRigidBodyRef {
+                coupling,
+                gpu_id: u32::MAX,
+            },
+        );
         self.rbd_dirty = true;
         // MPM-coupled boundary colliders live only in environment 0 and feed the
         // MPM coupling rebuild in `finalize`.
@@ -462,19 +484,32 @@ impl NexusState {
     }
 
     /// Inserts a collider-less rigid-body into environment `env`.
-    pub fn insert_body_in(&mut self, env: usize, body: RigidBody, coupling: RbdCoupling) -> RigidBodyHandle {
+    pub fn insert_body_in(
+        &mut self,
+        env: usize,
+        body: RigidBody,
+        coupling: RbdCoupling,
+    ) -> RigidBodyHandle {
         let handle = self.rbd_envs[env].insert_body(body);
-        self.rbd2gpu[env].insert(handle.0, GpuRigidBodyRef {
-            coupling,
-            gpu_id: u32::MAX
-        });
+        self.rbd2gpu[env].insert(
+            handle.0,
+            GpuRigidBodyRef {
+                coupling,
+                gpu_id: u32::MAX,
+            },
+        );
         self.rbd_dirty = true;
         handle
     }
 
     /// Attaches a collider to an existing body (or inserts a parent-less one) in
     /// environment `env`.
-    pub fn insert_collider_in(&mut self, env: usize, collider: Collider, parent: Option<RigidBodyHandle>) -> ColliderHandle {
+    pub fn insert_collider_in(
+        &mut self,
+        env: usize,
+        collider: Collider,
+        parent: Option<RigidBodyHandle>,
+    ) -> ColliderHandle {
         self.rbd_dirty = true;
         self.rbd_envs[env].insert_collider(collider, parent)
     }
@@ -841,5 +876,4 @@ impl NexusState {
 
         Ok(())
     }
-
 }

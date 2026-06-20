@@ -21,8 +21,8 @@ use crate::solver::particle::{Kinematics, Position};
 use crate::{AngVector, Matrix, PaddingExt, TWO_WAYS_COUPLING_ENABLED, Vector};
 use glamx::*;
 use khal_std::index::MaybeIndexUnchecked;
-use khal_std::sync::{atomic_add_i32, workgroup_memory_barrier_with_group_sync};
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::{atomic_add_i32, workgroup_memory_barrier_with_group_sync};
 
 /// Workgroup size: one thread per grid node of a block (8*8 in 2D, 4*4*4 in 3D).
 const WORKGROUP_SIZE: usize = 64;
@@ -109,7 +109,10 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
     let (local_cell, cell_pos) = {
         let lc = UVec3::new(tid.x, tid.y, tid.z);
         let c = vid * 4 + IVec3::new(tid.x as i32, tid.y as i32, tid.z as i32);
-        (lc, Vec3::new(c.x as f32, c.y as f32, c.z as f32) * cell_width)
+        (
+            lc,
+            Vec3::new(c.x as f32, c.y as f32, c.z as f32) * cell_width,
+        )
     };
 
     let gid = BlockHeaderId { id: bid }
@@ -335,9 +338,18 @@ pub fn gpu_p2g_generic<const USE_CPIC: bool>(
                 atomic_add_i32(&mut body_impulses.at_mut(ci).linear_x, flt2int(impulse.x));
                 atomic_add_i32(&mut body_impulses.at_mut(ci).linear_y, flt2int(impulse.y));
                 atomic_add_i32(&mut body_impulses.at_mut(ci).linear_z, flt2int(impulse.z));
-                atomic_add_i32(&mut body_impulses.at_mut(ci).angular_x, flt2int(ang_impulse.x));
-                atomic_add_i32(&mut body_impulses.at_mut(ci).angular_y, flt2int(ang_impulse.y));
-                atomic_add_i32(&mut body_impulses.at_mut(ci).angular_z, flt2int(ang_impulse.z));
+                atomic_add_i32(
+                    &mut body_impulses.at_mut(ci).angular_x,
+                    flt2int(ang_impulse.x),
+                );
+                atomic_add_i32(
+                    &mut body_impulses.at_mut(ci).angular_y,
+                    flt2int(ang_impulse.y),
+                );
+                atomic_add_i32(
+                    &mut body_impulses.at_mut(ci).angular_z,
+                    flt2int(ang_impulse.z),
+                );
             }
         }
     }
@@ -409,7 +421,8 @@ pub fn gpu_p2g_cpic(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] particles_kin: &[Kinematics],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] nodes: &mut [Node],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] body_vels: &[BodyVelocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] body_materials: &[BoundaryCondition],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)]
+    body_materials: &[BoundaryCondition],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)]
     body_impulses: &mut [IntegerImpulseAtomic],
     #[spirv(workgroup)] shared_pos: &mut [Position; WORKGROUP_SIZE],

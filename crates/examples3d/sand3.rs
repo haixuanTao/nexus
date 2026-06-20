@@ -1,7 +1,7 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
 use nexus3d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 
 use glamx::vec3;
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder};
@@ -10,7 +10,10 @@ const DENSITY: f32 = 2700.0;
 const YOUNG_MODULUS: f32 = 2.0e9;
 const POISSON_RATIO: f32 = 0.2;
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
     // MPM boundary colliders are inserted as rigid bodies coupled to the
     // continuum; they push the particles but aren't pushed back.
@@ -83,7 +86,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

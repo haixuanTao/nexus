@@ -11,9 +11,9 @@
 //! holds these vertex buffers.
 
 use crate::math::Point;
+use crate::parry::shape::{Shape as ParryShape, TypedShape};
 use crate::shaders::PaddedVector;
 use crate::shaders::shapes::Shape;
-use crate::parry::shape::{Shape as ParryShape, TypedShape};
 
 /// Auxiliary buffers for complex shape types like polylines and triangle meshes.
 ///

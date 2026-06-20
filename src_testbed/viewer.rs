@@ -21,11 +21,11 @@ use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps, WebGpu
 use khal::re_exports::wgpu::Limits;
 
 use kiss3d::prelude::Color;
-use kiss3d::scene::{SceneNode2d, SceneNode3d};
 #[cfg(feature = "dim2")]
 use kiss3d::scene::InstanceData2d;
 #[cfg(feature = "dim3")]
 use kiss3d::scene::InstanceData3d;
+use kiss3d::scene::{SceneNode2d, SceneNode3d};
 use kiss3d::window::Window;
 
 /// Viewer-owned scene node type for the active dimension.
@@ -38,20 +38,20 @@ type SceneNodeX = SceneNode3d;
 use kiss3d::camera::{FixedView2d, OrbitCamera3d};
 #[cfg(feature = "dim2")]
 use kiss3d::camera::{FixedView3d, PanZoomCamera2d};
-use rapier::prelude::{RigidBodyHandle, SharedShape};
 use nexus::mpm::solver::GpuParticleModel;
 use nexus::rbd::math::{Pose, Vector};
 use nexus::rbd::pipeline::{RbdPipeline, RunStats};
 use nexus::state::{NexusCounts, NexusRbdHandle, NexusState, RbdCoupling};
+use rapier::prelude::{RigidBodyHandle, SharedShape};
 // use crate::fem::{FemScene, FemSceneBuildFn};
 // use crate::mpm::{self, MpmScene, MpmSceneBuildFn};
 use crate::rapier::prelude::{Collider, ColliderSet, ImpulseJointSet, RigidBody, RigidBodySet};
 // use crate::rbd::{
 //     BackendType, RbdScene, RenderContext, SimulationState, setup_physics,
 // };
-use crate::{DemoKind, RunState, Transition, UiSections};
 use crate::backend::BackendType;
 use crate::graphics::RenderContext;
+use crate::{DemoKind, RunState, Transition, UiSections};
 
 /// UI / runtime state that is independent from the GPU/window resources. Kept in
 /// its own struct so [`NexusViewer::render`] can split-borrow it from `window`.
@@ -121,7 +121,6 @@ impl Default for SimSettings {
 /// [`NexusState`] scene, which (unlike [`RbdScene`]) has no scene object of its
 /// own to hand to [`NexusViewer::render_frame`].
 struct NexusSceneUi;
-
 
 #[cfg(feature = "dim2")]
 pub type SceneNode = SceneNode2d;
@@ -300,10 +299,12 @@ impl NexusViewer {
             max_compute_workgroup_storage_size: 19904,
             ..Default::default()
         };
-        match WebGpu::new(Default::default(), limits).await.map(|mut wgpu| {
-            wgpu.force_buffer_copy_src = true;
-            KhalGpuBackend::WebGpu(wgpu)
-        }) {
+        match WebGpu::new(Default::default(), limits)
+            .await
+            .map(|mut wgpu| {
+                wgpu.force_buffer_copy_src = true;
+                KhalGpuBackend::WebGpu(wgpu)
+            }) {
             Ok(gpu) => Some(gpu),
             Err(e) => {
                 self.ui.gpu_init_error = Some(format!(
@@ -489,7 +490,10 @@ impl NexusViewer {
         if let Some(rbd) = state.rbd.as_ref() {
             let poses = rbd.poses();
             let mut cache = vec![Pose::default(); poses.len() as usize];
-            let _ = self.backend().slow_read_buffer(poses.buffer(), &mut cache).await;
+            let _ = self
+                .backend()
+                .slow_read_buffer(poses.buffer(), &mut cache)
+                .await;
             self.nexus_render.update_instances_from_poses(state, &cache);
         }
 

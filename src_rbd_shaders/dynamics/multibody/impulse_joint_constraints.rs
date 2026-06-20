@@ -1710,7 +1710,11 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
     // `[color_groups[c-1], color_groups[c])` (start `0` for color `0`).
     let color = *curr_color as usize;
     let color_groups = batch_ids.mb_imp_joint_color_groups_batch(batch_id, all_color_groups);
-    let start = if color > 0 { color_groups[color - 1] } else { 0 };
+    let start = if color > 0 {
+        color_groups[color - 1]
+    } else {
+        0
+    };
     let end = color_groups[color];
 
     let mut j = start + wg_id.x;
@@ -1779,7 +1783,8 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
             let dvel = c.rhs + (v2 - v1);
             let total = (c.impulse + c.inv_lhs * (dvel - c.cfm_gain * c.impulse))
                 // NOTE: should be `clamp`, but `clamp` breaks uniform control flow for some reasons.
-                .max(c.impulse_lo).min(c.impulse_hi);
+                .max(c.impulse_lo)
+                .min(c.impulse_hi);
             let d = total - c.impulse;
             if lane == 0 {
                 c.impulse = total;

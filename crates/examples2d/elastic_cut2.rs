@@ -1,7 +1,7 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed2d::NexusViewer;
 use nexus2d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus2d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus2d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 
 use glamx::Vec2;
 use rapier2d::prelude::{Collider, ColliderBuilder, RigidBody, RigidBodyBuilder};
@@ -19,7 +19,10 @@ fn insert_boundary(
     viewer.insert_shape(handle, &shape);
 }
 
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
 
     let offset_y = 46.0;
@@ -56,7 +59,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
     insert_boundary(
         &mut state,
         viewer,
-        RigidBodyBuilder::fixed().translation(glamx::vec2(35.0, 20.0)).build(),
+        RigidBodyBuilder::fixed()
+            .translation(glamx::vec2(35.0, 20.0))
+            .build(),
         ColliderBuilder::cuboid(70.0, 1.0).build(),
     );
 
@@ -99,7 +104,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
         }
         viewer.sync(&mut state).await;
     }

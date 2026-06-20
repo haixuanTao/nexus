@@ -88,7 +88,8 @@ impl FemPipeline {
 
         // 2. Apply accumulated dv, gravity, damping (per-vertex)
         {
-            let mut pass = encoder.begin_pass("[FEM] dv+gravity+damping", timestamps.as_deref_mut());
+            let mut pass =
+                encoder.begin_pass("[FEM] dv+gravity+damping", timestamps.as_deref_mut());
             self.explicit.apply_forces_gravity_damping.call(
                 &mut pass,
                 nv,

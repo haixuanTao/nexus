@@ -6,10 +6,10 @@
 use crate::grid::grid::{GpuGrid, WgGrid};
 use crate::grid::sort::WgSort;
 use crate::solver::{
-    BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials,
-    GpuParticles, GpuRigidParticles, GpuSimulationParams, GpuTimestepBounds, Particle,
-    SimulationParams, WgG2P, WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgIntegrateBodies, WgP2G,
-    WgP2GCdf, WgParticleUpdate, WgRigidParticleUpdate, WgTimestepBounds,
+    BoundaryCondition, BoundaryConditionExt, GpuImpulses, GpuMaterials, GpuParticles,
+    GpuRigidParticles, GpuSimulationParams, GpuTimestepBounds, Particle, SimulationParams, WgG2P,
+    WgG2PCdf, WgGridUpdate, WgGridUpdateCdf, WgIntegrateBodies, WgP2G, WgP2GCdf, WgParticleUpdate,
+    WgRigidParticleUpdate, WgTimestepBounds,
 };
 use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuEncoder, GpuTimestamps};
 use khal::{BufferUsages, Shader};
@@ -102,10 +102,16 @@ impl MpmState {
             BufferUsages::COPY_DST | BufferUsages::MAP_READ,
         )?;
         let bounds = GpuTimestepBounds::default();
-        let timestep_bounds =
-            Tensor::scalar(backend, bounds, BufferUsages::STORAGE | BufferUsages::COPY_SRC)?;
-        let timestep_bounds_staging =
-            Tensor::scalar(backend, bounds, BufferUsages::COPY_DST | BufferUsages::MAP_READ)?;
+        let timestep_bounds = Tensor::scalar(
+            backend,
+            bounds,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        )?;
+        let timestep_bounds_staging = Tensor::scalar(
+            backend,
+            bounds,
+            BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        )?;
 
         Ok(Self {
             base_dt: params.dt,
@@ -387,7 +393,8 @@ impl MpmPipeline {
 
         if data.use_cpic {
             {
-                let mut pass = encoder.begin_pass("[MPM] CDF grid update", timestamps.as_deref_mut());
+                let mut pass =
+                    encoder.begin_pass("[MPM] CDF grid update", timestamps.as_deref_mut());
                 self.grid_update_cdf
                     .launch(&mut pass, &mut data.grid, &data.bodies)?;
             }

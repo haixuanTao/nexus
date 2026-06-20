@@ -26,15 +26,14 @@ use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
     GpuIncJointColor, GpuMbComputeDynamicsPre, GpuMbComputeDynamicsWithoutCoriolisPre,
     GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbInitContactConstraints,
-    GpuResetJointColor,
-    GpuMbInitJointConstraints, GpuMbSolveJointConstraints, GpuMbIntegrate, GpuMbIntegrateVelocities,
+    GpuMbInitJointConstraints, GpuMbIntegrate, GpuMbIntegrateVelocities,
     GpuMbRemoveContactConstraintBias, GpuMbRemoveImpulseJointConstraintBias,
     GpuMbRemoveSolveJointNoBias, GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
-    GpuMbUpdateImpulseJointConstraints, LocalMassProperties, MAX_AXIS_CONSTRAINTS,
-    MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder, MbImpulseJointConstraint,
-    MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint, MultibodyLinkStatic,
-    MultibodyLinkWorkspace, SIDE_KIND_BODY, SIDE_KIND_FIXED, SIDE_KIND_MB, Velocity,
-    WorldMassProperties,
+    GpuMbSolveJointConstraints, GpuMbUpdateImpulseJointConstraints, GpuResetJointColor,
+    LocalMassProperties, MAX_AXIS_CONSTRAINTS, MAX_MB_CONTACT_CONSTRAINTS_PER_MB,
+    MbImpulseJointBuilder, MbImpulseJointConstraint, MultibodyContactConstraint, MultibodyInfo,
+    MultibodyJointConstraint, MultibodyLinkStatic, MultibodyLinkWorkspace, SIDE_KIND_BODY,
+    SIDE_KIND_FIXED, SIDE_KIND_MB, Velocity, WorldMassProperties,
 };
 use crate::shaders::utils::BatchIndices;
 use crate::shaders::utils::linalg::MAX_MB_DOFS;
@@ -923,8 +922,7 @@ impl GpuMultibodySet {
         // alongside the builders below. `global_num_colors` /
         // `global_max_color_group_len` are the cross-batch maxima used to
         // size the flat buffer and the per-color dispatch width.
-        let mut per_env_color_groups: Vec<Vec<u32>> =
-            Vec::with_capacity(self.num_batches as usize);
+        let mut per_env_color_groups: Vec<Vec<u32>> = Vec::with_capacity(self.num_batches as usize);
         let mut global_num_colors = 0u32;
         let mut global_max_color_group_len = 0u32;
         let mut max_joints = 0u32;
@@ -1166,8 +1164,7 @@ impl GpuMultibodySet {
         // colors are no-ops (start == end). `cols` is clamped to ≥1 so the
         // buffer is always a valid non-empty binding even with no joints.
         let cols = global_num_colors.max(1);
-        let mut all_color_groups =
-            Vec::with_capacity((cols * self.num_batches) as usize);
+        let mut all_color_groups = Vec::with_capacity((cols * self.num_batches) as usize);
         for env_cg in &per_env_color_groups {
             let last = env_cg.last().copied().unwrap_or(0);
             all_color_groups.extend_from_slice(env_cg);
@@ -1351,7 +1348,8 @@ impl GpuMultibodySolver {
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
                 &mut mb.coriolis_packed,
-                &mb.dof_state,                &mb.dt,
+                &mb.dof_state,
+                &mb.dt,
                 args.batch_indices,
             )?;
         } else {
@@ -1365,7 +1363,8 @@ impl GpuMultibodySolver {
                 args.poses,
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
-                &mb.dof_state,                &mb.dt,
+                &mb.dof_state,
+                &mb.dt,
                 args.batch_indices,
             )?;
         }
@@ -1386,7 +1385,8 @@ impl GpuMultibodySolver {
             &mut mb.gen_forces,
             &mut mb.mass_matrices,
             &mut mb.lu_pivots,
-            &mb.dof_state,            &mb.gravity,
+            &mb.dof_state,
+            &mb.gravity,
             args.batch_indices,
         )?;
 
@@ -1454,7 +1454,8 @@ impl GpuMultibodySolver {
             dispatch,
             &mb.multibody_info,
             &mut mb.dof_state,
-            &mb.gen_forces,            &mb.dt,
+            &mb.gen_forces,
+            &mb.dt,
             args.batch_indices,
         )?;
 
@@ -1477,7 +1478,8 @@ impl GpuMultibodySolver {
                 &mb.mass_matrices,
                 &mb.lu_pivots,
                 &mut mb.joint_constraints,
-                &mut mb.joint_constraint_columns,                &mb.dt,
+                &mut mb.joint_constraint_columns,
+                &mb.dt,
                 args.batch_indices,
             )?;
             self.solve_joint_with_bias.call(
@@ -1485,7 +1487,8 @@ impl GpuMultibodySolver {
                 dispatch,
                 &mb.multibody_info,
                 &mut mb.joint_constraints,
-                &mut mb.joint_constraint_columns,                &mut mb.dof_state,
+                &mut mb.joint_constraint_columns,
+                &mut mb.dof_state,
                 args.batch_indices,
             )?;
         }
@@ -1519,7 +1522,8 @@ impl GpuMultibodySolver {
             &mut mb.contact_constraints,
             &mb.contact_constraint_jacs,
             &mut mb.contact_constraint_columns,
-            &mb.contact_constraint_count,            args.batch_indices,
+            &mb.contact_constraint_count,
+            args.batch_indices,
         )?;
 
         self.solve_contact_constraints.call(
@@ -1531,7 +1535,8 @@ impl GpuMultibodySolver {
             &mb.contact_constraint_columns,
             &mb.contact_constraint_count,
             &mut mb.dof_state,
-            args.solver_vels,            args.batch_indices,
+            args.solver_vels,
+            args.batch_indices,
         )?;
 
         // 3c. Multibody-touching impulse joints — generic (rb-mb / mb-mb)
@@ -1593,7 +1598,8 @@ impl GpuMultibodySolver {
             &mb.links_static,
             &mut mb.links_workspace,
             &mut mb.dof_values,
-            &mb.dof_state,            &mb.dt,
+            &mb.dof_state,
+            &mb.dt,
             args.batch_indices,
         )?;
 
@@ -1618,14 +1624,16 @@ impl GpuMultibodySolver {
                 &mb.multibody_info,
                 &mut mb.joint_constraints,
                 &mb.joint_constraint_columns,
-                &mut mb.dof_state,                args.batch_indices,
+                &mut mb.dof_state,
+                args.batch_indices,
             )?;
         }
         self.remove_contact_constraint_bias.call(
             pass,
             dispatch,
             &mut mb.contact_constraints,
-            &mb.contact_constraint_count,            args.batch_indices,
+            &mb.contact_constraint_count,
+            args.batch_indices,
         )?;
         if mb.mb_imp_joints_per_batch > 0 {
             let imp_dispatch = [mb.mb_imp_joints_per_batch, mb.num_batches, 1];
@@ -1649,7 +1657,8 @@ impl GpuMultibodySolver {
             &mb.contact_constraint_columns,
             &mb.contact_constraint_count,
             &mut mb.dof_state,
-            args.solver_vels,            args.batch_indices,
+            args.solver_vels,
+            args.batch_indices,
         )?;
         if mb.mb_imp_joints_per_batch > 0 {
             // Final stabilization sweep WITHOUT bias — colored, one
@@ -1710,7 +1719,8 @@ impl GpuMultibodySolver {
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
                 &mut mb.coriolis_packed,
-                &mb.dof_state,                &mb.dt,
+                &mb.dof_state,
+                &mb.dt,
                 args.batch_indices,
             )?;
         } else {
@@ -1724,7 +1734,8 @@ impl GpuMultibodySolver {
                 args.poses,
                 &mut mb.body_jacobians,
                 &mut mb.mass_matrices,
-                &mb.dof_state,                &mb.dt,
+                &mb.dof_state,
+                &mb.dt,
                 args.batch_indices,
             )?;
         }
@@ -1742,7 +1753,8 @@ impl GpuMultibodySolver {
             &mut mb.gen_forces,
             &mut mb.mass_matrices,
             &mut mb.lu_pivots,
-            &mb.dof_state,            &mb.gravity,
+            &mb.dof_state,
+            &mb.gravity,
             args.batch_indices,
         )?;
 

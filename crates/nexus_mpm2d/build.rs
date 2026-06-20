@@ -12,8 +12,7 @@ fn main() {
     builder = builder.feature("unsafe_remove_boundchecks");
 
     if target_arch == "wasm32" {
-        builder = builder
-            .feature("web-compat");
+        builder = builder.feature("web-compat");
     }
 
     builder.build(output_dir);

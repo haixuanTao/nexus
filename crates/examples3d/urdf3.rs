@@ -1,6 +1,6 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
-use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
+use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 use rapier3d_urdf::{UrdfLoaderOptions, UrdfMultibodyOptions, UrdfRobot};
 use std::path::PathBuf;
@@ -16,7 +16,10 @@ fn urdf_path() -> PathBuf {
 /// multibody joint's angular-X motor target velocity within `[-0.6, 0.6]` rad/s
 /// so the robot stays in slow continuous motion with periodically changing
 /// direction.
-pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
     use rand::RngExt;
 
     let mut state = NexusState::default();
@@ -131,7 +134,9 @@ pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyh
         }
 
         if viewer.simulating() {
-            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await;
             sim_time += dt;
         }
         viewer.sync(&mut state).await;

@@ -1,8 +1,8 @@
-use khal::backend::{GpuBackend, GpuBackendError, GpuTimestamps, Backend};
+use crate::fem::pipeline::FemPipeline;
 use crate::mpm::pipeline::MpmPipeline;
 use crate::rbd::pipeline::RbdPipeline;
-use crate::fem::pipeline::FemPipeline;
 use crate::state::NexusState;
+use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuTimestamps};
 
 bitflags::bitflags! {
     /// A bit mask identifying nexus pipelines.
@@ -23,7 +23,11 @@ pub struct NexusPipeline {
 }
 
 impl NexusPipeline {
-    pub fn preload_pipelines(&mut self, backend: &GpuBackend, pipelines: NexusPipelineMask) -> Result<(), GpuBackendError> {
+    pub fn preload_pipelines(
+        &mut self,
+        backend: &GpuBackend,
+        pipelines: NexusPipelineMask,
+    ) -> Result<(), GpuBackendError> {
         if pipelines.contains(NexusPipelineMask::RBD) && self.rbd_pipeline.is_none() {
             self.rbd_pipeline = Some(RbdPipeline::new(backend)?);
         }
@@ -45,7 +49,12 @@ impl NexusPipeline {
     /// In addition, resources are loaded lazily on the GPU, so the first step
     /// after inserting/removing entities can be slower too. Call `Self::finalize`
     /// to pay that cost upfront.
-    pub async fn simulate(&mut self, backend: &GpuBackend, state: &mut NexusState, mut timestamps: Option<&mut GpuTimestamps>) -> Result<(), GpuBackendError> {
+    pub async fn simulate(
+        &mut self,
+        backend: &GpuBackend,
+        state: &mut NexusState,
+        mut timestamps: Option<&mut GpuTimestamps>,
+    ) -> Result<(), GpuBackendError> {
         state.finalize(backend).await?;
 
         if let Some(timestamps) = &mut timestamps {
@@ -100,7 +109,9 @@ impl NexusPipeline {
             if let Ok(results) = timestamps.read(backend).await {
                 let mut aggregated: Vec<(String, f64)> = Vec::new();
                 for r in &results {
-                    if let Some(existing) = aggregated.iter_mut().find(|(label, _)| label == &r.label) {
+                    if let Some(existing) =
+                        aggregated.iter_mut().find(|(label, _)| label == &r.label)
+                    {
                         existing.1 += r.duration_ms;
                     } else {
                         aggregated.push((r.label.clone(), r.duration_ms));
