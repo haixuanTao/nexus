@@ -1,13 +1,13 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
 use nexus3d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus3d::prelude::{NexusState, RbdCoupling};
+use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
 
 use glamx::vec3;
 use rapier3d::parry::utils::Array2;
 use rapier3d::prelude::{ColliderBuilder, HeightField, RigidBodyBuilder, TriMeshFlags};
 
-pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
     let coupling = RbdCoupling::MPM_ONE_WAY_COUPLING;
 
@@ -58,7 +58,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
         }
         viewer.sync(&mut state).await;
     }

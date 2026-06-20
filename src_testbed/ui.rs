@@ -5,8 +5,7 @@ use crate::viewer::UiState;
 use crate::{DemoKind, RunState, Transition};
 use khal::backend::Backend;
 use kiss3d::egui;
-use kiss3d::window::Window;
-use nexus::rbd::pipeline::RbdStats;
+use nexus::rbd::pipeline::RunStats;
 use nexus::state::NexusCounts;
 
 use egui::{Button, CollapsingHeader, Color32, ComboBox, CornerRadius, RichText, Stroke};
@@ -97,16 +96,23 @@ pub fn setup_custom_theme(ctx: &egui::Context) {
     });
 }
 
-pub fn render_compiling_message(window: &mut Window) {
-    window.draw_ui(|ctx| {
-        setup_custom_theme(ctx);
-        egui::Window::new("Nexus Testbed").show(ctx, |ui| {
+/// Draws a centered "compiling shaders" banner into an existing egui context.
+///
+/// Shown as an overlay on the first GPU frame of a demo so it stays on screen
+/// while the (blocking) shader compilation freezes the app for a few seconds —
+/// otherwise the window looks frozen with no explanation. Uses a distinct
+/// window id from [`main_panel`] to avoid an egui id collision.
+pub fn compiling_overlay(ctx: &egui::Context) {
+    egui::Window::new("⏳ Compiling shaders")
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
             ui.colored_label(
                 Color32::from_rgb(82, 130, 150),
-                "Compiling shaders...\nThe app will freeze for a few seconds.\n\nIf nothing happens after a minute or two, check the dev console for an error.",
+                "Compiling shaders…\nThe app will freeze for a few seconds.\n\nIf nothing happens after a minute or two, check the dev console for an error.",
             );
         });
-    });
 }
 
 /// Builds the testbed control panel. Mutates `state` in place (run state, demo
@@ -241,7 +247,7 @@ fn gravity_drag(ui: &mut egui::Ui, label: &str, g: &mut nexus::rbd::math::Vector
 fn performance_ui(
     ui: &mut egui::Ui,
     counts: &NexusCounts,
-    rbd_stats: &RbdStats,
+    run_stats: &RunStats,
     backend: BackendType,
 ) {
     // Scene entity counts.
@@ -286,8 +292,8 @@ fn performance_ui(
     ui.add_space(4.0);
 
     // Timing.
-    let total_ms_with_readback = rbd_stats.total_simulation_time_with_readback_ms();
-    let total_ms_without_readback = rbd_stats.total_simulation_time_without_readback_ms();
+    let total_ms_with_readback = run_stats.total_simulation_time_with_readback_ms();
+    let total_ms_without_readback = run_stats.total_simulation_time_without_readback_ms();
     let total_readback_time = total_ms_with_readback - total_ms_without_readback;
     let fps = if total_ms_with_readback > 0.0 {
         (1000.0f32 / total_ms_with_readback).round()
@@ -308,27 +314,27 @@ fn performance_ui(
         .id_salt("rbd_sim_details")
         .default_open(false)
         .show(ui, |ui| {
-            ui.label(format!("Colors: {}", rbd_stats.num_colors));
+            ui.label(format!("Colors: {}", run_stats.num_colors));
             ui.label(format!(
                 "Coloring: {:.2}ms",
-                rbd_stats.coloring_time.as_secs_f32() * 1000.0
+                run_stats.coloring_time.as_secs_f32() * 1000.0
             ));
             ui.label(format!(
                 "Coloring iterations: {} x 10",
-                rbd_stats.coloring_iterations
+                run_stats.coloring_iterations
             ));
             ui.label(format!(
                 "Start to pairs count: {:.2}ms",
-                rbd_stats.start_to_pairs_count_time.as_secs_f32() * 1000.0
+                run_stats.start_to_pairs_count_time.as_secs_f32() * 1000.0
             ));
             ui.label(format!(
                 "Coloring fallback: {:.2}ms",
-                rbd_stats.coloring_fallback_time.as_secs_f32() * 1000.0
+                run_stats.coloring_fallback_time.as_secs_f32() * 1000.0
             ));
         });
 
-    if !rbd_stats.gpu_pass_times.is_empty() {
-        CollapsingHeader::new(format!("GPU passes: {:.2}ms", rbd_stats.gpu_total_time))
+    if !run_stats.gpu_pass_times.is_empty() {
+        CollapsingHeader::new(format!("GPU passes: {:.2}ms", run_stats.gpu_total_time))
             .id_salt("rbd_gpu_passes")
             .default_open(false)
             .show(ui, |ui| {
@@ -336,7 +342,7 @@ fn performance_ui(
                     .num_columns(2)
                     .spacing([20.0, 2.0])
                     .show(ui, |ui| {
-                        for (label, ms) in &rbd_stats.gpu_pass_times {
+                        for (label, ms) in &run_stats.gpu_pass_times {
                             ui.label(format!("{}:", label));
                             ui.label(format!("{:.2}ms", ms));
                             ui.end_row();
@@ -346,7 +352,7 @@ fn performance_ui(
     }
 
     // Slow performance warning.
-    if rbd_stats.total_simulation_time_with_readback.as_secs_f32() > 0.1 {
+    if run_stats.total_simulation_time_with_readback.as_secs_f32() > 0.1 {
         ui.add_space(4.0);
         ui.colored_label(
             Color32::from_rgb(180, 120, 60),
@@ -518,7 +524,7 @@ fn backend_selector(ui: &mut egui::Ui, state: &mut UiState, gpu_available: bool)
 //         true
 //     }
 //
-//     fn performance_ui(&mut self, ui: &mut egui::Ui, run_stats: &RbdStats, backend_type: BackendType) {
+//     fn performance_ui(&mut self, ui: &mut egui::Ui, run_stats: &RunStats, backend_type: BackendType) {
 //         let physics = &self.physics;
 //
 //         // Scene info.
@@ -670,7 +676,7 @@ fn backend_selector(ui: &mut egui::Ui, state: &mut UiState, gpu_available: bool)
 //     fn performance_ui(
 //         &mut self,
 //         ui: &mut egui::Ui,
-//         _run_stats: &RbdStats,
+//         _run_stats: &RunStats,
 //         _backend_type: BackendType,
 //     ) {
 //         let stage = &self.stage;
@@ -771,7 +777,7 @@ fn backend_selector(ui: &mut egui::Ui, state: &mut UiState, gpu_available: bool)
 //     fn performance_ui(
 //         &mut self,
 //         ui: &mut egui::Ui,
-//         _run_stats: &RbdStats,
+//         _run_stats: &RunStats,
 //         _backend_type: BackendType,
 //     ) {
 //         let stage = &self.stage;

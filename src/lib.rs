@@ -1,4 +1,5 @@
 pub mod state;
+pub mod pipeline;
 
 #[cfg(all(feature = "dim2", feature = "rbd"))]
 pub use nexus_rbd2d as rbd;
@@ -19,4 +20,5 @@ pub use rbd::{rapier, parry};
 
 pub mod prelude {
     pub use crate::state::*;
+    pub use crate::pipeline::*;
 }

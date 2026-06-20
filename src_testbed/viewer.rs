@@ -41,7 +41,7 @@ use kiss3d::camera::{FixedView3d, PanZoomCamera2d};
 use rapier::prelude::{RigidBodyHandle, SharedShape};
 use nexus::mpm::solver::GpuParticleModel;
 use nexus::rbd::math::{Pose, Vector};
-use nexus::rbd::pipeline::{RbdPipeline, RbdStats};
+use nexus::rbd::pipeline::{RbdPipeline, RunStats};
 use nexus::state::{NexusCounts, NexusRbdHandle, NexusState, RbdCoupling};
 // use crate::fem::{FemScene, FemSceneBuildFn};
 // use crate::mpm::{self, MpmScene, MpmSceneBuildFn};
@@ -57,7 +57,7 @@ use crate::graphics::RenderContext;
 /// its own struct so [`NexusViewer::render`] can split-borrow it from `window`.
 pub struct UiState {
     pub run_state: RunState,
-    pub run_stats: RbdStats,
+    pub run_stats: RunStats,
     pub ui_sections: UiSections,
     pub backend_type: BackendType,
     pub gpu_init_error: Option<String>,
@@ -132,6 +132,13 @@ pub struct ViewerNode {
     node: SceneNode,
     instance_id: usize,
 }
+
+/// Number of frames to render the "compiling shaders" banner before the
+/// (blocking) pipeline preload, so the browser actually *presents* it first. On
+/// the web, `create_compute_pipeline` stalls the JS thread without yielding, so
+/// a banner drawn but not yet composited would never reach the screen before
+/// the freeze; rendering a few real frames first forces the paint.
+const COMPILE_BANNER_PRESENT_FRAMES: u32 = 10;
 
 pub struct NexusViewer {
     window: Window,
@@ -222,7 +229,7 @@ impl NexusViewer {
             fem_node: None,
             ui: UiState {
                 run_state: RunState::Paused,
-                run_stats: RbdStats::default(),
+                run_stats: RunStats::default(),
                 ui_sections: UiSections {
                     show_examples: true,
                     show_settings: false,
@@ -396,30 +403,6 @@ impl NexusViewer {
         self.camera2d.look_at(center, zoom);
     }
 
-    /// Renders a few frames showing the "compiling shaders" message. Used before
-    /// an RBD GPU scene is built and the pipeline must be compiled (which freezes
-    /// the app for a few seconds).
-    async fn maybe_show_compiling(&mut self) {
-        let compiling = !matches!(self.ui.backend_type, BackendType::Cpu)
-            && self.cached_gpu_pipeline.is_none();
-        if !compiling {
-            return;
-        }
-        for _ in 0..40 {
-            self.window
-                .render(
-                    Some(&mut self.scene3d),
-                    Some(&mut self.scene2d),
-                    Some(&mut self.camera3d),
-                    Some(&mut self.camera2d),
-                    None,
-                    None,
-                )
-                .await;
-            crate::ui::render_compiling_message(&mut self.window);
-        }
-    }
-
     /// Ensures the GPU backend for the current backend type exists. Call once,
     /// before the demo loop, so [`Self::backend`] is usable by the examples that
     /// drive a [`NexusState`] directly.
@@ -468,9 +451,9 @@ impl NexusViewer {
     /// MPM particle point cloud, and the FEM vertex point cloud.
     pub async fn sync(&mut self, state: &mut NexusState) {
         // Simulation stats (incl. GPU pass timestamps) are aggregated into
-        // `rbd_stats` for every sub-state, so surface them regardless of whether
+        // `run_stats` for every sub-state, so surface them regardless of whether
         // the scene has any rigid bodies (FEM/MPM-only scenes have none).
-        self.ui.run_stats = state.rbd_stats.clone();
+        self.ui.run_stats = state.run_stats.clone();
         self.ui.counts = state.counts();
 
         // Settings: seed the UI from the scene only when a different demo is
@@ -551,6 +534,39 @@ impl NexusViewer {
         #[cfg(feature = "dim3")]
         {
             self.scene3d.add_cube(1.0, 1.0, 1.0)
+        }
+    }
+
+    /// The backend currently selected in the UI.
+    pub fn backend_type(&self) -> BackendType {
+        self.ui.backend_type
+    }
+
+    /// Renders the "Compiling shaders…" overlay for a few frames and presents
+    /// them. Call right before a blocking pipeline compilation so the banner is
+    /// on screen during the freeze — and, on the web, actually composited first:
+    /// rendering several real frames forces the browser to paint before the
+    /// (blocking, non-yielding) `create_compute_pipeline` (see
+    /// [`COMPILE_BANNER_PRESENT_FRAMES`]).
+    pub async fn show_compile_banner(&mut self) {
+        for _ in 0..COMPILE_BANNER_PRESENT_FRAMES {
+            let _ = self
+                .window
+                .render(
+                    Some(&mut self.scene3d),
+                    Some(&mut self.scene2d),
+                    Some(&mut self.camera3d),
+                    Some(&mut self.camera2d),
+                    None,
+                    None,
+                )
+                .await;
+            let gpu_available = self.webgpu.is_some();
+            self.window.draw_ui(|ctx| {
+                crate::ui::setup_custom_theme(ctx);
+                crate::ui::main_panel(ctx, &mut self.ui, gpu_available);
+                crate::ui::compiling_overlay(ctx);
+            });
         }
     }
 

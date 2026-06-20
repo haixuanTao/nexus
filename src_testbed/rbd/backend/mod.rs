@@ -6,7 +6,7 @@ pub use gpu::GpuBackend;
 
 use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::RbdStats;
+use nexus::rbd::pipeline::RunStats;
 use rapier::prelude::JointAxis;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -35,7 +35,7 @@ pub trait SimulationBackend {
 
     /// Step the simulation
     #[allow(async_fn_in_trait)]
-    async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RbdStats;
+    async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RunStats;
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -45,7 +45,7 @@ pub enum PhysicsBackend {
 }
 
 impl PhysicsBackend {
-    pub async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RbdStats {
+    pub async fn step(&mut self, gpu: Option<&KhalGpuBackend>) -> RunStats {
         match self {
             PhysicsBackend::Cpu(backend) => backend.step(gpu).await,
             PhysicsBackend::Gpu(backend) => backend.step(gpu).await,

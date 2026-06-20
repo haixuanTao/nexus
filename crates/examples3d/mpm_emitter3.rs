@@ -1,7 +1,7 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
 use nexus3d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus3d::prelude::{NexusParticleChunk, NexusState, RbdCoupling};
+use nexus3d::prelude::{NexusParticleChunk, NexusState, RbdCoupling, NexusPipeline};
 
 use glamx::vec3;
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder};
@@ -22,7 +22,7 @@ const EMIT_BLOCK_Y: i32 = 2;
 /// settled sand erodes behind the orbiting emitter like a comet tail).
 const MAX_PARTICLES: usize = 250_000;
 
-pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
     // MPM boundary colliders are inserted as rigid bodies coupled (one-way) to
     // the continuum: they push the particles but aren't pushed back.
@@ -113,7 +113,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
                 total_particles += n;
             }
 
-            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
             t += dt;
             step += 1;
         }

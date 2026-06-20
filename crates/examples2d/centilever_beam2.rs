@@ -1,11 +1,11 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed2d::NexusViewer;
 use nexus2d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus2d::prelude::{NexusState, RbdCoupling};
+use nexus2d::prelude::{NexusState, RbdCoupling, NexusPipeline};
 
 use rapier2d::prelude::{ColliderBuilder, RigidBodyBuilder};
 
-pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
 
     let width = 10.0;
@@ -55,7 +55,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
         }
         viewer.sync(&mut state).await;
     }

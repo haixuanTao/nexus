@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use inflector::Inflector;
-use nexus_testbed2d::{DemoKind, NexusViewer};
+use nexus2d::prelude::{NexusPipeline, NexusPipelineMask};
+use nexus_testbed2d::{BackendType, DemoKind, NexusViewer};
 
 mod balls2;
 mod boxes2;
@@ -35,12 +36,12 @@ macro_rules! demos {
             demos
         }
 
-        async fn dispatch(name: &str, viewer: &mut NexusViewer) {
+        async fn dispatch(name: &str, viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) {
             match name {
                 // `run` may return `()` (legacy demos) or a `Result` (demos
                 // migrated to the `NexusState` API); discard whatever it yields
                 // so every arm has the same `()` type.
-                $( $name => { let _ = $module::run(viewer).await; }, )*
+                $( $name => { let _ = $module::run(viewer, pipeline).await; }, )*
                 _ => eprintln!("Unknown demo: '{name}'"),
             }
         }
@@ -136,12 +137,37 @@ pub async fn main() {
         viewer = viewer.with_running();
     }
 
+    // The GPU pipelines are owned here (not by `NexusState`) so they can be
+    // compiled once up-front and reused across demos. A backend switch drops and
+    // recompiles them.
+    let mut pipeline = NexusPipeline::default();
+    let mut compiled_backend: Option<BackendType> = None;
+
     loop {
         // Initialize the currently-selected backend (it may have just changed
         // via the UI backend selector). Idempotent for already-created backends.
         viewer.init_backend();
+
+        // Compile all pipelines up-front the first time each backend is used,
+        // showing the "Compiling shaders…" banner while it blocks — so the
+        // freeze is explained and never happens mid-demo. A backend switch
+        // drops the stale (other-device) pipelines and recompiles.
+        let backend_type = viewer.backend_type();
+        if compiled_backend != Some(backend_type) {
+            pipeline = NexusPipeline::default();
+            if backend_type != BackendType::Cpu {
+                viewer.show_compile_banner().await;
+            }
+            if let Err(err) =
+                pipeline.preload_pipelines(viewer.backend(), NexusPipelineMask::all())
+            {
+                eprintln!("Failed to preload GPU pipelines: {err:?}");
+            }
+            compiled_backend = Some(backend_type);
+        }
+
         let sel = viewer.selected_demo();
-        dispatch(&demos[sel].0, &mut viewer).await;
+        dispatch(&demos[sel].0, &mut viewer, &mut pipeline).await;
         if viewer.quitting() {
             break;
         }

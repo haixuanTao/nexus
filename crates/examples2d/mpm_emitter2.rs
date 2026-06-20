@@ -1,7 +1,7 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed2d::NexusViewer;
 use nexus2d::mpm::solver::{Particle, ParticleModel, SimulationParams};
-use nexus2d::prelude::{NexusParticleChunk, NexusState, RbdCoupling};
+use nexus2d::prelude::{NexusParticleChunk, NexusPipeline, NexusState, RbdCoupling};
 
 use glamx::{vec2, Vec2};
 use rapier2d::prelude::{Collider, ColliderBuilder, RigidBody, RigidBodyBuilder};
@@ -34,7 +34,7 @@ fn insert_boundary(
     viewer.insert_shape(handle, &shape);
 }
 
-pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
     let mut state = NexusState::default();
 
     let cell_width = 0.2;
@@ -131,7 +131,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
                 total_particles += n;
             }
 
-            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
             t += dt;
             step += 1;
         }

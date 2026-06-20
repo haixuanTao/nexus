@@ -6,7 +6,7 @@ use crate::mpm::solver::{BoundaryCondition, BoundaryConditionExt, Particle, Simu
 use crate::rapier::data::{Arena, Coarena, Index};
 use crate::rapier::prelude::{Collider, ColliderHandle, GenericJoint, ImpulseJointHandle, MultibodyJointHandle, PhysicsWorld, RigidBody, RigidBodyHandle};
 use crate::rbd::dynamics::{body::{BodyCoupling, RapierBodyCouplingEntry}, RbdSimParams};
-use crate::rbd::pipeline::{RbdPipeline, RbdState, RbdStats};
+use crate::rbd::pipeline::{RbdPipeline, RbdState, RunStats};
 use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuTimestamps};
 
 /// Handle referencing a rigid-body managed by a [`NexusState`].
@@ -116,7 +116,7 @@ pub struct NexusState {
     /// FEM sub-state.
     pub fem: Option<FemState>,
 
-    pub rbd_stats: RbdStats,
+    pub run_stats: RunStats,
 
     /// Handle → GPU-slot map, one [`Coarena`] per simulation environment
     /// (batch). `rbd2gpu[env].get(body_handle.0).gpu_id` indexes into the
@@ -137,7 +137,7 @@ pub struct NexusState {
     mpm_params: Option<SimulationParams>,
     mpm_cell_width: f32,
     /// Number of MPM substeps run per [`Self::simulate`] call.
-    mpm_substeps: u32,
+    pub mpm_substeps: u32,
     /// Desired CPIC rigid-coupling flag, kept here so it survives until the MPM
     /// sub-state is lazily created (and is what [`Self::mpm_use_cpic`] reports
     /// meanwhile). Applied in [`Self::mpm_or_insert`].
@@ -149,13 +149,6 @@ pub struct NexusState {
     // Initial capacities used to allocate the states lazily.
     capacities: NexusCapacities,
 
-    // GPU compute pipelines, lazily created the first time the matching sub-state
-    // is stepped in [`Self::simulate`].
-    // TODO: move these to a separate NexusPipeline struct?
-    rbd_pipeline: Option<RbdPipeline>,
-    mpm_pipeline: Option<MpmPipeline>,
-    fem_pipeline: Option<FemPipeline>,
-
     /// One rapier world per simulation environment (batch). Environment 0
     /// always exists; the non-`*_in` insert helpers target it. Batched demos
     /// add more via [`Self::add_environment`].
@@ -166,7 +159,7 @@ pub struct NexusState {
     /// decide whether the GPU [`RbdState`] needs rebuilding.
     rbd_dirty: bool,
     /// Number of rigid-body solver steps advanced per [`Self::simulate`] call.
-    rbd_steps_per_frame: u32,
+    pub rbd_steps_per_frame: u32,
 
     // TODO: keep track of whether there is any non-fixed rigid-body (if there isn’t, we can
     //       skip the rbd pipeline entirely).
@@ -186,7 +179,7 @@ impl NexusState {
             rbd: None,
             mpm: None,
             fem: None,
-            rbd_stats: RbdStats::default(),
+            run_stats: RunStats::default(),
             rbd_envs: vec![PhysicsWorld::default()],
             rbd_sim_params: vec![RbdSimParams::tgs_soft()],
             rbd_dirty: false,
@@ -202,9 +195,6 @@ impl NexusState {
             mpm_use_cpic: true,
             mpm_dirty: false,
             capacities,
-            rbd_pipeline: None,
-            mpm_pipeline: None,
-            fem_pipeline: None,
         }
     }
 
@@ -777,94 +767,6 @@ impl NexusState {
             }
             self.mpm_dirty = false;
         }
-        Ok(())
-    }
-
-    /// Advances the physics simulation by one GPU timestep.
-    ///
-    /// The compute pipelines are compiled lazily the first time their
-    /// sub-state is stepped, so the initial call is more expensive (shader
-    /// compilation) than the subsequent ones.
-    ///
-    /// In addition, resources are loaded lazily on the GPU, so the first step
-    /// after inserting/removing entities can be slower too. Call `Self::finalize`
-    /// to pay that cost upfront.
-    pub async fn simulate(&mut self, backend: &GpuBackend, mut timestamps: Option<&mut GpuTimestamps>) -> Result<(), GpuBackendError> {
-        self.finalize(backend).await?;
-
-        if let Some(timestamps) = &mut timestamps {
-            timestamps.reset();
-        }
-
-        let t0 = web_time::Instant::now();
-
-        // Rigid-bodies. `auto_resize_buffers` grows the collision-pair / coloring
-        // buffers when the previous step overflowed them.
-        if let Some(rbd) = self.rbd.as_mut() {
-            let pipeline = self
-                .rbd_pipeline
-                .get_or_insert_with(|| RbdPipeline::from_backend(backend));
-            let steps = self.rbd_steps_per_frame.max(1);
-            for _ in 0..steps {
-                self.rbd_stats = pipeline.step(backend, rbd, timestamps.as_deref_mut())?;
-            }
-            let _ = backend.synchronize();
-            self.rbd_stats.total_simulation_time_without_readback = t0.elapsed();
-            pipeline.auto_resize_buffers(backend, rbd).await;
-        }
-
-        // MPM continuum.
-        if let Some(mpm) = self.mpm.as_mut() {
-            if self.mpm_pipeline.is_none() {
-                if let Ok(pipeline) = MpmPipeline::new(backend) {
-                    self.mpm_pipeline = Some(pipeline);
-                }
-            }
-            if let Some(pipeline) = self.mpm_pipeline.as_ref() {
-                // MPM needs many small substeps per visible frame for stability.
-                // Upload the per-substep dt once, then run the substep loop.
-                let substeps = self.mpm_substeps.max(1);
-                let _ = mpm.write_substep_params(backend, substeps);
-                for _ in 0..substeps {
-                    let _ = pipeline.step(backend, mpm, timestamps.as_deref_mut());
-                }
-                let _ = backend.synchronize();
-            }
-        }
-
-        // FEM soft-bodies.
-        if let Some(fem) = self.fem.as_mut() {
-            if self.fem_pipeline.is_none() {
-                if let Ok(pipeline) = FemPipeline::new(backend) {
-                    self.fem_pipeline = Some(pipeline);
-                }
-            }
-            if let Some(pipeline) = self.fem_pipeline.as_ref() {
-                for _ in 0..fem.num_substeps {
-                    let _ = pipeline.step(backend, fem, timestamps.as_deref_mut());
-                }
-                let _ = backend.synchronize();
-            }
-        }
-
-        // Read timestamp results.
-        // TODO: the caller should probably be responsible for that.
-        if let Some(timestamps) = timestamps {
-            if let Ok(results) = timestamps.read(backend).await {
-                let mut aggregated: Vec<(String, f64)> = Vec::new();
-                for r in &results {
-                    if let Some(existing) = aggregated.iter_mut().find(|(label, _)| label == &r.label) {
-                        existing.1 += r.duration_ms;
-                    } else {
-                        aggregated.push((r.label.clone(), r.duration_ms));
-                    }
-                }
-                self.rbd_stats.gpu_total_time = aggregated.iter().map(|e| e.1).sum();
-                self.rbd_stats.gpu_pass_times = aggregated;
-            }
-        }
-        self.rbd_stats.total_simulation_time_with_readback = t0.elapsed();
-
         Ok(())
     }
 

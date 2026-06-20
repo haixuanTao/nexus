@@ -8,7 +8,7 @@ use crate::RunState;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use nexus::rbd::dynamics::RbdSimParams;
 use nexus::rbd::math::Pose;
-use nexus::rbd::pipeline::{RbdPipeline, RbdStats};
+use nexus::rbd::pipeline::{RbdPipeline, RunStats};
 use rapier::geometry::{ColliderHandle, ColliderSet, SharedShape};
 use rapier::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodySet};
 use std::collections::HashMap;
@@ -153,7 +153,7 @@ impl RbdScene {
 
     /// Runs a single physics step. Self-contained (uses the backend's own GPU
     /// device); does not render. This is the headless/Python entry point.
-    pub async fn step(&mut self) -> RbdStats {
+    pub async fn step(&mut self) -> RunStats {
         self.physics.backend.step(None).await
     }
 

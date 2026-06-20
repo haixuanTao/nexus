@@ -4,9 +4,9 @@ use nexus_testbed3d::NexusViewer;
 
 use nexus3d::fem::mesh::FemMesh;
 use nexus3d::fem::solver::{FemConfig, FemMaterial, MaterialModel, SolverMethod};
-use nexus3d::prelude::NexusState;
+use nexus3d::prelude::{NexusState, NexusPipeline};
 
-pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
     viewer.set_camera(vec3(2.0, 2.0, 2.0), vec3(0.5, 0.3, 0.5));
 
     let mut state = NexusState::default();
@@ -37,7 +37,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
         }
         viewer.sync(&mut state).await;
     }

@@ -1,9 +1,9 @@
 use khal::backend::GpuTimestamps;
 use nexus_testbed3d::NexusViewer;
-use nexus3d::prelude::{NexusState, RbdCoupling};
+use nexus3d::prelude::{NexusState, RbdCoupling, NexusPipeline};
 use rapier3d::prelude::*;
 
-pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
+pub async fn run(viewer: &mut NexusViewer, pipeline: &mut NexusPipeline) -> anyhow::Result<NexusState> {
     const NXZ: isize = 30;
     const NY: isize = 70;
 
@@ -66,7 +66,7 @@ pub async fn run(viewer: &mut NexusViewer) -> anyhow::Result<NexusState> {
 
     while viewer.render_frame().await {
         if viewer.simulating() {
-            state.simulate(viewer.backend(), Some(&mut timestamps)).await;
+            pipeline.simulate(viewer.backend(), &mut state,Some(&mut timestamps)).await;
         }
         viewer.sync(&mut state).await;
     }

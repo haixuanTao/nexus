@@ -45,7 +45,7 @@ use {
 /// This structure tracks timing and iteration counts for various stages of the physics pipeline,
 /// useful for profiling and optimization.
 #[derive(Default, Clone, Debug)]
-pub struct RbdStats {
+pub struct RunStats {
     /// Number of colors used in the graph coloring algorithm for parallel constraint solving.
     pub num_colors: u32,
     /// Duration from the start of the step until collision pair count is read back from GPU.
@@ -66,7 +66,7 @@ pub struct RbdStats {
     pub gpu_total_time: f64,
 }
 
-impl RbdStats {
+impl RunStats {
     /// Returns the total simulation time in milliseconds.
     pub fn total_simulation_time_with_readback_ms(&self) -> f32 {
         self.total_simulation_time_with_readback.as_secs_f32() * 1000.0
@@ -1333,21 +1333,21 @@ impl RbdPipeline {
     /// Creates a new physics pipeline from a GPU backend.
     ///
     /// This method loads all the compute shaders needed for the physics simulation.
-    pub fn from_backend(backend: &GpuBackend) -> Self {
-        Self {
-            mprops_update: GpuMpropsUpdate::from_backend(backend).unwrap(),
+    pub fn new(backend: &GpuBackend) -> Result<Self, GpuBackendError> {
+        Ok(Self {
+            mprops_update: GpuMpropsUpdate::from_backend(backend)?,
             sync_collider_poses: crate::dynamics::GpuSyncColliderPosesShader::from_backend(backend)
-                .unwrap(),
-            narrow_phase: GpuNarrowPhase::from_backend(backend).unwrap(),
-            solver: GpuSolver::from_backend(backend).unwrap(),
-            joint_solver: GpuJointSolver::from_backend(backend).unwrap(),
+                ?,
+            narrow_phase: GpuNarrowPhase::from_backend(backend)?,
+            solver: GpuSolver::from_backend(backend)?,
+            joint_solver: GpuJointSolver::from_backend(backend)?,
             #[cfg(feature = "dim3")]
-            multibody_solver: GpuMultibodySolver::from_backend(backend).unwrap(),
-            prefix_sum: GpuPrefixSum::from_backend(backend).unwrap(),
+            multibody_solver: GpuMultibodySolver::from_backend(backend)?,
+            prefix_sum: GpuPrefixSum::from_backend(backend)?,
             lbvh: Lbvh::from_backend(backend),
-            coloring: GpuColoring::from_backend(backend).unwrap(),
-            warmstart: GpuWarmstart::from_backend(backend).unwrap(),
-        }
+            coloring: GpuColoring::from_backend(backend)?,
+            warmstart: GpuWarmstart::from_backend(backend)?,
+        })
     }
 
     /// Executes one physics simulation timestep on the GPU.
@@ -1358,8 +1358,8 @@ impl RbdPipeline {
         backend: &GpuBackend,
         state: &mut RbdState,
         mut timestamps: Option<&mut GpuTimestamps>,
-    ) -> Result<RbdStats, GpuBackendError> {
-        let mut stats = RbdStats::default();
+    ) -> Result<RunStats, GpuBackendError> {
+        let mut stats = RunStats::default();
         let t_phase1 = web_time::Instant::now();
 
         // Phase 0: Multibody once-per-visible-step setup (3D only for now).
