@@ -16,7 +16,7 @@
 //! ```
 
 use std::collections::HashMap;
-
+use std::time::Duration;
 use khal::Shader;
 use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps, WebGpu};
 use khal::re_exports::wgpu::Limits;
@@ -101,6 +101,7 @@ impl MpmRenderMode {
 pub struct UiState {
     pub run_state: RunState,
     pub run_stats: RunStats,
+    pub sync_time: Duration,
     pub ui_sections: UiSections,
     pub backend_type: BackendType,
     pub gpu_init_error: Option<String>,
@@ -288,6 +289,7 @@ impl NexusViewer {
             ui: UiState {
                 run_state: RunState::Paused,
                 run_stats: RunStats::default(),
+                sync_time: Duration::default(),
                 ui_sections: UiSections {
                     show_examples: true,
                     show_settings: false,
@@ -511,12 +513,7 @@ impl NexusViewer {
     /// it into the viewer-owned render instances: rigid-body collider poses, the
     /// MPM particle point cloud, and the FEM vertex point cloud.
     pub async fn sync(&mut self, state: &mut NexusState) {
-        // Simulation stats (incl. GPU pass timestamps) are aggregated into
-        // `run_stats` for every sub-state, so surface them regardless of whether
-        // the scene has any rigid bodies (FEM/MPM-only scenes have none).
-        self.ui.run_stats = state.run_stats.clone();
-        self.ui.counts = state.counts();
-
+        let t0 = web_time::Instant::now();
         // Settings: seed the UI from the scene only when a different demo is
         // loaded; on a restart / backend switch (same demo) keep the user's
         // current settings and push them back into the freshly-built scene.
@@ -646,6 +643,14 @@ impl NexusViewer {
             let data = build_point_instances(&positions, scale, [0.35, 0.55, 0.82, 1.0]);
             self.fem_node.as_mut().unwrap().set_instances(&data);
         }
+
+        // Simulation stats (incl. GPU pass timestamps) are aggregated into
+        // `run_stats` for every sub-state, so surface them regardless of whether
+        // the scene has any rigid bodies (FEM/MPM-only scenes have none).
+        self.ui.run_stats = state.run_stats.clone();
+        self.ui.sync_time = t0.elapsed();
+        self.ui.counts = state.counts();
+
     }
 
     /// Creates a unit point-cloud base node (a cube in 3D, a rectangle in 2D)

@@ -1,3 +1,4 @@
+use std::time::Duration;
 // use crate::mpm::RenderMode;
 // use crate::mpm::step::RenderConfig;
 // use crate::rbd::BackendType;
@@ -149,7 +150,7 @@ pub fn main_panel(ctx: &egui::Context, state: &mut UiState, gpu_available: bool)
 
                     if state.ui_sections.show_performance {
                         ui.separator();
-                        performance_ui(ui, &state.counts, &state.run_stats, state.backend_type);
+                        performance_ui(ui, &state.counts, &state.run_stats, state.sync_time, state.backend_type);
                     }
 
                     if state.ui_sections.show_examples && !state.demos.is_empty() {
@@ -255,6 +256,7 @@ fn performance_ui(
     ui: &mut egui::Ui,
     counts: &NexusCounts,
     run_stats: &RunStats,
+    sync_time: Duration,
     backend: BackendType,
 ) {
     // Scene entity counts.
@@ -308,10 +310,11 @@ fn performance_ui(
         0.0
     };
 
+    let sync_time = sync_time.as_secs_f32() * 1000.0;
     ui.label(
         RichText::new(format!(
-            "Total: {:.2}ms (+ readback: {:.2}ms) - {:.0} FPS",
-            total_ms_without_readback, total_readback_time, fps
+            "Total: {:.2}ms (+ readback: {:.2}ms, sync: {:.2}ms) - {:.0} FPS",
+            total_ms_without_readback, total_readback_time, sync_time, fps
         ))
         .strong(),
     );
