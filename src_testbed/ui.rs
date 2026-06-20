@@ -1,7 +1,7 @@
 // use crate::mpm::RenderMode;
 // use crate::mpm::step::RenderConfig;
 // use crate::rbd::BackendType;
-use crate::viewer::UiState;
+use crate::viewer::{MpmRenderMode, UiState};
 use crate::{DemoKind, RunState, Transition};
 use khal::backend::Backend;
 use kiss3d::egui;
@@ -211,6 +211,14 @@ fn simulation_settings(ui: &mut egui::Ui, state: &mut UiState) {
         ui.checkbox(&mut s.mpm_use_cpic, "Use CPIC")
             .on_hover_text("Compatible particle-in-cell coupling with rigid colliders");
         gravity_drag(ui, "gravity", &mut s.mpm_gravity);
+        // View-only coloring mode (not part of `sim_settings`).
+        ComboBox::from_label("coloring")
+            .selected_text(state.mpm_render_mode.text())
+            .show_ui(ui, |ui| {
+                for mode in MpmRenderMode::ALL {
+                    ui.selectable_value(&mut state.mpm_render_mode, *mode, mode.text());
+                }
+            });
     }
 
     if has_fem {
