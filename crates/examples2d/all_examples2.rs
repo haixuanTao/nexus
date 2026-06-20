@@ -7,6 +7,7 @@ use nexus2d::prelude::{NexusPipeline, NexusPipelineMask};
 mod balls2;
 mod boxes2;
 mod boxes_and_balls2;
+mod dynamic_rbd2;
 mod joint_ball2;
 mod joint_fixed2;
 mod joint_prismatic2;
@@ -52,6 +53,7 @@ demos! {
     "Balls" => Rbd : balls2,
     "Boxes" => Rbd : boxes2,
     "Boxes & balls" => Rbd : boxes_and_balls2,
+    "Dynamic insertion" => Rbd : dynamic_rbd2,
     "Pyramid" => Rbd : pyramid2,
     "Primitives" => Rbd : primitives2,
     "Polyline" => Rbd : polyline2,

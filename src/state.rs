@@ -166,6 +166,12 @@ pub struct NexusState {
     rbd_dirty: bool,
     /// Number of rigid-body solver steps advanced per [`Self::simulate`] call.
     pub rbd_steps_per_frame: u32,
+    /// Per-environment GPU collider-slot reservation. When > 0, the GPU
+    /// [`RbdState`] is built with this many slots (rather than exactly the
+    /// current body count), leaving room for [`Self::add_rigid_body`] to append
+    /// bodies in place — without rebuilding the whole scene. Set via
+    /// [`Self::reserve_rigid_bodies`].
+    rbd_reserve_per_env: usize,
     // TODO: keep track of whether there is any non-fixed rigid-body (if there isn’t, we can
     //       skip the rbd pipeline entirely).
 }
@@ -189,6 +195,7 @@ impl NexusState {
             rbd_sim_params: vec![RbdSimParams::tgs_soft()],
             rbd_dirty: false,
             rbd_steps_per_frame: 1,
+            rbd_reserve_per_env: 0,
             rbd2gpu: vec![Coarena::new()],
             mpm_body2gpu: Arena::new(),
             multibody2gpu: Coarena::new(),
@@ -478,6 +485,106 @@ impl NexusState {
         handle
     }
 
+    /// Reserves `per_env` GPU collider slots per environment so that bodies can
+    /// later be added with [`Self::add_rigid_body`] *in place* — appended to the
+    /// existing GPU buffers instead of rebuilding the whole scene.
+    ///
+    /// Call this before the first [`Self::finalize`]/[`Self::simulate`]. Intended
+    /// for single-environment scenes (the appended body data is shared across
+    /// batches). `per_env` is a hard cap: once it's full, `add_rigid_body` falls
+    /// back to a full rebuild.
+    pub fn reserve_rigid_bodies(&mut self, per_env: usize) {
+        self.rbd_reserve_per_env = per_env;
+    }
+
+    /// Adds a body + collider to environment 0, appending it directly to the GPU
+    /// [`RbdState`] **without rebuilding the scene** — provided the state already
+    /// exists and has spare capacity (see [`Self::reserve_rigid_bodies`]). If
+    /// there is no GPU state yet, or the reservation is full, it falls back to a
+    /// normal insert (a full rebuild on the next `finalize`).
+    ///
+    /// Only primitive (vertex-less) colliders are supported on the fast path.
+    pub fn add_rigid_body(
+        &mut self,
+        backend: &GpuBackend,
+        body: RigidBody,
+        collider: Collider,
+        coupling: RbdCoupling,
+    ) -> Result<RigidBodyHandle, GpuBackendError> {
+        let handles = self.add_rigid_bodies(backend, [(body, collider, coupling)])?;
+        Ok(handles[0])
+    }
+
+    /// Adds several body + collider pairs to environment 0 in a single in-place
+    /// GPU append — the batched form of [`Self::add_rigid_body`]. One
+    /// `append_bodies` call (one buffer upload + one `rebuild_batch_indices`)
+    /// covers the whole batch, so it's much cheaper than calling `add_rigid_body`
+    /// in a loop. Returns the handles in input order.
+    ///
+    /// Like the single-body version it appends without rebuilding the scene when
+    /// the GPU state exists and has room for the *entire* batch; otherwise it
+    /// falls back to a full rebuild on the next `finalize`. Only primitive
+    /// (vertex-less) colliders are supported on the fast path.
+    pub fn add_rigid_bodies(
+        &mut self,
+        backend: &GpuBackend,
+        bodies: impl IntoIterator<Item = (RigidBody, Collider, RbdCoupling)>,
+    ) -> Result<Vec<RigidBodyHandle>, GpuBackendError> {
+        // Keep copies for the GPU append before the rapier world consumes them.
+        let mut gpu_pairs: Vec<(RigidBody, Collider)> = Vec::new();
+        let mut handles: Vec<RigidBodyHandle> = Vec::new();
+        let mut couplings: Vec<RbdCoupling> = Vec::new();
+        for (body, collider, coupling) in bodies {
+            gpu_pairs.push((body.clone(), collider.clone()));
+            let (handle, _) = self.rbd_envs[0].insert(body, collider);
+            handles.push(handle);
+            couplings.push(coupling);
+        }
+        if handles.is_empty() {
+            return Ok(handles);
+        }
+
+        let appended = match self.rbd.as_mut() {
+            Some(rbd)
+                if (rbd.num_active_colliders() as usize) + gpu_pairs.len()
+                    <= rbd.num_colliders_per_batch() as usize =>
+            {
+                let range = rbd.append_bodies(backend, &gpu_pairs)?;
+                // Single environment: the per-batch local slot is the gpu_id.
+                for (i, (&handle, &coupling)) in handles.iter().zip(&couplings).enumerate() {
+                    self.rbd2gpu[0].insert(
+                        handle.0,
+                        GpuRigidBodyRef {
+                            coupling,
+                            gpu_id: range.start + i as u32,
+                        },
+                    );
+                }
+                true
+            }
+            _ => false,
+        };
+
+        if !appended {
+            // No GPU state yet, or not enough room for the whole batch: fall back
+            // to a full rebuild on the next `finalize`.
+            for (&handle, &coupling) in handles.iter().zip(&couplings) {
+                self.rbd2gpu[0].insert(
+                    handle.0,
+                    GpuRigidBodyRef {
+                        coupling,
+                        gpu_id: u32::MAX,
+                    },
+                );
+            }
+            self.rbd_dirty = true;
+        }
+        if couplings.iter().any(|c| c.body_coupling().is_some()) {
+            self.mpm_dirty = true;
+        }
+        Ok(handles)
+    }
+
     /// Inserts a rigid-body without any attached collider (e.g. a joint anchor).
     pub fn insert_body(&mut self, body: RigidBody, coupling: RbdCoupling) -> RigidBodyHandle {
         self.insert_body_in(0, body, coupling)
@@ -713,25 +820,50 @@ impl NexusState {
     pub async fn finalize(&mut self, backend: &GpuBackend) -> Result<(), GpuBackendError> {
         let rbd_was_dirty = self.rbd_dirty;
         if self.rbd_dirty {
-            // NOTE: this rebuilds the whole GPU rbd state from the rapier worlds
-            //       (one per environment / batch). It is correct to call more
-            //       than once but always does a full rebuild — incremental
-            //       insertion isn't wired yet.
-            let environments: Vec<_> = self
-                .rbd_envs
-                .iter()
-                .zip(self.rbd_sim_params.iter())
-                .map(|(w, sp)| {
-                    (
-                        &w.bodies,
-                        &w.colliders,
-                        &w.impulse_joints,
-                        &w.multibody_joints,
-                        sp,
-                    )
-                })
-                .collect();
-            let rbd_state = RbdState::from_rapier(backend, &environments);
+            // Full (re)build of the GPU rbd state from the rapier worlds. With a
+            // reservation (`reserve_rigid_bodies`) the buffers are sized for
+            // spare slots so later `add_rigid_body` calls can append in place;
+            // otherwise the state is sized exactly to the current body count.
+            let rbd_state = if self.rbd_reserve_per_env > 0 {
+                let num_envs = self.rbd_envs.len() as u32;
+                let max_count = self
+                    .rbd_envs
+                    .iter()
+                    .map(|w| w.colliders.len())
+                    .max()
+                    .unwrap_or(0);
+                let capacity = self.rbd_reserve_per_env.max(max_count) as u32;
+                let mut st = RbdState::empty(backend, num_envs, capacity);
+                // Append environment 0's bodies in collider-iteration order, so
+                // the per-batch slot index matches the `from_rapier` layout.
+                let world = &self.rbd_envs[0];
+                let mut bodies = Vec::new();
+                for (_, collider) in world.colliders.iter() {
+                    if let Some(bh) = collider.parent() {
+                        bodies.push((world.bodies[bh].clone(), collider.clone()));
+                    }
+                }
+                if !bodies.is_empty() {
+                    st.append_bodies(backend, &bodies)?;
+                }
+                st
+            } else {
+                let environments: Vec<_> = self
+                    .rbd_envs
+                    .iter()
+                    .zip(self.rbd_sim_params.iter())
+                    .map(|(w, sp)| {
+                        (
+                            &w.bodies,
+                            &w.colliders,
+                            &w.impulse_joints,
+                            &w.multibody_joints,
+                            sp,
+                        )
+                    })
+                    .collect();
+                RbdState::from_rapier(backend, &environments)
+            };
 
             // Rebuild the per-environment handle → GPU-slot maps to match the
             // flattened pose layout `from_rapier` produced: colliders are laid

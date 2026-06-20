@@ -1050,8 +1050,16 @@ impl RbdState {
             let collider_local_pose = co.position_wrt_parent().copied().unwrap_or(Pose::IDENTITY);
             let is_dynamic = rb.is_dynamic();
             let (local, world) = if is_dynamic {
+                // A standalone rigid-body carries no collider mass: rapier only
+                // folds a collider's mass into the body once the collider is
+                // attached in a world (which `append_bodies` bodies are not).
+                // Combine the body's own (additional) mass with the collider's,
+                // expressed in the body frame, so the appended body falls under
+                // gravity exactly like a `from_rapier` body.
                 let m = rb.mass_properties();
-                let local = local_mprops_from_rapier(&m.local_mprops);
+                let combined =
+                    m.local_mprops + co.mass_properties().transform_by(&collider_local_pose);
+                let local = local_mprops_from_rapier(&combined);
                 let world = world_mprops_from_local(&body_pose, &local);
                 (local, world)
             } else {
@@ -1319,6 +1327,13 @@ impl RbdState {
         self.num_colliders_per_batch
     }
 
+    /// The number of *active* colliders per batch — i.e. how many of the
+    /// `num_colliders_per_batch` capacity slots are currently in use. Bodies
+    /// added via [`Self::append_bodies`] increase this up to the capacity.
+    pub fn num_active_colliders(&self) -> u32 {
+        self.num_active_colliders
+    }
+
     /// The number of batches.
     pub fn num_batches(&self) -> u32 {
         self.num_batches
@@ -1439,6 +1454,7 @@ impl RbdPipeline {
                 &mut encoder,
                 &mut state.lbvh,
                 state.collider_local_poses.len() as u32,
+                state.num_active_colliders,
                 state.num_batches,
                 &state.collider_world_poses,
                 &state.vertex_buffers,
@@ -1468,7 +1484,7 @@ impl RbdPipeline {
             self.lbvh.find_pairs(
                 &mut pass,
                 &mut state.lbvh,
-                state.body_poses.len() as u32,
+                state.num_active_colliders,
                 state.num_batches,
                 &state.batch_indices,
                 &mut state.collision_pairs,

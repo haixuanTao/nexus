@@ -7,6 +7,7 @@ use nexus3d::prelude::{NexusPipeline, NexusPipelineMask};
 mod balls3;
 mod boxes3;
 mod boxes_and_balls3;
+mod dynamic_rbd3;
 mod joint_ball3;
 mod joint_fixed3;
 mod joint_prismatic3;
@@ -65,6 +66,7 @@ demos! {
     "Balls" => Rbd : balls3,
     "Boxes" => Rbd : boxes3,
     "Boxes & balls" => Rbd : boxes_and_balls3,
+    "Dynamic insertion" => Rbd : dynamic_rbd3,
     "Primitives" => Rbd : primitives3,
     "Pyramid" => Rbd : pyramid3,
     "Many pyramids" => Rbd : many_pyramids3,
