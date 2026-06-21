@@ -208,8 +208,6 @@ impl GpuColoring {
         mut args: ColoringArgs<'a>,
         stats: &mut RunStats,
     ) -> u32 {
-        let t0 = web_time::Instant::now();
-
         // Initialize coloring state
         {
             let mut encoder = backend.begin_encoding();
@@ -248,7 +246,6 @@ impl GpuColoring {
         }
 
         stats.num_colors = num_colors;
-        stats.coloring_fallback_time = t0.elapsed();
         num_colors
     }
 
@@ -282,8 +279,6 @@ impl GpuColoring {
         stats: &mut RunStats,
         mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Option<u32> {
-        let t0 = web_time::Instant::now();
-
         // Initialize TOPO-GC state
         {
             let mut encoder = backend.begin_encoding();
@@ -297,7 +292,6 @@ impl GpuColoring {
         loop {
             num_loops += 1;
             if num_loops > 64 {
-                stats.coloring_time = t0.elapsed();
                 return None;
             }
 
@@ -329,7 +323,6 @@ impl GpuColoring {
                 .unwrap()[0];
 
             if max_color != 0 {
-                stats.coloring_time = t0.elapsed();
                 stats.num_colors = max_color;
                 stats.coloring_iterations = num_loops;
                 return Some(max_color + 1); // NOTE: color indices are 1-based.

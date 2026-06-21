@@ -2,7 +2,7 @@ use crate::fem::pipeline::FemPipeline;
 use crate::mpm::pipeline::MpmPipeline;
 use crate::rbd::pipeline::RbdPipeline;
 use crate::state::NexusState;
-use khal::backend::{Backend, GpuBackend, GpuBackendError, GpuTimestamps};
+use khal::backend::{GpuBackend, GpuBackendError, GpuTimestamps};
 
 bitflags::bitflags! {
     /// A bit mask identifying nexus pipelines.
@@ -57,10 +57,6 @@ impl NexusPipeline {
     ) -> Result<(), GpuBackendError> {
         state.finalize(backend).await?;
 
-        if let Some(timestamps) = &mut timestamps {
-            timestamps.reset();
-        }
-
         let t0 = web_time::Instant::now();
 
         // Rigid-bodies. `auto_resize_buffers` grows the collision-pair / coloring
@@ -72,9 +68,7 @@ impl NexusPipeline {
             for _ in 0..steps {
                 state.run_stats = pipeline.step(backend, rbd, timestamps.as_deref_mut())?;
             }
-            let _ = backend.synchronize();
-            state.run_stats.total_simulation_time_without_readback = t0.elapsed();
-            pipeline.auto_resize_buffers(backend, rbd).await;
+            pipeline.auto_resize_buffers(backend, rbd);
         }
 
         // MPM continuum.
@@ -89,7 +83,6 @@ impl NexusPipeline {
             for _ in 0..substeps {
                 let _ = pipeline.step(backend, mpm, timestamps.as_deref_mut());
             }
-            let _ = backend.synchronize();
         }
 
         // FEM soft-bodies.
@@ -100,29 +93,9 @@ impl NexusPipeline {
             for _ in 0..fem.num_substeps {
                 let _ = pipeline.step(backend, fem, timestamps.as_deref_mut());
             }
-            let _ = backend.synchronize();
         }
 
-        // Read timestamp results.
-        // TODO: the caller should probably be responsible for that.
-        if let Some(timestamps) = timestamps {
-            if let Ok(results) = timestamps.read(backend).await {
-                let mut aggregated: Vec<(String, f64)> = Vec::new();
-                for r in &results {
-                    if let Some(existing) =
-                        aggregated.iter_mut().find(|(label, _)| label == &r.label)
-                    {
-                        existing.1 += r.duration_ms;
-                    } else {
-                        aggregated.push((r.label.clone(), r.duration_ms));
-                    }
-                }
-                state.run_stats.gpu_total_time = aggregated.iter().map(|e| e.1).sum();
-                state.run_stats.gpu_pass_times = aggregated;
-            }
-        }
-
-        state.run_stats.total_simulation_time_with_readback = t0.elapsed();
+        state.run_stats.encoding_time = t0.elapsed();
 
         Ok(())
     }

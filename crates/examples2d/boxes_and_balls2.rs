@@ -78,9 +78,9 @@ pub async fn run(
         if viewer.simulating() {
             pipeline
                 .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
-                .await;
+                .await?;
         }
-        viewer.sync(&mut state).await;
+        viewer.sync(&mut state, Some(&mut timestamps)).await?;
     }
 
     Ok(state)

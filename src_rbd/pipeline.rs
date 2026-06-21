@@ -27,7 +27,7 @@ use khal::Shader;
 use std::ops::Range;
 
 use khal::BufferUsages;
-use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuTimestamps};
+use khal::backend::{Backend, Encoder, GpuBackend, GpuBackendError, GpuReadback, GpuTimestamps};
 use std::time::Duration;
 use vortx::tensor::Tensor;
 
@@ -48,33 +48,20 @@ use {
 pub struct RunStats {
     /// Number of colors used in the graph coloring algorithm for parallel constraint solving.
     pub num_colors: u32,
-    /// Duration from the start of the step until collision pair count is read back from GPU.
-    pub start_to_pairs_count_time: Duration,
-    /// Time spent on the graph coloring algorithm.
-    pub coloring_time: Duration,
     /// Number of iterations the coloring algorithm took to converge.
     pub coloring_iterations: u32,
-    /// Time spent on the fallback coloring method (if the primary method failed).
-    pub coloring_fallback_time: Duration,
-    /// Total simulation time not including GPU-to-CPU readbacks.
-    pub total_simulation_time_without_readback: Duration,
-    /// Total simulation time including GPU-to-CPU readbacks.
-    pub total_simulation_time_with_readback: Duration,
+    /// Total command encoding time.
+    pub encoding_time: Duration,
     /// Per-pass GPU timestamp durations (label, milliseconds).
     pub gpu_pass_times: Vec<(String, f64)>,
     /// Total GPU time across all measured passes, in milliseconds.
-    pub gpu_total_time: f64,
+    pub gpu_total_time_ms: f64,
 }
 
 impl RunStats {
-    /// Returns the total simulation time in milliseconds.
-    pub fn total_simulation_time_with_readback_ms(&self) -> f32 {
-        self.total_simulation_time_with_readback.as_secs_f32() * 1000.0
-    }
-
-    /// Returns the total simulation time in milliseconds.
-    pub fn total_simulation_time_without_readback_ms(&self) -> f32 {
-        self.total_simulation_time_without_readback.as_secs_f32() * 1000.0
+    /// Returns the command encoding time in milliseconds.
+    pub fn encoding_time_ms(&self) -> f32 {
+        self.encoding_time.as_secs_f32() * 1000.0
     }
 }
 
@@ -125,7 +112,9 @@ pub struct RbdState {
     collision_groups: Tensor<crate::rapier::geometry::InteractionGroups>,
     collision_pairs: Tensor<[u32; 2]>,
     collision_pairs_len: Tensor<u32>,
-    collision_pairs_len_staging: Tensor<u32>,
+    /// Non-blocking readback of `[collision_pairs_len, uncolored]` used by
+    /// [`RbdPipeline::auto_resize_buffers`] to grow buffers without stalling.
+    resize_readback: GpuReadback<u32>,
     collision_pairs_indirect: Tensor<[u32; 3]>,
     /// CPU-side mirrors of the dynamic batch capacities. The capacity values
     /// live in the [`BatchIndices`] uniform; these mirrors let
@@ -593,9 +582,7 @@ impl RbdState {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )
         .unwrap();
-        let collision_pairs_len_staging =
-            Tensor::scalar_uninit(backend, BufferUsages::MAP_READ | BufferUsages::COPY_DST)
-                .unwrap();
+        let resize_readback = GpuReadback::new(backend, 2).unwrap();
         let collision_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
 
@@ -722,7 +709,7 @@ impl RbdState {
             collision_groups,
             collision_pairs,
             collision_pairs_len,
-            collision_pairs_len_staging,
+            resize_readback,
             collision_pairs_indirect,
             contacts_per_batch_cpu,
             collision_pairs_per_batch_cpu,
@@ -860,9 +847,7 @@ impl RbdState {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )
         .unwrap();
-        let collision_pairs_len_staging =
-            Tensor::scalar_uninit(backend, BufferUsages::MAP_READ | BufferUsages::COPY_DST)
-                .unwrap();
+        let resize_readback = GpuReadback::new(backend, 2).unwrap();
         let collision_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
         let contacts =
@@ -960,7 +945,7 @@ impl RbdState {
             collision_groups,
             collision_pairs,
             collision_pairs_len,
-            collision_pairs_len_staging,
+            resize_readback,
             collision_pairs_indirect,
             contacts_per_batch_cpu,
             collision_pairs_per_batch_cpu,
@@ -1392,7 +1377,6 @@ impl RbdPipeline {
         mut timestamps: Option<&mut GpuTimestamps>,
     ) -> Result<RunStats, GpuBackendError> {
         let mut stats = RunStats::default();
-        let t_phase1 = web_time::Instant::now();
 
         // Phase 0: Multibody once-per-visible-step setup (3D only for now).
         #[cfg(feature = "dim3")]
@@ -1496,8 +1480,6 @@ impl RbdPipeline {
             drop(pass);
             backend.submit(encoder)?;
         }
-
-        stats.start_to_pairs_count_time = t_phase1.elapsed();
 
         // Phase 2a: Narrow phase. Split out from solver-prep + coloring
         // so its CPU encoding overlaps with Phase 1's GPU work and its
@@ -1702,56 +1684,30 @@ impl RbdPipeline {
         Ok(stats)
     }
 
-    pub async fn auto_resize_buffers(&self, backend: &GpuBackend, state: &mut RbdState) {
-        let mut encoder = backend.begin_encoding();
-        encoder
-            .copy_buffer_to_buffer(
-                state.collision_pairs_len.buffer(),
-                0,
-                state.collision_pairs_len_staging.buffer_mut(),
-                0,
-                1,
-            )
-            .unwrap();
-        encoder
-            .copy_buffer_to_buffer(
-                state.uncolored.buffer(),
-                0,
-                state.uncolored_staging.buffer_mut(),
-                0,
-                1,
-            )
-            .unwrap();
-        backend.submit(encoder).unwrap();
+    /// Grows the collision-pair / contact / constraint buffers when the previous
+    /// step overflowed them.
+    ///
+    /// The decision is driven by a non-blocking readback of the pair count and
+    /// coloring-convergence flag: each call harvests an earlier frame's counters
+    /// (if the GPU has finished) and kicks off the next readback. Nothing here
+    /// blocks on the GPU, so the physics step never stalls — at the cost of the
+    /// resize reacting a frame or two late, which the lazy scheme already
+    /// tolerates (a brief overflow drops some contacts for one frame).
+    pub fn auto_resize_buffers(&self, backend: &GpuBackend, state: &mut RbdState) {
+        let mut counts = [0u32; 2];
+        if state.resize_readback.try_take(backend, &mut counts) {
+            let collision_pairs_len = counts[0];
+            let coloring_converged = counts[1];
 
-        let mut collision_pairs_len = [0u32];
-        let mut coloring_converged = [0u32];
-        backend
-            .read_buffer(
-                state.collision_pairs_len_staging.buffer(),
-                &mut collision_pairs_len,
-            )
-            .await
-            .unwrap();
-        backend
-            .read_buffer(state.uncolored_staging.buffer(), &mut coloring_converged)
-            .await
-            .unwrap();
+            if coloring_converged == 0 {
+                state.max_colors += 5;
+            }
 
-        if coloring_converged[0] == 0 {
-            state.max_colors += 5;
-        }
-
-        // Lazy resize: grow collision-pair / contact / constraint buffers
-        // based on the *previous* frame's max pair count.
-        // This can create a one-frame delay where a bunch of contacts are ignored for a frame
-        // if their count exceed the allocated buffer’s size for contacts. But this delay allows
-        // us to avoid a gpu-cpu sync in the middle of the physics pipeline.
-        {
+            // Lazy resize based on the *previous* frame's max pair count.
             let per_batch_capacity = state.collision_pairs.len() as u32 / state.num_batches;
             // Add a 25% slack so we resize once for a band of nearby
             // overflows instead of bouncing on each new pair.
-            let needed = collision_pairs_len[0].saturating_add(collision_pairs_len[0] / 4);
+            let needed = collision_pairs_len.saturating_add(collision_pairs_len / 4);
             if needed >= per_batch_capacity {
                 let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
                 let desired_len = needed.next_power_of_two().max(per_batch_capacity);
@@ -1784,6 +1740,20 @@ impl RbdPipeline {
                 state.contacts_per_batch_cpu = desired_len;
                 state.rebuild_batch_indices(backend);
             }
+        }
+
+        // Start the next readback once the previous one has been consumed, so a
+        // later frame can harvest this step's counters. `collision_pairs_len` and
+        // `uncolored` are the GPU-resident sources (both `COPY_SRC`); the copy
+        // lands in the readback's own staging buffer.
+        if state.resize_readback.is_idle() {
+            let _ = state.resize_readback.request(
+                backend,
+                &[
+                    (state.collision_pairs_len.buffer(), 0),
+                    (state.uncolored.buffer(), 0),
+                ],
+            );
         }
     }
 }

@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 use khal::Shader;
-use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuTimestamps, WebGpu};
+use khal::backend::{Backend, GpuBackend as KhalGpuBackend, GpuBackendError, GpuTimestamps, WebGpu};
 use khal::re_exports::wgpu::Limits;
 
 use kiss3d::prelude::Color;
@@ -27,7 +27,7 @@ use kiss3d::scene::InstanceData2d;
 #[cfg(feature = "dim3")]
 use kiss3d::scene::InstanceData3d;
 use kiss3d::scene::{SceneNode2d, SceneNode3d};
-use kiss3d::window::Window;
+use kiss3d::window::{NumSamples, Window};
 
 /// Viewer-owned scene node type for the active dimension.
 #[cfg(feature = "dim2")]
@@ -236,6 +236,7 @@ impl NexusViewer {
         let mut window = Window::new("nexus demos").await;
         window.set_background_color(Color::new(245.0 / 255.0, 245.0 / 255.0, 236.0 / 255.0, 1.0));
         window.set_shadows_enabled(false);
+        window.set_samples(NumSamples::One); // On Edge, enabling msaa significantly hurts performances.
 
         #[cfg(feature = "dim2")]
         let (camera2d, camera3d) = {
@@ -255,8 +256,7 @@ impl NexusViewer {
         let mut scene3d = SceneNode3d::empty();
         let scene2d = SceneNode2d::empty();
 
-        scene3d.add_directional_light(glamx::Vec3::new(-1.0, -1.0, -1.0));
-        scene3d.add_directional_light(glamx::Vec3::new(1.0, 1.0, 1.0));
+        scene3d.add_directional_light(glamx::Vec3::new(-1.0, -2.0, -3.0));
 
         let mut viewer = Self {
             window,
@@ -512,7 +512,8 @@ impl NexusViewer {
     /// Reads the latest state from a [`NexusState`] back from the GPU and pushes
     /// it into the viewer-owned render instances: rigid-body collider poses, the
     /// MPM particle point cloud, and the FEM vertex point cloud.
-    pub async fn sync(&mut self, state: &mut NexusState) {
+    pub async fn sync(&mut self, state: &mut NexusState, timestamps: Option<&mut GpuTimestamps>) -> Result<(), GpuBackendError> {
+        self.backend().synchronize()?;
         let t0 = web_time::Instant::now();
         // Settings: seed the UI from the scene only when a different demo is
         // loaded; on a restart / backend switch (same demo) keep the user's
@@ -644,12 +645,35 @@ impl NexusViewer {
             self.fem_node.as_mut().unwrap().set_instances(&data);
         }
 
-        // Simulation stats (incl. GPU pass timestamps) are aggregated into
-        // `run_stats` for every sub-state, so surface them regardless of whether
-        // the scene has any rigid bodies (FEM/MPM-only scenes have none).
+        // GPU pass timings recorded during `simulate`. Read back here (blocking)
+        // rather than in `simulate`, so the step itself never stalls on the GPU.
+        // The readbacks above already drained the GPU; the explicit `synchronize`
+        // keeps this correct for scenes whose only timed work has no readback.
+        if let Some(timestamps) = timestamps {
+            if let Ok(results) = timestamps.read(self.backend()).await {
+                let mut aggregated: Vec<(String, f64)> = Vec::new();
+                for r in &results {
+                    if let Some(existing) =
+                        aggregated.iter_mut().find(|(label, _)| label == &r.label)
+                    {
+                        existing.1 += r.duration_ms;
+                    } else {
+                        aggregated.push((r.label.clone(), r.duration_ms));
+                    }
+                }
+
+                if !aggregated.is_empty() {
+                    state.run_stats.gpu_total_time_ms = aggregated.iter().map(|e| e.1).sum();
+                    state.run_stats.gpu_pass_times = aggregated;
+                }
+            }
+            timestamps.reset();
+        }
+
         self.ui.run_stats = state.run_stats.clone();
         self.ui.sync_time = t0.elapsed();
         self.ui.counts = state.counts();
+        Ok(())
 
     }
 

@@ -301,50 +301,17 @@ fn performance_ui(
     ui.add_space(4.0);
 
     // Timing.
-    let total_ms_with_readback = run_stats.total_simulation_time_with_readback_ms();
-    let total_ms_without_readback = run_stats.total_simulation_time_without_readback_ms();
-    let total_readback_time = total_ms_with_readback - total_ms_without_readback;
-    let fps = if total_ms_with_readback > 0.0 {
-        (1000.0f32 / total_ms_with_readback).round()
-    } else {
-        0.0
-    };
-
+    let encoding_time = run_stats.encoding_time_ms();
     let sync_time = sync_time.as_secs_f32() * 1000.0;
     ui.label(
         RichText::new(format!(
-            "Total: {:.2}ms (+ readback: {:.2}ms, sync: {:.2}ms) - {:.0} FPS",
-            total_ms_without_readback, total_readback_time, sync_time, fps
+            "Encoding: {:.2}ms\nGPU: {:.2}ms\nSync: {:.2}ms",
+            encoding_time, run_stats.gpu_total_time_ms, sync_time
         ))
         .strong(),
     );
-    ui.add_space(4.0);
-
-    CollapsingHeader::new("Simulation details")
-        .id_salt("rbd_sim_details")
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.label(format!("Colors: {}", run_stats.num_colors));
-            ui.label(format!(
-                "Coloring: {:.2}ms",
-                run_stats.coloring_time.as_secs_f32() * 1000.0
-            ));
-            ui.label(format!(
-                "Coloring iterations: {} x 10",
-                run_stats.coloring_iterations
-            ));
-            ui.label(format!(
-                "Start to pairs count: {:.2}ms",
-                run_stats.start_to_pairs_count_time.as_secs_f32() * 1000.0
-            ));
-            ui.label(format!(
-                "Coloring fallback: {:.2}ms",
-                run_stats.coloring_fallback_time.as_secs_f32() * 1000.0
-            ));
-        });
-
     if !run_stats.gpu_pass_times.is_empty() {
-        CollapsingHeader::new(format!("GPU passes: {:.2}ms", run_stats.gpu_total_time))
+        CollapsingHeader::new(format!("GPU passes: {:.2}ms", run_stats.gpu_total_time_ms))
             .id_salt("rbd_gpu_passes")
             .default_open(false)
             .show(ui, |ui| {
@@ -362,7 +329,7 @@ fn performance_ui(
     }
 
     // Slow performance warning.
-    if run_stats.total_simulation_time_with_readback.as_secs_f32() > 0.1 {
+    if run_stats.gpu_total_time_ms > 100.0 {
         ui.add_space(4.0);
         ui.colored_label(
             Color32::from_rgb(180, 120, 60),
