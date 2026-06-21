@@ -1,5 +1,5 @@
 use khal::backend::GpuTimestamps;
-use nexus_testbed3d::NexusViewer;
+use nexus_viewer3d::NexusViewer;
 use nexus3d::mpm::solver::{Particle, ParticleModel, SimulationParams};
 use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 

@@ -92,7 +92,7 @@ impl Default for GpuRigidBodyRef {
     }
 }
 
-/// Entity counts for the current scene, surfaced in the testbed UI. Rigid-body
+/// Entity counts for the current scene, surfaced in the viewer UI. Rigid-body
 /// counts are summed across all environments (batches).
 #[derive(Clone, Copy, Default, Debug)]
 pub struct NexusCounts {
@@ -274,7 +274,7 @@ impl NexusState {
     /// Whether this state uses the MPM solver. True once MPM has been configured
     /// via [`Self::set_mpm_params`], even before the sub-state is lazily
     /// allocated on the first [`Self::add_particles`] — so a particle emitter
-    /// that starts empty still reports its MPM usage (e.g. to the testbed UI).
+    /// that starts empty still reports its MPM usage (e.g. to the viewer UI).
     pub fn has_mpm(&self) -> bool {
         self.mpm.is_some() || self.mpm_params.is_some()
     }

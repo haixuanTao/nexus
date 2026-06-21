@@ -6,15 +6,15 @@ edition = "2024"
 
 [features]
 default = []
-cpu = ["nexus_testbed3d/cpu"]
-cpu-parallel = ["cpu", "nexus_testbed3d/cpu-parallel"]
-cuda = ["nexus_testbed3d/cuda"]
-metal = ["nexus_testbed3d/metal"]
+cpu = ["nexus_viewer3d/cpu"]
+cpu-parallel = ["cpu", "nexus_viewer3d/cpu-parallel"]
+cuda = ["nexus_viewer3d/cuda"]
+metal = ["nexus_viewer3d/metal"]
 
 [dependencies]
 glamx = { version = "0.3", default-features = false }
 nexus3d = { path = "../nexus3d", features = [ "rbd", "mpm", "fem" ] }
-nexus_testbed3d = { path = "../nexus_testbed3d" }
+nexus_viewer3d = { path = "../nexus_viewer3d" }
 nexus_rbd3d = { path = "../nexus_rbd3d" } # TODO: remove this
 rapier3d = "0.33"
 rapier3d-urdf = { version = "0.33", features = ["stl"] }

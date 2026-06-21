@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use inflector::Inflector;
-use nexus_testbed3d::{BackendType, DemoKind, NexusViewer};
+use nexus_viewer3d::{BackendType, DemoKind, NexusViewer};
 use nexus3d::prelude::{NexusPipeline, NexusPipelineMask};
 
 mod balls3;
@@ -161,11 +161,11 @@ pub async fn main() {
     }
     #[cfg(feature = "cuda")]
     if opts.cuda {
-        viewer = viewer.with_backend(nexus_testbed3d::BackendType::Cuda);
+        viewer = viewer.with_backend(nexus_viewer3d::BackendType::Cuda);
     }
     #[cfg(feature = "metal")]
     if opts.metal {
-        viewer = viewer.with_backend(nexus_testbed3d::BackendType::Metal);
+        viewer = viewer.with_backend(nexus_viewer3d::BackendType::Metal);
     }
     if opts.run {
         viewer = viewer.with_running();

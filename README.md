@@ -38,7 +38,7 @@ cargo install cargo-gpu --version 0.10.0-alpha.1
 
 ## Running the examples
 
-The example binaries launch a testbed window with all available demos. Use the `--release` flag for good performance,
+The example binaries launch a viewer window with all available demos. Use the `--release` flag for good performance,
 as debug builds of GPU physics code will be very slow.
 
 ```sh

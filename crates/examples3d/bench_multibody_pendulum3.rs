@@ -5,7 +5,7 @@
 //! and reports per-step wall-clock times so we can track the perf gap and
 //! verify that shader optimisations are landing.
 //!
-//! Usage (the `cpu` feature wires the nexus-CPU backend through nexus_testbed3d):
+//! Usage (the `cpu` feature wires the nexus-CPU backend through nexus_viewer3d):
 //!
 //! ```text
 //! cargo run -p nexus_examples_3d --release \
@@ -20,11 +20,11 @@ use std::time::Duration;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
-use nexus_testbed3d::SimulationState;
-use nexus_testbed3d::nexus::rbd::dynamics::RbdSimParams;
-use nexus_testbed3d::rbd::BatchEnvironment;
-use nexus_testbed3d::rbd::GpuBackend;
-use nexus_testbed3d::rbd::backend::SimulationBackend;
+use nexus_viewer3d::SimulationState;
+use nexus_viewer3d::nexus::rbd::dynamics::RbdSimParams;
+use nexus_viewer3d::rbd::BatchEnvironment;
+use nexus_viewer3d::rbd::GpuBackend;
+use nexus_viewer3d::rbd::backend::SimulationBackend;
 use rapier3d::prelude::*;
 use std::collections::HashMap;
 
@@ -200,7 +200,7 @@ async fn bench_backend_inner(
 async fn webgpu_backend() -> KhalGpuBackend {
     // The pendulum scene's narrow-phase shader needs more storage buffers
     // and a larger workgroup-storage budget than wgpu's defaults — mirror
-    // the limits the testbed requests.
+    // the limits the viewer requests.
     let limits = wgpu::Limits {
         max_buffer_size: 1_200_000_000,
         max_storage_buffer_binding_size: 1_200_000_000,

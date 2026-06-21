@@ -1,5 +1,5 @@
 use khal::backend::GpuTimestamps;
-use nexus_testbed3d::NexusViewer;
+use nexus_viewer3d::NexusViewer;
 use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 use rapier3d_urdf::{UrdfLoaderOptions, UrdfMultibodyOptions, UrdfRobot};
@@ -42,7 +42,7 @@ pub async fn run(
         // original triangle meshes attached to each collider as a `UrdfVisual`,
         // which we forward to the viewer as a per-body visual override.
         mesh_converter: None, // Some(MeshConverter::Obb),
-        // Lift the robot above the ground. URDF is Z-up but the testbed is Y-up,
+        // Lift the robot above the ground. URDF is Z-up but the viewer is Y-up,
         // so rotate -90° around X so the robot stands upright.
         shift: Pose::from_parts(
             Vec3::new(0.0, scale, 0.0),

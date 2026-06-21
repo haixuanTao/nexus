@@ -38,7 +38,7 @@ use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 ///
 /// Workgroup memory: matrix tile (`32×32 f32 = 4 KiB`) + rhs (`32 f32`) +
 /// per-lane reduction scratch (`32 f32`) + two scalar broadcast slots ≈ 4.5
-/// KiB, well under the 19 904 B limit configured by the testbed.
+/// KiB, well under the 19 904 B limit configured by the viewer.
 #[spirv_bindgen]
 #[spirv(compute(threads(32, 1, 1)))]
 pub fn gpu_mb_gravity_and_lu(

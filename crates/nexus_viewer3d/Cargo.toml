@@ -1,14 +1,14 @@
 [package]
-name = "nexus_testbed3d"
+name = "nexus_viewer3d"
 version = "0.4.0"
 authors = ["Sébastien Crozet <developer@crozet.re>"]
-description = "Testbed for 3D GPU physics demos with nexus."
+description = "Viewer for 3D GPU physics demos with nexus."
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [lib]
-name = "nexus_testbed3d"
-path = "../../src_testbed/lib.rs"
+name = "nexus_viewer3d"
+path = "../../src_viewer/lib.rs"
 required-features = ["dim3"]
 
 [lints]

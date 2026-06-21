@@ -1,5 +1,5 @@
 use khal::backend::GpuTimestamps;
-use nexus_testbed3d::NexusViewer;
+use nexus_viewer3d::NexusViewer;
 use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
@@ -92,5 +92,5 @@ pub async fn run(
     }
 
     Ok(state)
-    // testbed.look_at(point![100.0, 100.0, 100.0], Point::origin());
+    // viewer.look_at(point![100.0, 100.0, 100.0], Point::origin());
 }

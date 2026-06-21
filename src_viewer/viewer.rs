@@ -1,6 +1,6 @@
 //! Generic, scene-agnostic rendering/runtime resources.
 //!
-//! [`NexusViewer`] is the testbed analogue of kiss3d's `Window`: it owns the window,
+//! [`NexusViewer`] is the viewer analogue of kiss3d's `Window`: it owns the window,
 //! cameras, GPU backends and UI state, but knows nothing about a particular
 //! physics scene. Examples build a scene from rapier resources via
 //! [`NexusViewer::set_rbd`] / [`set_mpm`](NexusViewer::set_mpm) / [`set_fem`](NexusViewer::set_fem)
@@ -129,7 +129,7 @@ pub struct UiState {
     pub mpm_render_mode: MpmRenderMode,
 }
 
-/// Editable simulation settings exposed in the testbed UI. The viewer pulls
+/// Editable simulation settings exposed in the viewer UI. The viewer pulls
 /// these from the [`NexusState`] when a demo loads and pushes edits back each
 /// frame (see [`NexusViewer::sync`]).
 #[derive(Clone)]

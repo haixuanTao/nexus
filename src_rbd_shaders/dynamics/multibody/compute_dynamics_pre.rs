@@ -22,7 +22,7 @@
 //!      `gpu_mb_mass_matrix_with_coriolis`.
 //!
 //! Bindings: 14 storage + 8 uniform — exactly at the 14-storage WebGPU limit
-//! requested by the testbed. The follow-up `gpu_mb_gravity_and_lu` kernel
+//! requested by the viewer. The follow-up `gpu_mb_gravity_and_lu` kernel
 //! finishes the dynamics pipeline (gravity rhs + LU factor + LU solve).
 
 use khal_std::glamx::UVec3;

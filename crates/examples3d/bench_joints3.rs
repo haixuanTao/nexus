@@ -20,11 +20,11 @@ use std::time::Duration;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
-use nexus_testbed3d::SimulationState;
-use nexus_testbed3d::nexus::rbd::dynamics::RbdSimParams;
-use nexus_testbed3d::rbd::BatchEnvironment;
-use nexus_testbed3d::rbd::GpuBackend;
-use nexus_testbed3d::rbd::backend::SimulationBackend;
+use nexus_viewer3d::SimulationState;
+use nexus_viewer3d::nexus::rbd::dynamics::RbdSimParams;
+use nexus_viewer3d::rbd::BatchEnvironment;
+use nexus_viewer3d::rbd::GpuBackend;
+use nexus_viewer3d::rbd::backend::SimulationBackend;
 use rapier3d::prelude::*;
 
 fn create_prismatic_joints(

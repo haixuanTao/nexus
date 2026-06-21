@@ -1,5 +1,5 @@
 use khal::backend::GpuTimestamps;
-use nexus_testbed3d::NexusViewer;
+use nexus_viewer3d::NexusViewer;
 use nexus3d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier3d::prelude::*;
 
@@ -66,7 +66,7 @@ pub fn build_block(
                     ColliderBuilder::cuboid(dim.x, dim.y, dim.z).build(),
                 );
 
-                // testbed.set_initial_body_color(handle, color0);
+                // viewer.set_initial_body_color(handle, color0);
                 std::mem::swap(&mut color0, &mut color1);
             }
         }
@@ -90,7 +90,7 @@ pub fn build_block(
                     .build(),
                 ColliderBuilder::cuboid(dim.x, dim.y, dim.z).build(),
             );
-            // testbed.set_initial_body_color(handle, color0);
+            // viewer.set_initial_body_color(handle, color0);
             std::mem::swap(&mut color0, &mut color1);
         }
     }
@@ -154,5 +154,5 @@ pub async fn run(
     }
 
     Ok(state)
-    // testbed.look_at(point![100.0, 100.0, 100.0], Point::origin());
+    // viewer.look_at(point![100.0, 100.0, 100.0], Point::origin());
 }

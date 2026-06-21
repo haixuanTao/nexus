@@ -1,6 +1,6 @@
 use glamx::vec3;
 use khal::backend::GpuTimestamps;
-use nexus_testbed3d::NexusViewer;
+use nexus_viewer3d::NexusViewer;
 
 use nexus3d::fem::mesh::FemMesh;
 use nexus3d::fem::solver::{FemConfig, FemMaterial, MaterialModel, SolverMethod};

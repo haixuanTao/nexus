@@ -116,10 +116,10 @@ pub fn compiling_overlay(ctx: &egui::Context) {
         });
 }
 
-/// Builds the testbed control panel. Mutates `state` in place (run state, demo
+/// Builds the viewer control panel. Mutates `state` in place (run state, demo
 /// selection, backend choice) and queries the scene for scene-specific widgets.
 pub fn main_panel(ctx: &egui::Context, state: &mut UiState, gpu_available: bool) {
-    egui::Window::new("Nexus Testbed")
+    egui::Window::new("Nexus Viewer")
         .default_width(300.0)
         .show(ctx, |ui| {
             // GPU error banner.

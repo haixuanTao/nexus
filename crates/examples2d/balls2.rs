@@ -1,5 +1,5 @@
 use khal::backend::GpuTimestamps;
-use nexus_testbed2d::NexusViewer;
+use nexus_viewer2d::NexusViewer;
 use nexus2d::prelude::{NexusPipeline, NexusState, RbdCoupling};
 use rapier2d::prelude::*;
 

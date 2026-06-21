@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use inflector::Inflector;
-use nexus_testbed2d::{BackendType, DemoKind, NexusViewer};
+use nexus_viewer2d::{BackendType, DemoKind, NexusViewer};
 use nexus2d::prelude::{NexusPipeline, NexusPipelineMask};
 
 mod balls2;
@@ -133,7 +133,7 @@ pub async fn main() {
     }
     #[cfg(feature = "metal")]
     if opts.metal {
-        viewer = viewer.with_backend(nexus_testbed2d::BackendType::Metal);
+        viewer = viewer.with_backend(nexus_viewer2d::BackendType::Metal);
     }
     if opts.run {
         viewer = viewer.with_running();
