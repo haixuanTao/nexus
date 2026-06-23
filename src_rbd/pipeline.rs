@@ -473,11 +473,31 @@ impl RbdState {
                 .iter()
                 .map(|(mb, ids, bodies)| (*mb, ids, *bodies))
                 .collect();
+            // Per-env contact friction μ, read from the rapier collider
+            // material so a collider's configured friction (and per-env friction
+            // randomization) actually reaches the GPU contact solver — the
+            // builder otherwise hardcodes 0.5. Read the GROUND (fixed-body)
+            // collider: the unambiguous single carrier of the env's contact μ.
+            // Parallel to `mb_refs` because `multibody_envs` is pushed one-per-
+            // env, in step with `environments`. Falls back to 0.5 when none.
+            let mb_frictions: Vec<f32> = environments
+                .iter()
+                .map(|(bodies, colliders, _, _, _)| {
+                    colliders
+                        .iter()
+                        .find_map(|(_, c)| {
+                            let b = bodies.get(c.parent()?)?;
+                            b.is_fixed().then(|| c.friction())
+                        })
+                        .unwrap_or(0.5)
+                })
+                .collect();
             let mut mb = GpuMultibodySet::from_rapier(
                 backend,
                 &mb_refs,
                 [0.0, -9.81, 0.0],
                 max_colliders as u32,
+                &mb_frictions,
             );
             mb.set_visible_dt(backend, multibody_dt);
 
@@ -820,7 +840,15 @@ impl RbdState {
             let mb_refs: Vec<_> = (0..num_batches as usize)
                 .map(|_| (&empty_mb, &empty_body_ids, &empty_bodies))
                 .collect();
-            GpuMultibodySet::from_rapier(backend, &mb_refs, [0.0, -9.81, 0.0], capacity_per_batch)
+            // Empty/padding path: no real colliders → default friction (0.5)
+            // for every env (from_rapier falls back to 0.5 on a missing entry).
+            GpuMultibodySet::from_rapier(
+                backend,
+                &mb_refs,
+                [0.0, -9.81, 0.0],
+                capacity_per_batch,
+                &Vec::<f32>::new(),
+            )
         };
 
         // Shared shape vertex/index buffers: dummy data to avoid empty bindings.

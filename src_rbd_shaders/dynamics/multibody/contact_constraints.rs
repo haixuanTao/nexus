@@ -47,9 +47,12 @@ use glamx::Vec2;
 #[cfg(feature = "dim3")]
 use glamx::Vec3;
 
-/// Default Coulomb friction coefficient — matches the rb-rb default in
-/// `solver_utils::contact_to_constraint`. Per-collider material props are a
-/// TODO for both code paths.
+/// Default Coulomb friction coefficient — the host's `MultibodyInfo::friction`
+/// fallback when no collider friction is found. Multibody contacts now read
+/// the per-collider `mb.friction`; retained as the documented default and for
+/// the rigid-body path in `solver_utils::contact_to_constraint`, which still
+/// hardcodes 0.5 (separate TODO).
+#[allow(dead_code)]
 const FRICTION_DEFAULT: f32 = 0.5;
 
 /// Compute an arbitrary unit vector orthogonal to `v` (assumed unit length).
@@ -354,7 +357,7 @@ pub fn gpu_mb_init_contact_constraints(
                 kind: MB_CONTACT_KIND_NORMAL,
                 free_body_id,
                 free_body_im: free_im,
-                friction_coeff: FRICTION_DEFAULT,
+                friction_coeff: mb.friction,
                 normal_constraint_slot: normal_slot,
                 _pad0: 0,
                 lin_jac,
@@ -380,7 +383,7 @@ pub fn gpu_mb_init_contact_constraints(
                 free_body_im: free_im,
                 ang_jac: ang_jac_normal,
                 ii_ang_jac: ii_ang_jac_normal,
-                friction_coeff: FRICTION_DEFAULT,
+                friction_coeff: mb.friction,
                 normal_constraint_slot: normal_slot,
                 _pad0: [0; 1],
                 lin_jac,
@@ -479,7 +482,7 @@ pub fn gpu_mb_init_contact_constraints(
                     kind: MB_CONTACT_KIND_TANGENT,
                     free_body_id,
                     free_body_im: free_im,
-                    friction_coeff: FRICTION_DEFAULT,
+                    friction_coeff: mb.friction,
                     normal_constraint_slot: normal_slot,
                     _pad0: 0,
                     lin_jac: free_tangent,
@@ -505,7 +508,7 @@ pub fn gpu_mb_init_contact_constraints(
                     free_body_im: free_im,
                     ang_jac: ang_jac_tang,
                     ii_ang_jac: ii_ang_jac_tang,
-                    friction_coeff: FRICTION_DEFAULT,
+                    friction_coeff: mb.friction,
                     normal_constraint_slot: normal_slot,
                     _pad0: [0; 1],
                     lin_jac: free_tangent,
