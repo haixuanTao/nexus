@@ -34,6 +34,30 @@ Branch for the work: `rebase/onto-rustgpu-clean` (this branch).
     Known-good for sm_120; more porting; keeps the maintenance burden.
   - DECISION PENDING (user). Lean B for reliability unless khal/cuda is verified on sm_120.
 
+## PATH B SCOPE (user chose B: re-port cuda-oxide; 2026-06-24)
+
+cuda-oxide is ADDITIVE (a `cuda-oxide` feature alongside webgpu/khal-cuda), NOT a
+replacement — good. BUT it chains to `khal-std/cuda-oxide` + `vortx-shaders/cuda-oxide`,
+which exist ONLY in our forks:
+- our khal fork `/home/baguette/Documents/work/khal` @ `feat/cuda-oxide-profiling`,
+  version **0.1.1** (cuda-oxide feature → `~/cuda-oxide-src/crates/cuda-device`).
+- our vortx fork `/home/baguette/Documents/work/vortx` @ master (vortx-shaders cuda-oxide).
+- Upstream rustgpu-clean needs khal/vortx **0.2** (khal git pin dimforge 6cd9c85).
+- **dimforge khal 0.2 has NO cuda-oxide** (ships `cargo-cuda` codegen instead) — no shortcut.
+
+So Path B = a **3-repo forward-port**, prerequisite-first:
+1. **[PREREQ] Forward-port our cuda-oxide feature from khal 0.1.1 → khal 0.2** (rebase our
+   khal `feat/cuda-oxide-profiling` onto dimforge khal 6cd9c85). Major-version API migration.
+2. Same for vortx-shaders cuda-oxide → vortx 0.2.
+3. nexus-cuda (this branch): repoint khal/vortx → our 0.2+cuda-oxide forks; add `cuda-oxide`
+   feature; re-apply shader-compat tweaks (contacts_len clamp, smem helpers, -Zmir JumpThreading);
+   bring build_cuda/ scripts.
+4. Kernel re-ports: physics features (§1.B) + cooperative rewrite (gate said needed).
+5. zealot API aliases + retrain acceptance gate.
+
+Effort: multi-day, multi-repo, GPU-gated for cubin builds. NOT a parallel-to-training side
+task — recommend a dedicated session. Step 1 (khal version migration) is the entry blocker.
+
 ## 0. THE GATE (decide scope first — needs GPU)
 
 Our headline perf work is the cooperative-solver rewrite (`240874d`+`85246ac`:
