@@ -25,13 +25,17 @@ pub const MAX_MB_CONTACTS_PER_MB: u32 = 64;
 /// Number of constraint slots reserved per contact point — one normal +
 /// `DIM-1` friction tangents (Coulomb friction). Mirrors rapier's
 /// `ContactConstraintNormalPart` + `ContactConstraintTangentPart` layout.
+// 2D: angular friction not yet emitted here — keep 1 normal + 1 linear tangent.
 #[cfg(feature = "dim2")]
 pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 2;
 /// Number of constraint slots reserved per contact point — one normal +
-/// `DIM-1` friction tangents (Coulomb friction). Mirrors rapier's
-/// `ContactConstraintNormalPart` + `ContactConstraintTangentPart` layout.
+/// `DIM-1` LINEAR friction tangents (Coulomb) + `ANG_DIM` ANGULAR friction
+/// constraints (torsional about the normal + rolling about each tangent, the
+/// MuJoCo condim=6 analog). The angular slots give a SINGLE contact point a
+/// rotational constraint so a loaded foot can't pivot/screw about it.
+/// 3D: 1 + 2 + 3 = 6.
 #[cfg(feature = "dim3")]
-pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 3;
+pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 6;
 
 /// Total constraint slots reserved per multibody (= contact points × DIM).
 pub const MAX_MB_CONTACT_CONSTRAINTS_PER_MB: u32 =

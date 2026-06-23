@@ -60,6 +60,14 @@ use glamx::Vec3;
 #[allow(dead_code)]
 const FRICTION_DEFAULT: f32 = 0.5;
 
+/// Angular-friction length scale (metres). The torsional/rolling friction limit
+/// at a contact is `mb.friction * ANG_FRICTION_LEN * normal_impulse` — i.e. the
+/// effective lever a real contact PATCH would provide. Gives a single contact
+/// point a rotational constraint so a loaded foot resists pivoting/screwing
+/// about it (the sim-to-real foot "sliding-rotating"). ~half the foot footprint.
+/// Tunable: too small → foot still pivots; too large → foot can't articulate.
+const ANG_FRICTION_LEN: f32 = 0.0;
+
 /// Compute an arbitrary unit vector orthogonal to `v` (assumed unit length).
 /// Mirrors rapier's `OrthonormalBasis::orthonormal_vector` fallback used when
 /// the relative tangent velocity is too small to drive friction direction
@@ -196,6 +204,23 @@ pub fn gpu_mb_init_contact_constraints(
     let contact_damping_ratio = params.contact_damping_ratio;
     let ang_freq = contact_natural_frequency * core::f32::consts::TAU;
     let erp_inv_dt = ang_freq / (dt * ang_freq + 2.0 * contact_damping_ratio);
+    // Contact CFM (constraint-force-mixing) coefficient — SOFT/compliant normal
+    // contact. The multibody contact path was fully HARD (cfm=0), so the first
+    // PGS-solved point of the foot's manifold absorbed the whole load and the
+    // others stayed at ~0 (single load-bearing point → the foot rocks). A soft
+    // normal makes each point's force ∝ its penetration, so the box's manifold
+    // points SHARE load and the foot settles flat (a patch) — what the rigid-body
+    // path already does (sim_params::contact_cfm_factor) and what MuJoCo's
+    // solref/solimp gives. The solve divides the impulse update by (1+cfm_coeff).
+    // BIPED_CONTACT_CFM_SCALE (default 1) tunes the softness up for stronger
+    // load-sharing without a recompile path change.
+    let contact_erp = dt * erp_inv_dt;
+    let contact_cfm_coeff = if contact_erp > 0.0 {
+        let ie = 1.0 / contact_erp - 1.0;
+        ie * ie / ((1.0 + ie) * 4.0 * contact_damping_ratio * contact_damping_ratio)
+    } else {
+        0.0
+    };
     let allowed_lin_err = 0.001f32;
     let max_corr_velocity = 10.0f32;
 
@@ -404,9 +429,14 @@ pub fn gpu_mb_init_contact_constraints(
                 rhs: rhs_wo_bias + rhs_bias,
                 rhs_wo_bias,
                 impulse: 0.0,
-                cfm_coeff: 0.0,
+                // SOFT normal contact (load-sharing across the foot's manifold).
+                cfm_coeff: contact_cfm_coeff,
                 cfm_gain: 0.0,
-                _pad4: [0; 2],
+                // DEBUG: stash the contact-point world XY so the host per-substep
+                // trace can see WHICH point is load-bearing each substep — testing
+                // the "single contact point dances between candidate points →
+                // ratchets the foot forward" hypothesis. [foot-pivot trace]
+                _pad4: [pt_world.x.to_bits(), pt_world.y.to_bits()],
             };
             #[cfg(feature = "dim2")]
             let normal_cons = MultibodyContactConstraint {
@@ -436,7 +466,7 @@ pub fn gpu_mb_init_contact_constraints(
             // column; the free-side jacobians are stored on the constraint.
             // Limit `±μ · normal_impulse` is computed at solve time by
             // looking up `cons[normal_constraint_slot].impulse`.
-            for tang_idx in 0..(CONTACT_CONSTRAINTS_PER_POINT - 1) {
+            for tang_idx in 0..(DIM - 1) {
                 let mb_tangent = if tang_idx == 0 {
                     mb_tangent0
                 } else {
@@ -555,6 +585,80 @@ pub fn gpu_mb_init_contact_constraints(
                 };
                 contact_constraints.write(cons_base + tang_slot as usize, tang_cons);
                 count += 1;
+            }
+
+            // Angular friction (torsional about the contact normal + rolling
+            // about each tangent — the MuJoCo condim=6 analog). A single contact
+            // point otherwise gives NO rotational constraint, so a loaded foot
+            // PIVOTS/screws about it (the sim-to-real foot "sliding-rotating":
+            // contact point sticks, foot rotates about it, origin sweeps). Each
+            // constraint resists the link's angular velocity about its axis
+            // (pure-angular jacobian: zero linear force, torque = axis), clamped
+            // (kind=TANGENT) to ±(mb.friction·ANG_FRICTION_LEN)·normal_impulse.
+            // Slots are already reserved by the per-point capacity check above
+            // (CONTACT_CONSTRAINTS_PER_POINT = 1 normal + (DIM-1) linear + ANG_DIM).
+            #[cfg(feature = "dim3")]
+            {
+                let ang_axes = [mb_normal, mb_tangent0, mb_tangent1];
+                let ang_mu = mb.friction * ANG_FRICTION_LEN;
+                for ax_i in 0..ANG_DIM {
+                    let ax = ang_axes[ax_i as usize];
+                    let ang_slot = count;
+                    let ang_col_offset = col_base + (ang_slot as usize) * dofs_stride;
+                    fill_contact_jac_row(
+                        body_jacobians,
+                        mb_jac_base,
+                        ndofs,
+                        mb_link_id_a,
+                        Vector::ZERO,
+                        ax,
+                        contact_constraint_jacs,
+                        ang_col_offset,
+                        false,
+                    );
+                    let (afj, iiafj) = if is_self {
+                        fill_contact_jac_row(
+                            body_jacobians,
+                            mb_jac_base,
+                            ndofs,
+                            mb_link_id_b,
+                            Vector::ZERO,
+                            -ax,
+                            contact_constraint_jacs,
+                            ang_col_offset,
+                            true,
+                        );
+                        (AngVector::ZERO, AngVector::ZERO)
+                    } else {
+                        let aj = -ax;
+                        (aj, free_mp.inv_inertia_mul(aj))
+                    };
+                    let ang_cons = MultibodyContactConstraint {
+                        multibody_id: mb_idx,
+                        link_id: mb_link_id_a,
+                        kind: MB_CONTACT_KIND_TANGENT,
+                        free_body_id,
+                        free_body_im: free_im,
+                        friction_coeff: ang_mu,
+                        normal_constraint_slot: normal_slot,
+                        _pad0: 0,
+                        lin_jac: Vector::ZERO,
+                        _pad1: 0,
+                        ang_jac: afj,
+                        _pad2: 0,
+                        ii_ang_jac: iiafj,
+                        _pad3: 0,
+                        inv_lhs: 0.0,
+                        rhs: 0.0,
+                        rhs_wo_bias: 0.0,
+                        impulse: 0.0,
+                        cfm_coeff: 0.0,
+                        cfm_gain: 0.0,
+                        _pad4: [0; 2],
+                    };
+                    contact_constraints.write(cons_base + ang_slot as usize, ang_cons);
+                    count += 1;
+                }
             }
         }
     }
@@ -742,7 +846,11 @@ fn solve_contact_constraints_par(
                 j_dot_v += cons.lin_jac.dot(free.linear) + gdot(cons.ang_jac, free.angular);
             }
             let rhs_total = j_dot_v + cons.rhs;
-            let raw_imp = cons.impulse - cons.inv_lhs * (rhs_total + cons.cfm_gain * cons.impulse);
+            // Soft contact: ÷(1+cfm_coeff) makes the normal force compliant
+            // (∝ penetration) so the foot's manifold points share load. cfm_coeff=0
+            // (tangent / angular / hard) ⇒ factor 1 ⇒ unchanged hard solve.
+            let raw_imp = (cons.impulse - cons.inv_lhs * (rhs_total + cons.cfm_gain * cons.impulse))
+                / (1.0 + cons.cfm_coeff);
             let new_imp = if cons.kind == MB_CONTACT_KIND_TANGENT {
                 let normal =
                     contact_constraints.read(cons_base + cons.normal_constraint_slot as usize);
