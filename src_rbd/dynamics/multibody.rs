@@ -312,6 +312,19 @@ impl GpuMultibodySet {
         &self.dof_state
     }
 
+    /// Mutable handle to the generalized-velocity / damping buffer. Used to inject
+    /// external velocity perturbations (torso pushes for sim-to-real robustness)
+    /// by read-modify-writing the root linear-velocity DOFs of selected envs.
+    pub fn dof_state_mut(&mut self) -> &mut Tensor<f32> {
+        &mut self.dof_state
+    }
+
+    /// Generalized DOFs per batch (env). Root free joint occupies DOFs 0..6
+    /// (linear 0..3, angular 3..6); actuated joints follow.
+    pub fn dofs_per_batch_count(&self) -> u32 {
+        self.dofs_per_batch
+    }
+
     /// Per-batch per-step link workspace (joint coords, joint rotation, shifts,
     /// local/world poses). Exposed for diagnostic readback while debugging
     /// dimforge/nexus-rustgpu#1; not part of the stable API.
@@ -342,6 +355,26 @@ impl GpuMultibodySet {
     /// Per-batch constraint-slot stride for [`Self::joint_constraints`].
     pub fn joint_constraints_per_batch(&self) -> u32 {
         self.joint_constraints_per_batch
+    }
+
+    /// Per-multibody contact constraints (1 normal + tangents per point), after
+    /// the solve. Layout: `[mb_idx * MAX_MB_CONTACT_CONSTRAINTS_PER_MB + slot]`.
+    /// Diagnostic accessor (read the post-solve normal/friction impulses).
+    pub fn contact_constraints(&self) -> &Tensor<MultibodyContactConstraint> {
+        &self.contact_constraints
+    }
+
+    /// Per-multibody live contact-constraint count (slots used this step).
+    pub fn contact_constraint_count(&self) -> &Tensor<u32> {
+        &self.contact_constraint_count
+    }
+
+    /// Per-constraint multibody-side jacobian rows `J` (one `dof_batch_capacity`-
+    /// strided column per slot). Diagnostic accessor: lets the host recompute
+    /// `J · v = Σ_i jac[i]·dof_state[i]` (the contact-point tangential velocity
+    /// the solver sees) and compare it to the foot's real world slip.
+    pub fn contact_constraint_jacs(&self) -> &Tensor<f32> {
+        &self.contact_constraint_jacs
     }
 
     /// Scatter per-(actuated-joint, env) motor target positions into
@@ -1947,20 +1980,31 @@ impl GpuMultibodySolver {
         )?;
 
         // Cooperative threads(32): one workgroup per articulation.
+        // PGS sweeps: each call is one Gauss-Seidel sweep over the contacts; the
+        // impulse accumulates across calls (only `init` zeroes it), so K calls = K
+        // sweeps → the friction impulse converges to "stick" within the substep.
+        // One sweep was too few: a loaded foot's friction never built up and it
+        // crept ~0.3 m/s. NEXUS_CONTACT_SWEEPS sets K (default 1 = old behaviour).
         let contact_solve_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
-        self.solve_contact_constraints.call(
-            pass,
-            contact_solve_dispatch,
-            &mb.multibody_info,
-            &mut mb.contact_constraints,
-            &mb.contact_constraint_jacs,
-            &mb.contact_constraint_columns,
-            &mb.contact_constraint_count,
-            &mut mb.dof_state,
-            args.solver_vels,
-            &mb.num_multibodies,
-            args.batch_indices,
-        )?;
+        let contact_sweeps: u32 = std::env::var("NEXUS_CONTACT_SWEEPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        for _ in 0..contact_sweeps {
+            self.solve_contact_constraints.call(
+                pass,
+                contact_solve_dispatch,
+                &mb.multibody_info,
+                &mut mb.contact_constraints,
+                &mb.contact_constraint_jacs,
+                &mb.contact_constraint_columns,
+                &mb.contact_constraint_count,
+                &mut mb.dof_state,
+                args.solver_vels,
+                &mb.num_multibodies,
+                args.batch_indices,
+            )?;
+        }
 
         // 3c. Multibody-touching impulse joints — generic (rb-mb / mb-mb)
         //     constraints. Mirrors rapier's `JointGenericExternalConstraintBuilder::update`
@@ -2080,19 +2124,29 @@ impl GpuMultibodySolver {
         // hot path.
         let remove_solve_contact_dispatch =
             [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
-        self.remove_solve_contact_no_bias.call(
-            pass,
-            remove_solve_contact_dispatch,
-            &mb.multibody_info,
-            &mut mb.contact_constraints,
-            &mb.contact_constraint_jacs,
-            &mb.contact_constraint_columns,
-            &mb.contact_constraint_count,
-            &mut mb.dof_state,
-            args.solver_vels,
-            &mb.num_multibodies,
-            args.batch_indices,
-        )?;
+        // TEST: loop the no-bias contact stabilization sweep. If the single sweep
+        // leaves residual bias-velocity (momentum) that accumulates ∝ substeps
+        // (the foot-slip / drift-∝-substeps bug), extra sweeps should drain it and
+        // make drift substep-invariant. NEXUS_CONTACT_STAB_SWEEPS (default 1).
+        let stab_sweeps: u32 = std::env::var("NEXUS_CONTACT_STAB_SWEEPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        for _ in 0..stab_sweeps.max(1) {
+            self.remove_solve_contact_no_bias.call(
+                pass,
+                remove_solve_contact_dispatch,
+                &mb.multibody_info,
+                &mut mb.contact_constraints,
+                &mb.contact_constraint_jacs,
+                &mb.contact_constraint_columns,
+                &mb.contact_constraint_count,
+                &mut mb.dof_state,
+                args.solver_vels,
+                &mb.num_multibodies,
+                args.batch_indices,
+            )?;
+        }
         if mb.mb_imp_joints_per_batch > 0 {
             // Final stabilization sweep WITHOUT bias — colored, one
             // dispatch per color (see the with-bias sweep above).
