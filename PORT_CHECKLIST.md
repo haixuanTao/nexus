@@ -46,14 +46,24 @@ which exist ONLY in our forks:
 - **dimforge khal 0.2 has NO cuda-oxide** (ships `cargo-cuda` codegen instead) — no shortcut.
 
 So Path B = a **3-repo forward-port**, prerequisite-first:
-1. **[PREREQ] Forward-port our cuda-oxide feature from khal 0.1.1 → khal 0.2** (rebase our
-   khal `feat/cuda-oxide-profiling` onto dimforge khal 6cd9c85). Major-version API migration.
-2. Same for vortx-shaders cuda-oxide → vortx 0.2.
-3. nexus-cuda (this branch): repoint khal/vortx → our 0.2+cuda-oxide forks; add `cuda-oxide`
-   feature; re-apply shader-compat tweaks (contacts_len clamp, smem helpers, -Zmir JumpThreading);
-   bring build_cuda/ scripts.
+1. ✅ **[DONE] khal 0.1.1 → 0.2 cuda-oxide forward-port** — branch `cuda-oxide-0.2` in worktree
+   `../khal-02port` (5 commits cherry-picked onto dimforge 6cd9c85; host build clean with
+   webgpu+cuda). dimforge 0.2 = v0.1.1 + only 4 mostly-additive commits, so small. Conflicts:
+   cuda.rs comment (dimforge independently added pre-linked-cubin support — converged), and
+   poll()/as_cuda() at same spot (kept both).
+2. ✅ **[DONE] vortx → v0.2.0 cuda-oxide forward-port** — branch `cuda-oxide-0.2` in worktree
+   `../vortx-02port` (5 commits onto v0.2.0 tag 01c0fff; host build clean with cuda). Conflicts:
+   cfg idiom target_arch_is_gpu→any(spirv,nvptx64) [needed for nvptx], khal 0.2 bump
+   (kept default-features=false), patch repoint → ../khal-02port, and an explicit glam
+   nostd-libm backend (glamx 0.3 stopped unifying it). Patches point khal → ../khal-02port.
+3. **[NEXT] nexus-cuda (this branch): repoint khal/vortx → ../khal-02port + ../vortx-02port;
+   add `cuda-oxide` feature; re-apply shader-compat tweaks (contacts_len clamp, smem helpers,
+   -Zmir JumpThreading); bring build_cuda/ scripts.**
 4. Kernel re-ports: physics features (§1.B) + cooperative rewrite (gate said needed).
 5. zealot API aliases + retrain acceptance gate.
+
+NOTE: device-side (nvptx cuda-oxide) compilation of khal/vortx is validated later at the
+nexus cubin-build stage (step 3-4); only host builds checked so far.
 
 Effort: multi-day, multi-repo, GPU-gated for cubin builds. NOT a parallel-to-training side
 task — recommend a dedicated session. Step 1 (khal version migration) is the entry blocker.
