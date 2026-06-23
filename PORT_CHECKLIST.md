@@ -10,6 +10,30 @@ Branch for the work: `rebase/onto-rustgpu-clean` (this branch).
 
 ---
 
+## PROBE FINDINGS (2026-06-23, parallel to v58 training)
+
+- **Deps fetch OK** here (crates.io + git resolve; only GitHub *API* is blocked).
+- **Gate, structurally answered → cooperative re-port IS in scope.** Upstream's
+  per-articulation solve is still `threads(1)` (contact + joint init/solve) vs our
+  `threads(32)` lane-split. For our 1-biped-per-env config that serial LU+PGS is
+  the bottleneck our rewrite removed (finalize 11.6×, joint-init 4.5×). A *measured*
+  number needs a harness we'd port anyway (upstream has no headless CUDA bench —
+  `pendulum_headless` is ours; upstream only has kiss3d GUI benches).
+- **BACKEND FORK-IN-THE-ROAD (the big decision).** `rustgpu-clean` HAS a `cuda`
+  feature but it compiles shaders via **khal's `cargo cuda` codegen** (khal-builder
+  0.2 shells out to `cargo cuda build`). Probe build: Rust compiled fine
+  (nexus_rbd_shaders3d 12.8s) but died at codegen — "Codegen backend not found, run
+  `cargo cuda install`". `cargo-cuda` binary is present; its rustc codegen backend
+  is NOT installed. Our cuda-oxide+libNVVM path exists precisely to bypass this
+  (system ptxas = CUDA 12.0, NO sm_120; libNVVM works on Blackwell — see memory
+  native-cuda-build-pinning).
+  - **Option A**: `cargo cuda install` + use khal/cuda → drop our cuda-oxide/build_cuda
+    burden. RISK: khal's codegen must clear the sm_120/Blackwell bar that drove us to
+    cuda-oxide; and `cargo cuda install` mutates the pinned toolchain.
+  - **Option B**: re-port our cuda-oxide path (1469f56 + build_cuda/) onto upstream.
+    Known-good for sm_120; more porting; keeps the maintenance burden.
+  - DECISION PENDING (user). Lean B for reliability unless khal/cuda is verified on sm_120.
+
 ## 0. THE GATE (decide scope first — needs GPU)
 
 Our headline perf work is the cooperative-solver rewrite (`240874d`+`85246ac`:
