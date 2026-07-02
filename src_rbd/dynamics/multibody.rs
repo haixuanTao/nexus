@@ -288,6 +288,18 @@ pub struct GpuMultibodySet {
     dt: Tensor<f32>,
 }
 
+/// CPU-side snapshot of one (single-batch) multibody template, read off the GPU
+/// once so [`GpuMultibodySet::reset_env_from_snapshot`] can restore an env with
+/// writes only — no per-reset GPU→CPU readback (the dominant cost of repeated
+/// `reset_env_from` on the WebGPU backend, where every `slow_read_buffer` stalls).
+#[derive(Clone)]
+pub struct GpuMultibodySnapshot {
+    links_workspace: Vec<MultibodyLinkWorkspace>,
+    links_static: Vec<MultibodyLinkStatic>,
+    dof_values: Vec<f32>,
+    dof_state: Vec<f32>,
+}
+
 impl GpuMultibodySet {
     /// Number of simulation batches.
     pub fn num_batches(&self) -> u32 {
@@ -650,6 +662,62 @@ impl GpuMultibodySet {
                 .write_buffer(self.dof_state.buffer_mut(), (dst_env as usize * dpb) as u64, &ds[..dpb])
                 .unwrap();
         }
+    }
+
+    /// Read this (template) multibody set off the GPU into a CPU snapshot. Call
+    /// once per template at setup; pass the result to
+    /// [`Self::reset_env_from_snapshot`] for readback-free resets.
+    pub async fn snapshot(&self, backend: &GpuBackend) -> GpuMultibodySnapshot {
+        let mut links_workspace = bytemuck::zeroed_vec(self.links_workspace.len() as usize);
+        backend.slow_read_buffer(self.links_workspace.buffer(), &mut links_workspace).await.unwrap();
+        let mut links_static = bytemuck::zeroed_vec(self.links_static.len() as usize);
+        backend.slow_read_buffer(self.links_static.buffer(), &mut links_static).await.unwrap();
+        let mut dof_values = bytemuck::zeroed_vec(self.dof_values.len() as usize);
+        backend.slow_read_buffer(self.dof_values.buffer(), &mut dof_values).await.unwrap();
+        let mut dof_state = bytemuck::zeroed_vec(self.dof_state.len() as usize);
+        backend.slow_read_buffer(self.dof_state.buffer(), &mut dof_state).await.unwrap();
+        GpuMultibodySnapshot { links_workspace, links_static, dof_values, dof_state }
+    }
+
+    /// Restore env `dst_env` from a CPU snapshot using `write_buffer` only — no
+    /// GPU→CPU readback. Functionally identical to [`Self::reset_env_from`] with a
+    /// `src` whose state matches `snap`, but ~6 fewer sync stalls per reset.
+    pub fn reset_env_from_snapshot(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &GpuMultibodySnapshot,
+    ) {
+        let lpb = self.links_per_batch as usize;
+        let dpb = self.dofs_per_batch as usize;
+        backend
+            .write_buffer(self.links_workspace.buffer_mut(), (dst_env as usize * lpb) as u64, &snap.links_workspace[..lpb])
+            .unwrap();
+        backend
+            .write_buffer(self.links_static.buffer_mut(), (dst_env as usize * lpb) as u64, &snap.links_static[..lpb])
+            .unwrap();
+        let base = dst_env as usize * lpb;
+        self.links_static_mirror[base..base + lpb].copy_from_slice(&snap.links_static[..lpb]);
+        if dpb > 0 {
+            backend
+                .write_buffer(self.dof_values.buffer_mut(), (dst_env as usize * dpb) as u64, &snap.dof_values[..dpb])
+                .unwrap();
+            backend
+                .write_buffer(self.dof_state.buffer_mut(), (dst_env as usize * dpb) as u64, &snap.dof_state[..dpb])
+                .unwrap();
+        }
+    }
+
+    /// DEBUG: the per-multibody contact-constraint bank (effective inv-mass
+    /// `inv_lhs`, `rhs`, accumulated `impulse`, jacobians) and the per-batch
+    /// active counts. Used to diagnose contact-solve instability on WebGpu.
+    pub fn dbg_contact_constraints(
+        &self,
+    ) -> &Tensor<crate::shaders::dynamics::MultibodyContactConstraint> {
+        &self.contact_constraints
+    }
+    pub fn dbg_contact_constraint_count(&self) -> &Tensor<u32> {
+        &self.contact_constraint_count
     }
 
     /// Upload a new gravity vector.

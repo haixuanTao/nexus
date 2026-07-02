@@ -35,6 +35,11 @@ khal-std = { workspace = true }
 unroll = { workspace = true }
 crunchy = { workspace = true }
 glamx = { workspace = true }
+# Cap glam < 0.33 for the shader build: spirv-std 0.10.0-alpha.1 declares glam ">=0.30.8"
+# (open-ended), but glam 0.33 dropped `UVec4` under default-features=false, which breaks
+# spirv-std's compile (112 errors). 0.32.1 is the newest pre-0.33 version that still works.
+# (Same pin as vortx-shaders; needed here too so cargo-gpu's per-shader-crate build sees it.)
+glam = { version = "=0.32.1", default-features = false }
 parry3d = { version = "0.26", default-features = false, features = ["dim3","f32"] }
 rapier3d = { version = "0.32", default-features = false, features = ["dim3","f32","bytemuck"] }
 

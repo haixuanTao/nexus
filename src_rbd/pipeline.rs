@@ -10,7 +10,7 @@ use crate::dynamics::{
     GpuWarmstart, JointSolverArgs, SolverArgs, warmstart::WarmstartArgs,
 };
 #[cfg(feature = "dim3")]
-use crate::dynamics::{GpuMultibodySet, GpuMultibodySolver};
+use crate::dynamics::{GpuMultibodySet, GpuMultibodySnapshot, GpuMultibodySolver};
 use crate::math::{Pose, Vector};
 use crate::queries::GpuIndexedContact;
 use crate::shaders::PaddedVector;
@@ -942,6 +942,53 @@ impl GpuPhysicsState {
 
         self.multibodies.reset_env_from(backend, dst_env, &src.multibodies).await;
     }
+
+    /// Read this (template) physics state off the GPU into a CPU snapshot. Call
+    /// once per template at setup; pass the result to
+    /// [`Self::reset_env_from_snapshot`] for readback-free per-env resets.
+    #[cfg(feature = "dim3")]
+    pub async fn snapshot(&self, backend: &GpuBackend) -> GpuPhysicsSnapshot {
+        let mut body_poses = bytemuck::zeroed_vec(self.body_poses.len() as usize);
+        backend.slow_read_buffer(self.body_poses.buffer(), &mut body_poses).await.unwrap();
+        let mut vels = bytemuck::zeroed_vec(self.vels.len() as usize);
+        backend.slow_read_buffer(self.vels.buffer(), &mut vels).await.unwrap();
+        let mb = self.multibodies.snapshot(backend).await;
+        GpuPhysicsSnapshot { body_poses, vels, mb }
+    }
+
+    /// Reset env `dst_env` from a CPU snapshot using `write_buffer` only — no
+    /// GPU→CPU readback. Equivalent to [`Self::reset_env_from`] against a template
+    /// matching `snap`, but eliminates the ~6 per-reset sync stalls that dominate
+    /// reset cost on the WebGPU backend.
+    #[cfg(feature = "dim3")]
+    pub fn reset_env_from_snapshot(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &GpuPhysicsSnapshot,
+    ) {
+        let nb = self.num_batches as u64;
+        let bps = (self.body_poses.len() / nb) as usize;
+        backend
+            .write_buffer(self.body_poses.buffer_mut(), dst_env as u64 * bps as u64, &snap.body_poses[..bps])
+            .unwrap();
+        let vs = (self.vels.len() / nb) as usize;
+        backend
+            .write_buffer(self.vels.buffer_mut(), dst_env as u64 * vs as u64, &snap.vels[..vs])
+            .unwrap();
+        self.multibodies.reset_env_from_snapshot(backend, dst_env, &snap.mb);
+    }
+}
+
+/// CPU-side snapshot of one (single-batch) physics template — body poses,
+/// velocities, and the multibody joint-space state — read off the GPU once for
+/// readback-free resets. See [`GpuPhysicsState::snapshot`].
+#[cfg(feature = "dim3")]
+#[derive(Clone)]
+pub struct GpuPhysicsSnapshot {
+    body_poses: Vec<Pose>,
+    vels: Vec<GpuVelocity>,
+    mb: GpuMultibodySnapshot,
 }
 
 /// The main GPU physics pipeline coordinating all simulation stages.

@@ -47,11 +47,13 @@ const VALIDATE_LBVH_TOPOLOGY: bool = false;
 /// GPU-compute-bound (and capturable). The affected kernels grid-stride over the
 /// real count read from a buffer, so over-launch is always correct.
 ///
-/// Default is backend-aware (set once at [`pipeline::GpuPhysicsState`] init via
-/// [`set_fixed_dispatch_grid_default`]): ON for CUDA (the indirect drain is
-/// catastrophic there), OFF for WebGPU (indirect dispatch is native/cheap, so a
-/// fixed worst-case grid would only waste idle workgroups). `BIPED_FIXED_GRID=1`
-/// / `=0` overrides either way.
+/// Default is ON for BOTH backends (set once at [`pipeline::GpuPhysicsState`]
+/// init via [`set_fixed_dispatch_grid_default`]). CUDA: the indirect host
+/// round-trip drain is catastrophic. WebGPU/Metal: indirect dispatch is BROKEN —
+/// it launches 0 workgroups, so the narrow-phase + contact solver never run and
+/// every body free-falls through the floor (measured 2026-06: contacts only
+/// appear with the fixed grid). Fixed grid is always correct (kernels grid-stride
+/// over the real per-batch count). `BIPED_FIXED_GRID=1` / `=0` overrides either way.
 static FIXED_GRID_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
 
 fn fixed_grid_env_override() -> Option<bool> {
@@ -64,9 +66,16 @@ fn fixed_grid_env_override() -> Option<bool> {
 
 /// Set the fixed-grid default from the active backend. The `BIPED_FIXED_GRID`
 /// env var, if set, always wins. Called once when the physics state is built.
+///
+/// Defaults to fixed-grid on BOTH backends now: CUDA needs it for the indirect
+/// drain, and WebGPU/Metal NEEDS it because indirect dispatch launches 0
+/// workgroups there (contacts never generate). `is_cuda` is retained for callers
+/// but no longer changes the default. (Real root cause: khal's WebGPU indirect
+/// dispatch — fix there to restore the indirect path on WebGPU.)
 pub fn set_fixed_dispatch_grid_default(is_cuda: bool) {
     use std::sync::atomic::Ordering;
-    let enabled = fixed_grid_env_override().unwrap_or(is_cuda);
+    let _ = is_cuda;
+    let enabled = fixed_grid_env_override().unwrap_or(true);
     FIXED_GRID_STATE.store(enabled as u8, Ordering::Relaxed);
 }
 
