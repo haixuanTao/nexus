@@ -1,12 +1,7 @@
 #!/bin/bash
 set -eo pipefail
-BACKEND=$HOME/cuda-oxide-src/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so
-export CUDA_OXIDE_PTX_DIR=$HOME/nexus_ptx
-export PATH=$HOME/.cargo/bin:$PATH
-export CUDA_OXIDE_LIBDEVICE=$HOME/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/libdevice/libdevice.10.bc
-export LIBNVVM_PATH=$HOME/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/lib64/libnvvm.so
-export LIBNVJITLINK_PATH=$HOME/nvjit-wheel/extracted/nvidia/nvjitlink/lib/libnvJitLink.so.12
-cd ~/Documents/work/nexus-cuda
+source "$(dirname "${BASH_SOURCE[0]}")/detect_env.sh"
+cd "$NEXUS_DIR"
 
 echo "=== [1/4] cuda-oxide build nexus_rbd_shaders3d -> .ll ==="
 cargo clean -p nexus_rbd_shaders3d 2>/dev/null || true
@@ -20,14 +15,14 @@ echo "ll: $(grep -c "^define" $LL) defines; device init_constraints = $DEV_HASH"
 
 echo "=== [2/4] make_cubin (libNVVM + nvJitLink) ==="
 rm -f $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
-cd ~/make_cubin
-OUT=$(cargo +nightly-2026-04-03 run --release -- $LL sm_120 2>/tmp/mkcubin.err | grep "^CUBIN=" | cut -d= -f2)
+cd "$MAKE_CUBIN_DIR"
+OUT=$(cargo +"$NIGHTLY" run --release -- "$LL" "$SM" 2>/tmp/mkcubin.err | grep "^CUBIN=" | cut -d= -f2)
 cat /tmp/mkcubin.err | tail -3
 echo "produced: $OUT"
 [ -s "$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin" ] || { echo "!!! make_cubin produced NO cubin"; cat /tmp/mkcubin.err; exit 1; }
 [ "$OUT" = "$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin" ] || cp "$OUT" $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
-ls -la $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
-cd ~/Documents/work/nexus-cuda
+ls -la "$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin"
+cd "$NEXUS_DIR"
 
 echo "=== [3/4] rebuild HOST, embedding cubin ==="
 export CUDA_OXIDE_SHADERS_PTX=$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin

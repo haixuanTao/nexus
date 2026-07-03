@@ -1,35 +1,32 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# nexus_rbd_shaders3d -> sm_120 cubin via cuda-oxide + llc + ptxas, embedded into
+# the host (boxes3d_cuda) with a device/host symbol-hash assert.
+# Paths auto-detect (see detect_env.sh); override any var before running.
 set -eo pipefail
-TOOL=$HOME/.rustup/toolchains/nightly-2025-08-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin
-LIBDEV=$HOME/nvvm-wheel/extracted/nvidia/cuda_nvcc/nvvm/libdevice/libdevice.10.bc
-PTXAS=$HOME/.local/lib/python3.12/site-packages/triton/backends/nvidia/bin/ptxas
-BACKEND=$HOME/cuda-oxide-src/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so
-export CUDA_OXIDE_PTX_DIR=$HOME/nexus_ptx
-export PATH=$HOME/.cargo/bin:$PATH
-cd ~/Documents/work/nexus-cuda
+source "$(dirname "${BASH_SOURCE[0]}")/detect_env.sh"
+cd "$NEXUS_DIR"
 
 echo "=== [1/6] cuda-oxide build nexus_rbd_shaders3d -> .ll ==="
 cargo clean -p nexus_rbd_shaders3d 2>/dev/null || true
-set -o pipefail
 CARGO_INCREMENTAL=0 RUSTFLAGS="-Z codegen-backend=$BACKEND -Zalways-encode-mir -Zmir-enable-passes=-JumpThreading" \
-  cargo +nightly-2026-04-03 build -p nexus_rbd_shaders3d --release \
+  cargo +"$NIGHTLY" build -p nexus_rbd_shaders3d --release \
   --no-default-features --features "cuda-oxide dim3 unsafe_remove_boundchecks" \
   --target nvptx64-nvidia-cuda -Z build-std=core
 LL=$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.ll
-DEV_HASH=$(grep -oE "gpu_solver_init_constraints_cuda_entry_[0-9a-f]+" $LL | sort -u)
-echo "ll: $(grep -c "^define" $LL) defines; device init_constraints = $DEV_HASH"
+DEV_HASH=$(grep -oE "gpu_solver_init_constraints_cuda_entry_[0-9a-f]+" "$LL" | sort -u)
+echo "ll: $(grep -c "^define" "$LL") defines; device init_constraints = $DEV_HASH"
 
 echo "=== [2/6] assemble + link libdevice ==="
-$TOOL/llvm-as $LL -o /tmp/nx.bc
-$TOOL/llvm-link /tmp/nx.bc $LIBDEV -o /tmp/nx_linked.bc
+"$TOOL"/llvm-as "$LL" -o /tmp/nx.bc
+"$TOOL"/llvm-link /tmp/nx.bc "$LIBDEV" -o /tmp/nx_linked.bc
 echo "=== [3/6] internalize + globaldce ==="
-$TOOL/opt -passes="internalize,globaldce" /tmp/nx_linked.bc -o /tmp/nx_pruned.bc
-echo "=== [4/6] llc -> ptx ==="
-$TOOL/llc -mcpu=sm_120 -O3 /tmp/nx_pruned.bc -o /tmp/nx.ptx
-echo "=== [5/6] ptxas -> cubin ==="
-rm -f $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
-$PTXAS -arch=sm_120 -O3 /tmp/nx.ptx -o $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
-ls -la $CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
+"$TOOL"/opt -passes="internalize,globaldce" /tmp/nx_linked.bc -o /tmp/nx_pruned.bc
+echo "=== [4/6] llc -> ptx ($SM) ==="
+"$TOOL"/llc -mcpu="$SM" -O3 /tmp/nx_pruned.bc -o /tmp/nx.ptx
+echo "=== [5/6] ptxas -> cubin ($SM) ==="
+rm -f "$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin"
+"$PTXAS" -arch="$SM" -O3 /tmp/nx.ptx -o "$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin"
+ls -la "$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin"
 
 echo "=== [6/6] rebuild HOST binary (boxes3d_cuda), embedding the cubin via build.rs ==="
 export CUDA_OXIDE_SHADERS_PTX=$CUDA_OXIDE_PTX_DIR/nexus_rbd_shaders3d.cubin
