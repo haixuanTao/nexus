@@ -1,36 +1,52 @@
-use nexus_testbed3d::{BatchEnvironment, DemoBuilder, SimulationState};
+use khal::backend::GpuTimestamps;
+use nexus_viewer3d::NexusViewer;
+use nexus3d::prelude::{NexusCapacities, NexusPipeline, NexusState};
 use rapier3d::prelude::*;
 
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::rbd("Joints (Revolute - Batched)", build)
-}
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
+    let capacities = NexusCapacities::default().rbd_collisions(32);
+    let mut state = NexusState::new(capacities);
 
-fn build() -> SimulationState {
-    /*
-     * World
-     */
-    let mut environments = vec![];
     let rad = 0.4;
     let num = 10;
     let shift = 2.0;
     let nk = 10;
     let nj = 50;
 
+    // Environment 0 already exists; the first chain reuses it, the rest get a
+    // fresh environment each.
+    let mut first = true;
+
     for k in 0..nk {
         for l in 0..4 {
             let y = l as f32 * shift * (num as f32) * 3.0;
             for j in 0..nj {
-                let mut bodies = RigidBodySet::new();
-                let mut colliders = ColliderSet::new();
-                let mut impulse_joints = ImpulseJointSet::new();
+                let env = if first {
+                    first = false;
+                    0
+                } else {
+                    state.add_environment()
+                };
 
                 let x = (j as f32 - nj as f32 / 2.0) * shift * 4.0;
                 let z = (k as f32 - nk as f32 / 2.0) * num as f32 * shift * 2.1;
 
-                let ground = RigidBodyBuilder::fixed().translation(Vec3::new(x, y, z));
-                let mut curr_parent = bodies.insert(ground);
-                let collider = ColliderBuilder::cuboid(rad, rad, rad);
-                colliders.insert_with_parent(collider, curr_parent, &mut bodies);
+                let ground = RigidBodyBuilder::fixed()
+                    .translation(Vec3::new(x, y, z))
+                    .build();
+                let ground_collider = ColliderBuilder::cuboid(rad, rad, rad).build();
+                let ground_shape = ground_collider.shared_shape().clone();
+                let mut curr_parent = state.insert_rigid_body_in(env, ground, ground_collider);
+                viewer.insert_shape_in(
+                    env as u32,
+                    curr_parent,
+                    &ground_shape,
+                    Pose::IDENTITY,
+                    None,
+                );
 
                 for i in 0..num {
                     // Create four bodies.
@@ -45,10 +61,19 @@ fn build() -> SimulationState {
                     let mut handles = [curr_parent; 4];
                     for k in 0..4 {
                         let density = 1.0;
-                        let rigid_body = RigidBodyBuilder::dynamic().pose(positions[k]);
-                        handles[k] = bodies.insert(rigid_body);
-                        let collider = ColliderBuilder::cuboid(rad, rad, rad).density(density);
-                        colliders.insert_with_parent(collider, handles[k], &mut bodies);
+                        let body = RigidBodyBuilder::dynamic().pose(positions[k]).build();
+                        let collider = ColliderBuilder::cuboid(rad, rad, rad)
+                            .density(density)
+                            .build();
+                        let shape = collider.shared_shape().clone();
+                        handles[k] = state.insert_rigid_body_in(env, body, collider);
+                        viewer.insert_shape_in(
+                            env as u32,
+                            handles[k],
+                            &shape,
+                            Pose::IDENTITY,
+                            None,
+                        );
                     }
 
                     // Setup four impulse_joints.
@@ -62,29 +87,31 @@ fn build() -> SimulationState {
                         RevoluteJointBuilder::new(x).local_anchor2(Vec3::new(shift, 0.0, 0.0)),
                     ];
 
-                    impulse_joints.insert(curr_parent, handles[0], revs[0], true);
-                    impulse_joints.insert(handles[0], handles[1], revs[1], true);
-                    impulse_joints.insert(handles[1], handles[2], revs[2], true);
-                    impulse_joints.insert(handles[2], handles[3], revs[3], true);
+                    state.insert_impulse_joint_in(env, curr_parent, handles[0], revs[0]);
+                    state.insert_impulse_joint_in(env, handles[0], handles[1], revs[1]);
+                    state.insert_impulse_joint_in(env, handles[1], handles[2], revs[2]);
+                    state.insert_impulse_joint_in(env, handles[2], handles[3], revs[3]);
 
                     curr_parent = handles[3];
                 }
-
-                environments.push(BatchEnvironment {
-                    bodies,
-                    colliders,
-                    impulse_joints,
-                    multibody_joints: rapier3d::prelude::MultibodyJointSet::new(),
-                    sim_params: Default::default(),
-                    visuals: Default::default(),
-                });
             }
         }
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::from_environments(environments)
-    // testbed.look_at(point![478.0, 83.0, 228.0], point![134.0, 83.0, -116.0]);
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
+    viewer
+        .scene3d_mut()
+        .add_directional_light(glamx::Vec3::new(1.0, -2.0, 3.0));
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await?;
+        }
+        viewer.sync(&mut state, Some(&mut timestamps)).await?;
+    }
+
+    Ok(state)
 }

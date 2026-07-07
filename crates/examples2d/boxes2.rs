@@ -1,41 +1,43 @@
-use nexus_testbed2d::{DemoBuilder, SimulationState};
+use khal::backend::GpuTimestamps;
+use nexus_viewer2d::NexusViewer;
+use nexus2d::prelude::{NexusCapacities, NexusPipeline, NexusState};
 use rapier2d::prelude::*;
 
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::rbd("Boxes", build)
-}
-
-fn build() -> SimulationState {
-    /*
-     * World
-     */
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let impulse_joints = ImpulseJointSet::new();
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
+    let capacities = NexusCapacities::default().rbd_collisions(250_000);
+    let mut state = NexusState::new(capacities);
 
     /*
      * Ground
      */
     let ground_size = 150.0;
 
-    let rigid_body = RigidBodyBuilder::fixed();
-    let handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::cuboid(ground_size, 1.5);
-    colliders.insert_with_parent(collider, handle, &mut bodies);
+    let body = RigidBodyBuilder::fixed().build();
+    let collider = ColliderBuilder::cuboid(ground_size, 1.5).build();
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider);
+    viewer.insert_shape(handle, &shape, Pose::IDENTITY);
 
-    let rigid_body = RigidBodyBuilder::fixed()
+    let body = RigidBodyBuilder::fixed()
         .rotation(std::f32::consts::FRAC_PI_2)
-        .translation(Vec2::new(ground_size, ground_size * 1.2));
-    let handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::cuboid(ground_size * 1.2, 1.5);
-    colliders.insert_with_parent(collider, handle, &mut bodies);
+        .translation(Vec2::new(ground_size, ground_size * 1.2))
+        .build();
+    let collider = ColliderBuilder::cuboid(ground_size * 1.2, 1.5).build();
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider);
+    viewer.insert_shape(handle, &shape, Pose::IDENTITY);
 
-    let rigid_body = RigidBodyBuilder::fixed()
+    let body = RigidBodyBuilder::fixed()
         .rotation(std::f32::consts::FRAC_PI_2)
-        .translation(Vec2::new(-ground_size, ground_size * 1.2));
-    let handle = bodies.insert(rigid_body);
-    let collider = ColliderBuilder::cuboid(ground_size * 1.2, 1.5);
-    colliders.insert_with_parent(collider, handle, &mut bodies);
+        .translation(Vec2::new(-ground_size, ground_size * 1.2))
+        .build();
+    let collider = ColliderBuilder::cuboid(ground_size * 1.2, 1.5).build();
+    let shape = collider.shared_shape().clone();
+    let handle = state.insert_rigid_body(body, collider);
+    viewer.insert_shape(handle, &shape, Pose::IDENTITY);
 
     /*
      * Create the cubes
@@ -52,17 +54,28 @@ fn build() -> SimulationState {
             let x = i as f32 * shift - centerx + (j % 2) as f32 * 0.2;
             let y = j as f32 * shift + centery + 20.0;
 
-            // Build the rigid body.
-            let rigid_body = RigidBodyBuilder::dynamic().translation(Vec2::new(x, y));
-            let handle = bodies.insert(rigid_body);
-            let collider = ColliderBuilder::cuboid(rad, rad);
-            colliders.insert_with_parent(collider, handle, &mut bodies);
+            let body = RigidBodyBuilder::dynamic()
+                .translation(Vec2::new(x, y))
+                .build();
+            let collider = ColliderBuilder::cuboid(rad, rad).build();
+            let shape = collider.shared_shape().clone();
+            let handle = state.insert_rigid_body(body, collider);
+            viewer.insert_shape(handle, &shape, Pose::IDENTITY);
         }
     }
 
-    /*
-     * Set up the testbed.
-     */
-    SimulationState::single(bodies, colliders, impulse_joints)
-    // testbed.look_at(point![0.0, 50.0], 10.0);
+    // Optional, useful so we can render even before starting the simulation.
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await?;
+        }
+        viewer.sync(&mut state, Some(&mut timestamps)).await?;
+    }
+
+    Ok(state)
 }

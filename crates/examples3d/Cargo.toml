@@ -2,44 +2,55 @@
 name = "nexus_examples_3d"
 version = "0.4.0"
 authors = ["Sébastien Crozet <developer@crozet.re>"]
-edition = "2024"
+edition = { workspace = true }
+publish = false
 
 [features]
 default = []
-cpu = ["nexus_testbed3d/cpu"]
-cpu-parallel = ["cpu", "nexus_testbed3d/cpu-parallel"]
-cuda = ["nexus_testbed3d/cuda"]
-metal = ["nexus_testbed3d/metal"]
+cpu = ["nexus_viewer3d/cpu"]
+cpu-parallel = ["cpu", "nexus_viewer3d/cpu-parallel"]
+cuda = ["nexus_viewer3d/cuda"]
+metal = ["nexus_viewer3d/metal"]
 
 [dependencies]
-glamx = { version = "0.2", default-features = false }
-nexus_testbed3d = { path = "../nexus_testbed3d" }
-nexus_rbd3d = { path = "../nexus_rbd3d" }
-rapier3d = "0.32"
-rapier3d-urdf = { version = "0.13", features = ["stl"] }
+glamx = { workspace = true }
+nexus3d = { workspace = true, features = [ "rbd" ] }
+nexus_viewer3d = { workspace = true }
+nexus_rbd3d = { workspace = true, features = ["default"] } # TODO: remove this
+rapier3d = { workspace = true, features = ["default"] }
 khal = { workspace = true }
-Inflector = "0.11"
-kiss3d = "0.41"
-oorandom = "11"
-rand = "0.9"
-pollster = "0.4"
+vortx = { workspace = true }
+Inflector = { workspace = true }
+kiss3d = { workspace = true }
+oorandom = { workspace = true }
+rand = "0.10"
+pollster = { workspace = true }
 env_logger = "0.11"
+anyhow = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { workspace = true }
+
+# The URDF/MJCF robot loaders read their assets from the filesystem, so the
+# corresponding demos are native-only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rapier3d-urdf = { workspace = true, features = ["stl"] }
+rapier3d-mjcf = { workspace = true }
 
 [[bin]]
 name = "all_examples3"
 path = "all_examples3.rs"
 
-[[bin]]
-name = "bench_multibody_pendulum3"
-path = "bench_multibody_pendulum3.rs"
+# TODO: the bench harnesses below still use the removed `SimulationState`
+# viewer API; re-enable them once they are ported to `NexusState`.
+#[[bin]]
+#name = "bench_multibody_pendulum3"
+#path = "bench_multibody_pendulum3.rs"
 
-[[bin]]
-name = "bench_urdf3"
-path = "bench_urdf3.rs"
+#[[bin]]
+#name = "bench_urdf3"
+#path = "bench_urdf3.rs"
 
-[[bin]]
-name = "bench_joints3"
-path = "bench_joints3.rs"
+#[[bin]]
+#name = "bench_joints3"
+#path = "bench_joints3.rs"

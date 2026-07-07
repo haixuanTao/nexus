@@ -1,15 +1,13 @@
-use nexus_testbed3d::{DemoBuilder, SimulationState};
+use khal::backend::GpuTimestamps;
+use nexus_viewer3d::NexusViewer;
+use nexus3d::prelude::{NexusPipeline, NexusState};
 use rapier3d::prelude::*;
 
-pub fn builder() -> DemoBuilder {
-    DemoBuilder::rbd("Multibody (Pendulum)", build)
-}
-
-fn build() -> SimulationState {
-    let mut bodies = RigidBodySet::new();
-    let mut colliders = ColliderSet::new();
-    let impulse_joints = ImpulseJointSet::new();
-    let mut multibody_joints = MultibodyJointSet::new();
+pub async fn run(
+    viewer: &mut NexusViewer,
+    pipeline: &mut NexusPipeline,
+) -> anyhow::Result<NexusState> {
+    let mut state = NexusState::default();
 
     /*
      * The ground
@@ -42,19 +40,24 @@ fn build() -> SimulationState {
     let num_links = 20;
 
     // Fixed root at origin.
-    let root_body = RigidBodyBuilder::fixed();
-    let mut parent_handle = bodies.insert(root_body);
-    let root_collider = ColliderBuilder::cuboid(rad, rad, rad);
-    colliders.insert_with_parent(root_collider, parent_handle, &mut bodies);
+    let root_body = RigidBodyBuilder::fixed().build();
+    let root_collider = ColliderBuilder::cuboid(rad, rad, rad).build();
+    let root_shape = root_collider.shared_shape().clone();
+    let mut parent_handle = state.insert_rigid_body(root_body, root_collider);
+    viewer.insert_shape(parent_handle, &root_shape, Pose::IDENTITY);
 
     for i in 0..num_links {
         // Each link hangs `link_len` below its parent.
         let x = (i as f32 + 1.0) * link_len;
-        let rigid_body = RigidBodyBuilder::dynamic().translation(Vec3::new(x, 0.0, 0.0));
-        let handle = bodies.insert(rigid_body);
+        let rigid_body = RigidBodyBuilder::dynamic()
+            .translation(Vec3::new(x, 0.0, 0.0))
+            .build();
         let collider = ColliderBuilder::cuboid(link_len * 0.5, rad, rad)
-            .collision_groups(InteractionGroups::none());
-        colliders.insert_with_parent(collider, handle, &mut bodies);
+            .collision_groups(InteractionGroups::none())
+            .build();
+        let shape = collider.shared_shape().clone();
+        let handle = state.insert_rigid_body(rigid_body, collider);
+        viewer.insert_shape(handle, &shape, Pose::IDENTITY);
 
         // Revolute joint about X: anchor on parent is at its bottom
         // (or at origin for the root), anchor on child is at its top.
@@ -69,12 +72,25 @@ fn build() -> SimulationState {
             // .limits([-0.1, 0.1])
             // .contacts_enabled(false)
             .build();
-        multibody_joints.insert(parent_handle, handle, joint, true);
+        state.insert_multibody_joint(parent_handle, handle, joint);
 
         parent_handle = handle;
     }
 
-    SimulationState::single_with_multibody(bodies, colliders, impulse_joints, multibody_joints)
-    // .with_dt(1.0 / 60.0 / 10.0)
-    // .with_num_steps_per_frame(10)
+    let mut timestamps = GpuTimestamps::new(viewer.backend(), 2048);
+    viewer
+        .scene3d_mut()
+        .add_directional_light(glamx::Vec3::new(1.0, -2.0, 3.0));
+    state.finalize(viewer.backend()).await?;
+
+    while viewer.render_frame().await {
+        if viewer.simulating() {
+            pipeline
+                .simulate(viewer.backend(), &mut state, Some(&mut timestamps))
+                .await?;
+        }
+        viewer.sync(&mut state, Some(&mut timestamps)).await?;
+    }
+
+    Ok(state)
 }

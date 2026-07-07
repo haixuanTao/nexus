@@ -20,11 +20,11 @@ use std::time::Duration;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
-use nexus_testbed3d::SimulationState;
-use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
-use nexus_testbed3d::rbd::BatchEnvironment;
-use nexus_testbed3d::rbd::GpuBackend;
-use nexus_testbed3d::rbd::backend::SimulationBackend;
+use nexus_viewer3d::SimulationState;
+use nexus_viewer3d::nexus::rbd::dynamics::RbdSimParams;
+use nexus_viewer3d::rbd::BatchEnvironment;
+use nexus_viewer3d::rbd::GpuBackend;
+use nexus_viewer3d::rbd::backend::SimulationBackend;
 use rapier3d::prelude::*;
 
 fn create_prismatic_joints(
@@ -505,7 +505,7 @@ fn build_one_batch(num_substeps: u32) -> BatchEnvironment {
         Vector::new(-5.0, 0.0, 0.0),
     );
 
-    let mut sim_params = GpuSimParams::default();
+    let mut sim_params = RbdSimParams::default();
     sim_params.num_solver_iterations = num_substeps;
     BatchEnvironment {
         bodies,
@@ -607,8 +607,8 @@ async fn bench_backend(
 
 async fn webgpu_backend() -> KhalGpuBackend {
     let limits = wgpu::Limits {
-        max_buffer_size: 1_200_000_000,
-        max_storage_buffer_binding_size: 1_200_000_000,
+        max_buffer_size: 1_000_000_000,
+        max_storage_buffer_binding_size: 1_000_000_000,
         max_storage_buffers_per_shader_stage: 14,
         max_compute_workgroup_storage_size: 19_904,
         ..Default::default()

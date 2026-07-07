@@ -1,6 +1,11 @@
 [workspace]
 # Trimmed to the 3D rigid-body library crates zealot needs (skips testbed/examples,
 # which need kiss3d). mpm/fem remain optional path-deps of nexus3d (not built).
+# Upstream v0.4.0 crates merged into the tree but NOT workspace members yet
+# (nexus2d, viewers, examples2d/3d, nexus_python3d): they target glamx 0.3 /
+# vortx 0.3 / rapier 0.34 while this fork's core still pins glamx 0.2 /
+# vortx 0.1 / rapier 0.32 (matching the zealot sibling forks). Re-add them
+# after the dependency migration.
 members = [
     "crates/nexus3d",
     "crates/nexus_rbd3d",

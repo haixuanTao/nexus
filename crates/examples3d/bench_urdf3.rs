@@ -22,11 +22,11 @@ use std::time::Duration;
 use khal::backend::GpuBackend as KhalGpuBackend;
 use khal::backend::WebGpu;
 use khal::re_exports::wgpu;
-use nexus_testbed3d::SimulationState;
-use nexus_testbed3d::nexus::rbd::dynamics::GpuSimParams;
-use nexus_testbed3d::rbd::BatchEnvironment;
-use nexus_testbed3d::rbd::GpuBackend;
-use nexus_testbed3d::rbd::backend::SimulationBackend;
+use nexus_viewer3d::SimulationState;
+use nexus_viewer3d::nexus::rbd::dynamics::RbdSimParams;
+use nexus_viewer3d::rbd::BatchEnvironment;
+use nexus_viewer3d::rbd::GpuBackend;
+use nexus_viewer3d::rbd::backend::SimulationBackend;
 use rapier3d::prelude::*;
 use rapier3d_urdf::{UrdfLoaderOptions, UrdfMultibodyOptions, UrdfRobot};
 
@@ -82,7 +82,7 @@ fn build_one_batch(path: &PathBuf, num_substeps: u32) -> Option<BatchEnvironment
         UrdfMultibodyOptions::DISABLE_SELF_CONTACTS,
     );
 
-    let mut sim_params = GpuSimParams::default();
+    let mut sim_params = RbdSimParams::default();
     sim_params.num_solver_iterations = num_substeps;
     Some(BatchEnvironment {
         bodies,
@@ -143,7 +143,7 @@ async fn bench_backend(
 
     // Mirrors the urdf3 demo's `apply_random_ang_motors` tick: every 5 simulated
     // seconds, push a fresh random AngX motor target velocity to every link.
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
     let dt = 1.0 / 60.0_f64;
     let mut next_change_at = 0.0_f64;
@@ -216,8 +216,8 @@ async fn bench_backend(
 
 async fn webgpu_backend() -> KhalGpuBackend {
     let limits = wgpu::Limits {
-        max_buffer_size: 1_200_000_000,
-        max_storage_buffer_binding_size: 1_200_000_000,
+        max_buffer_size: 1_000_000_000,
+        max_storage_buffer_binding_size: 1_000_000_000,
         max_storage_buffers_per_shader_stage: 14,
         max_compute_workgroup_storage_size: 19_904,
         ..Default::default()

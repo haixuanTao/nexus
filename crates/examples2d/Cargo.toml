@@ -2,28 +2,31 @@
 name = "nexus_examples_2d"
 version = "0.4.0"
 authors = ["Sébastien Crozet <developer@crozet.re>"]
-edition = "2024"
+edition = { workspace = true }
+publish = false
 
 [features]
 default = []
-cpu = ["nexus_testbed2d/cpu"]
-cpu-parallel = ["cpu", "nexus_testbed2d/cpu-parallel"]
-cuda = ["nexus_testbed2d/cuda"]
-metal = ["nexus_testbed2d/metal"]
+cpu = ["nexus_viewer2d/cpu"]
+cpu-parallel = ["cpu", "nexus_viewer2d/cpu-parallel"]
+cuda = ["nexus_viewer2d/cuda"]
+metal = ["nexus_viewer2d/metal"]
 
 [dependencies]
-glamx = { version = "0.2", default-features = false }
-nexus_testbed2d = { path = "../nexus_testbed2d" }
-nexus_rbd2d = { path = "../nexus_rbd2d" }
-rapier2d = "0.32"
+glamx = { workspace = true }
+nexus2d = { workspace = true, features = [ "rbd" ] }
+nexus_viewer2d = { workspace = true }
+nexus_rbd2d = { workspace = true, features = ["default"] }
+rapier2d = { workspace = true, features = ["default"] }
 khal = { workspace = true }
-Inflector = "0.11"
-kiss3d = "0.41"
-oorandom = "11"
-rand = "0.9"
+Inflector = { workspace = true }
+kiss3d = { workspace = true }
+oorandom = { workspace = true }
+rand = "0.10"
+anyhow = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { workspace = true }
 
 [[bin]]
 name = "all_examples2"
