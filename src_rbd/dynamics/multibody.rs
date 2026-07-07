@@ -720,6 +720,41 @@ impl GpuMultibodySet {
         &self.contact_constraint_count
     }
 
+    /// DEBUG: per-constraint `Jᵀ` rows (multibody-side constraint jacobian,
+    /// written by the init kernel). Slot `s` of batch `b` occupies
+    /// `[b*columns_per_batch + s*dofs_per_batch ..][..ndofs]` — see
+    /// [`Self::dbg_contact_constraint_strides`].
+    pub fn dbg_contact_constraint_jacs(&self) -> &Tensor<f32> {
+        &self.contact_constraint_jacs
+    }
+    /// DEBUG: per-constraint `M⁻¹·Jᵀ` columns (LU back-substitution output of
+    /// the finalize kernel; same layout as the jacs bank). Prime suspect for
+    /// the WebGpu contact-solve divergence — diff against the CUDA golden.
+    pub fn dbg_contact_constraint_columns(&self) -> &Tensor<f32> {
+        &self.contact_constraint_columns
+    }
+    /// DEBUG: `(columns_per_batch, dofs_per_batch, constraints_per_batch)` —
+    /// the strides needed to slice the jac/column/constraint banks on the host.
+    pub fn dbg_contact_constraint_strides(&self) -> (u32, u32, u32) {
+        (
+            self.contact_constraint_columns_per_batch,
+            self.dofs_per_batch,
+            self.contact_constraints_per_batch,
+        )
+    }
+    /// DEBUG: the packed dof state; the velocity section is
+    /// `[b*dofs_per_batch ..][..ndofs]` for batch `b` (damping follows at
+    /// `dofs_per_batch * num_batches`).
+    pub fn dbg_dof_state(&self) -> &Tensor<f32> {
+        &self.dof_state
+    }
+    /// DEBUG: the per-multibody mass matrices (dense `ndofs × ndofs`,
+    /// `mass_matrix_batch_capacity`-strided per batch; holds the LU factors
+    /// after `gravity_and_lu` has run).
+    pub fn dbg_mass_matrices(&self) -> &Tensor<f32> {
+        &self.mass_matrices
+    }
+
     /// Upload a new gravity vector.
     pub fn set_gravity(&mut self, backend: &GpuBackend, g: [f32; 3]) {
         self.gravity = Tensor::scalar(
