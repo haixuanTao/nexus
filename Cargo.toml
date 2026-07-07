@@ -18,15 +18,15 @@ repository = "https://github.com/dimforge/nexus"
 [workspace.dependencies]
 glamx = { version = "0.2", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
-khal-std = { version = "0.1", default-features = false }
-khal = { version = "0.1", features = ["derive"]}
+khal-std = { version = "0.2", default-features = false }
+khal = { version = "0.2", features = ["derive"]}
 vortx = "0.1"
 bytemuck = { version = "1", features = ["derive"] }
 web-time = "1"
 static_assertions = "1"
 
 # Shaders deps
-khal-builder = "0.1.1"
+khal-builder = "0.2"
 vortx-shaders = { version = "0.1", default-features = false }
 unroll = "0.1"
 crunchy = "0.2.4"
