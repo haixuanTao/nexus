@@ -10,7 +10,7 @@ use crate::nexus::{GpuTimestamps, NexusState};
 use crate::rbd::{RigidBodyHandle, SharedShape};
 use khal::backend::GpuBackend;
 use nexus_viewer3d::NexusViewer as RViewer;
-use numpy::PyArray2;
+use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -177,10 +177,14 @@ impl NexusViewer {
     }
 
     /// World poses of several rigid bodies, read back from the GPU in a single
-    /// readback (positions match rapier's `RigidBody::position`). Returns a
-    /// `(len(handles), 7)` float32 numpy array of `[x, y, z, qi, qj, qk, qw]`
-    /// rows; rows are NaN for bodies not active on the GPU yet. Prefer this
-    /// over per-body `body_pose` calls when querying many bodies.
+    /// readback (positions match rapier's `RigidBody::position`).
+    ///
+    /// Returns `(positions, quaternions)` float32 numpy arrays of shapes
+    /// `(len(handles), 3)` and `(len(handles), 4)`; quaternions are scalar
+    /// first, `(w, x, y, z)` — the MuJoCo (`data.xpos`/`data.xquat`), Genesis
+    /// and Isaac Lab convention. Rows are NaN for bodies not active on the GPU
+    /// yet. Prefer this over per-body `body_pose` calls when querying many
+    /// bodies.
     #[pyo3(signature = (state, handles, env=0))]
     fn body_poses<'py>(
         &mut self,
@@ -188,31 +192,47 @@ impl NexusViewer {
         state: PyRef<NexusState>,
         handles: Vec<RigidBodyHandle>,
         env: u32,
-    ) -> Bound<'py, PyArray2<f32>> {
+    ) -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>) {
         let handles: Vec<_> = handles.iter().map(|h| h.0).collect();
         let poses = pollster::block_on(self.inner_mut().read_body_poses(&state.0, env, &handles));
-        let rows: Vec<[f32; 7]> = poses
-            .into_iter()
-            .map(|p| match p {
+        let (mut pos, mut quat) = (Vec::new(), Vec::new());
+        for p in poses {
+            match p {
                 Some(p) => {
                     let (t, q) = (p.translation, p.rotation);
-                    [t.x, t.y, t.z, q.x, q.y, q.z, q.w]
+                    pos.push(vec![t.x, t.y, t.z]);
+                    quat.push(vec![q.w, q.x, q.y, q.z]);
                 }
-                None => [f32::NAN; 7],
-            })
-            .collect();
-        PyArray2::from_vec2(py, &rows.iter().map(|r| r.to_vec()).collect::<Vec<_>>()).unwrap()
+                None => {
+                    pos.push(vec![f32::NAN; 3]);
+                    quat.push(vec![f32::NAN; 4]);
+                }
+            }
+        }
+        (
+            PyArray2::from_vec2(py, &pos).unwrap(),
+            PyArray2::from_vec2(py, &quat).unwrap(),
+        )
     }
 
-    /// World pose of one rigid body — convenience wrapper around `body_poses`.
+    /// World pose of one rigid body: `(position, quaternion)` float32 numpy
+    /// arrays of shapes `(3,)` and `(4,)`, quaternion scalar first
+    /// `(w, x, y, z)` — same convention as `body_poses`. `None` when the body
+    /// isn't active on the GPU yet.
     #[pyo3(signature = (state, handle, env=0))]
-    fn body_pose(
+    fn body_pose<'py>(
         &mut self,
+        py: Python<'py>,
         state: PyRef<NexusState>,
         handle: RigidBodyHandle,
         env: u32,
-    ) -> Option<Pose> {
-        pollster::block_on(self.inner_mut().read_body_pose(&state.0, env, handle.0)).map(Pose)
+    ) -> Option<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f32>>)> {
+        let p = pollster::block_on(self.inner_mut().read_body_pose(&state.0, env, handle.0))?;
+        let (t, q) = (p.translation, p.rotation);
+        Some((
+            PyArray1::from_vec(py, vec![t.x, t.y, t.z]),
+            PyArray1::from_vec(py, vec![q.w, q.x, q.y, q.z]),
+        ))
     }
 
     // --- misc -------------------------------------------------------------
