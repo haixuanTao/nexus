@@ -102,7 +102,7 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 #vortx-shaders = { git = "https://github.com/dimforge/vortx", branch = "int-reduce" }
 
 #glamx = { path = "../glamx" }
-#kiss3d = { path = "../kiss3d" }
+kiss3d = { path = "../kiss3d" }
 #parry2d = { path = "../parry/crates/parry2d" }
 #parry3d = { path = "../parry/crates/parry3d" }
 #rapier2d = { path = "../rapier/crates/rapier2d" }
