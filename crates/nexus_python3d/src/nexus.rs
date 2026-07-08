@@ -322,6 +322,66 @@ impl NexusState {
         (world.bodies.len(), world.colliders.len(), pairs, points, min_mass)
     }
 
+    /// Debug: scales every multibody motor's stiffness/damping (0 = disable).
+    #[pyo3(signature = (scale, env=0))]
+    fn scale_rapier_motors(&mut self, scale: f32, env: usize) {
+        let world = self.0.rbd_world_mut(env);
+        let links: Vec<_> = {
+            let joints = &world.multibody_joints;
+            world
+                .bodies
+                .iter()
+                .filter_map(|(h, _)| joints.rigid_body_link(h).copied())
+                .collect()
+        };
+        for lid in links {
+            let Some(mb) = world.multibody_joints.get_multibody_mut(lid.multibody) else {
+                continue;
+            };
+            let Some(link) = mb.link_mut(lid.id) else { continue };
+            for motor in link.joint.data.motors.iter_mut() {
+                motor.stiffness *= scale;
+                motor.damping *= scale;
+            }
+        }
+    }
+
+    /// Debug: per multibody link, motors with any nonzero parameter:
+    /// (link_id, axis, stiffness, damping, target_pos, max_force).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug_motors(&mut self, env: usize) -> Vec<(usize, usize, f32, f32, f32, f32)> {
+        let world = self.0.rbd_world_mut(env);
+        let mut out = Vec::new();
+        for mb in world.multibody_joints.multibodies() {
+            for (i, link) in mb.links().enumerate() {
+                for (axis, m) in link.joint().data.motors.iter().enumerate() {
+                    if m.stiffness != 0.0 || m.damping != 0.0 || m.max_force != 0.0 {
+                        out.push((i, axis, m.stiffness, m.damping, m.target_pos, m.max_force));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Debug: per-body (is_dynamic, z, vz, mass).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug_bodies(&mut self, env: usize) -> Vec<(bool, f32, f32, f32)> {
+        let world = self.0.rbd_world_mut(env);
+        world
+            .bodies
+            .iter()
+            .map(|(_, b)| {
+                (
+                    b.is_dynamic(),
+                    b.position().translation.z,
+                    b.linvel().z,
+                    b.mass(),
+                )
+            })
+            .collect()
+    }
+
     /// Debug: per-collider (has_parent, world_z, groups_bits).
     #[pyo3(signature = (env=0))]
     fn rapier_debug_colliders(&mut self, env: usize) -> Vec<(bool, f32, u32)> {
