@@ -175,6 +175,14 @@ impl NexusViewer {
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))
     }
 
+    /// Pushes CPU-side rapier body poses into the renderer — the counterpart
+    /// of `sync` for scenes stepped with `NexusState.step_rapier` (no GPU
+    /// physics involved).
+    #[pyo3(signature = (state, env=0))]
+    fn sync_rapier(&mut self, state: PyRef<NexusState>, env: usize) {
+        self.inner_mut().sync_rapier(&state.0, env);
+    }
+
     // --- misc -------------------------------------------------------------
 
     fn clear_scene(&mut self) {
