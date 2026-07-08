@@ -896,27 +896,49 @@ impl NexusViewer {
             .set_denoise(enabled);
     }
 
-    /// Reads a rigid body's world-origin pose back from the GPU (matches
-    /// rapier's `RigidBody::position`). Returns `None` when the body isn't
-    /// active on the GPU or `env`/`handle` are unknown.
+    /// Reads the world-origin poses of several rigid bodies back from the GPU
+    /// in one readback (positions match rapier's `RigidBody::position`).
+    /// Entries are `None` for bodies that aren't active on the GPU or unknown
+    /// `env`/handles.
     ///
-    /// This is a blocking readback of the whole pose buffer — fine for
-    /// inspection or a few bodies per frame, not for bulk per-body queries.
+    /// This is a blocking readback of the whole pose buffer; prefer one call
+    /// with many handles over many single-handle calls.
+    pub async fn read_body_poses(
+        &mut self,
+        state: &NexusState,
+        env: u32,
+        handles: &[RigidBodyHandle],
+    ) -> Vec<Option<Pose>> {
+        let Some(rbd) = state.rbd.as_ref() else {
+            return vec![None; handles.len()];
+        };
+        let poses = rbd.body_poses();
+        let mut cache = vec![Pose::default(); poses.len() as usize];
+        if self
+            .backend()
+            .slow_read_buffer(poses.buffer(), &mut cache)
+            .await
+            .is_err()
+        {
+            return vec![None; handles.len()];
+        }
+        handles
+            .iter()
+            .map(|handle| {
+                let gpu_id = state.rbd2gpu.get(env as usize)?.get(handle.0)?.gpu_id;
+                cache.get(gpu_id as usize).copied()
+            })
+            .collect()
+    }
+
+    /// Single-body convenience wrapper around [`Self::read_body_poses`].
     pub async fn read_body_pose(
         &mut self,
         state: &NexusState,
         env: u32,
         handle: RigidBodyHandle,
     ) -> Option<Pose> {
-        let rbd = state.rbd.as_ref()?;
-        let gpu_id = state.rbd2gpu.get(env as usize)?.get(handle.0)?.gpu_id;
-        let poses = rbd.body_poses();
-        let mut cache = vec![Pose::default(); poses.len() as usize];
-        self.backend()
-            .slow_read_buffer(poses.buffer(), &mut cache)
-            .await
-            .ok()?;
-        cache.get(gpu_id as usize).copied()
+        self.read_body_poses(state, env, &[handle]).await.pop()?
     }
 
     /// Draws example-specific egui widgets into the current frame's UI pass.
