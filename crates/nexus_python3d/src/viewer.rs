@@ -10,6 +10,7 @@ use crate::nexus::{GpuTimestamps, NexusState};
 use crate::rbd::{RigidBodyHandle, SharedShape};
 use khal::backend::GpuBackend;
 use nexus_viewer3d::NexusViewer as RViewer;
+use numpy::PyArray2;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -176,21 +177,31 @@ impl NexusViewer {
     }
 
     /// World poses of several rigid bodies, read back from the GPU in a single
-    /// readback (positions match rapier's `RigidBody::position`). Returns one
-    /// entry per handle, `None` for bodies not active on the GPU yet. Prefer
-    /// this over per-body `body_pose` calls when querying many bodies.
+    /// readback (positions match rapier's `RigidBody::position`). Returns a
+    /// `(len(handles), 7)` float32 numpy array of `[x, y, z, qi, qj, qk, qw]`
+    /// rows; rows are NaN for bodies not active on the GPU yet. Prefer this
+    /// over per-body `body_pose` calls when querying many bodies.
     #[pyo3(signature = (state, handles, env=0))]
-    fn body_poses(
+    fn body_poses<'py>(
         &mut self,
+        py: Python<'py>,
         state: PyRef<NexusState>,
         handles: Vec<RigidBodyHandle>,
         env: u32,
-    ) -> Vec<Option<Pose>> {
+    ) -> Bound<'py, PyArray2<f32>> {
         let handles: Vec<_> = handles.iter().map(|h| h.0).collect();
-        pollster::block_on(self.inner_mut().read_body_poses(&state.0, env, &handles))
+        let poses = pollster::block_on(self.inner_mut().read_body_poses(&state.0, env, &handles));
+        let rows: Vec<[f32; 7]> = poses
             .into_iter()
-            .map(|p| p.map(Pose))
-            .collect()
+            .map(|p| match p {
+                Some(p) => {
+                    let (t, q) = (p.translation, p.rotation);
+                    [t.x, t.y, t.z, q.x, q.y, q.z, q.w]
+                }
+                None => [f32::NAN; 7],
+            })
+            .collect();
+        PyArray2::from_vec2(py, &rows.iter().map(|r| r.to_vec()).collect::<Vec<_>>()).unwrap()
     }
 
     /// World pose of one rigid body — convenience wrapper around `body_poses`.
