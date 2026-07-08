@@ -322,6 +322,36 @@ impl NexusState {
         (world.bodies.len(), world.colliders.len(), pairs, points, min_mass)
     }
 
+    /// Debug: raises every dynamic body's mass (and inertia, proportionally)
+    /// to at least `min_mass` kg. Workaround for near-massless connector links
+    /// destabilizing multibody contact resolution. Returns how many bodies
+    /// were boosted.
+    #[pyo3(signature = (min_mass, env=0))]
+    fn boost_light_rapier_links(&mut self, min_mass: f32, env: usize) -> u32 {
+        use rp::MassProperties;
+        let world = self.0.rbd_world_mut(env);
+        let mut boosted = 0;
+        for (_, body) in world.bodies.iter_mut() {
+            if !body.is_dynamic() {
+                continue;
+            }
+            let mass = body.mass();
+            if mass <= 0.0 || mass >= min_mass {
+                continue;
+            }
+            let f = min_mass / mass;
+            let local = body.mass_properties().local_mprops;
+            let props = MassProperties::new(
+                local.local_com,
+                mass * f,
+                local.principal_inertia() * f,
+            );
+            body.set_additional_mass_properties(props, true);
+            boosted += 1;
+        }
+        boosted
+    }
+
     /// Debug: scales every multibody motor's stiffness/damping (0 = disable).
     #[pyo3(signature = (scale, env=0))]
     fn scale_rapier_motors(&mut self, scale: f32, env: usize) {
