@@ -287,6 +287,30 @@ impl NexusState {
             .set_rbd_gravity(viewer.backend(), [gravity.0.x, gravity.0.y, gravity.0.z]);
     }
 
+    /// Sets the gravity of the CPU-side rapier world used by `step_rapier`
+    /// (independent of the GPU state's gravity set by `set_rbd_gravity`).
+    #[pyo3(signature = (gravity, env=0))]
+    fn set_rapier_gravity(&mut self, gravity: Vec3, env: usize) {
+        self.0.rbd_world_mut(env).gravity = gravity.0;
+    }
+
+    /// Advances the CPU-side rapier world natively (no GPU physics at all) by
+    /// `steps` timesteps of its `integration_parameters.dt` (default 1/60 s).
+    ///
+    /// This steps the same rapier world the scene was built into — including
+    /// multibody joints and the position servos imported from MJCF actuators —
+    /// so robots hold their actuated stance. Pair with
+    /// `NexusViewer.sync_rapier(state)` to push the resulting poses into the
+    /// renderer. Orders of magnitude faster than the GPU pipeline for a single
+    /// environment (no per-kernel dispatch overhead).
+    #[pyo3(signature = (steps=1, env=0))]
+    fn step_rapier(&mut self, steps: u32, env: usize) {
+        let world = self.0.rbd_world_mut(env);
+        for _ in 0..steps {
+            world.step();
+        }
+    }
+
     fn set_multibody_motor_velocity(
         &mut self,
         viewer: PyRef<NexusViewer>,

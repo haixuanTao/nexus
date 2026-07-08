@@ -941,6 +941,37 @@ impl NexusViewer {
         self.read_body_poses(state, env, &[handle]).await.pop()?
     }
 
+    /// Pushes CPU-side body poses (e.g. from stepping the rapier
+    /// [`PhysicsWorld`](nexus::rapier::prelude::PhysicsWorld) natively) into the
+    /// render instances — the zero-GPU-physics counterpart of [`Self::sync`].
+    ///
+    /// Poses are read from `state.rbd_world(env)` and routed through the same
+    /// `rbd2gpu` slot mapping the GPU path uses, so it works on any scene built
+    /// through [`NexusState`] (including MJCF/URDF robots with visual meshes).
+    pub fn sync_rapier(&mut self, state: &NexusState, env: usize) {
+        let Some(map) = state.rbd2gpu.get(env) else {
+            return;
+        };
+        let world = state.rbd_world(env);
+        let n = world
+            .bodies
+            .iter()
+            .filter_map(|(h, _)| map.get(h.0).map(|r| r.gpu_id as usize + 1))
+            .max()
+            .unwrap_or(0);
+        let mut cache = vec![Pose::IDENTITY; n];
+        for (h, body) in world.bodies.iter() {
+            if let Some(r) = map.get(h.0) {
+                cache[r.gpu_id as usize] = *body.position();
+            }
+        }
+        self.nexus_render.update_instances_from_poses(state, &cache);
+        #[cfg(feature = "dim3")]
+        if self.nexus_render.has_visual_nodes() {
+            self.nexus_render.update_visual_nodes(state, &cache);
+        }
+    }
+
     /// Draws example-specific egui widgets into the current frame's UI pass.
     ///
     /// Call this once per frame, after [`Self::render_frame`], to overlay a
