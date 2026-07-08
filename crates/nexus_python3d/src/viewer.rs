@@ -231,7 +231,6 @@ impl NexusViewer {
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))
     }
 
-<<<<<<< HEAD
     /// World poses of several rigid bodies, read back from the GPU in a single
     /// readback (positions match rapier's `RigidBody::position`).
     ///
@@ -289,14 +288,14 @@ impl NexusViewer {
             PyArray1::from_vec(py, vec![t.x, t.y, t.z]),
             PyArray1::from_vec(py, vec![q.w, q.x, q.y, q.z]),
         ))
-=======
+    }
+
     /// Pushes CPU-side rapier body poses into the renderer — the counterpart
     /// of `sync` for scenes stepped with `NexusState.step_rapier` (no GPU
     /// physics involved).
     #[pyo3(signature = (state, env=0))]
     fn sync_rapier(&mut self, state: PyRef<NexusState>, env: usize) {
         self.inner_mut().sync_rapier(&state.0, env);
->>>>>>> feat/python-rapier-native-step
     }
 
     // --- misc -------------------------------------------------------------
