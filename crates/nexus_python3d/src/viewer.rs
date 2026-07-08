@@ -175,10 +175,25 @@ impl NexusViewer {
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))
     }
 
-    /// World pose of a rigid body, read back from the GPU (position matches
-    /// rapier's `RigidBody::position`). Returns `None` when the body isn't
-    /// active on the GPU yet. Blocking readback — fine for inspection or a few
-    /// bodies per frame.
+    /// World poses of several rigid bodies, read back from the GPU in a single
+    /// readback (positions match rapier's `RigidBody::position`). Returns one
+    /// entry per handle, `None` for bodies not active on the GPU yet. Prefer
+    /// this over per-body `body_pose` calls when querying many bodies.
+    #[pyo3(signature = (state, handles, env=0))]
+    fn body_poses(
+        &mut self,
+        state: PyRef<NexusState>,
+        handles: Vec<RigidBodyHandle>,
+        env: u32,
+    ) -> Vec<Option<Pose>> {
+        let handles: Vec<_> = handles.iter().map(|h| h.0).collect();
+        pollster::block_on(self.inner_mut().read_body_poses(&state.0, env, &handles))
+            .into_iter()
+            .map(|p| p.map(Pose))
+            .collect()
+    }
+
+    /// World pose of one rigid body — convenience wrapper around `body_poses`.
     #[pyo3(signature = (state, handle, env=0))]
     fn body_pose(
         &mut self,
