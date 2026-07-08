@@ -303,9 +303,48 @@ impl NexusState {
     /// `NexusViewer.sync_rapier(state)` to push the resulting poses into the
     /// renderer. Orders of magnitude faster than the GPU pipeline for a single
     /// environment (no per-kernel dispatch overhead).
-    #[pyo3(signature = (steps=1, env=0))]
-    fn step_rapier(&mut self, steps: u32, env: usize) {
+    /// Debug: (bodies, colliders, contact_pairs, active_contact_points, min_dynamic_mass).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug(&mut self, env: usize) -> (usize, usize, usize, usize, f32) {
         let world = self.0.rbd_world_mut(env);
+        let mut pairs = 0usize;
+        let mut points = 0usize;
+        for c in world.narrow_phase.contact_pairs() {
+            pairs += 1;
+            points += c.manifolds.iter().map(|m| m.points.len()).sum::<usize>();
+        }
+        let min_mass = world
+            .bodies
+            .iter()
+            .filter(|(_, b)| b.is_dynamic())
+            .map(|(_, b)| b.mass())
+            .fold(f32::INFINITY, f32::min);
+        (world.bodies.len(), world.colliders.len(), pairs, points, min_mass)
+    }
+
+    /// Debug: per-collider (has_parent, world_z, groups_bits).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug_colliders(&mut self, env: usize) -> Vec<(bool, f32, u32)> {
+        let world = self.0.rbd_world_mut(env);
+        world
+            .colliders
+            .iter()
+            .map(|(_, c)| {
+                (
+                    c.parent().is_some(),
+                    c.position().translation.z,
+                    c.collision_groups().memberships.bits(),
+                )
+            })
+            .collect()
+    }
+
+    #[pyo3(signature = (steps=1, env=0, dt=None))]
+    fn step_rapier(&mut self, steps: u32, env: usize, dt: Option<f32>) {
+        let world = self.0.rbd_world_mut(env);
+        if let Some(dt) = dt {
+            world.integration_parameters.dt = dt;
+        }
         for _ in 0..steps {
             world.step();
         }

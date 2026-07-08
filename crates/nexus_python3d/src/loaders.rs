@@ -130,6 +130,10 @@ pub fn insert_mjcf(
         make_roots_fixed: false,
         create_colliders_from_visual_shapes: false,
         collider_blueprint: rp::ColliderBuilder::default().density(0.0),
+        // Dynamic trimesh colliders are hollow and unreliable for contact
+        // resolution (bodies sink through the ground when stepped with
+        // rapier natively); convex hulls are the standard robotics choice.
+        mesh_converter: Some(rapier3d::prelude::MeshConverter::ConvexHull),
         ..Default::default()
     };
 
@@ -215,8 +219,11 @@ pub fn insert_mjcf(
                 let footprint = he.x.max(he.y).max(0.5);
                 let floor_thick = 0.1;
                 let floor_he = glamx::Vec3::new(footprint * 6.0, footprint * 6.0, floor_thick);
+                // Leave a small clearance below the model: an exactly-touching
+                // floor starts the scene in penetration, and the contact
+                // solver's recovery impulse can launch a multibody upward.
                 let floor_center =
-                    glamx::Vec3::new(center.x, center.y, center.z - he.z - floor_thick);
+                    glamx::Vec3::new(center.x, center.y, center.z - he.z - floor_thick - 0.005);
                 floor = Some((floor_center, floor_he));
 
                 let radius = (he.x * he.x + he.y * he.y + he.z * he.z).sqrt().max(0.5);
