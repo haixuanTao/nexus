@@ -231,6 +231,20 @@ impl NexusViewer {
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))
     }
 
+    /// World pose of a rigid body, read back from the GPU (position matches
+    /// rapier's `RigidBody::position`). Returns `None` when the body isn't
+    /// active on the GPU yet. Blocking readback — fine for inspection or a few
+    /// bodies per frame.
+    #[pyo3(signature = (state, handle, env=0))]
+    fn body_pose(
+        &mut self,
+        state: PyRef<NexusState>,
+        handle: RigidBodyHandle,
+        env: u32,
+    ) -> Option<Pose> {
+        pollster::block_on(self.inner_mut().read_body_pose(&state.0, env, handle.0)).map(Pose)
+    }
+
     // --- misc -------------------------------------------------------------
 
     fn clear_scene(&mut self) {

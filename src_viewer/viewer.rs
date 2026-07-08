@@ -896,6 +896,29 @@ impl NexusViewer {
             .set_denoise(enabled);
     }
 
+    /// Reads a rigid body's world-origin pose back from the GPU (matches
+    /// rapier's `RigidBody::position`). Returns `None` when the body isn't
+    /// active on the GPU or `env`/`handle` are unknown.
+    ///
+    /// This is a blocking readback of the whole pose buffer — fine for
+    /// inspection or a few bodies per frame, not for bulk per-body queries.
+    pub async fn read_body_pose(
+        &mut self,
+        state: &NexusState,
+        env: u32,
+        handle: RigidBodyHandle,
+    ) -> Option<Pose> {
+        let rbd = state.rbd.as_ref()?;
+        let gpu_id = state.rbd2gpu.get(env as usize)?.get(handle.0)?.gpu_id;
+        let poses = rbd.body_poses();
+        let mut cache = vec![Pose::default(); poses.len() as usize];
+        self.backend()
+            .slow_read_buffer(poses.buffer(), &mut cache)
+            .await
+            .ok()?;
+        cache.get(gpu_id as usize).copied()
+    }
+
     /// Draws example-specific egui widgets into the current frame's UI pass.
     ///
     /// Call this once per frame, after [`Self::render_frame`], to overlay a
