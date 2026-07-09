@@ -31,7 +31,7 @@ pub(super) fn lu_factor_in_shared(
     // the loop trip count must be uniform because of the barriers inside.
     max_n: u32,
     lane: u32,
-    mat: &mut [f32; MAX_MB_DOFS * MAX_MB_DOFS],
+    mat: &mut impl MaybeIndexUnchecked<f32>,
     pivots_dst: &mut [u32],
     piv: VSlice,
     pivot_row_shared: &mut u32,
@@ -109,9 +109,9 @@ pub(super) fn lu_triangular_solve_in_place(
     // Uniform-sourced upper bound for `n` — see `lu_factor_in_shared`.
     max_n: u32,
     lane: u32,
-    mat: &[f32; MAX_MB_DOFS * MAX_MB_DOFS],
-    x: &mut [f32; MAX_MB_DOFS],
-    partial: &mut [f32; LANES as usize],
+    mat: &impl MaybeIndexUnchecked<f32>,
+    x: &mut impl MaybeIndexUnchecked<f32>,
+    partial: &mut impl MaybeIndexUnchecked<f32>,
 ) {
     // NOTE: uniform trip count (from a uniform buffer) for the barriers below.
     for i in 0..max_n {
@@ -374,7 +374,9 @@ pub(super) fn lu_apply_pivots(
     lane: u32,
     buf_pivots: &[u32],
     piv: VSlice,
-    x: &mut [f32; MAX_MB_DOFS],
+    // Generic over the element access so cuda-oxide's SmemBuf workgroup
+    // arrays fit (they don't coerce to `&mut [f32; N]`).
+    x: &mut impl MaybeIndexUnchecked<f32>,
 ) {
     if lane == 0 {
         for k in 0..n {

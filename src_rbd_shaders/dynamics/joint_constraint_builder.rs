@@ -3,6 +3,7 @@
 //! This module contains functions to build and update joint constraints from
 //! joint definitions and body states.
 
+use crate::ColBranchless;
 use super::body::{Velocity, WorldMassProperties};
 use super::joint::{ANG_AXES_MASK, GenericJoint, LIN_AXES_MASK, MotorParameters, SPATIAL_DIM};
 use super::joint_constraint::{JointConstraint, JointConstraintElement, JointSolverBody};
