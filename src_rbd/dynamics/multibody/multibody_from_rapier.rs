@@ -421,10 +421,12 @@ impl GpuMultibodySet {
                 storage | BufferUsages::COPY_DST,
             )
             .unwrap(),
+            // COPY_SRC so hosts can read joint/link state back (observation
+            // pipelines); see `GpuMultibodySet::read_links`.
             links_workspace: Tensor::vector(
                 backend,
                 &crate::shaders::dynamics::ws_soa_from_structs(&all_ws, links_cap, num_batches),
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
             dof_values: Tensor::vector(backend, &all_dof_vals, storage).unwrap(),

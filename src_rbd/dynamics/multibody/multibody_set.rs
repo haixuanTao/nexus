@@ -492,6 +492,63 @@ impl GpuMultibodySet {
         &self.links_static
     }
 
+
+    /// Number of link slots per environment (the per-link-buffer stride
+    /// factor; buffers are batch-interleaved, element `link` of env `e` at
+    /// `link · num_batches + e`).
+    pub fn links_per_batch(&self) -> u32 {
+        self.links_per_batch
+    }
+
+    /// Refreshes every link's joint parameters (motor targets/gains, limits) of
+    /// environment `env` from a rapier multibody set laid out identically to the
+    /// one this GPU set was built from (same multibody/link traversal order as
+    /// [`from_rapier`](Self::from_rapier)), then uploads the `links_static`
+    /// buffer in one write.
+    ///
+    /// This is the per-step control path for actuated robots: mutate the motors
+    /// on the CPU rapier joints (e.g. via `rapier3d-mjcf`'s
+    /// `apply_controls_multibody`, which implements the MJCF actuator
+    /// semantics), then call this to push the new motor state to the GPU. Only
+    /// joint data is refreshed — coordinates, velocities and mass properties are
+    /// untouched, so this cannot be used to teleport links.
+    pub fn sync_joint_data_from_rapier(
+        &mut self,
+        backend: &GpuBackend,
+        env: u32,
+        set: &crate::rapier::dynamics::MultibodyJointSet,
+        bodies: &crate::rapier::dynamics::RigidBodySet,
+    ) -> Result<(), GpuBackendError> {
+        let nb = self.num_batches as usize;
+        let mut offset = 0usize;
+        for mb in set.multibodies() {
+            // Mirror `from_rapier`'s fixed-root handling: a non-dynamic root has
+            // all 6 DOFs locked on the GPU even though rapier models it as free.
+            let root_is_dynamic = mb
+                .link(0)
+                .and_then(|r| bodies.get(r.rigid_body_handle()))
+                .map(|rb| rb.is_dynamic())
+                .unwrap_or(false);
+            for (link_idx, link) in mb.links().enumerate() {
+                // Batch-interleaved links layout.
+                let global_idx = offset * nb + env as usize;
+                let Some(entry) = self.links_static_mirror.get_mut(global_idx) else {
+                    return Ok(());
+                };
+                let mut data = convert_generic_joint(link.joint().data);
+                if link_idx == 0 && !root_is_dynamic {
+                    data.locked_axes = 0x3f;
+                }
+                entry.data = data;
+                offset += 1;
+            }
+        }
+        backend.write_buffer(
+            self.links_static.buffer_mut(),
+            0,
+            &self.links_static_mirror,
+        )
+    }
     /// Upload a new gravity vector.
     pub fn set_gravity(&mut self, backend: &GpuBackend, g: [f32; 3]) {
         self.gravity = Tensor::scalar(
