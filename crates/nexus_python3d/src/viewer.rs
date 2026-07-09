@@ -224,6 +224,13 @@ impl NexusViewer {
         self.inner_mut().set_raytracer_denoise(enabled);
     }
 
+    /// Resolution scale used while the camera/scene moves, in `(0, 1]`
+    /// (default 0.5: traced at half resolution and upscaled). Set `1.0` for
+    /// full-resolution tracing of animated scenes (e.g. benchmarks).
+    fn set_raytracer_interactive_scale(&mut self, scale: f32) {
+        self.inner_mut().set_raytracer_interactive_scale(scale);
+    }
+
     /// Which intersection backend the path tracer uses: `"hardware"` (RT-core
     /// ray queries) or `"software"` (portable compute-shader BVH fallback).
     fn raytracer_backend(&mut self) -> &'static str {
@@ -338,6 +345,15 @@ impl NexusViewer {
             PyArray1::from_vec(py, vec![t.x, t.y, t.z]),
             PyArray1::from_vec(py, vec![q.w, q.x, q.y, q.z]),
         ))
+    }
+
+    /// The most recently harvested per-pass GPU timings as a list of
+    /// `(label, milliseconds)` pairs plus their sum. Populated when a
+    /// `GpuTimestamps` is threaded through `simulate`/`sync`; empty otherwise.
+    /// Timing readbacks complete every few frames, so values lag slightly.
+    fn gpu_pass_times(&mut self) -> (Vec<(String, f64)>, f64) {
+        let (passes, total) = self.inner_mut().gpu_pass_times();
+        (passes.to_vec(), total)
     }
 
     /// Reads back environment `env`'s multibody link states from the GPU in one

@@ -947,6 +947,17 @@ impl NexusViewer {
             .set_denoise(enabled);
     }
 
+    /// Resolution scale the path tracer uses while the camera or scene is in
+    /// motion, in `(0, 1]` (kiss3d defaults to 0.5: half-resolution traced then
+    /// upscaled). Set `1.0` to always trace at full resolution — required for
+    /// benchmarking animated scenes, where every frame counts as "in motion".
+    #[cfg(feature = "dim3")]
+    pub fn set_raytracer_interactive_scale(&mut self, scale: f32) {
+        self.raytracer
+            .get_or_insert_with(RayTracer::new)
+            .set_interactive_scale(scale);
+    }
+
     /// Reads the world-origin poses of several rigid bodies back from the GPU
     /// in one readback (positions match rapier's `RigidBody::position`).
     /// Entries are `None` for bodies that aren't active on the GPU or unknown
@@ -980,6 +991,15 @@ impl NexusViewer {
                 cache.get(gpu_id as usize).copied()
             })
             .collect()
+    }
+
+    /// The most recently harvested per-pass GPU timings, as `(label, ms)`
+    /// pairs, and their sum. Populated by [`Self::sync`] when a
+    /// [`GpuTimestamps`] is threaded through `simulate`/`sync`; empty
+    /// otherwise. Readbacks only complete every few frames, so these lag the
+    /// current frame slightly — fine for profiling.
+    pub fn gpu_pass_times(&self) -> (&[(String, f64)], f64) {
+        (&self.last_gpu_pass_times, self.last_gpu_total_time_ms)
     }
 
     /// Reads back environment `env`'s multibody link workspaces from the GPU in
