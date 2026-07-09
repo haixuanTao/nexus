@@ -241,18 +241,18 @@ impl NexusViewer {
     /// Call once per frame after [`render_frame`][Self::render_frame] to export
     /// frames off-screen (e.g. to encode a video) instead of only presenting to
     /// the window.
-    fn render<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<u8>>> {
+    fn snap_rgb<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<u8>>> {
         let (w, h, rgb) = self.inner_mut().snap_rgb();
         Self::to_array(py, w, h, rgb)
     }
 
-    /// Pipelined variant of [`render`][Self::render] for video capture: starts
+    /// Pipelined variant of [`snap_rgb`][Self::snap_rgb] for video capture: starts
     /// a non-blocking capture of the frame just rendered and returns the
     /// *previous* frame's pixels (one frame of latency), or `None` on the
-    /// first call. Unlike `render` this never stalls the GPU pipeline waiting
-    /// for the copy. Call [`render_flush`][Self::render_flush] after the loop
+    /// first call. Unlike `snap_rgb` this never stalls the GPU pipeline waiting
+    /// for the copy. Call [`snap_rgb_flush`][Self::snap_rgb_flush] after the loop
     /// to collect the final frame.
-    fn render_async<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
+    fn snap_rgb_async<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
         match self.inner_mut().snap_rgb_async() {
             Some((w, h, rgb)) => Ok(Some(Self::to_array(py, w, h, rgb)?)),
             None => Ok(None),
@@ -260,8 +260,8 @@ impl NexusViewer {
     }
 
     /// Completes and returns the capture left in flight by
-    /// [`render_async`][Self::render_async], or `None` when there is none.
-    fn render_flush<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
+    /// [`snap_rgb_async`][Self::snap_rgb_async], or `None` when there is none.
+    fn snap_rgb_flush<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
         match self.inner_mut().snap_rgb_flush() {
             Some((w, h, rgb)) => Ok(Some(Self::to_array(py, w, h, rgb)?)),
             None => Ok(None),
