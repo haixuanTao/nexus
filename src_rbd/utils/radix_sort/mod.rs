@@ -243,6 +243,14 @@ impl RadixSort {
             &mut workspace.num_reduce_wgs,
         )?;
 
+        // Capture-safe fixed grids matching `gpu_init_sort_dispatch` from
+        // host-side capacities (`max_n`): no host count readback, so the CUDA
+        // backend neither drains the stream per dispatch nor breaks CUDA-graph
+        // capture. MUST be `DispatchGrid::Grid` (raw workgroup counts).
+        let nwg = per_batch_max.div_ceil(BLOCK_SIZE).max(1);
+        let sort_grid = [nwg, 1u32, 1u32];
+        let reduce_grid = [BIN_COUNT * nwg.div_ceil(BLOCK_SIZE), 1u32, 1u32];
+
         if workspace.output_keys_pong.len() < input_keys.len() {
             workspace.output_keys_pong =
                 Tensor::vector_uninit(backend, input_keys.len() as u32, BufferUsages::STORAGE)?;
@@ -297,7 +305,7 @@ impl RadixSort {
 
                 self.count.call(
                     pass,
-                    &workspace.num_wgs,
+                    khal::backend::DispatchGrid::Grid(sort_grid),
                     uniforms_buffer,
                     n_sort,
                     $src,
@@ -306,7 +314,7 @@ impl RadixSort {
 
                 self.reduce.call(
                     pass,
-                    &workspace.num_reduce_wgs,
+                    khal::backend::DispatchGrid::Grid(reduce_grid),
                     uniforms_buffer,
                     n_sort,
                     &workspace.count_buf,
@@ -318,7 +326,7 @@ impl RadixSort {
 
                 self.scan_add.call(
                     pass,
-                    &workspace.num_reduce_wgs,
+                    khal::backend::DispatchGrid::Grid(reduce_grid),
                     uniforms_buffer,
                     n_sort,
                     &workspace.reduced_buf,
@@ -327,7 +335,7 @@ impl RadixSort {
 
                 self.scatter.call(
                     pass,
-                    &workspace.num_wgs,
+                    khal::backend::DispatchGrid::Grid(sort_grid),
                     uniforms_buffer,
                     n_sort,
                     $src,
@@ -480,6 +488,17 @@ impl RadixSort {
             &mut workspace.num_reduce_wgs,
         )?;
 
+        // Capture-safe fixed grids for the flattened sort passes — host-exact
+        // match to `gpu_init_sort_dispatch` (no host count readback ⇒ CUDA-graph
+        // capturable, and no per-dispatch stream drain on the CUDA backend).
+        // MUST be `DispatchGrid::Grid` (raw workgroup counts), NOT a bare
+        // `[u32;3]` (that converts to ThreadCount and divides by block size).
+        //   num_wgs    = ceil(total_n / BLOCK_SIZE)
+        //   reduce_wgs = BIN_COUNT * ceil(num_wgs / BLOCK_SIZE)
+        let nwg = total_n.div_ceil(BLOCK_SIZE);
+        let sort_grid = [nwg, 1u32, 1u32];
+        let reduce_grid = [BIN_COUNT * nwg.div_ceil(BLOCK_SIZE), 1u32, 1u32];
+
         // Run all sort passes with 3-stream ping-pong.
         // Stream mapping changes between key passes and batch_id passes:
         //   Key passes:      scatter(src=keys, values=vals, aux=bids)
@@ -496,7 +515,7 @@ impl RadixSort {
                 // Key pass: digit extraction from keys.
                 self.count.call(
                     pass,
-                    &workspace.num_wgs,
+                    khal::backend::DispatchGrid::Grid(sort_grid),
                     uniforms,
                     n_sort_flat,
                     cur_keys,
@@ -504,7 +523,7 @@ impl RadixSort {
                 )?;
                 self.reduce.call(
                     pass,
-                    &workspace.num_reduce_wgs,
+                    khal::backend::DispatchGrid::Grid(reduce_grid),
                     uniforms,
                     n_sort_flat,
                     &workspace.count_buf,
@@ -514,7 +533,7 @@ impl RadixSort {
                     .call(pass, [1u32, 1, 1], n_sort_flat, &mut workspace.reduced_buf)?;
                 self.scan_add.call(
                     pass,
-                    &workspace.num_reduce_wgs,
+                    khal::backend::DispatchGrid::Grid(reduce_grid),
                     uniforms,
                     n_sort_flat,
                     &workspace.reduced_buf,
@@ -522,7 +541,7 @@ impl RadixSort {
                 )?;
                 self.scatter.call(
                     pass,
-                    &workspace.num_wgs,
+                    khal::backend::DispatchGrid::Grid(sort_grid),
                     uniforms,
                     n_sort_flat,
                     cur_keys,
@@ -538,7 +557,7 @@ impl RadixSort {
                 // Remap: src=batch_ids, values=keys, aux=vals.
                 self.count.call(
                     pass,
-                    &workspace.num_wgs,
+                    khal::backend::DispatchGrid::Grid(sort_grid),
                     uniforms,
                     n_sort_flat,
                     cur_aux,
@@ -546,7 +565,7 @@ impl RadixSort {
                 )?;
                 self.reduce.call(
                     pass,
-                    &workspace.num_reduce_wgs,
+                    khal::backend::DispatchGrid::Grid(reduce_grid),
                     uniforms,
                     n_sort_flat,
                     &workspace.count_buf,
@@ -556,7 +575,7 @@ impl RadixSort {
                     .call(pass, [1u32, 1, 1], n_sort_flat, &mut workspace.reduced_buf)?;
                 self.scan_add.call(
                     pass,
-                    &workspace.num_reduce_wgs,
+                    khal::backend::DispatchGrid::Grid(reduce_grid),
                     uniforms,
                     n_sort_flat,
                     &workspace.reduced_buf,
@@ -566,7 +585,7 @@ impl RadixSort {
                 //         out=next_bids, out_values=next_keys, out_aux=next_vals)
                 self.scatter.call(
                     pass,
-                    &workspace.num_wgs,
+                    khal::backend::DispatchGrid::Grid(sort_grid),
                     uniforms,
                     n_sort_flat,
                     cur_aux,
