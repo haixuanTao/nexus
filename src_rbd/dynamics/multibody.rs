@@ -434,6 +434,54 @@ impl GpuMultibodySet {
         self.links_per_batch
     }
 
+    /// Refreshes every link's joint parameters (motor targets/gains, limits) of
+    /// environment `env` from a rapier multibody set laid out identically to the
+    /// one this GPU set was built from (same multibody/link traversal order as
+    /// [`from_rapier`](Self::from_rapier)), then uploads the `links_static`
+    /// buffer in one write.
+    ///
+    /// This is the per-step control path for actuated robots: mutate the motors
+    /// on the CPU rapier joints (e.g. via `rapier3d-mjcf`'s
+    /// `apply_controls_multibody`, which implements the MJCF actuator
+    /// semantics), then call this to push the new motor state to the GPU. Only
+    /// joint data is refreshed — coordinates, velocities and mass properties are
+    /// untouched, so this cannot be used to teleport links.
+    pub fn sync_joint_data_from_rapier(
+        &mut self,
+        backend: &GpuBackend,
+        env: u32,
+        set: &crate::rapier::dynamics::MultibodyJointSet,
+        bodies: &crate::rapier::dynamics::RigidBodySet,
+    ) -> Result<(), GpuBackendError> {
+        let base = (env * self.links_per_batch) as usize;
+        let mut offset = 0usize;
+        for mb in set.multibodies() {
+            // Mirror `from_rapier`'s fixed-root handling: a non-dynamic root has
+            // all 6 DOFs locked on the GPU even though rapier models it as free.
+            let root_is_dynamic = mb
+                .link(0)
+                .and_then(|r| bodies.get(r.rigid_body_handle()))
+                .map(|rb| rb.is_dynamic())
+                .unwrap_or(false);
+            for (link_idx, link) in mb.links().enumerate() {
+                let Some(entry) = self.links_static_mirror.get_mut(base + offset) else {
+                    return Ok(());
+                };
+                let mut data = convert_generic_joint(link.joint().data);
+                if link_idx == 0 && !root_is_dynamic {
+                    data.locked_axes = 0x3f;
+                }
+                entry.data = data;
+                offset += 1;
+            }
+        }
+        backend.write_buffer(
+            self.links_static.buffer_mut(),
+            0,
+            &self.links_static_mirror,
+        )
+    }
+
     /// Diagnostic readback accessor (inert-motor debug): the limit/motor
     /// constraint slots written by `gpu_mb_init_solve_joint_with_bias`. Layout
     /// is `[num_batches * joint_constraints_per_batch]`. Not a stable API.
@@ -1291,7 +1339,9 @@ impl GpuMultibodySet {
             links_static_mirror: all_statics.clone(),
             // COPY_DST on the dynamic joint-space buffers so `reset_env_from` can
             // overwrite a single env's state in place.
-            links_workspace: Tensor::vector(backend, &all_ws, storage | BufferUsages::COPY_DST).unwrap(),
+            // COPY_SRC so hosts can read joint/link state back (observation
+            // pipelines); see `GpuMultibodySet::links_workspace`.
+            links_workspace: Tensor::vector(backend, &all_ws, storage | BufferUsages::COPY_DST | BufferUsages::COPY_SRC).unwrap(),
             links_mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
             dof_values: Tensor::vector(backend, &all_dof_vals, storage | BufferUsages::COPY_DST).unwrap(),
             dof_state: {
