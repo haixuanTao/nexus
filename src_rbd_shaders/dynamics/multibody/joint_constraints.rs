@@ -662,6 +662,20 @@ fn emit_limit_constraint(
 
     let min_enabled = curr_pos < limits[0];
     let max_enabled = limits[1] < curr_pos;
+    // INACTIVE limit (joint strictly inside its bounds): the row would carry
+    // zero positional bias AND both impulse clamps at 0, so it can never apply
+    // any impulse — dead weight in every PGS sweep. Skip emission: the slot
+    // stays `kind = 0` (pre-zeroed by the discovery walk), which the deferred
+    // column back-solve (`compute_joint_columns_par`) and both PGS sweeps
+    // already skip. Result-identical, and it saves the O(ndofs) back-solve
+    // column per limit per substep — a standing robot has essentially every
+    // joint inside its limits every substep, so the joint-constraint kernel
+    // drops from #joints rows to #violated rows (~0). Constraints are rebuilt
+    // from current coords each substep, so a joint reaching its bound re-emits
+    // on the next substep exactly as before.
+    if !min_enabled && !max_enabled {
+        return;
+    }
     let lo_excess = (limits[0] - curr_pos).max(0.0);
     let hi_excess = (curr_pos - limits[1]).max(0.0);
     let rhs_bias = (hi_excess - lo_excess) * erp_inv_dt;
