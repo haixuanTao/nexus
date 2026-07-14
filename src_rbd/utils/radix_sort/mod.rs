@@ -2,7 +2,7 @@
 
 use crate::shaders::utils::radix_sort::{
     GpuInitSortBatched, GpuInitSortDispatch, GpuSortCount, GpuSortReduce, GpuSortScan,
-    GpuSortScanAdd, GpuSortScatter, SortUniforms,
+    GpuSortScanAdd, GpuSortScatter, GpuSortSmall, SMALL_SORT_MAX, SMALL_SORT_WG, SortUniforms,
 };
 use khal::backend::{GpuBackend, GpuBackendError, GpuPass};
 use khal::{BufferUsages, Shader};
@@ -37,6 +37,7 @@ pub struct RadixSort {
     scan: GpuSortScan,
     scan_add: GpuSortScanAdd,
     scatter: GpuSortScatter,
+    small: GpuSortSmall,
 }
 
 /// Workspace buffers for radix sort operations.
@@ -142,6 +143,44 @@ impl RadixSort {
                 input_values,
                 n_sort,
                 num_batches,
+                output_keys,
+                output_values,
+            );
+        }
+
+        // FAST PATH: small per-batch capacity → ONE segmented bitonic-sort
+        // launch (stable via original-index tiebreak — output bit-identical to
+        // the radix path) instead of ceil(bits/4) passes × 5 kernels, plus
+        // batch-id passes when flattened (~55 launches for a 2048-batch
+        // robot-RL scene sorting a dozen colliders per batch).
+        let per_batch_max = input_keys.len() as u32 / num_batches.max(1);
+        let small_enabled = std::env::var("NEXUS_SMALL_SORT").map(|v| v != "0").unwrap_or(true);
+        if small_enabled && per_batch_max > 0 && per_batch_max <= SMALL_SORT_MAX {
+            // Cached uniform. Signature (0, cap, 2) can't collide with radix
+            // signatures (their num_passes ≥ 1, has_aux ≤ 1).
+            let sig = (0u32, per_batch_max, 2u32);
+            if workspace.uniform_sig != Some(sig) {
+                workspace.pass_uniforms.clear();
+                workspace.pass_uniforms.push(Tensor::scalar(
+                    backend,
+                    SortUniforms {
+                        shift: 0,
+                        max_keys_per_batch: per_batch_max,
+                        has_aux: 0,
+                    },
+                    BufferUsages::STORAGE | BufferUsages::UNIFORM,
+                )?);
+                workspace.uniform_sig = Some(sig);
+            }
+            // `call` takes logical THREAD counts (div_ceil'd by the workgroup
+            // size) — one 64-wide workgroup per batch.
+            return self.small.call(
+                pass,
+                [num_batches * SMALL_SORT_WG, 1, 1],
+                &workspace.pass_uniforms[0],
+                n_sort,
+                input_keys,
+                input_values,
                 output_keys,
                 output_values,
             );
