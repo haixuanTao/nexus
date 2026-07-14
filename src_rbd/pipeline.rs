@@ -216,6 +216,7 @@ impl GpuPhysicsState {
             .unwrap_or(0);
 
         let mut all_poses = Vec::new();
+        let mut all_vels = Vec::new();
         let mut all_local_mprops = Vec::new();
         let mut all_mprops = Vec::new();
         let mut all_shapes = Vec::new();
@@ -337,6 +338,10 @@ impl GpuPhysicsState {
                 // consume `collider_world_poses`, which the
                 // `gpu_sync_collider_poses` kernel keeps in sync each step.
                 all_poses.push(body_pose);
+                all_vels.push(match parent {
+                    Some(b) => GpuVelocity::new(b.linvel(), b.angvel()),
+                    None => GpuVelocity::default(),
+                });
                 all_collider_local_poses.push(collider_local_pose);
                 all_collision_groups.push(co.collision_groups());
             }
@@ -345,6 +350,7 @@ impl GpuPhysicsState {
             let dummy_shape = all_shapes.last().copied().unwrap_or_default();
             for _ in env_collider_count..max_colliders {
                 all_poses.push(dummy_pose);
+                all_vels.push(GpuVelocity::default());
                 all_collider_local_poses.push(Pose::IDENTITY);
                 all_local_mprops.push(dummy_local_mprops);
                 all_mprops.push(dummy_mprops);
@@ -565,7 +571,11 @@ impl GpuPhysicsState {
         let num_colliders_per_batch = max_colliders;
         let num_bodies_total = num_colliders_per_batch * num_batches as usize;
 
-        let all_vels = vec![GpuVelocity::default(); num_bodies_total];
+        // Initial body velocities were accumulated in body-slot order alongside
+        // `all_poses`; zero-filling here would silently drop each body's initial
+        // linvel/angvel (gravity used to mask the linear part, but e.g. an
+        // initial spin was lost entirely).
+        debug_assert_eq!(all_vels.len(), num_bodies_total);
         let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
         let shapes = Tensor::vector(backend, &all_shapes, storage).unwrap();
         let collider_local_poses =
