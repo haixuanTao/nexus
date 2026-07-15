@@ -378,7 +378,15 @@ impl GpuMultibodySet {
             mass_matrix_entries_per_batch: mm_cap,
             coriolis_entries_per_batch: cor_cap,
             i_coriolis_dt_entries_per_batch: icdt_cap,
-            implicit_coriolis: true,
+            // Implicit coriolis OFF by default (BIPED_IMPLICIT_CORIOLIS=1
+            // restores the old always-on behavior; same switch as zealot's
+            // biped env). Explicit treatment matches MuJoCo (implicitfast),
+            // Genesis, PhysX and Bullet — one dynamics linearization per step
+            // instead of rebuilding M/LU every TGS substep — and avoids the
+            // substep-count-dependent damping that caused passive foot creep.
+            implicit_coriolis: std::env::var("BIPED_IMPLICIT_CORIOLIS")
+                .map(|v| v != "0")
+                .unwrap_or(false),
             has_joint_constraints: all_infos.iter().any(|info| info.max_constraints > 0),
 
             multibody_info: Tensor::vector(backend, &all_infos, storage).unwrap(),
