@@ -610,72 +610,57 @@ pub fn gemm_tr(
 }
 
 //
-// LU decomposition + solve, split so the factorization can be reused with
-// multiple right-hand sides (mirrors `nalgebra::LU` / `LU::solve_mut`).
+// Tree-sparse LᵀDL decomposition + solve, split so the factorization can be
+// reused with multiple right-hand sides.
 //
 
-/// In-place LU factorization with partial pivoting (Doolittle form).
+/// In-place tree-sparse LᵀDL factorization (`M = Lᵀ·D·L`) of an SPD matrix
+/// with branch-induced sparsity, eliminating leaves-to-root (Featherstone,
+/// RBDA ch. 6).
 ///
-/// Overwrites `m` (a square `n × n` dense column-major view) with the LU factors:
-/// strictly-below-diagonal entries hold `L` (with implicit unit diagonal), the
-/// diagonal and above hold `U`. Row pivots are written to `pivots[0..n]` —
-/// `pivots[k]` is the row that was swapped with row `k` during elimination step
-/// `k`. `pivots_offset` is where this multibody's pivot slot starts in `buf_pivots`.
+/// `buf_parents[parents_offset + k]` is DOF `k`'s parent index (`u32::MAX`
+/// at roots); `M[i, j]` must be zero whenever `i` and `j` do not lie on the
+/// same root-to-leaf chain. Overwrites the strict-lower ancestor-chain
+/// entries of `m` with `L` (implicit unit diagonal) and the diagonal with
+/// `D`; the upper triangle is left untouched (stale symmetric copies).
+/// A dense SPD matrix is the chain-tree special case (`parents[k] = k - 1`).
 #[inline]
-pub fn lu_decompose(buf_m: &mut [f32], m: MatSlice, buf_pivots: &mut [u32], pivots_offset: usize) {
+pub fn ltdl_decompose(buf_m: &mut [f32], m: MatSlice, buf_parents: &[u32], parents_offset: usize) {
     let n = m.rows;
-    for k in 0..n {
-        // Partial pivot: find max |M[i, k]| for i in k..n.
-        let mut pivot_row = k;
-        let mut pivot_val = {
-            let v = buf_m.read(m.idx(k, k));
-            if v >= 0.0 { v } else { -v }
-        };
-        for i in (k + 1)..n {
-            let v = buf_m.read(m.idx(i, k));
-            let av = if v >= 0.0 { v } else { -v };
-            if av > pivot_val {
-                pivot_val = av;
-                pivot_row = i;
+    const NO_PARENT: u32 = u32::MAX;
+    for step in 0..n {
+        let k = n - 1 - step;
+        let d = buf_m.read(m.idx(k, k));
+        let inv_d = if d != 0.0 { 1.0 / d } else { 0.0 };
+        let mut i = buf_parents.read(parents_offset + k as usize);
+        // Bounded (parents strictly decrease) so corrupt data can't hang.
+        for _ in 0..n {
+            if i == NO_PARENT {
+                break;
             }
-        }
-        buf_pivots.write(pivots_offset + k as usize, pivot_row);
-
-        // Row swap k ↔ pivot_row (full row since we haven't computed past col k).
-        if pivot_row != k {
-            for c in 0..n {
-                let a = buf_m.read(m.idx(k, c));
-                let b = buf_m.read(m.idx(pivot_row, c));
-                buf_m.write(m.idx(k, c), b);
-                buf_m.write(m.idx(pivot_row, c), a);
+            let a = buf_m.read(m.idx(k, i)) * inv_d;
+            let mut j = i;
+            for _ in 0..n {
+                if j == NO_PARENT {
+                    break;
+                }
+                let v = buf_m.read(m.idx(i, j)) - a * buf_m.read(m.idx(k, j));
+                buf_m.write(m.idx(i, j), v);
+                j = buf_parents.read(parents_offset + j as usize);
             }
-        }
-
-        // Scale sub-column below the pivot: M[i, k] /= M[k, k].
-        let akk = buf_m.read(m.idx(k, k));
-        let inv_akk = if akk != 0.0 { 1.0 / akk } else { 0.0 };
-        for r in (k + 1)..n {
-            let v = buf_m.read(m.idx(r, k)) * inv_akk;
-            buf_m.write(m.idx(r, k), v);
-        }
-
-        // Trailing sub-matrix update: M[i, j] -= M[i, k] * M[k, j].
-        for j in (k + 1)..n {
-            let akj = buf_m.read(m.idx(k, j));
-            for i2 in (k + 1)..n {
-                let lik = buf_m.read(m.idx(i2, k));
-                let v = buf_m.read(m.idx(i2, j)) - lik * akj;
-                buf_m.write(m.idx(i2, j), v);
-            }
+            buf_m.write(m.idx(k, i), a);
+            i = buf_parents.read(parents_offset + i as usize);
         }
     }
 }
 
-/// Solve `M · x = rhs` in-place, using LU factors produced by
-/// [`lu_decompose`] (and its pivot array). The result overwrites `rhs`.
+/// Solve `M · x = rhs` in-place, using LᵀDL factors produced by
+/// [`ltdl_decompose`] (or the workgroup variant in `dynamics::multibody::lu`)
+/// and the same per-DOF parent array. The result overwrites `rhs`.
 ///
-/// `m` and `pivots` must be the exact outputs of a previous `lu_decompose` call.
-/// `rhs` is an `n`-element column vector; `rhs_offset` is where it starts in `buf_rhs`.
+/// `m` must hold the exact factor output and `pivots` the parent array the
+/// factorization used. `rhs` is an `n`-element column vector; `rhs_offset` is
+/// where it starts in `buf_rhs`.
 #[inline]
 pub fn lu_solve_in_place(
     buf_m: &[f32],
