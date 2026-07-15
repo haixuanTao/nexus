@@ -23,7 +23,16 @@ pub(super) fn sm_idx(r: u32, c: u32) -> usize {
     (c * MAX_DOFS_U32 + r) as usize
 }
 
-/// Workgroup-parallel LU factorization on the shared `mat` tile in place.
+/// Workgroup-parallel unpivoted LU factorization on the shared `mat` tile in
+/// place.
+///
+/// The augmented mass matrix is SPD (armature/damping keep the diagonal
+/// positive), so partial pivoting is unnecessary: unpivoted LU of an SPD
+/// matrix is exactly `L·(D·Lᵀ)` — Cholesky-class stability, the same
+/// factorization MuJoCo uses (`mj_factorM`). Dropping the pivot search
+/// removes the O(n) serial scan and two of the five barriers per column.
+/// Identity pivots are still written so `lu_apply_pivots` consumers keep
+/// working (their swap loop no-ops).
 #[inline]
 pub(super) fn lu_factor_in_shared(
     n: u32,
@@ -34,39 +43,16 @@ pub(super) fn lu_factor_in_shared(
     pivot_row_shared: &mut u32,
     inv_akk_shared: &mut f32,
 ) {
+    let _ = pivot_row_shared;
+    if lane == 0 {
+        for k in 0..n {
+            pivots_dst.write(pivots_offset + k as usize, k);
+        }
+    }
     // NOTE: fixed number of iterations for uniform control flow.
     // TODO(PERF): on non-web platforms we could just use `n` as the upper bound.
     for k in 0..MAX_DOFS_U32 {
         let active = k < n;
-        if active && lane == 0 {
-            let mut pivot_row = k;
-            let mut pivot_val = {
-                let v = mat.read(sm_idx(k, k));
-                if v >= 0.0 { v } else { -v }
-            };
-            for i in (k + 1)..n {
-                let v = mat.read(sm_idx(i, k));
-                let av = if v >= 0.0 { v } else { -v };
-                if av > pivot_val {
-                    pivot_val = av;
-                    pivot_row = i;
-                }
-            }
-            *pivot_row_shared = pivot_row;
-            pivots_dst.write(pivots_offset + k as usize, pivot_row);
-        }
-        workgroup_memory_barrier_with_group_sync();
-        let pivot_row = *pivot_row_shared;
-
-        if active && pivot_row != k && lane < n {
-            let c = lane;
-            let a = mat.read(sm_idx(k, c));
-            let b = mat.read(sm_idx(pivot_row, c));
-            mat.write(sm_idx(k, c), b);
-            mat.write(sm_idx(pivot_row, c), a);
-        }
-        workgroup_memory_barrier_with_group_sync();
-
         if active && lane == 0 {
             let akk = mat.read(sm_idx(k, k));
             *inv_akk_shared = if akk != 0.0 { 1.0 / akk } else { 0.0 };
