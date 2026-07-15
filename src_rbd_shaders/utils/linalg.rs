@@ -686,38 +686,50 @@ pub fn lu_solve_in_place(
     rhs_offset: usize,
 ) {
     let n = m.rows;
+    const NO_PARENT: u32 = u32::MAX;
 
-    // Permute rhs in place according to the recorded pivots.
-    for k in 0..n {
-        let p = buf_pivots.read(pivots_offset + k as usize);
-        if p != k {
-            let ki = rhs_offset + k as usize;
-            let pi = rhs_offset + p as usize;
-            let a = buf_rhs.read(ki);
-            let b = buf_rhs.read(pi);
-            buf_rhs.write(ki, b);
-            buf_rhs.write(pi, a);
+    // `m` holds tree-sparse LᵀDL factors (see `dynamics::multibody::lu`):
+    // strict-lower ancestor-chain entries are L (unit diagonal), the diagonal
+    // is D, and `buf_pivots` holds each DOF's parent (NO_PARENT at roots).
+    // Every walk is O(depth), making the whole solve O(n·depth).
+
+    // Solve Lᵀ·z = b: scatter descending (descendants before ancestors).
+    for step in 0..n {
+        let i = n - 1 - step;
+        let xi = buf_rhs.read(rhs_offset + i as usize);
+        let mut j = buf_pivots.read(pivots_offset + i as usize);
+        // Bounded (parents strictly decrease) so corrupt data can't hang.
+        for _ in 0..n {
+            if j == NO_PARENT {
+                break;
+            }
+            let idx = rhs_offset + j as usize;
+            let v = buf_rhs.read(idx) - buf_m.read(m.idx(i, j)) * xi;
+            buf_rhs.write(idx, v);
+            j = buf_pivots.read(pivots_offset + j as usize);
         }
     }
 
-    // Forward substitution: L · y = P · rhs (L is unit-lower — implicit diag = 1).
+    // z = D⁻¹·z.
+    for i in 0..n {
+        let d = buf_m.read(m.idx(i, i));
+        let idx = rhs_offset + i as usize;
+        let v = buf_rhs.read(idx);
+        buf_rhs.write(idx, if d != 0.0 { v / d } else { 0.0 });
+    }
+
+    // Solve L·x = z: gather ascending (ancestors before descendants).
     for i in 0..n {
         let mut s = buf_rhs.read(rhs_offset + i as usize);
-        for j in 0..i {
+        let mut j = buf_pivots.read(pivots_offset + i as usize);
+        for _ in 0..n {
+            if j == NO_PARENT {
+                break;
+            }
             s -= buf_m.read(m.idx(i, j)) * buf_rhs.read(rhs_offset + j as usize);
+            j = buf_pivots.read(pivots_offset + j as usize);
         }
         buf_rhs.write(rhs_offset + i as usize, s);
-    }
-
-    // Back substitution: U · x = y (reverse iteration — equivalent to `for ii in (0..n).rev()`).
-    for step in 0..n {
-        let ii = n - 1 - step;
-        let mut s = buf_rhs.read(rhs_offset + ii as usize);
-        for j in (ii + 1)..n {
-            s -= buf_m.read(m.idx(ii, j)) * buf_rhs.read(rhs_offset + j as usize);
-        }
-        let u = buf_m.read(m.idx(ii, ii));
-        buf_rhs.write(rhs_offset + ii as usize, if u != 0.0 { s / u } else { 0.0 });
     }
 }
 
