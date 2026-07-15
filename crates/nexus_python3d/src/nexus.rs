@@ -263,17 +263,20 @@ impl NexusState {
         })
     }
 
-    /// Loads a MuJoCo MJCF scene into environment 0 as multibodies, registering
-    /// its render shapes (and a sized floor) with `viewer`. Returns scene info
-    /// (suggested camera + whether the scene is Z-up). Call `finalize` after.
-    #[pyo3(signature = (viewer, scene_path, render_colliders=false))]
+    /// Loads a MuJoCo MJCF scene into environment `env` as multibodies. For
+    /// `env == 0` its render shapes (and a sized floor) are registered with
+    /// `viewer`; batch environments are physics-only (the viewer draws env 0).
+    /// Returns scene info (suggested camera + whether the scene is Z-up).
+    /// Call `finalize` after.
+    #[pyo3(signature = (viewer, scene_path, render_colliders=false, env=0))]
     fn insert_mjcf(
         &mut self,
         viewer: PyRefMut<NexusViewer>,
         scene_path: std::path::PathBuf,
         render_colliders: bool,
+        env: usize,
     ) -> PyResult<MjcfSceneInfo> {
-        crate::loaders::insert_mjcf(&mut self.0, viewer, &scene_path, render_colliders)
+        crate::loaders::insert_mjcf(&mut self.0, viewer, &scene_path, render_colliders, env)
     }
 
     // --- rbd config -------------------------------------------------------
