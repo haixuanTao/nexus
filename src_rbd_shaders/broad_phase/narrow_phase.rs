@@ -5,6 +5,8 @@
 use crate::queries::{
     ContactManifold, IndexedManifold, ball_ball, ball_convex, convex_ball, cuboid_cuboid, pfm_pfm,
 };
+#[cfg(feature = "dim3")]
+use crate::queries::{ContactPoint, MAX_MANIFOLD_POINTS, manifold_reduction};
 use crate::shapes::{
     Capsule, Polyline, SHAPE_TYPE_BALL, SHAPE_TYPE_CAPSULE, SHAPE_TYPE_CONE, SHAPE_TYPE_CUBOID,
     SHAPE_TYPE_CYLINDER, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH, Shape, TriMesh,
@@ -69,6 +71,95 @@ pub fn gpu_narrow_phase_init_contacts_dispatch(
         *indirect_args.at_mut(0) = highest.div_ceil(WORKGROUP_SIZE);
         *indirect_args.at_mut(1) = num_batches as u32;
         *indirect_args.at_mut(2) = 1;
+    }
+}
+
+/// OPTIONAL contact reduction (training-grade). A convex collider resting on
+/// a trimesh emits one manifold PER OVERLAPPING TRIANGLE — all sharing one
+/// `colliders` key (the trimesh is always collider A, so their points share
+/// one local frame). Downstream, the multibody contact-constraint kernels pay
+/// 6 solver slots per point, so a foot on rough terrain costs 4–8× its
+/// flat-ground price for near-duplicate information. This pass compacts the
+/// batch's contacts in place: the FIRST record of each collider pair is kept
+/// verbatim (single-manifold pairs — e.g. all flat-ground contacts — are
+/// bit-identical to the unreduced path), and every further record with the
+/// same key is MERGED into it — pool both manifolds' points (≤8), keep the
+/// deeper manifold's normal, and run the standard deepest+spread selection
+/// down to `MAX_MANIFOLD_POINTS`. Approximations (documented, opt-in for RL
+/// training): one normal per merged manifold (a foot straddling a box edge
+/// loses the second normal) and greedy pairwise merging in emission order.
+/// Dispatched only when the host enables contact reduction; grid
+/// `[1, num_batches, 1]`, serial per batch (n ≤ contacts capacity, ~128).
+#[cfg(feature = "dim3")]
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_reduce_contacts(
+    #[spirv(workgroup_id)] workgroup_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &mut [IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
+) {
+    let batch_id = workgroup_id.y;
+    let capacity = batch_ids.contacts_batch_capacity as usize;
+    let mut contacts = batch_ids.contact_batch_mut(batch_id, contacts);
+    let n = (contacts_len.read(batch_id as usize) as usize).min(capacity);
+
+    let mut w = 0usize; // write cursor — always ≤ read cursor, in-place safe
+    for i in 0..n {
+        let im = contacts[i];
+        let mut merged = false;
+        for j in 0..w {
+            let out = contacts[j];
+            if out.colliders.x == im.colliders.x && out.colliders.y == im.colliders.y {
+                // Pool the two manifolds' points (same collider-A local frame).
+                let na = (out.contact.len as usize).min(MAX_MANIFOLD_POINTS);
+                let nb = (im.contact.len as usize).min(MAX_MANIFOLD_POINTS);
+                let mut cand = [ContactPoint::default(); 8];
+                for k in 0..na {
+                    cand.write(k, out.contact.points_a.read(k));
+                }
+                for k in 0..nb {
+                    cand.write(na + k, im.contact.points_a.read(k));
+                }
+                // Normal of whichever manifold holds the deepest point.
+                let mut deep_out = out.contact.points_a.at(0).dist;
+                for k in 1..na {
+                    let d = out.contact.points_a.at(k).dist;
+                    if d < deep_out {
+                        deep_out = d;
+                    }
+                }
+                let mut deep_in = im.contact.points_a.at(0).dist;
+                for k in 1..nb {
+                    let d = im.contact.points_a.at(k).dist;
+                    if d < deep_in {
+                        deep_in = d;
+                    }
+                }
+                let normal = if deep_in < deep_out {
+                    im.contact.normal_a
+                } else {
+                    out.contact.normal_a
+                };
+                let mut reduced = manifold_reduction(&cand, (na + nb) as u32, normal);
+                // `manifold_reduction` fills points/len only.
+                reduced.normal_a = normal;
+                let mut kept = out;
+                kept.contact = reduced;
+                contacts[j] = kept;
+                merged = true;
+                break;
+            }
+        }
+        if !merged {
+            contacts[w] = im;
+            w += 1;
+        }
+    }
+    // Compacted count; plain store, single writer per batch. (Loop shell per
+    // the `gpu_reset_narrow_phase` rustgpu-triviality workaround.)
+    for _ in 0..1 {
+        contacts_len.write(batch_id as usize, w as u32);
     }
 }
 

@@ -7,6 +7,8 @@ use crate::shaders::broad_phase::{
     GpuInitPfmPfmDispatch, GpuNarrowPhaseInitContactsDispatch, GpuNarrowPhasePfmPfm,
     GpuNarrowPhaseShapeShape, GpuResetNarrowPhase, NarrowPhasePfmPair,
 };
+#[cfg(feature = "dim3")]
+use crate::shaders::broad_phase::GpuReduceContacts;
 use crate::shaders::shapes::Shape;
 use khal::Shader;
 use khal::backend::{GpuBackendError, GpuPass};
@@ -18,6 +20,8 @@ pub struct GpuNarrowPhase {
     reset_narrow_phase: GpuResetNarrowPhase,
     narrow_phase: GpuNarrowPhaseShapeShape,
     narrow_phase_pfm_pfm: GpuNarrowPhasePfmPfm,
+    #[cfg(feature = "dim3")]
+    reduce_contacts: GpuReduceContacts,
     init_pfm_pfm_indirect_args: GpuInitPfmPfmDispatch,
     init_contacts_indirect_args: GpuNarrowPhaseInitContactsDispatch,
 }
@@ -42,6 +46,11 @@ impl GpuNarrowPhase {
         pfm_pairs_len: &mut Tensor<u32>,
         pfm_pairs_indirect: &mut Tensor<[u32; 3]>,
         batch_indices: &Tensor<crate::shaders::utils::BatchIndices>,
+        // OPTIONAL training-grade contact reduction: merge all manifolds of a
+        // collider pair (per-triangle trimesh contacts) to one ≤4-point
+        // manifold before the solvers see them. Single-manifold pairs pass
+        // through bit-identically; `false` skips the kernel entirely.
+        reduce_contacts: bool,
     ) -> Result<(), GpuBackendError> {
         let num_batches = contacts_len.len() as u32;
         // Fixed capacity-based grids (BIPED_FIXED_GRID) — both kernels grid-stride
@@ -86,6 +95,13 @@ impl GpuNarrowPhase {
             vertices,
             indices,
         )?;
+        #[cfg(feature = "dim3")]
+        if reduce_contacts {
+            self.reduce_contacts
+                .call(pass, [1u32, num_batches, 1], contacts, contacts_len, batch_indices)?;
+        }
+        #[cfg(not(feature = "dim3"))]
+        let _ = reduce_contacts;
         self.init_contacts_indirect_args
             .call(pass, 1u32, contacts_len, contacts_indirect)?;
 

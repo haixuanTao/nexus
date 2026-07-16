@@ -1113,6 +1113,12 @@ pub struct GpuPhysicsPipeline {
     lbvh: Lbvh,
     coloring: GpuColoring,
     warmstart: GpuWarmstart,
+    /// OPTIONAL training-grade contact reduction: merge each collider pair's
+    /// manifolds (per-triangle trimesh contacts) into one ≤4-point manifold
+    /// before the solvers. Default `false` = the pass is not dispatched;
+    /// flat-ground contacts are bit-identical either way. Keep constant for
+    /// the process lifetime (CUDA-graph capture records the choice).
+    pub contact_reduction: bool,
 }
 
 impl GpuPhysicsPipeline {
@@ -1133,6 +1139,7 @@ impl GpuPhysicsPipeline {
             lbvh: Lbvh::from_backend(backend),
             coloring: GpuColoring::from_backend(backend).unwrap(),
             warmstart: GpuWarmstart::from_backend(backend).unwrap(),
+            contact_reduction: false,
         }
     }
 
@@ -1292,6 +1299,7 @@ impl GpuPhysicsPipeline {
                     &mut state.pfm_pairs_len,
                     &mut state.pfm_pairs_indirect,
                     &state.batch_indices,
+                    self.contact_reduction,
                 )
                 .unwrap();
 
