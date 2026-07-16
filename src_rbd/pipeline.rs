@@ -224,6 +224,13 @@ impl GpuPhysicsState {
         let mut all_collision_groups: Vec<crate::rapier::geometry::InteractionGroups> = Vec::new();
         let mut all_collider_local_poses: Vec<Pose> = Vec::new();
         let mut shape_buffers = ShapeBuffers::default();
+        // TriMesh dedupe: batched envs often share one terrain mesh (the same
+        // parry `SharedShape` Arc cloned per env). Emitting its flat BVH +
+        // pseudo-normals once and reusing the `Shape` descriptor (whose ranges
+        // point into the shared `shape_buffers`) keeps memory O(unique meshes)
+        // instead of O(envs). Keyed by the parry shape data pointer, TriMesh
+        // ONLY — scenes without trimeshes produce byte-identical buffers.
+        let mut trimesh_cache: HashMap<usize, crate::shaders::shapes::Shape> = HashMap::new();
         let mut joint_envs: Vec<(
             &ImpulseJointSet,
             HashMap<crate::rapier::dynamics::RigidBodyHandle, u32>,
@@ -328,9 +335,23 @@ impl GpuPhysicsState {
                 env_collider_idx += 1;
                 all_local_mprops.push(local_mprops);
                 all_mprops.push(mprops);
-                all_shapes.push(
-                    shape_from_parry(co.shape(), &mut shape_buffers).expect("Unsupported shape"),
-                );
+                let gpu_shape = match co.shape().as_typed_shape() {
+                    crate::parry::shape::TypedShape::TriMesh(tm) => {
+                        let key = tm as *const _ as *const u8 as usize;
+                        match trimesh_cache.get(&key) {
+                            Some(&s) => s,
+                            None => {
+                                let s = shape_from_parry(co.shape(), &mut shape_buffers)
+                                    .expect("Unsupported shape");
+                                trimesh_cache.insert(key, s);
+                                s
+                            }
+                        }
+                    }
+                    _ => shape_from_parry(co.shape(), &mut shape_buffers)
+                        .expect("Unsupported shape"),
+                };
+                all_shapes.push(gpu_shape);
                 // Mirror rapier: bodies hold a world-origin pose, colliders hold
                 // their local offset and a world pose `body * local`. Joint /
                 // solver / integrator / mprops_update / multibody-FK consume
@@ -988,6 +1009,23 @@ impl GpuPhysicsState {
             .unwrap();
         self.multibodies.reset_env_from_snapshot(backend, dst_env, &snap.mb);
     }
+
+    /// [`Self::reset_env_from_snapshot`] with the robot rigidly translated by
+    /// `offset` (world frame) — the teleport primitive for terrain-curriculum
+    /// style spawn placement. Only floating-base multibody links move; fixed
+    /// bodies (ground, terrain) keep their snapshot poses. Costs one small
+    /// snapshot clone per call (single-env sized).
+    #[cfg(feature = "dim3")]
+    pub fn reset_env_from_snapshot_offset(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &GpuPhysicsSnapshot,
+        offset: Vector,
+    ) {
+        let moved = snap.translated(offset);
+        self.reset_env_from_snapshot(backend, dst_env, &moved);
+    }
 }
 
 /// CPU-side snapshot of one (single-batch) physics template — body poses,
@@ -999,6 +1037,24 @@ pub struct GpuPhysicsSnapshot {
     body_poses: Vec<Pose>,
     vels: Vec<GpuVelocity>,
     mb: GpuMultibodySnapshot,
+}
+
+#[cfg(feature = "dim3")]
+impl GpuPhysicsSnapshot {
+    /// A copy with every floating-base multibody translated by `offset`:
+    /// the affected links' `body_poses` plus the multibody workspace (root
+    /// free-joint coords, local_to_parent, per-link local_to_world). Fixed
+    /// bodies (ground/terrain) and velocities are untouched.
+    pub fn translated(&self, offset: Vector) -> GpuPhysicsSnapshot {
+        let mut out = self.clone();
+        out.mb = self.mb.translated(offset);
+        self.mb.for_each_link_rb_id(|rb_id| {
+            if let Some(p) = out.body_poses.get_mut(rb_id as usize) {
+                p.translation += offset;
+            }
+        });
+        out
+    }
 }
 
 /// The main GPU physics pipeline coordinating all simulation stages.

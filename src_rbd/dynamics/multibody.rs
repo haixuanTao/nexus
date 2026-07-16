@@ -300,6 +300,66 @@ pub struct GpuMultibodySnapshot {
     dof_state: Vec<f32>,
 }
 
+impl GpuMultibodySnapshot {
+    /// True for entries that describe a real link (the buffers are padded to
+    /// `links_per_batch` with zeroed slots: rb_id 0, parent 0, ndofs 0 — a
+    /// combination no real link can have, since a chain's body-0 link is its
+    /// root and roots carry `parent_link_id == MULTIBODY_ROOT`).
+    fn link_is_valid(ls: &MultibodyLinkStatic) -> bool {
+        ls.parent_link_id == crate::shaders::dynamics::MULTIBODY_ROOT
+            || ls.ndofs > 0
+            || ls.rb_id != 0
+    }
+
+    /// True if this link's multibody has a FREE root joint (floating base).
+    /// Only such multibodies can be rigidly translated; a fixed-base chain is
+    /// welded to the world and must not move.
+    fn mb_root_is_free(&self, multibody_id: u32) -> bool {
+        self.links_static.iter().any(|ls| {
+            Self::link_is_valid(ls)
+                && ls.multibody_id == multibody_id
+                && ls.parent_link_id == crate::shaders::dynamics::MULTIBODY_ROOT
+                && ls.data.locked_axes == 0
+        })
+    }
+
+    /// Calls `f(rb_id)` for every rigid body backing a link of a FREE-rooted
+    /// (floating-base) multibody — the set of bodies an offset-reset moves.
+    pub(crate) fn for_each_link_rb_id(&self, mut f: impl FnMut(u32)) {
+        for ls in &self.links_static {
+            if Self::link_is_valid(ls) && self.mb_root_is_free(ls.multibody_id) {
+                f(ls.rb_id);
+            }
+        }
+    }
+
+    /// A copy of this snapshot with every FLOATING-BASE multibody translated
+    /// by `offset` (world frame). Rotations, joint coordinates past the free
+    /// linear DOFs, velocities and `dof_values` are translation-invariant;
+    /// the free root's world position lives in `coords[0..3]` +
+    /// `local_to_parent` (the root's parent frame IS the world; verified
+    /// against the build-time seeding from `rb.position()`), and every link's
+    /// `local_to_world` carries its body pose. Fixed-base multibodies are
+    /// left untouched. `body_poses` (owned by `GpuPhysicsSnapshot`) must be
+    /// translated by the caller for the same rb_ids.
+    pub(crate) fn translated(&self, offset: glamx::Vec3) -> GpuMultibodySnapshot {
+        let mut out = self.clone();
+        for (ws, ls) in out.links_workspace.iter_mut().zip(&self.links_static) {
+            if !Self::link_is_valid(ls) || !self.mb_root_is_free(ls.multibody_id) {
+                continue;
+            }
+            ws.local_to_world.translation += offset;
+            if ls.parent_link_id == crate::shaders::dynamics::MULTIBODY_ROOT {
+                ws.local_to_parent.translation += offset;
+                ws.coords[0] += offset.x;
+                ws.coords[1] += offset.y;
+                ws.coords[2] += offset.z;
+            }
+        }
+        out
+    }
+}
+
 impl GpuMultibodySet {
     /// Number of simulation batches.
     pub fn num_batches(&self) -> u32 {
