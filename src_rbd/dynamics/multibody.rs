@@ -132,6 +132,8 @@ pub struct GpuMultibodySet {
     /// explicitly in `gpu_mb_gravity_and_lu` as `-frictionloss·sign(v)`
     /// (smoothed near v=0). Initialised to 0; set via [`set_dof_frictionloss`].
     dof_frictionloss: Tensor<f32>,
+    /// Actuator-delay state per batch: `[tick, k, prev_target × links_cap]`.
+    motor_delay_state: Tensor<f32>,
     /// Per-DOF armature (rotor inertia, N·m·s²/rad), `dofs_cap × num_batches` in
     /// the same env-major layout as the velocity section. Added to the mass-
     /// matrix DIAGONAL in `gpu_mb_compute_dynamics_pre` (NOT the link inertia
@@ -724,6 +726,25 @@ impl GpuMultibodySet {
         }
     }
 
+    /// Per-batch stride of the actuator-delay state buffer:
+    /// `[tick, k, prev_target × links_per_batch]`.
+    pub fn motor_delay_stride(&self) -> u32 {
+        2 + self.links_per_batch
+    }
+
+    /// Upload the actuator-delay state for all batches (see
+    /// [`Self::motor_delay_stride`] for the layout; `data.len()` must be
+    /// `stride × num_batches`). Zeroed state = delay off. Call BEFORE the
+    /// step's kernels are queued: a pageable H2D copy issued between queued
+    /// substeps stalls the stream — exactly what this GPU-side delay removes.
+    pub fn write_motor_delay_state(
+        &mut self,
+        backend: &GpuBackend,
+        data: &[f32],
+    ) -> Result<(), GpuBackendError> {
+        backend.write_buffer(self.motor_delay_state.buffer_mut(), 0, data)
+    }
+
     /// Read this (template) multibody set off the GPU into a CPU snapshot. Call
     /// once per template at setup; pass the result to
     /// [`Self::reset_env_from_snapshot`] for readback-free resets.
@@ -1226,6 +1247,15 @@ impl GpuMultibodySet {
             dof_frictionloss: Tensor::vector(
                 backend,
                 &vec![0.0f32; (dofs_cap * num_batches) as usize],
+                storage | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
+            // Actuator-delay state, stride (2 + links_cap) per batch:
+            // [tick, k, prev_target per link]. Zero-init ⇒ k = 0 ⇒ the PD
+            // always uses the current target (delay off, bit-identical).
+            motor_delay_state: Tensor::vector(
+                backend,
+                &vec![0.0f32; ((2 + links_cap) * num_batches) as usize],
                 storage | BufferUsages::COPY_DST,
             )
             .unwrap(),
@@ -1999,6 +2029,7 @@ impl GpuMultibodySolver {
             &mb.gravity,
             args.batch_indices,
             &mb.dof_frictionloss,
+            &mut mb.motor_delay_state,
         )?;
 
         Ok(())
@@ -2412,6 +2443,7 @@ impl GpuMultibodySolver {
             &mb.gravity,
             args.batch_indices,
             &mb.dof_frictionloss,
+            &mut mb.motor_delay_state,
         )?;
 
         Ok(())

@@ -63,6 +63,18 @@ pub fn gpu_mb_gravity_and_lu(
     // DOF layout as the velocity section (indexed `gen_base + i`); 0 for the root
     // and any unactuated DOF.
     #[spirv(storage_buffer, descriptor_set = 0, binding = 12)] dof_frictionloss: &[f32],
+    // Actuator-delay state, per batch, stride `2 + links_per_batch`:
+    //   [0] tick — physics-step counter within the control step (f32; the
+    //       host zeroes it once per control step, THIS kernel bumps it),
+    //   [1] k — delay in physics steps (0 = no delay, the default),
+    //   [2 + link] — the PREVIOUS control step's motor position target for
+    //       that link's motorized axis.
+    // While tick < k the PD uses the previous target (WBC-AGILE's
+    // DelayedPDActuator semantics) with ZERO mid-step host writes — the old
+    // host-side restage stalled the stream on a pageable H2D copy per substep.
+    // NOTE: the tick bump assumes ONE multibody per batch (zealot's layout);
+    // with several, extra multibodies race the bump by one step at worst.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 13)] motor_delay_state: &mut [f32],
     // Mass-matrix tile in shared memory.
     #[spirv(workgroup)] mat: &mut [f32; (MAX_MB_DOFS * MAX_MB_DOFS) as usize],
     // RHS / solution vector.
@@ -270,6 +282,13 @@ pub fn gpu_mb_gravity_and_lu(
     // no double-write, and `gen_forces` for this mb is final after the damping
     // pass above.
     if lane == 0 {
+        // Actuator delay: while this control step's physics-step counter is
+        // below the batch's delay, the PD tracks the PREVIOUS target.
+        let delay_stride = 2 + batch_ids.links_batch_capacity as usize;
+        let delay_base = batch_id as usize * delay_stride;
+        let tick = motor_delay_state.read(delay_base);
+        let delay_k = motor_delay_state.read(delay_base + 1);
+        let use_prev = tick < delay_k;
         for k in 0..num_links {
             let stat = stat_slice[k as usize];
             if stat.kinematic != 0 {
@@ -296,7 +315,13 @@ pub fn gpu_mb_gravity_and_lu(
                         let q = ws.coords.read(axis as usize);
                         let abs_dof = stat.assembly_id + curr_free_dof;
                         let v = vel_slice[abs_dof as usize];
-                        let tau = (motor.stiffness * (motor.target_pos - q)
+                        let target = if use_prev {
+                            motor_delay_state
+                                .read(delay_base + 2 + (mb.first_link + k) as usize)
+                        } else {
+                            motor.target_pos
+                        };
+                        let tau = (motor.stiffness * (target - q)
                             - motor.damping * v)
                             .clamp(-motor.max_force, motor.max_force);
                         let idx = gen_base + abs_dof as usize;
@@ -305,6 +330,11 @@ pub fn gpu_mb_gravity_and_lu(
                 }
                 curr_free_dof += 1;
             }
+        }
+        // Bump the per-control-step physics-step counter (single writer: one
+        // multibody per batch — see the binding comment).
+        if mb_idx == 0 {
+            motor_delay_state.write(delay_base, tick + 1.0);
         }
     }
     workgroup_memory_barrier_with_group_sync();
