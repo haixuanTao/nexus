@@ -1010,6 +1010,49 @@ impl GpuPhysicsState {
         self.multibodies.reset_env_from_snapshot(backend, dst_env, &snap.mb);
     }
 
+    /// Pre-size the collision-pair / contact / constraint buffers to at least
+    /// `per_batch` entries per batch — the same allocations the lazy in-step
+    /// resize performs, done eagerly. Use before CUDA-graph capture on scenes
+    /// whose contact counts grow over time (e.g. terrain curricula): growth is
+    /// impossible after capture, and overflowing pairs are silently dropped.
+    #[cfg(feature = "dim3")]
+    pub fn reserve_contacts(&mut self, backend: &GpuBackend, per_batch: u32) {
+        let current = self.collision_pairs.len() as u32 / self.num_batches;
+        if per_batch <= current {
+            return;
+        }
+        let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+        let desired_len = per_batch.next_power_of_two();
+        let nb = self.num_batches;
+        self.collision_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.collision_pairs_batch_capacity =
+            Tensor::scalar(backend, desired_len, BufferUsages::STORAGE | BufferUsages::UNIFORM)
+                .unwrap();
+        self.contacts_batch_capacity =
+            Tensor::scalar(backend, desired_len, BufferUsages::STORAGE | BufferUsages::UNIFORM)
+                .unwrap();
+        self.contacts = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.pfm_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.old_constraints = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.old_constraint_builders =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.old_body_constraint_ids =
+            Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
+        self.new_constraints = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.new_constraint_builders =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.new_body_constraint_ids =
+            Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
+        self.constraints_colors =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.colored = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.constraints_rands =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.collision_pairs_per_batch_cpu = desired_len;
+        self.contacts_per_batch_cpu = desired_len;
+        self.rebuild_batch_indices(backend);
+    }
+
     /// [`Self::reset_env_from_snapshot`] with the robot rigidly translated by
     /// `offset` (world frame) — the teleport primitive for terrain-curriculum
     /// style spawn placement. Only floating-base multibody links move; fixed
