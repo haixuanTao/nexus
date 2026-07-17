@@ -577,20 +577,20 @@ impl RbdState {
         let collision_groups = Tensor::vector(backend, &all_collision_groups, storage).unwrap();
         let collider_materials = Tensor::vector(backend, &all_collider_materials, storage).unwrap();
 
-        let collision_pairs = Tensor::vector_uninit(
+        let collision_pairs = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let collision_pairs_len = Tensor::vector_uninit(
+        let collision_pairs_len = Tensor::vector(
             backend,
-            num_batches,
+            bytemuck::zeroed_vec((num_batches) as usize),
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )
         .unwrap();
         let collision_pairs_len_max =
-            Tensor::vector_uninit(backend, 1, BufferUsages::STORAGE | BufferUsages::COPY_SRC)
+            Tensor::vector(backend, bytemuck::zeroed_vec((1) as usize), BufferUsages::STORAGE | BufferUsages::COPY_SRC)
                 .unwrap();
         let num_batches_uniform = Tensor::scalar(
             backend,
@@ -603,15 +603,15 @@ impl RbdState {
         let collision_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
 
-        let contacts = Tensor::vector_uninit(
+        let contacts = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let contacts_len = Tensor::vector_uninit(
+        let contacts_len = Tensor::vector(
             backend,
-            num_batches,
+            bytemuck::zeroed_vec((num_batches) as usize),
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )
         .unwrap();
@@ -619,91 +619,91 @@ impl RbdState {
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
         let pfm_pairs_indirect =
             Tensor::scalar_uninit(backend, BufferUsages::STORAGE | BufferUsages::INDIRECT).unwrap();
-        let pfm_pairs = Tensor::vector_uninit(
+        let pfm_pairs = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let pfm_pairs_len = Tensor::vector_uninit(
+        let pfm_pairs_len = Tensor::vector(
             backend,
-            num_batches,
+            bytemuck::zeroed_vec((num_batches) as usize),
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         )
         .unwrap();
         let pairs_flat_offsets =
-            Tensor::vector_uninit(backend, num_batches + 1, BufferUsages::STORAGE).unwrap();
+            Tensor::vector(backend, bytemuck::zeroed_vec((num_batches + 1) as usize), BufferUsages::STORAGE).unwrap();
         let pfm_flat_offsets =
-            Tensor::vector_uninit(backend, num_batches + 1, BufferUsages::STORAGE).unwrap();
+            Tensor::vector(backend, bytemuck::zeroed_vec((num_batches + 1) as usize), BufferUsages::STORAGE).unwrap();
         let num_colors_uniform = Tensor::scalar(
             backend,
             capacities.solver_colors + 1,
             BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         )
         .unwrap();
-        let old_constraints = Tensor::vector_uninit(
+        let old_constraints = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let old_constraint_builders = Tensor::vector_uninit(
+        let old_constraint_builders = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let new_constraints = Tensor::vector_uninit(
+        let new_constraints = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let new_constraint_builders = Tensor::vector_uninit(
+        let new_constraint_builders = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let constraints_colors = Tensor::vector_uninit(
+        let constraints_colors = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let colored = Tensor::vector_uninit(
+        let colored = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let constraints_rands = Tensor::vector_uninit(
+        let constraints_rands = Tensor::vector(
             backend,
-            capacities.collisions_capacity * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let old_constraints_counts = Tensor::vector_uninit(
+        let old_constraints_counts = Tensor::vector(
             backend,
-            num_colliders_per_batch as u32 * num_batches,
+            bytemuck::zeroed_vec((num_colliders_per_batch as u32 * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let new_constraints_counts = Tensor::vector_uninit(
+        let new_constraints_counts = Tensor::vector(
             backend,
-            num_colliders_per_batch as u32 * num_batches,
+            bytemuck::zeroed_vec((num_colliders_per_batch as u32 * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let old_body_constraint_ids = Tensor::vector_uninit(
+        let old_body_constraint_ids = Tensor::vector(
             backend,
-            capacities.collisions_capacity * 2 * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * 2 * num_batches) as usize),
             storage,
         )
         .unwrap();
-        let new_body_constraint_ids = Tensor::vector_uninit(
+        let new_body_constraint_ids = Tensor::vector(
             backend,
-            capacities.collisions_capacity * 2 * num_batches,
+            bytemuck::zeroed_vec((capacities.collisions_capacity * 2 * num_batches) as usize),
             storage,
         )
         .unwrap();

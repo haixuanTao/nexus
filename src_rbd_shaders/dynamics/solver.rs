@@ -217,9 +217,15 @@ pub fn gpu_solver_sort_constraints(
     let mut body_constraint_ids = SliceMut(body_constraint_ids, bci_start);
     let len = contacts_len.read(batch_id as usize);
 
+    let nb = batch_ids.colliders_len as usize;
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let body1 = contacts[i as usize].bodies.x as usize;
         let body2 = contacts[i as usize].bodies.y as usize;
+        // DEBUG GUARD: skip manifolds with out-of-range body ids instead of
+        // faulting (diagnosing a >16-batch illegal address).
+        if body1 >= nb || body2 >= nb {
+            continue;
+        }
         let group1 = body_group[body1] as usize;
         let group2 = body_group[body2] as usize;
 

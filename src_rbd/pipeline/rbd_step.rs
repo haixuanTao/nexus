@@ -317,7 +317,8 @@ impl RbdPipeline {
         // memory; batches with more bodies than the stage fall back to the
         // per-color dispatch chain.
         let fuse_color_loops = state.num_colliders_per_batch
-            <= crate::shaders::dynamics::FUSED_SOLVE_MAX_BODIES as u32;
+            <= crate::shaders::dynamics::FUSED_SOLVE_MAX_BODIES as u32
+            && std::env::var("NEXUS_FUSE_COLORS").map(|v| v != "0").unwrap_or(true);
 
         // Create solver_args for solve phase (after coloring is complete)
         let solver_args = SolverArgs {
