@@ -302,21 +302,15 @@ impl RbdPipeline {
 
         let num_colors = stats.num_colors;
 
-        // Keep the fused-kernel color-count uniform in sync (the count only
-        // moves when the Grow policy raises `max_colors`, so this is rare).
-        // Update IN PLACE via a stream-ordered H2D write — NOT a realloc:
-        // `Tensor::scalar` here would `cudaMalloc` inside the step, which is
-        // illegal during CUDA-graph capture (STREAM_CAPTURE_INVALIDATED). The
-        // buffer is pre-sized with COPY_DST at state build; `write_buffer` is a
-        // `cuMemcpyHtoDAsync` on the captured stream, so it is capture-safe. And
-        // during capture `num_colors` is constant (max_colors only ratchets in
-        // auto_resize, outside the captured region), so this branch is skipped
-        // then anyway.
-        if state.num_colors_uniform_cpu != num_colors {
-            backend
-                .write_buffer(state.num_colors_uniform.buffer_mut(), 0, &[num_colors])?;
-            state.num_colors_uniform_cpu = num_colors;
-        }
+        // NOTE: the fused-kernel color-count uniform (`num_colors_uniform`) is
+        // NOT synced here. Any H2D write inside step() — pageable `memcpy_htod`
+        // just like a realloc — is illegal during CUDA-graph capture and
+        // invalidates it. `max_colors` only changes in `set_max_colors` (setup)
+        // and `auto_resize_buffers` (the ratchet), both OUTSIDE the captured
+        // region, so the uniform is synced there instead (see
+        // `auto_resize_buffers`). `num_colors` is constant across a captured
+        // step, so nothing needs to happen here.
+        let _ = num_colors;
         // One 64-lane workgroup per env stages that env's velocities in shared
         // memory; batches with more bodies than the stage fall back to the
         // per-color dispatch chain.
@@ -519,6 +513,19 @@ impl RbdPipeline {
                 backend,
                 &[(pairs_source, 0, 1), (state.uncolored.buffer(), 0, 1)],
             )?;
+        }
+
+        // Sync the fused-solver color-count uniform here — OUTSIDE the captured
+        // step, so this H2D write is legal (inside step() it would invalidate a
+        // CUDA-graph capture). Runs on every auto_resize call, covering both the
+        // ratchet above and any `set_max_colors` from setup; `max_colors` is
+        // constant across a capture, so the value is stable by the time the
+        // graph is recorded (biped warms up through several auto_resize cycles
+        // before capturing).
+        let num_colors = state.max_colors + 1;
+        if state.num_colors_uniform_cpu != num_colors {
+            backend.write_buffer(state.num_colors_uniform.buffer_mut(), 0, &[num_colors])?;
+            state.num_colors_uniform_cpu = num_colors;
         }
 
         Ok(())

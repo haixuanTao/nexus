@@ -139,16 +139,25 @@ impl RadixSort {
             .map(|v| v != "0")
             .unwrap_or(true);
         if small_enabled && per_batch_max > 0 && per_batch_max <= SMALL_SORT_MAX {
-            workspace.pass_uniforms.clear();
-            workspace.pass_uniforms.push(Tensor::scalar(
-                backend,
-                SortUniforms {
-                    shift: 0,
-                    max_keys_per_batch: per_batch_max,
-                    has_aux: 0,
-                },
-                BufferUsages::STORAGE | BufferUsages::UNIFORM,
-            )?);
+            // Allocate the uniform ONCE and cache it, keyed by per_batch_max —
+            // reallocating every dispatch would `cuMemAlloc` inside the step and
+            // invalidate CUDA-graph capture (same reason the radix path caches
+            // via `uniforms_key`). The small-sort key is `(per_batch, 0, 0, 0)`
+            // so it never collides with the radix path's key shape.
+            let small_key = (per_batch_max, 0, 0, 0);
+            if workspace.uniforms_key != Some(small_key) || workspace.pass_uniforms.is_empty() {
+                workspace.pass_uniforms.clear();
+                workspace.pass_uniforms.push(Tensor::scalar(
+                    backend,
+                    SortUniforms {
+                        shift: 0,
+                        max_keys_per_batch: per_batch_max,
+                        has_aux: 0,
+                    },
+                    BufferUsages::STORAGE | BufferUsages::UNIFORM,
+                )?);
+                workspace.uniforms_key = Some(small_key);
+            }
             // `call` takes logical THREAD counts (div_ceil'd by the workgroup
             // size) — one 64-wide workgroup per batch.
             return self.small.call(
