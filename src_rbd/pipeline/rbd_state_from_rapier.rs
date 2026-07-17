@@ -454,17 +454,30 @@ impl RbdState {
                 .iter()
                 .map(|(mb, ids, bodies)| (*mb, ids, *bodies))
                 .collect();
+            // Per-env contact μ for the multibody contact kernels: read the
+            // GROUND (fixed-body) collider — the unambiguous carrier of the
+            // env's DR friction (this is what makes per-env friction DR reach
+            // the GPU). Default 0.5 where none found.
+            let mb_frictions: Vec<f32> = environments
+                .iter()
+                .map(|(bodies, colliders, _, _, _)| {
+                    colliders
+                        .iter()
+                        .find_map(|(_, c)| {
+                            let b = bodies.get(c.parent()?)?;
+                            b.is_fixed().then(|| c.friction())
+                        })
+                        .unwrap_or(0.5)
+                })
+                .collect();
             let mut mb = GpuMultibodySet::from_rapier(
                 backend,
                 &mb_refs,
                 [0.0, -9.81, 0.0],
                 max_colliders as u32,
+                &mb_frictions,
             );
             mb.set_visible_dt(backend, multibody_dt);
-            // Soft contact coefficients (rapier TGS-soft) from the substep sim
-            // params, so multibody-vs-floor contacts use the same soft ERP + CFM
-            // as the free-body path (and as rapier) instead of a rigid `1/dt`.
-            mb.set_constraint_softness(backend, &all_sim_params[0]);
 
             // Route MB-touching impulse joints (those skipped by the
             // regular `GpuImpulseJointSet`) to the multibody generic

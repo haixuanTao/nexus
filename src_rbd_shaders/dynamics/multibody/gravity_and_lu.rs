@@ -3,19 +3,20 @@
 //! Replaces a 3-dispatch chain (`gpu_mb_apply_gravity_with_coriolis` →
 //! `gpu_mb_lu_factor_and_solve`) with a single workgroup-parallel kernel,
 //! removing two WebGPU dispatch round-trips per `compute_dynamics` call.
+//!
+//! Lane partitioning matches the originals: gravity assembly is per-link
+//! sequential (kinematic_acc chained parent → child) with the per-link
+//! `Aᵀ·f` scatter parallelised across DOFs; LU then operates on a workgroup
+//! tile of the mass matrix.
 
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
-#[cfg(feature = "dim2")]
-use glamx::Vec2;
-#[cfg(feature = "dim3")]
-use glamx::Vec3;
-use glamx::Vec4;
+use glamx::{Vec2, Vec3, Vec4};
 
-use crate::dynamics::body::Velocity;
+use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
 use crate::utils::linalg::{MAX_MB_DOFS, MatSlice, fill_par, gemv_tr_spatial_split_par};
 use crate::utils::{BatchIndices, Slice};
@@ -24,11 +25,22 @@ use crate::{AngVector, Vector, gcross_av};
 use super::lu::{
     LANES, lu_apply_pivots, lu_factor_in_shared, lu_triangular_solve_in_place, sm_idx,
 };
+use super::mass_matrix::link_world_inertia;
 use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
 
 /// Fused gravity / Coriolis-force assembly + LU factor + LU solve.
+///
+/// Bindings count (`14` storage max in 3D, `10` in 2D):
+///   - `multibody_info`, `links_static`, `links_workspace`,
+///     `links_local_mprops`, `body_jacobians`, `gen_forces`, `mass_matrices`,
+///     `lu_pivots`, `dof_velocities`, `damping`, `num_multibodies`, `gravity`
+///   = 12 storage buffers, plus 4 uniform `*_batch_capacity` slots.
+///
+/// Workgroup memory: matrix tile (`32×32 f32 = 4 KiB`) + rhs (`32 f32`) +
+/// per-lane reduction scratch (`32 f32`) + two scalar broadcast slots ≈ 4.5
+/// KiB, well under the 19 904 B limit configured by the testbed.
 #[spirv_bindgen]
-#[spirv(compute(threads(64, 1, 1)))]
+#[spirv(compute(threads(32, 1, 1)))]
 pub fn gpu_mb_gravity_and_lu(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
@@ -37,15 +49,34 @@ pub fn gpu_mb_gravity_and_lu(
     links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] body_jacobians: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] gen_forces: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] lu_pivots: &mut [u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] gravity: &Vec4,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] gen_forces: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] lu_pivots: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] gravity: &Vec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] batch_ids: &BatchIndices,
+    // Per-DOF Coulomb joint friction (MJCF `frictionloss`, N·m). Same per-env-per-
+    // DOF layout as the velocity section (indexed `gen_base + i`); 0 for the root
+    // and any unactuated DOF.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 12)] dof_frictionloss: &[f32],
+    // Actuator-delay state, per batch, stride `2 + links_per_batch`:
+    //   [0] tick — physics-step counter within the control step (f32; the
+    //       host zeroes it once per control step, THIS kernel bumps it),
+    //   [1] k — delay in physics steps (0 = no delay, the default),
+    //   [2 + link] — the PREVIOUS control step's motor position target for
+    //       that link's motorized axis.
+    // While tick < k the PD uses the previous target (WBC-AGILE's
+    // DelayedPDActuator semantics) with ZERO mid-step host writes — the old
+    // host-side restage stalled the stream on a pageable H2D copy per substep.
+    // NOTE: the tick bump assumes ONE multibody per batch (zealot's layout);
+    // with several, extra multibodies race the bump by one step at worst.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 13)] motor_delay_state: &mut [f32],
     // Mass-matrix tile in shared memory.
-    #[spirv(workgroup)] mat: &mut [f32; MAX_MB_DOFS * MAX_MB_DOFS],
+    #[spirv(workgroup)] mat: &mut [f32; (MAX_MB_DOFS * MAX_MB_DOFS) as usize],
     // RHS / solution vector.
     #[spirv(workgroup)] x: &mut [f32; MAX_MB_DOFS],
     // Per-lane partial sums for the triangular-solve tree reduction.
@@ -75,11 +106,15 @@ pub fn gpu_mb_gravity_and_lu(
     let mut ws_slice = batch_ids
         .mb_links_batch_mut(batch_id, links_workspace)
         .offset(mb.first_link as usize);
+    let local_mprops_slice = batch_ids
+        .mb_links_batch(batch_id, links_local_mprops)
+        .offset(mb.first_link as usize);
     let vel_slice = Slice(dof_state, gen_base);
     let damping_slice = Slice(
         dof_state,
         batch_ids.dof_damping_section_offset as usize + gen_base,
     );
+    let frictionloss_slice = Slice(dof_frictionloss, gen_base);
 
     // ---- Phase 1: zero the generalized-force vector (parallel across DOFs). ----
     let accelerations = MatSlice::dense(gen_base, ndofs, 1);
@@ -167,13 +202,12 @@ pub fn gpu_mb_gravity_and_lu(
         workgroup_memory_barrier_with_group_sync();
 
         if active {
-            #[cfg(feature = "dim3")]
             let rb_ang = ws_slice[k as usize].rb_vels.angular;
-            let lmp = stat_slice[k as usize].local_mprops;
+            let lmp = local_mprops_slice[k as usize];
             let inv_mass_x = lmp.inv_mass.x;
             if inv_mass_x != 0.0 {
                 let mass = 1.0 / inv_mass_x;
-                let rb_inertia = ws_slice[k as usize].link_world_inertia(&lmp);
+                let rb_inertia = link_world_inertia(&ws_slice[k as usize], &lmp);
 
                 #[cfg(feature = "dim3")]
                 let gyroscopic = {
@@ -223,7 +257,85 @@ pub fn gpu_mb_gravity_and_lu(
     if i < ndofs {
         let idx = gen_base + i as usize;
         let cur = gen_forces.read(idx);
-        gen_forces.write(idx, cur - damping_slice[i as usize] * vel_slice[i as usize]);
+        let v = vel_slice[i as usize];
+        // Viscous damping (linear) + Coulomb joint friction (frictionloss). The
+        // Coulomb term -fl·sign(v) is smoothed near v=0 via clamp(v/eps) (eps=1
+        // rad/s) so it tapers to viscous instead of chattering across zero. It's
+        // applied explicitly here (not folded into M like viscous damping) since
+        // Coulomb isn't linear in v.
+        let coulomb = frictionloss_slice[i as usize] * (v / 1.0).clamp(-1.0, 1.0);
+        gen_forces.write(idx, cur - damping_slice[i as usize] * v - coulomb);
+    }
+    workgroup_memory_barrier_with_group_sync();
+
+    // ---- Explicit force-based motor PD torque ----
+    // For motors with `model == FORCE_BASED`, apply the actuator torque
+    // τ = clamp(stiffness·(target − q) − damping·q̇, ±max_force) DIRECTLY as a
+    // generalized force (added to `gen_forces` before the LU solve, so it enters
+    // the accelerations like any applied force), instead of as the soft
+    // cfm_gain motor constraint (which under-realizes kp on the low-inertia leg
+    // joints, so the robot sags / buckles under gravity). This matches the real
+    // robot and MuJoCo's position actuator exactly: τ = kp·err − kv·q̇ with fixed
+    // gains. AccelerationBased motors (model 0) are untouched — they still go
+    // through the constraint path. Run serially on lane 0 over the links
+    // (`num_links` is small, ~13); each motor maps to a distinct DOF so there's
+    // no double-write, and `gen_forces` for this mb is final after the damping
+    // pass above.
+    if lane == 0 {
+        // Actuator delay: while this control step's physics-step counter is
+        // below the batch's delay, the PD tracks the PREVIOUS target.
+        let delay_stride = 2 + batch_ids.links_batch_capacity as usize;
+        let delay_base = batch_id as usize * delay_stride;
+        let tick = motor_delay_state.read(delay_base);
+        let delay_k = motor_delay_state.read(delay_base + 1);
+        let use_prev = tick < delay_k;
+        for k in 0..num_links {
+            let stat = stat_slice[k as usize];
+            if stat.kinematic != 0 {
+                continue;
+            }
+            let locked = stat.data.locked_axes;
+            let motor_axes = stat.data.motor_axes & !locked;
+            if motor_axes == 0 {
+                continue;
+            }
+            let ws = &ws_slice[k as usize];
+            // Walk the free axes in DOF order (mirrors `init_joint_constraints`),
+            // tracking the DOF offset within this joint's slice.
+            let mut curr_free_dof = 0u32;
+            for axis in 0..(SPATIAL_DIM as u32) {
+                if (locked & (1 << axis)) != 0 {
+                    continue;
+                }
+                if (motor_axes & (1 << axis)) != 0 {
+                    // By-value element load — cuda-oxide drops the dynamic index
+                    // on `&motors[axis]` (see init_joint_constraints).
+                    let motor = stat.data.motors[axis as usize];
+                    if motor.model == crate::dynamics::joint::FORCE_BASED {
+                        let q = ws.coords.read(axis as usize);
+                        let abs_dof = stat.assembly_id + curr_free_dof;
+                        let v = vel_slice[abs_dof as usize];
+                        let target = if use_prev {
+                            motor_delay_state
+                                .read(delay_base + 2 + (mb.first_link + k) as usize)
+                        } else {
+                            motor.target_pos
+                        };
+                        let tau = (motor.stiffness * (target - q)
+                            - motor.damping * v)
+                            .clamp(-motor.max_force, motor.max_force);
+                        let idx = gen_base + abs_dof as usize;
+                        gen_forces.write(idx, gen_forces.read(idx) + tau);
+                    }
+                }
+                curr_free_dof += 1;
+            }
+        }
+        // Bump the per-control-step physics-step counter (single writer: one
+        // multibody per batch — see the binding comment).
+        if mb_idx == 0 {
+            motor_delay_state.write(delay_base, tick + 1.0);
+        }
     }
     workgroup_memory_barrier_with_group_sync();
 

@@ -294,3 +294,6 @@ impl RbdSimParams {
         self.normalized_prediction_distance * self.length_unit
     }
 }
+
+/// Back-compat alias: the fork-era multibody kernels call this `SimParams`.
+pub type SimParams = RbdSimParams;

@@ -305,6 +305,7 @@ impl GpuSolver {
                         contacts_len: args.contacts_len,
                         solver_vels: &mut *args.solver_vels,
                         batch_indices: args.batch_indices,
+                        sim_params: args.sim_params,
                     };
                     solver.$method(pass, state, &mut mb_args $(, $extra)*)?;
                 }

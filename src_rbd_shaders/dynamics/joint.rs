@@ -150,34 +150,40 @@ fn pseudo_inv(x: f32) -> f32 {
     if x == 0.0 { 0.0 } else { 1.0 / x }
 }
 
-impl JointMotor {
-    /// Computes motor parameters from this motor's configuration.
-    pub fn motor_params(&self, dt: f32) -> MotorParameters {
-        if self.model == ACCELERATION_BASED {
-            let erp_inv_dt = self.stiffness * pseudo_inv(dt * self.stiffness + self.damping);
-            let cfm_coeff = pseudo_inv(dt * dt * self.stiffness + dt * self.damping);
+/// Computes motor parameters from motor configuration.
+pub fn motor_params(motor: &JointMotor, dt: f32) -> MotorParameters {
+    if motor.model == ACCELERATION_BASED {
+        let erp_inv_dt = motor.stiffness * pseudo_inv(dt * motor.stiffness + motor.damping);
+        let cfm_coeff = pseudo_inv(dt * dt * motor.stiffness + dt * motor.damping);
 
-            MotorParameters {
-                erp_inv_dt,
-                cfm_coeff,
-                cfm_gain: 0.0,
-                target_pos: self.target_pos,
-                target_vel: self.target_vel,
-                max_impulse: self.max_force * dt,
-            }
-        } else {
-            // FORCE_BASED
-            let erp_inv_dt = self.stiffness * pseudo_inv(dt * self.stiffness + self.damping);
-            let cfm_gain = pseudo_inv(dt * dt * self.stiffness + dt * self.damping);
-
-            MotorParameters {
-                erp_inv_dt,
-                cfm_coeff: 0.0,
-                cfm_gain,
-                target_pos: self.target_pos,
-                target_vel: self.target_vel,
-                max_impulse: self.max_force * dt,
-            }
+        MotorParameters {
+            erp_inv_dt,
+            cfm_coeff,
+            cfm_gain: 0.0,
+            target_pos: motor.target_pos,
+            target_vel: motor.target_vel,
+            max_impulse: motor.max_force * dt,
         }
+    } else {
+        // FORCE_BASED
+        let erp_inv_dt = motor.stiffness * pseudo_inv(dt * motor.stiffness + motor.damping);
+        let cfm_gain = pseudo_inv(dt * dt * motor.stiffness + dt * motor.damping);
+
+        MotorParameters {
+            erp_inv_dt,
+            cfm_coeff: 0.0,
+            cfm_gain,
+            target_pos: motor.target_pos,
+            target_vel: motor.target_vel,
+            max_impulse: motor.max_force * dt,
+        }
+    }
+}
+
+impl JointMotor {
+    /// Method form of [`motor_params`] (upstream call-site convention).
+    #[inline(always)]
+    pub fn motor_params(&self, dt: f32) -> MotorParameters {
+        motor_params(self, dt)
     }
 }

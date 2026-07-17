@@ -4,17 +4,36 @@
 //! Replaces a 4-dispatch chain
 //! (`gpu_mb_forward_kinematics` → `gpu_mb_body_jacobians` →
 //! `gpu_mb_update_velocities` → `gpu_mb_mass_matrix_with_coriolis`) with a
-//! single workgroup-parallel kernel (one workgroup per `(multibody, batch)`).
-//! The follow-up `gpu_mb_gravity_and_lu` kernel finishes the dynamics pipeline
-//! (gravity rhs + LU factor + LU solve).
+//! single workgroup-parallel kernel: each phase reuses the same `(multibody,
+//! batch)` workgroup and a workgroup-shared scratch slot, removing three
+//! WebGPU dispatches per `compute_dynamics` call.
+//!
+//! Phases (32 lanes per workgroup):
+//!   1. Forward kinematics — link walk (lane 0 only; others idle at barrier).
+//!      Writes workspace `local_to_parent`, `local_to_world`, `shift02`,
+//!      `shift23` and pushes the link world pose into the shared `poses`
+//!      buffer for downstream consumers (mprops update, broad phase).
+//!   2. Body jacobians — per-link sequential outer loop, 32-lane parallel
+//!      column work; matches `gpu_mb_body_jacobians`.
+//!   3. Velocity propagation — link walk (lane 0). Mirrors
+//!      `gpu_mb_update_velocities`.
+//!   4. CRBA + Coriolis mass-matrix assembly — per-link sequential outer
+//!      loop, 32-lane parallel inner work. Mirrors
+//!      `gpu_mb_mass_matrix_with_coriolis`.
+//!
+//! Bindings: 14 storage + 8 uniform — exactly at the 14-storage WebGPU limit
+//! requested by the testbed. The follow-up `gpu_mb_gravity_and_lu` kernel
+//! finishes the dynamics pipeline (gravity rhs + LU factor + LU solve).
 
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
-use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
-use crate::dynamics::body::Velocity;
+#[cfg(feature = "dim3")]
+use glamx::{Mat3, Vec3};
+
+use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
 #[cfg(feature = "dim3")]
 use crate::utils::linalg::gemm_skew_lhs_cross_buf_par;
@@ -26,13 +45,18 @@ use crate::utils::linalg::{
 use crate::utils::{BatchIndices, Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross_av};
 use parry::math::VectorExt;
+use crate::utils::radix_sort::num_workgroups;
+use super::jacobian::{joint_jacobian_accumulate_par, joint_jacobian_column};
+use super::mass_matrix::link_world_inertia;
+use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
+use super::utils::body_to_parent;
 
-const LANES: u32 = 64;
+const LANES: u32 = 32;
 
 // TODO: refactor into multiple functions (but single kernel) to share between the coriolis and non-coriolis versions.
 /// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
-#[spirv_bindgen(force_cpu_coroutines)]
-#[spirv(compute(threads(64, 1, 1)))]
+#[spirv_bindgen]
+#[spirv(compute(threads(32, 1, 1)))]
 pub fn gpu_mb_compute_dynamics_pre(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
@@ -41,13 +65,26 @@ pub fn gpu_mb_compute_dynamics_pre(
     links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] coriolis_packed: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] coriolis_packed: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] batch_ids: &BatchIndices,
+    // Per-DOF armature (rotor inertia), env-major `dofs_cap × num_batches`, same
+    // layout/indexing as the velocity section (`vel_base + i`). Added to the mass-
+    // matrix DIAGONAL (not the link inertia tensor) so it stays consistent with
+    // the gravity bias force — otherwise a free-falling body gets spurious
+    // internal joint accelerations. 0 for the root / unactuated DOFs.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 12)] dof_armature: &[f32],
+    // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
+    // path (for parity with the original kernels that needed it). Cheap on
+    // GPU — unused.
+    #[spirv(workgroup)] _cpu_marker: &mut u32,
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -58,6 +95,7 @@ pub fn gpu_mb_compute_dynamics_pre(
     // uniform across the workgroup, so any subsequent `workgroupBarrier()`
     // would be flagged "called from non-uniform control flow". See
     // `gpu_mb_lu_decompose` for the rationale.
+    let _ = num_multibodies;
 
     let dt = *dt_uniform;
 
@@ -81,40 +119,31 @@ pub fn gpu_mb_compute_dynamics_pre(
     let mut ws_slice = batch_ids
         .mb_links_batch_mut(batch_id, links_workspace)
         .offset(mb.first_link as usize);
+    let local_mprops_slice = batch_ids
+        .mb_links_batch(batch_id, links_local_mprops)
+        .offset(mb.first_link as usize);
     let mut poses_slice = batch_ids.coll_batch_mut(batch_id, poses);
     let damping_slice = Slice(
         dof_state,
         vel_base + batch_ids.dof_damping_section_offset as usize,
     );
-    // Armature (reflected rotor inertia) section sits right after damping, at
-    // `2 · dof_damping_section_offset` (= 2·N). Added to the mass-matrix diagonal
-    // alongside `damping·dt`, matching rapier's `update_mass_matrix`.
-    let armature_slice = Slice(
-        dof_state,
-        vel_base + 2 * batch_ids.dof_damping_section_offset as usize,
-    );
+    // Per-DOF armature, env-major, indexed `vel_base + dof` like the velocity
+    // section. Added to the mass-matrix diagonal below.
+    let armature_slice = Slice(dof_armature, vel_base);
     let vel_slice = Slice(dof_state, vel_base);
 
     // 1) Forward Kinematics (single-threaded)
     if lane == 0 {
-        forward_kinematics(&mb, &stat_slice, &mut poses_slice, &mut ws_slice, num_links);
+        forward_kinematics(&mb, &stat_slice, &mut poses_slice, &mut ws_slice, &local_mprops_slice, num_links);
     }
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(
-        lane,
-        mb_jac_base,
-        ndofs,
-        num_links,
-        &stat_slice,
-        &ws_slice.as_ref(),
-        body_jacobians,
-    );
+    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
 
     // 3) Propagate velocities (single-threaded)
     if lane == 0 {
-        propagate_velocities(num_links, &stat_slice, &vel_slice, &mut ws_slice);
+        propagate_velocities(num_links, &stat_slice, &local_mprops_slice, &vel_slice, &mut ws_slice);
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -136,7 +165,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         let mut mass = 0.0;
 
         if loop_is_active {
-            let lmp = stat_slice[k as usize].local_mprops;
+            let lmp = local_mprops_slice[k as usize];
 
             inv_mass_x = lmp.inv_mass.x;
 
@@ -185,9 +214,9 @@ pub fn gpu_mb_compute_dynamics_pre(
 
         if loop_is_active {
             let ws = &ws_slice[k as usize];
-            let lmp = stat_slice[k as usize].local_mprops;
+            let lmp = local_mprops_slice[k as usize];
             mass = 1.0 / inv_mass_x;
-            rb_inertia = ws.link_world_inertia(&lmp);
+            rb_inertia = link_world_inertia(ws, &lmp);
 
             #[cfg(feature = "dim3")]
             let augmented_inertia = {
@@ -337,7 +366,7 @@ pub fn gpu_mb_compute_dynamics_pre(
                         let parent_w_skew = crate::utils::linalg::skew(parent_link.rb_vels.angular);
                         let c = lane;
                         if c < stat.ndofs {
-                            let (jv, jw) = stat.joint_jacobian_column(transform_rot, c);
+                            let (jv, jw) = joint_jacobian_column(&stat, transform_rot, c);
                             let pv = parent_w_skew * jv;
                             let pw = parent_w_skew * jw;
                             let iv0 = coriolis_v_part.idx(0, c);
@@ -359,7 +388,7 @@ pub fn gpu_mb_compute_dynamics_pre(
                         let parent_w = parent_link.rb_vels.angular;
                         let c = lane;
                         if c < stat.ndofs {
-                            let (jv, _) = stat.joint_jacobian_column(transform_rot, c);
+                            let (jv, _) = joint_jacobian_column(&stat, transform_rot, c);
                             let iv0 = coriolis_v_part.idx(0, c);
                             let iv1 = coriolis_v_part.idx(1, c);
                             coriolis_packed
@@ -464,8 +493,7 @@ pub fn gpu_mb_compute_dynamics_pre(
         workgroup_memory_barrier_with_group_sync();
     }
 
-    // Diagonal: M[i, i] += damping[i] * dt + armature[i] — parallel.
-    // Matches rapier's `update_mass_matrix`: `diag = damping·dt + armature`.
+    // Damping diagonal: M[i, i] += damping[i] * dt — parallel.
     let d = lane;
     if d < ndofs {
         let diag_idx = acc_augmented_mass.idx(d, d);
@@ -478,8 +506,8 @@ pub fn gpu_mb_compute_dynamics_pre(
 }
 
 /// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
-#[spirv_bindgen(force_cpu_coroutines)]
-#[spirv(compute(threads(64, 1, 1)))]
+#[spirv_bindgen]
+#[spirv(compute(threads(32, 1, 1)))]
 pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
@@ -488,12 +516,23 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [MultibodyLinkWorkspace],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_state: &[f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
+    // Per-DOF armature (rotor inertia) — see the with-Coriolis kernel. Added to
+    // the mass-matrix diagonal (binding here is 11; this kernel has no Coriolis
+    // buffer so its binding indices are one lower than the Coriolis variant).
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] dof_armature: &[f32],
+    // Dummy workgroup cell forces the khal CPU dispatch to use the coroutine
+    // path (for parity with the original kernels that needed it). Cheap on
+    // GPU — unused.
+    #[spirv(workgroup)] _cpu_marker: &mut u32,
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -501,6 +540,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     // No early-return on out-of-range `mb_idx` — see `gpu_mb_lu_decompose`
     // for the WGSL uniformity rationale. Dummy multibody slots have zero
     // links / DOFs, so all per-link loops below iterate zero times.
+    let _ = num_multibodies;
 
     let dt = *dt_uniform;
 
@@ -519,40 +559,31 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     let mut ws_slice = batch_ids
         .mb_links_batch_mut(batch_id, links_workspace)
         .offset(mb.first_link as usize);
+    let local_mprops_slice = batch_ids
+        .mb_links_batch(batch_id, links_local_mprops)
+        .offset(mb.first_link as usize);
     let mut poses_slice = batch_ids.coll_batch_mut(batch_id, poses);
     let damping_slice = Slice(
         dof_state,
         vel_base + batch_ids.dof_damping_section_offset as usize,
     );
-    // Armature (reflected rotor inertia) section sits right after damping, at
-    // `2 · dof_damping_section_offset` (= 2·N). Added to the mass-matrix diagonal
-    // alongside `damping·dt`, matching rapier's `update_mass_matrix`.
-    let armature_slice = Slice(
-        dof_state,
-        vel_base + 2 * batch_ids.dof_damping_section_offset as usize,
-    );
+    // Per-DOF armature, env-major, indexed `vel_base + dof` like the velocity
+    // section. Added to the mass-matrix diagonal below.
+    let armature_slice = Slice(dof_armature, vel_base);
     let vel_slice = Slice(dof_state, vel_base);
 
     // 1) Forward Kinematics (single-threaded)
     if lane == 0 {
-        forward_kinematics(&mb, &stat_slice, &mut poses_slice, &mut ws_slice, num_links);
+        forward_kinematics(&mb, &stat_slice, &mut poses_slice, &mut ws_slice, &local_mprops_slice, num_links);
     }
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(
-        lane,
-        mb_jac_base,
-        ndofs,
-        num_links,
-        &stat_slice,
-        &ws_slice.as_ref(),
-        body_jacobians,
-    );
+    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
 
     // 3) Velocities propagation (single-threaded)
     if lane == 0 {
-        propagate_velocities(num_links, &stat_slice, &vel_slice, &mut ws_slice);
+        propagate_velocities(num_links, &stat_slice, &local_mprops_slice, &vel_slice, &mut ws_slice);
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -566,7 +597,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     for k in 0..MAX_MB_DOFS as u32 {
         let mut active = k < num_links;
         if active {
-            let lmp = stat_slice[k as usize].local_mprops;
+            let lmp = local_mprops_slice[k as usize];
             if lmp.inv_mass.x == 0.0 {
                 active = false;
             }
@@ -574,9 +605,9 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
 
         if active {
             let ws = &ws_slice[k as usize];
-            let lmp = stat_slice[k as usize].local_mprops;
+            let lmp = local_mprops_slice[k as usize];
             let mass = 1.0 / lmp.inv_mass.x;
-            let inertia = ws.link_world_inertia(&lmp);
+            let inertia = link_world_inertia(ws, &lmp);
 
             let body_jacobian = MatSlice::dense(
                 mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
@@ -601,8 +632,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         workgroup_memory_barrier_with_group_sync();
     }
 
-    // Diagonal: M[i, i] += damping[i] * dt + armature[i] — parallel.
-    // Matches rapier's `update_mass_matrix`: `diag = damping·dt + armature`.
+    // Damping diagonal: M[i, i] += damping[i] * dt — parallel.
     let d = lane;
     if d < ndofs {
         let diag_idx = acc_augmented_mass.idx(d, d);
@@ -670,6 +700,7 @@ fn forward_kinematics(
     stat_slice: &Slice<MultibodyLinkStatic>,
     poses_slice: &mut SliceMut<Pose>,
     ws_slice: &mut SliceMut<MultibodyLinkWorkspace>,
+    local_mprops_slice: &Slice<LocalMassProperties>,
     num_links: u32,
 ) {
     // Root pose.
@@ -678,7 +709,7 @@ fn forward_kinematics(
         poses_slice[root_config.rb_id as usize]
     } else {
         let ws_ref = &ws_slice[0];
-        let pose = root_config.body_to_parent(ws_ref.joint_rot, &ws_ref.coords);
+        let pose = body_to_parent(&root_config, ws_ref.joint_rot, &ws_ref.coords);
         poses_slice[root_config.rb_id as usize] = pose;
         pose
     };
@@ -695,12 +726,12 @@ fn forward_kinematics(
             let ws_ref = &ws_slice[k_usize];
             let parent_ref = &ws_slice[stat.parent_link_id as usize];
             parent_to_world = parent_ref.local_to_world;
-            local_to_parent = stat.body_to_parent(ws_ref.joint_rot, &ws_ref.coords);
+            local_to_parent = body_to_parent(&stat, ws_ref.joint_rot, &ws_ref.coords);
         }
         let local_to_world = parent_to_world * local_to_parent;
 
-        let parent_lmp = stat_slice[stat.parent_link_id as usize].local_mprops;
-        let lmp = stat.local_mprops;
+        let parent_lmp = local_mprops_slice[stat.parent_link_id as usize];
+        let lmp = local_mprops_slice[k_usize];
         let world_com = local_to_world * lmp.com;
         let parent_com_world = parent_to_world * parent_lmp.com;
         let child_anchor_world = local_to_world * stat.data.local_frame_b.translation;
@@ -725,6 +756,7 @@ fn update_body_jacobians(
     ws_slice: &Slice<MultibodyLinkWorkspace>,
     body_jacobians: &mut [f32],
 ) {
+
     // TODO(PERF): on non-web platforms we could just use `mb.num_links` as the upper bound.
     // TODO(PERF): instead of copying the body jacobian over and over for each body, we should
     //             precompute a bit set that indicates which dofs are part of the kinematic tree
@@ -775,7 +807,8 @@ fn update_body_jacobians(
         if k < num_links {
             let link_infos = &stat_slice[k as usize];
             let link_j_part = link_j.columns(link_infos.assembly_id, link_infos.ndofs);
-            link_infos.joint_jacobian_accumulate_par(
+            joint_jacobian_accumulate_par(
+                link_infos,
                 parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
                 body_jacobians,
                 link_j_part,
@@ -808,15 +841,16 @@ fn update_body_jacobians(
 fn propagate_velocities(
     num_links: u32,
     stat_slice: &Slice<MultibodyLinkStatic>,
+    local_mprops_slice: &Slice<LocalMassProperties>,
     vel_slice: &Slice<f32>,
-    ws_slice: &mut SliceMut<MultibodyLinkWorkspace>,
+    ws_slice: &mut SliceMut <MultibodyLinkWorkspace>,
 ) {
     for k in 0..num_links {
         let k_usize = k as usize;
         let stat = stat_slice[k_usize];
 
         let (jv_local_lin, jv_local_ang) =
-            jacobian_mul_coordinates(stat.data.locked_axes, stat.assembly_id, vel_slice);
+            jacobian_mul_coordinates(stat.data.locked_axes, stat.assembly_id, &vel_slice);
 
         let (joint_velocity, rb_vels) = if k == 0 {
             let jv = Velocity::new(jv_local_lin, jv_local_ang);
@@ -829,7 +863,7 @@ fn propagate_velocities(
             let parent_rb_lin = parent_ws.rb_vels.linear;
             let parent_rb_ang = parent_ws.rb_vels.angular;
 
-            let parent_lmp = stat_slice[parent_id].local_mprops;
+            let parent_lmp = local_mprops_slice[parent_id];
             let transform_rot = parent_to_world_rot * stat.data.local_frame_a.rotation;
 
             #[cfg(feature = "dim3")]
@@ -843,7 +877,7 @@ fn propagate_velocities(
                 (ws_ref.local_to_world, ws_ref.shift23)
             };
 
-            let lmp = stat.local_mprops;
+            let lmp = local_mprops_slice[k_usize];
             let world_com = self_local_to_world * lmp.com;
             let parent_world_com = parent_world_com_pose * parent_lmp.com;
             let shift = world_com - parent_world_com;

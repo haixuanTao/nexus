@@ -9,9 +9,28 @@
 //!
 //! No constraints, contacts, or Coriolis terms (not in scope).
 //!
-//! Links and multibodies are stored flat across all simulation batches. Each
-//! batch has a capacity; unused slots are padded out and skipped via per-batch
-//! length counts.
+//! ### Memory layout
+//!
+//! Links and multibodies are stored flat across all simulation batches. Each batch
+//! has a capacity; unused slots are padded out and skipped via per-batch length
+//! counts (mirrors the impulse-joint infrastructure).
+//!
+//! - `links_static: Tensor<MultibodyLinkStatic>`: constant per-link config.
+//! - `links_workspace: Tensor<MultibodyLinkWorkspace>`: per-step scratch (pose, shifts).
+//! - `multibody_info: Tensor<MultibodyInfo>`: offsets/sizes per multibody.
+//! - `dof_values: Tensor<f32>`: generalized coordinates (flat, ndofs per multibody).
+//! - `dof_velocities: Tensor<f32>`: generalized velocities.
+//! - `gen_forces: Tensor<f32>`: generalized forces (receives gravity).
+//! - `body_jacobians: Tensor<f32>`: per-link `6 × ndofs` column-major.
+//! - `mass_matrices: Tensor<f32>`: per-multibody `ndofs × ndofs` column-major.
+//!
+//! ### Kernel topology
+//!
+//! Forward kinematics, jacobian assembly, mass-matrix assembly, and LU are
+//! inherently sequential within a single multibody (parent before child, or
+//! i-th elimination step before (i+1)-th). They run as `threads(1)` with one
+//! workgroup per multibody. Links are independent across multibodies so the
+//! batch × multibody grid parallelises fine.
 
 mod compute_dynamics_pre;
 mod contact_constraints;
@@ -22,6 +41,8 @@ mod jacobian;
 mod joint_constraints;
 mod lu;
 mod mass_matrix;
+mod packed_dof_poc;
+mod scatter_motor;
 mod types;
 mod utils;
 
@@ -31,5 +52,7 @@ pub use gravity_and_lu::*;
 pub use impulse_joint_constraints::*;
 pub use integrate::*;
 pub use joint_constraints::*;
+pub use packed_dof_poc::*;
+pub use scatter_motor::*;
 pub use types::*;
 pub use utils::*;

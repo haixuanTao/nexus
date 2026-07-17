@@ -1,17 +1,30 @@
 //! LU decomposition + solve.
 //!
 //! Split into two kernels so the factorization can be reused across multiple
-//! right-hand sides within a frame (e.g. gravity τ, contact impulses, …).
-//! Dispatched one workgroup per `(multibody, batch)` pair.
+//! right-hand sides within a frame (e.g. gravity τ, contact impulses, …) —
+//! mirrors nalgebra's `LU` / `LU::solve_mut` API.
+//!
+//! The augmented mass matrix from CRBA is symmetric positive definite, so
+//! pivoting is not strictly needed, but partial pivoting is still performed
+//! for robustness and parity with rapier.
+//!
+//! Workgroup-parallel: one workgroup of `LU_LANES = 32` threads cooperates
+//! per `(multibody, batch)` pair, holding the matrix in shared memory and
+//! partitioning each pivot step's row-swap / column-scale / trailing-update
+//! across lanes (tiled LU).
 
+use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
+use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
-use crate::utils::linalg::MAX_MB_DOFS;
+use crate::utils::linalg::{MAX_MB_DOFS, MatSlice};
+
+use super::types::MultibodyInfo;
 
 /// Workgroup width for the parallelised LU kernels. Must match the
 /// `threads(N, 1, 1)` attribute and `MB_LU_LANES` on the host side.
-pub(super) const LANES: u32 = 64;
+pub(super) const LANES: u32 = 32;
 
 /// Side length of the workgroup-shared matrix tile. Must equal both the lane
 /// count and the maximum supported `ndofs`.
@@ -24,6 +37,13 @@ pub(super) fn sm_idx(r: u32, c: u32) -> usize {
 }
 
 /// Workgroup-parallel LU factorization on the shared `mat` tile in place.
+///
+/// Each pivot step `k`:
+///   - lane 0 finds the pivot row (sequential argmax over rows `k..n`),
+///   - lanes 0..n participate in the row swap (each owns one column),
+///   - lane 0 broadcasts `1/akk` via shared memory,
+///   - each lane below the pivot scales its row entry,
+///   - each lane handling a trailing column updates that whole column.
 #[inline]
 pub(super) fn lu_factor_in_shared(
     n: u32,
@@ -98,9 +118,12 @@ pub(super) fn lu_factor_in_shared(
     }
 }
 
-/// Inner of the workgroup-parallel triangular solves used by the LU
-/// solve/factor-and-solve kernels. Preconditions: `mat`
-/// already holds the LU factors and `x` already holds the permuted rhs.
+/// Inner of the workgroup-parallel triangular solves used by
+/// [`gpu_mb_lu_solve`] and [`gpu_mb_lu_factor_and_solve`]. Operates entirely on
+/// shared memory: `mat` already holds the LU factors and `x` already holds the
+/// permuted rhs. Each row's `Σ_{j} M[i, j] · x[j]` is parallelised across
+/// lanes via a tree reduction in shared memory — the inherently sequential
+/// `i` dependency keeps this O(n · log lanes) but every lane stays busy.
 #[inline]
 pub(super) fn lu_triangular_solve_in_place(
     n: u32,
@@ -120,8 +143,8 @@ pub(super) fn lu_triangular_solve_in_place(
         };
         partial.write(lane as usize, s);
         workgroup_memory_barrier_with_group_sync();
-        for step in 0..6u32 {
-            let stride = 1u32 << (5 - step);
+        for step in 0..5u32 {
+            let stride = 1u32 << (4 - step);
             if lane < stride {
                 let v = partial.read(lane as usize) + partial.read((lane + stride) as usize);
                 partial.write(lane as usize, v);
@@ -149,8 +172,8 @@ pub(super) fn lu_triangular_solve_in_place(
         };
         partial.write(lane as usize, s);
         workgroup_memory_barrier_with_group_sync();
-        for r in 0..6u32 {
-            let stride = 1u32 << (5 - r);
+        for r in 0..5u32 {
+            let stride = 1u32 << (4 - r);
             if lane < stride {
                 let v = partial.read(lane as usize) + partial.read((lane + stride) as usize);
                 partial.write(lane as usize, v);

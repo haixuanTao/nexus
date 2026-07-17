@@ -6,9 +6,9 @@ use glamx::{Quat, Vec3};
 #[cfg(feature = "dim2")]
 use glamx::{Rot2, Vec2};
 
-use crate::Pose;
-use crate::dynamics::body::{LocalMassProperties, Velocity};
+use crate::dynamics::body::Velocity;
 use crate::dynamics::joint::{GenericJoint, SPATIAL_DIM};
+use crate::{Pose, Rotation, Vector};
 
 /// Max degrees of freedom any single joint can expose.
 ///
@@ -25,13 +25,17 @@ pub const MAX_MB_CONTACTS_PER_MB: u32 = 64;
 /// Number of constraint slots reserved per contact point — one normal +
 /// `DIM-1` friction tangents (Coulomb friction). Mirrors rapier's
 /// `ContactConstraintNormalPart` + `ContactConstraintTangentPart` layout.
+// 2D: angular friction not yet emitted here — keep 1 normal + 1 linear tangent.
 #[cfg(feature = "dim2")]
 pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 2;
 /// Number of constraint slots reserved per contact point — one normal +
-/// `DIM-1` friction tangents (Coulomb friction). Mirrors rapier's
-/// `ContactConstraintNormalPart` + `ContactConstraintTangentPart` layout.
+/// `DIM-1` LINEAR friction tangents (Coulomb) + `ANG_DIM` ANGULAR friction
+/// constraints (torsional about the normal + rolling about each tangent, the
+/// MuJoCo condim=6 analog). The angular slots give a SINGLE contact point a
+/// rotational constraint so a loaded foot can't pivot/screw about it.
+/// 3D: 1 + 2 + 3 = 6.
 #[cfg(feature = "dim3")]
-pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 3;
+pub const CONTACT_CONSTRAINTS_PER_POINT: u32 = 6;
 
 /// Total constraint slots reserved per multibody (= contact points × DIM).
 pub const MAX_MB_CONTACT_CONSTRAINTS_PER_MB: u32 =
@@ -78,10 +82,6 @@ pub struct MultibodyLinkStatic {
     pub _pad0: [u32; 2],
     /// Joint configuration — reused directly from the impulse-joint infrastructure.
     pub data: GenericJoint,
-    /// Per-link mass properties in body-local coordinates. `GenericJoint` ends
-    /// 16-byte aligned, so the (Quat-leading, in 3D) `LocalMassProperties` lands
-    /// straddle-free.
-    pub local_mprops: LocalMassProperties,
 }
 
 /// Per-link workspace updated every step.
@@ -258,11 +258,9 @@ pub struct MultibodyContactConstraint {
     /// Accumulated impulse (warmstart-able).
     pub impulse: f32,
 
-    /// Contact CFM factor `1/(1+cfm_coeff)` — rapier's generic-contact form:
-    /// multiplies the impulse each PGS sweep for compliance (replaces the old
-    /// rigid `cfm_coeff`/`cfm_gain` generic-joint form, which was always 0).
-    pub cfm_factor: f32,
-    pub _unused_cfm: f32,
+    /// CFM coefficients (matches rapier's `cfm_coeff` / `cfm_gain`).
+    pub cfm_coeff: f32,
+    pub cfm_gain: f32,
     pub _pad4: [u32; 2],
 }
 
@@ -299,9 +297,8 @@ pub struct MultibodyContactConstraint {
     pub rhs_wo_bias: f32,
     pub impulse: f32,
 
-    /// Contact CFM factor `1/(1+cfm_coeff)` (rapier's generic-contact form).
-    pub cfm_factor: f32,
-    pub _unused_cfm: f32,
+    pub cfm_coeff: f32,
+    pub cfm_gain: f32,
 }
 
 /// Descriptor for one multibody: where its links live, how many DOFs it has, and
@@ -342,13 +339,10 @@ pub struct MultibodyInfo {
     /// Maximum constraints this multibody can hold (sum over its joints of
     /// `2 * num_free_axes`). Slots beyond this are not touched.
     pub max_constraints: u32,
-    /// `1` if contacts between two links of THIS multibody are allowed, `0` if
-    /// disabled (rapier's `Multibody::self_contacts_enabled`, set by MJCF's
-    /// `DISABLE_SELF_CONTACTS`). The contact-constraint kernel skips self
-    /// contacts when this is `0`.
-    pub self_contacts_enabled: u32,
-    /// Per-frame count of active multibody contact constraints emitted for this
-    /// multibody. Written by `gpu_mb_init_contact_constraints`, read by the
-    /// warmstart / finalize / solve / remove-bias contact kernels.
-    pub contact_constraint_count: u32,
+    /// Coulomb friction coefficient `μ` for this multibody's contacts, read
+    /// from the rapier collider material at `from_rapier` time. The contact
+    /// builder uses this instead of a hardcoded default, so per-env friction
+    /// domain-randomization actually reaches the GPU solver. Falls back to
+    /// `FRICTION_DEFAULT` (0.5) when no collider friction is found.
+    pub friction: f32,
 }
