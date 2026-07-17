@@ -174,6 +174,33 @@ pub(crate) fn fixed_dispatch_grid_enabled() -> bool {
 /// original `indirect` buffer. `fixed` MUST cover the kernel's max count (the
 /// kernel bounds-checks against the true count internally, so over-launch is
 /// safe).
+/// Debug: per-site fixed/indirect selection via NEXUS_FIXED_MASK bitmask
+/// (bit N = site N uses the fixed grid; unset bits fall back to indirect).
+/// Absent mask = normal dispatch_grid behavior.
+pub(crate) fn dispatch_grid_tagged<'a>(
+    indirect: &'a vortx::tensor::Tensor<[u32; 3]>,
+    fixed: [u32; 3],
+    site: u32,
+) -> khal::backend::DispatchGrid<'a, khal::backend::GpuBackend> {
+    use khal::backend::DispatchGrid;
+    static MASK: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let mask = MASK.get_or_init(|| {
+        std::env::var("NEXUS_FIXED_MASK").ok().and_then(|v| {
+            u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()
+        })
+    });
+    match mask {
+        Some(m) => {
+            if m & (1 << site) != 0 {
+                DispatchGrid::Grid(fixed)
+            } else {
+                DispatchGrid::Indirect(indirect.buffer())
+            }
+        }
+        None => dispatch_grid(indirect, fixed),
+    }
+}
+
 pub(crate) fn dispatch_grid<'a>(
     indirect: &'a vortx::tensor::Tensor<[u32; 3]>,
     fixed: [u32; 3],

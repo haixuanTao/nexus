@@ -90,7 +90,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.reset_luby_kernel.call(
             pass,
-            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
+            crate::dispatch_grid_tagged(args.contacts_len_indirect, coloring_grid(args), 0),
             args.constraints_colors,
             args.constraints_rands,
             args.contacts_len,
@@ -107,7 +107,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.step_graph_coloring_luby_kernel.call(
             pass,
-            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
+            crate::dispatch_grid_tagged(args.contacts_len_indirect, coloring_grid(args), 1),
             args.body_constraint_counts,
             args.body_constraint_ids,
             args.constraints,
@@ -130,7 +130,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.reset_topo_gc_kernel.call(
             pass,
-            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
+            crate::dispatch_grid_tagged(args.contacts_len_indirect, coloring_grid(args), 2),
             args.constraints_colors,
             args.colored,
             args.contacts_len,
@@ -147,7 +147,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.step_graph_coloring_topo_gc_kernel.call(
             pass,
-            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
+            crate::dispatch_grid_tagged(args.contacts_len_indirect, coloring_grid(args), 3),
             args.body_constraint_counts,
             args.body_constraint_ids,
             args.constraints,
@@ -169,7 +169,7 @@ impl GpuColoring {
     ) -> Result<(), GpuBackendError> {
         self.fix_conflicts_topo_gc_kernel.call(
             pass,
-            crate::dispatch_grid(args.contacts_len_indirect, coloring_grid(args)),
+            crate::dispatch_grid_tagged(args.contacts_len_indirect, coloring_grid(args), 4),
             args.body_constraint_counts,
             args.body_constraint_ids,
             args.constraints,

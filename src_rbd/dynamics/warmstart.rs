@@ -57,7 +57,7 @@ impl GpuWarmstart {
         ];
         self.transfer_warmstart_impulses_kernel.call(
             pass,
-            crate::dispatch_grid(args.contacts_len_indirect, ws_grid),
+            crate::dispatch_grid_tagged(args.contacts_len_indirect, ws_grid, 5),
             args.old_body_constraint_counts,
             args.old_body_constraint_ids,
             args.old_constraints,

@@ -88,7 +88,7 @@ impl GpuNarrowPhase {
 
         self.narrow_phase.call(
             pass,
-            crate::dispatch_grid(collision_pairs_indirect, pairs_grid),
+            crate::dispatch_grid_tagged(collision_pairs_indirect, pairs_grid, 6),
             collision_pairs,
             pairs_offsets,
             poses,
@@ -104,7 +104,7 @@ impl GpuNarrowPhase {
         // separate dispatch so each pass fits 8 storage buffers).
         self.narrow_phase_deferred.call(
             pass,
-            crate::dispatch_grid(collision_pairs_indirect, pairs_grid),
+            crate::dispatch_grid_tagged(collision_pairs_indirect, pairs_grid, 7),
             collision_pairs,
             pairs_offsets,
             poses,
@@ -126,7 +126,7 @@ impl GpuNarrowPhase {
         )?;
         self.narrow_phase_pfm_pfm.call(
             pass,
-            crate::dispatch_grid(&*pfm_pairs_indirect, pfm_grid),
+            crate::dispatch_grid_tagged(&*pfm_pairs_indirect, pfm_grid, 8),
             contacts,
             contacts_len,
             pfm_pairs,
