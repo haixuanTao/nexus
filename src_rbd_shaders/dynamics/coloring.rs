@@ -53,7 +53,11 @@ pub fn gpu_reset_luby(
     let batch_id = invocation_id.y;
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let mut constraints_rands = batch_ids.contact_batch_mut(batch_id, constraints_rands);
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
 
     let i = invocation_id.x;
 
@@ -94,7 +98,11 @@ pub fn gpu_step_graph_coloring_luby(
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let constraints_rands = batch_ids.contact_batch(batch_id, constraints_rands);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
     let color = *curr_color;
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -191,7 +199,11 @@ pub fn gpu_reset_topo_gc(
     let batch_id = invocation_id.y;
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
 
     let i = invocation_id.x;
 
@@ -252,7 +264,11 @@ pub fn gpu_step_graph_coloring_topo_gc(
     let mut constraints_colors = batch_ids.contact_batch_mut(batch_id, constraints_colors);
     let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;
@@ -345,7 +361,11 @@ pub fn gpu_fix_conflicts_topo_gc(
     let constraints_colors = batch_ids.contact_batch(batch_id, constraints_colors);
     let mut colored = batch_ids.contact_batch_mut(batch_id, colored);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
 
     for constraint_i in StepRng::new(invocation_id.x..len, num_threads) {
         let i = constraint_i as usize;

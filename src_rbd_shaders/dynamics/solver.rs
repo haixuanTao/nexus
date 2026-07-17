@@ -182,7 +182,11 @@ pub fn gpu_solver_update_constraints(
     let mut constraints = batch_ids.contact_batch_mut(batch_id, constraints);
     let constraint_builders = batch_ids.contact_batch(batch_id, constraint_builders);
     let solver_body_poses = batch_ids.coll_batch(batch_id, solver_body_poses);
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         constraints[i as usize].update_constraint(
@@ -215,17 +219,15 @@ pub fn gpu_solver_sort_constraints(
     let body_group = batch_ids.coll_batch(batch_id, body_group);
     let mprops = batch_ids.coll_batch(batch_id, mprops);
     let mut body_constraint_ids = SliceMut(body_constraint_ids, bci_start);
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
 
-    let nb = batch_ids.colliders_len as usize;
     for i in StepRng::new(invocation_id.x..len, num_threads) {
         let body1 = contacts[i as usize].bodies.x as usize;
         let body2 = contacts[i as usize].bodies.y as usize;
-        // DEBUG GUARD: skip manifolds with out-of-range body ids instead of
-        // faulting (diagnosing a >16-batch illegal address).
-        if body1 >= nb || body2 >= nb {
-            continue;
-        }
         let group1 = body_group[body1] as usize;
         let group2 = body_group[body2] as usize;
 
@@ -389,7 +391,11 @@ pub fn gpu_warmstart(
     let constraints = batch_ids.contact_batch(batch_id, constraints);
     let constraints_colors = batch_ids.contact_batch(batch_id, constraints_colors);
     let mut solver_vels = batch_ids.coll_batch_mut(batch_id, solver_vels);
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
     let color = *curr_color;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -429,7 +435,11 @@ pub fn gpu_step_gauss_seidel(
     let mut constraints = batch_ids.contact_batch_mut(batch_id, constraints);
     let constraints_colors = batch_ids.contact_batch(batch_id, constraints_colors);
     let mut solver_vels = batch_ids.coll_batch_mut(batch_id, solver_vels);
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
     let color = *curr_color;
 
     for i in StepRng::new(invocation_id.x..len, num_threads) {
@@ -766,7 +776,11 @@ pub fn gpu_remove_cfm_and_bias_kernel(
     let i = invocation_id.x;
 
     let mut constraints = batch_ids.contact_batch_mut(batch_id, constraints);
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
 
     if i < len {
         constraints[i as usize].remove_cfm_and_bias();

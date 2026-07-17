@@ -264,8 +264,12 @@ pub fn gpu_narrow_phase_shape_shape(
         let pair = collision_pairs[i as usize];
         // Resolve the parent rigid-bodies here (the broad phase no longer does)
         // and skip pairs whose colliders share the same body.
-        let body1 = collider_parent.read(pair.colliders.x as usize);
-        let body2 = collider_parent.read(pair.colliders.y as usize);
+        // Pair ids are batch-LOCAL (LBVH leaves index per-batch slices), so
+        // the parent map must be sliced too — the raw read returned batch 0's
+        // parents for every batch.
+        let collider_parent = batch_ids.coll_batch(batch_id, collider_parent);
+        let body1 = collider_parent[pair.colliders.x as usize];
+        let body2 = collider_parent[pair.colliders.y as usize];
         if body1 == body2 {
             continue;
         }
@@ -431,7 +435,13 @@ pub fn gpu_narrow_phase_shape_shape_deferred(
                     colliders: pair.colliders,
                 };
                 let pfm_index = atomic_add_u32(pfm_pairs_len, 1);
-                pfm_pairs.write(pfm_index as usize, pfm_pair);
+                // NOTE: past the per-batch capacity, keep counting but skip
+                // the write (same contract as the contact emission sites) —
+                // an unclamped write walks into the next batch's slab, and
+                // past the end of the buffer for the last batch.
+                if (pfm_index as usize) < batch_ids.contacts_batch_capacity as usize {
+                    pfm_pairs.write(pfm_index as usize, pfm_pair);
+                }
 
                 // The actual calculations are deferred to another kernel.
                 continue;
@@ -452,6 +462,7 @@ pub fn gpu_narrow_phase_shape_shape_deferred(
                 pfm_pairs_len,
                 vertices,
                 indices,
+                batch_ids.contacts_batch_capacity as usize,
             );
             continue;
         }
@@ -469,6 +480,7 @@ pub fn gpu_narrow_phase_shape_shape_deferred(
                 pfm_pairs_len,
                 vertices,
                 indices,
+                batch_ids.contacts_batch_capacity as usize,
             );
             continue;
         }
@@ -487,6 +499,7 @@ pub fn gpu_narrow_phase_shape_shape_deferred(
                 pfm_pairs_len,
                 vertices,
                 indices,
+                batch_ids.contacts_batch_capacity as usize,
             );
             continue;
         }
@@ -504,6 +517,7 @@ pub fn gpu_narrow_phase_shape_shape_deferred(
                 pfm_pairs_len,
                 vertices,
                 indices,
+                batch_ids.contacts_batch_capacity as usize,
             );
             continue;
         }
@@ -520,6 +534,7 @@ fn trimesh_convex(
     pfm_pairs_len: &mut u32,
     vertices: &[PaddedVector],
     indices: &[u32],
+    pfm_capacity: usize,
 ) {
     let sub2 = convex.pfm_subshape();
     if !sub2.valid {
@@ -561,7 +576,10 @@ fn trimesh_convex(
                 colliders,
             };
             let pfm_index = atomic_add_u32(pfm_pairs_len, 1);
-            pfm_pairs.write(pfm_index as usize, pfm_pair);
+            // Count-and-clamp: see the deferred-pass emission note.
+            if (pfm_index as usize) < pfm_capacity {
+                pfm_pairs.write(pfm_index as usize, pfm_pair);
+            }
 
             // Continue traversal.
             curr = idx.exit_index;
@@ -586,6 +604,7 @@ fn polyline_convex(
     pfm_pairs_len: &mut u32,
     vertices: &[PaddedVector],
     indices: &[u32],
+    pfm_capacity: usize,
 ) {
     let sub2 = convex.pfm_subshape();
     if !sub2.valid {
@@ -630,7 +649,10 @@ fn polyline_convex(
                 colliders,
             };
             let pfm_index = atomic_add_u32(pfm_pairs_len, 1);
-            pfm_pairs.write(pfm_index as usize, pfm_pair);
+            // Count-and-clamp: see the deferred-pass emission note.
+            if (pfm_index as usize) < pfm_capacity {
+                pfm_pairs.write(pfm_index as usize, pfm_pair);
+            }
 
             // Continue traversal.
             curr = idx.exit_index;
@@ -726,8 +748,12 @@ pub fn gpu_narrow_phase_pfm_pfm(
         // is where the deferred (PFM / trimesh / polyline) pairs get the same-body
         // filtering that the analytic pass does inline — the broad phase no longer
         // does it, and the deferred pass has no spare storage binding for it.
-        let body1 = collider_parent.read(pair.colliders.x as usize);
-        let body2 = collider_parent.read(pair.colliders.y as usize);
+        // Pair ids are batch-LOCAL (LBVH leaves index per-batch slices), so
+        // the parent map must be sliced too — the raw read returned batch 0's
+        // parents for every batch.
+        let collider_parent = batch_ids.coll_batch(batch_id, collider_parent);
+        let body1 = collider_parent[pair.colliders.x as usize];
+        let body2 = collider_parent[pair.colliders.y as usize];
         if body1 == body2 {
             continue;
         }

@@ -104,7 +104,14 @@ impl GpuNarrowPhase {
         // separate dispatch so each pass fits 8 storage buffers).
         self.narrow_phase_deferred.call(
             pass,
-            crate::dispatch_grid_tagged(collision_pairs_indirect, pairs_grid, 7),
+            // KNOWN ISSUE: this kernel and pfm_pfm below, when BOTH launched with
+            // capacity-based fixed grids, trigger a host-side pathology on CUDA
+            // (~19s/step at 2048 batches, 100% host CPU; also the historical
+            // >16-batch illegal address before the len clamps). Either one on
+            // indirect dispatch is fine, and the two extra per-step syncs cost
+            // nothing measurable — so these two default to indirect until the
+            // interaction is understood. NEXUS_FIXED_MASK still overrides.
+            crate::dispatch_grid_tagged_default_indirect(collision_pairs_indirect, pairs_grid, 7),
             collision_pairs,
             pairs_offsets,
             poses,
@@ -126,7 +133,7 @@ impl GpuNarrowPhase {
         )?;
         self.narrow_phase_pfm_pfm.call(
             pass,
-            crate::dispatch_grid_tagged(&*pfm_pairs_indirect, pfm_grid, 8),
+            crate::dispatch_grid_tagged_default_indirect(&*pfm_pairs_indirect, pfm_grid, 8),
             contacts,
             contacts_len,
             pfm_pairs,

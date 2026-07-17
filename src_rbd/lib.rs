@@ -201,6 +201,28 @@ pub(crate) fn dispatch_grid_tagged<'a>(
     }
 }
 
+/// Like [`dispatch_grid_tagged`], but the site defaults to INDIRECT dispatch
+/// when no NEXUS_FIXED_MASK override is present (see the narrow-phase
+/// deferred/pfm known-issue note).
+pub(crate) fn dispatch_grid_tagged_default_indirect<'a>(
+    indirect: &'a vortx::tensor::Tensor<[u32; 3]>,
+    fixed: [u32; 3],
+    site: u32,
+) -> khal::backend::DispatchGrid<'a, khal::backend::GpuBackend> {
+    use khal::backend::DispatchGrid;
+    static MASK: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let mask = MASK.get_or_init(|| {
+        std::env::var("NEXUS_FIXED_MASK")
+            .ok()
+            .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+    });
+    match mask {
+        Some(m) if m & (1 << site) != 0 => DispatchGrid::Grid(fixed),
+        Some(_) => DispatchGrid::Indirect(indirect.buffer()),
+        None => DispatchGrid::Indirect(indirect.buffer()),
+    }
+}
+
 pub(crate) fn dispatch_grid<'a>(
     indirect: &'a vortx::tensor::Tensor<[u32; 3]>,
     fixed: [u32; 3],

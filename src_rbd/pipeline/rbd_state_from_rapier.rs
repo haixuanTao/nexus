@@ -677,9 +677,23 @@ impl RbdState {
             storage,
         )
         .unwrap();
+        // The coloring's random tie-breakers. These MUST be non-degenerate:
+        // all-equal rands (e.g. zeroed) livelock the parallel topo-GC — the
+        // conflict-fix pass can never break neighbor ties, `uncolored` stays
+        // set, and the max_colors ratchet grows without bound (this was
+        // historically "initialized" by uninitialized-memory garbage, which
+        // wgpu zeroes — so it also livelocks on WebGPU zero-init!). SplitMix64
+        // per slot, deterministic.
         let constraints_rands = Tensor::vector(
             backend,
-            bytemuck::zeroed_vec((capacities.collisions_capacity * num_batches) as usize),
+            (0..(capacities.collisions_capacity * num_batches) as usize)
+                .map(|i| {
+                    let mut z = (i as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+                    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                    (z ^ (z >> 31)) as u32
+                })
+                .collect::<Vec<u32>>(),
             storage,
         )
         .unwrap();

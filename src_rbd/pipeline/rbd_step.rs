@@ -438,6 +438,9 @@ impl RbdPipeline {
                 && coloring_converged == 0
             {
                 state.max_colors += 5;
+                if std::env::var_os("NEXUS_TRACE_RATCHET").is_some() {
+                    eprintln!("[nexus] coloring failed to converge — max_colors ratcheted to {}", state.max_colors);
+                }
             }
 
             // Lazy resize based on the *previous* frame's max pair count.

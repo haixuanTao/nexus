@@ -40,7 +40,11 @@ pub fn gpu_transfer_warmstart_impulses(
     let mut new_constraints = SliceMut(new_constraints, contacts_start);
     let new_constraint_builders = Slice(new_constraint_builders, contacts_start);
 
-    let len = contacts_len.read(batch_id as usize);
+    // Emissions count past capacity by contract (count-and-clamp, so
+    // the host can lazy-resize from the counter); every consumer must clamp.
+    let len = contacts_len
+        .read(batch_id as usize)
+        .min(batch_ids.contacts_batch_capacity);
     let cid_new = invocation_id.x;
 
     if cid_new < len {
