@@ -1,7 +1,7 @@
 //! `JointConstraintHelper` and the generic per-axis constraint builders
 //! (lock / limit / motor, linear and angular) mirroring rapier.
 
-#[cfg(feature = "dim3")]
+use crate::ColumnIndex;
 use glamx::{Mat3, Quat, Vec3};
 
 use khal_std::index::MaybeIndexUnchecked;
@@ -94,7 +94,7 @@ pub(super) fn new_helper(
     let mut new_center1 = frame2.translation;
     for i in 0..DIM_USIZE {
         if (locked_lin_axes & (1u32 << i)) != 0 {
-            let axis = basis.col(i);
+            let axis = basis.col_at(i);
             new_center1 -= axis * lin_err.dot(axis);
         }
     }
@@ -110,8 +110,8 @@ pub(super) fn new_helper(
         let ang_err = frame1.rotation.inverse() * frame2.rotation;
         JointConstraintHelper {
             basis,
-            cmat1_basis: [cmat1.dot(basis.col(0)), cmat1.dot(basis.col(1))],
-            cmat2_basis: [cmat2.dot(basis.col(0)), cmat2.dot(basis.col(1))],
+            cmat1_basis: [cmat1.dot(basis.col_at(0)), cmat1.dot(basis.col_at(1))],
+            cmat2_basis: [cmat2.dot(basis.col_at(0)), cmat2.dot(basis.col_at(1))],
             lin_err,
             ang_err,
         }
@@ -337,7 +337,7 @@ impl JointConstraintHelper {
     #[inline]
     #[cfg(feature = "dim3")]
     pub(super) fn ang_jac_for_axis(&self, axis: usize) -> AngVector {
-        self.ang_basis.col(axis)
+        self.ang_basis.col_at(axis)
     }
 
     #[inline]
@@ -349,7 +349,7 @@ impl JointConstraintHelper {
     #[inline]
     #[cfg(feature = "dim3")]
     pub(super) fn motor_ang_jac(&self, axis: usize) -> AngVector {
-        self.basis.col(axis)
+        self.basis.col_at(axis)
     }
 
     #[inline]
@@ -385,15 +385,15 @@ pub(super) fn lock_linear_generic(
     mprops: &[WorldMassProperties],
     colliders_start: usize,
 ) {
-    let lin_jac = helper.basis.col(locked_axis);
+    let lin_jac = helper.basis.col_at(locked_axis);
     #[cfg(feature = "dim2")]
     let ang_jac1 = helper.cmat1_basis.read(locked_axis);
     #[cfg(feature = "dim2")]
     let ang_jac2 = helper.cmat2_basis.read(locked_axis);
     #[cfg(feature = "dim3")]
-    let ang_jac1 = helper.cmat1_basis.col(locked_axis);
+    let ang_jac1 = helper.cmat1_basis.col_at(locked_axis);
     #[cfg(feature = "dim3")]
-    let ang_jac2 = helper.cmat2_basis.col(locked_axis);
+    let ang_jac2 = helper.cmat2_basis.col_at(locked_axis);
 
     lock_jacobians_generic(
         out,
@@ -483,15 +483,15 @@ pub(super) fn limit_linear_generic(
     mprops: &[WorldMassProperties],
     colliders_start: usize,
 ) {
-    let lin_jac = helper.basis.col(limited_axis);
+    let lin_jac = helper.basis.col_at(limited_axis);
     #[cfg(feature = "dim2")]
     let ang_jac1 = helper.cmat1_basis.read(limited_axis);
     #[cfg(feature = "dim2")]
     let ang_jac2 = helper.cmat2_basis.read(limited_axis);
     #[cfg(feature = "dim3")]
-    let ang_jac1 = helper.cmat1_basis.col(limited_axis);
+    let ang_jac1 = helper.cmat1_basis.col_at(limited_axis);
     #[cfg(feature = "dim3")]
-    let ang_jac2 = helper.cmat2_basis.col(limited_axis);
+    let ang_jac2 = helper.cmat2_basis.col_at(limited_axis);
 
     lock_jacobians_generic(
         out,
@@ -596,15 +596,15 @@ pub(super) fn motor_linear_generic(
     colliders_start: usize,
 ) {
     let mp = motor.motor_params(dt);
-    let lin_jac = helper.basis.col(motor_axis);
+    let lin_jac = helper.basis.col_at(motor_axis);
     #[cfg(feature = "dim2")]
     let ang_jac1 = helper.cmat1_basis.read(motor_axis);
     #[cfg(feature = "dim2")]
     let ang_jac2 = helper.cmat2_basis.read(motor_axis);
     #[cfg(feature = "dim3")]
-    let ang_jac1 = helper.cmat1_basis.col(motor_axis);
+    let ang_jac1 = helper.cmat1_basis.col_at(motor_axis);
     #[cfg(feature = "dim3")]
-    let ang_jac2 = helper.cmat2_basis.col(motor_axis);
+    let ang_jac2 = helper.cmat2_basis.col_at(motor_axis);
 
     lock_jacobians_generic(
         out,

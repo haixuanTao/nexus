@@ -66,6 +66,19 @@ pub struct GpuSolver {
 
 /// Arguments for constraint solver dispatch, used by [`GpuSolver::prepare`] and
 /// [`GpuSolver::solve_tgs`].
+
+/// Capacity-based dispatch grid for the contact-count-driven solver kernels
+/// (used when fixed-grid dispatch replaces the indirect buffer; see
+/// `crate::dispatch_grid`).
+fn contacts_grid(args: &SolverArgs) -> [u32; 3] {
+    let nb = args.num_batches.max(1);
+    [
+        (args.contacts.len() as u32 / nb).max(1).div_ceil(64),
+        args.num_batches.max(1),
+        1,
+    ]
+}
+
 pub struct SolverArgs<'a> {
     /// Total number of colors from graph coloring.
     pub num_colors: u32,
@@ -181,7 +194,7 @@ impl GpuSolver {
 
         self.init_constraints.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, contacts_grid(&args)),
             args.contacts,
             args.constraints,
             args.constraint_builders,
@@ -197,7 +210,7 @@ impl GpuSolver {
         // build pass above stays within 8 storage buffers.
         self.count_constraints.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, contacts_grid(&args)),
             args.contacts,
             args.body_constraint_counts,
             args.body_group,
@@ -215,7 +228,7 @@ impl GpuSolver {
 
         self.sort_constraints.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, contacts_grid(&args)),
             args.body_constraint_counts,
             args.mprops,
             args.contacts,
@@ -329,7 +342,7 @@ impl GpuSolver {
                 // gpu_warmstart_fused's prologue.
                 self.update_constraints.call(
                     pass,
-                    args.contacts_len_indirect,
+                    crate::dispatch_grid(args.contacts_len_indirect, contacts_grid(&args)),
                     args.constraints,
                     args.constraint_builders,
                     args.contacts_len,
@@ -379,7 +392,7 @@ impl GpuSolver {
             if args.fuse_color_loops {
                 self.step_gauss_seidel_fused.call(
                     pass,
-                    [64u32, args.num_batches, 1],
+                    crate::dispatch_grid(args.contacts_len_indirect, contacts_grid(&args)),
                     args.constraints,
                     args.solver_vels,
                     args.constraints_colors,
@@ -427,7 +440,7 @@ impl GpuSolver {
                 // prologue.
                 self.remove_cfm_and_bias_kernel.call(
                     pass,
-                    args.contacts_len_indirect,
+                    crate::dispatch_grid(args.contacts_len_indirect, contacts_grid(&args)),
                     args.constraints,
                     args.contacts_len,
                     args.batch_indices,
