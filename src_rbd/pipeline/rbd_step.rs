@@ -666,6 +666,19 @@ impl RbdPipeline {
             )?;
         }
 
+        // Sync the fused-solver color-count uniform here — OUTSIDE the captured
+        // step, so this H2D write is legal (inside step() it would invalidate a
+        // CUDA-graph capture). Runs on every auto_resize call, covering both the
+        // ratchet above and any `set_max_colors` from setup; `max_colors` is
+        // constant across a capture, so the value is stable by the time the
+        // graph is recorded (biped warms up through several auto_resize cycles
+        // before capturing).
+        let num_colors = state.max_colors + 1;
+        if state.num_colors_uniform_cpu != num_colors {
+            backend.write_buffer(state.num_colors_uniform.buffer_mut(), 0, &[num_colors])?;
+            state.num_colors_uniform_cpu = num_colors;
+        }
+
         Ok(())
     }
 }
