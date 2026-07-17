@@ -34,6 +34,7 @@
 
 mod compute_dynamics_pre;
 mod contact_constraints;
+mod contact_constraints_soa;
 mod gravity_and_lu;
 mod impulse_joint_constraints;
 mod integrate;
@@ -49,6 +50,7 @@ mod utils;
 
 pub use compute_dynamics_pre::*;
 pub use contact_constraints::*;
+pub use contact_constraints_soa::*;
 pub use gravity_and_lu::*;
 pub use impulse_joint_constraints::*;
 pub use integrate::*;

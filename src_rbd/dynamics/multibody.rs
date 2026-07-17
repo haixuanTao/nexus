@@ -28,6 +28,9 @@ use crate::shaders::dynamics::{
     GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbGravityRhs, GpuMbInitContactConstraints,
     GpuMbLtdlLanes,
     GpuResetJointColor,
+    GpuMbInitContactConstraintsSoa, GpuMbFinalizeContactConstraintsSoa,
+    GpuMbSolveContactConstraintsSoa, GpuMbRemoveSolveContactNoBiasSoa,
+    GpuMbTransposeFactorsSoa,
     GpuMbInitSolveJointWithBias, GpuMbIntegrate, GpuMbIntegrateVelocities,
     GpuMbIntegrateVelocitiesPackedDof, GpuMbRemoveSolveContactNoBias,
     GpuMbTransposeDofStateFromPacked, GpuMbTransposeDofStateToPacked,
@@ -170,6 +173,10 @@ pub struct GpuMultibodySet {
     body_jacobians: Tensor<f32>,
     /// Per-multibody `ndofs × ndofs` mass matrices (also used as LU work buffer).
     mass_matrices: Tensor<f32>,
+    /// `NEXUS_SOA_CONTACTS=1`: batch-interleaved mirror of the LᵀDL factors
+    /// (`elem·NB + batch`), refreshed once per step by
+    /// `gpu_mb_transpose_factors_soa` right after the factor.
+    mass_matrices_soa: Tensor<f32>,
     /// Per-DOF pivot buffer used by LU.
     lu_pivots: Tensor<u32>,
 
@@ -1295,6 +1302,12 @@ impl GpuMultibodySet {
                 storage,
             )
             .unwrap(),
+            mass_matrices_soa: Tensor::vector(
+                backend,
+                &vec![0.0f32; (mm_cap * num_batches) as usize],
+                storage,
+            )
+            .unwrap(),
             lu_pivots: Tensor::vector(
                 backend,
                 &vec![0u32; (dofs_cap * num_batches) as usize],
@@ -1889,6 +1902,13 @@ pub struct LayoutBenchKernels {
     pub soa: crate::shaders::dynamics::GpuBenchFinalizeSoa,
 }
 
+/// `NEXUS_SOA_CONTACTS=1`: run the contact-constraint pipeline on the
+/// batch-interleaved (SoA) layout — coalesced jac/column/factor streams.
+fn soa_contacts() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("NEXUS_SOA_CONTACTS").is_ok_and(|v| v == "1"))
+}
+
 /// GPU shader bundle for multibody dynamics.
 #[derive(Shader)]
 pub struct GpuMultibodySolver {
@@ -1907,6 +1927,14 @@ pub struct GpuMultibodySolver {
     /// Fused remove-bias + solve-without-bias for the stabilization sweep.
     remove_solve_joint_no_bias: GpuMbRemoveSolveJointNoBias,
     init_contact_constraints: GpuMbInitContactConstraints,
+    /// `NEXUS_SOA_CONTACTS=1` batch-interleaved pipeline (see
+    /// `contact_constraints_soa.rs`): 3.9× on the back-solve in the layout
+    /// microbench.
+    transpose_factors_soa: GpuMbTransposeFactorsSoa,
+    init_contact_constraints_soa: GpuMbInitContactConstraintsSoa,
+    finalize_contact_constraints_soa: GpuMbFinalizeContactConstraintsSoa,
+    solve_contact_constraints_soa: GpuMbSolveContactConstraintsSoa,
+    remove_solve_contact_no_bias_soa: GpuMbRemoveSolveContactNoBiasSoa,
     finalize_contact_constraints: GpuMbFinalizeContactConstraints,
     solve_contact_constraints: GpuMbSolveContactConstraints,
     remove_contact_constraint_bias: GpuMbRemoveContactConstraintBias,
@@ -2080,6 +2108,21 @@ impl GpuMultibodySolver {
             )?;
         }
 
+        // SoA mirror of the freshly-written LᵀDL factors (once per step,
+        // outside the substep loop; both sides of the tiled transpose are
+        // coalesced). Only when the SoA contact pipeline is on.
+        if soa_contacts() {
+            let mm_cap = (mb.mass_matrices.len() as u32) / mb.num_batches.max(1);
+            self.transpose_factors_soa.call(
+                pass,
+                [((mb.num_batches + 31) / 32) * 32, (mm_cap + 31) / 32, 1],
+                &mb.mass_matrices,
+                &mut mb.mass_matrices_soa,
+                &mb.num_batches_uniform,
+                args.batch_indices,
+            )?;
+        }
+
         Ok(())
     }
 
@@ -2184,23 +2227,44 @@ impl GpuMultibodySolver {
         // 3b. Build + finalize + solve contact constraints (normal-only, free
         //     body × multibody pairs only). Mirrors rapier's interleaved
         //     "generic constraint" sweep order.
-        self.init_contact_constraints.call(
-            pass,
-            dispatch,
-            &mb.multibody_info,
-            &mb.body_jacobians,
-            &mb.body_to_link,
-            &mut mb.contact_constraints,
-            &mut mb.contact_constraint_jacs,
-            &mut mb.contact_constraint_count,
-            &mb.dt,
-            args.batch_indices,
-            args.mprops,
-            args.collider_world_poses,
-            args.contacts,
-            args.contacts_len,
-            args.sim_params,
-        )?;
+        if soa_contacts() {
+            self.init_contact_constraints_soa.call(
+                pass,
+                dispatch,
+                &mb.multibody_info,
+                &mb.body_jacobians,
+                &mb.body_to_link,
+                &mut mb.contact_constraints,
+                &mut mb.contact_constraint_jacs,
+                &mut mb.contact_constraint_count,
+                &mb.dt,
+                args.batch_indices,
+                &mb.num_batches_uniform,
+                args.mprops,
+                args.collider_world_poses,
+                args.contacts,
+                args.contacts_len,
+                args.sim_params,
+            )?;
+        } else {
+            self.init_contact_constraints.call(
+                pass,
+                dispatch,
+                &mb.multibody_info,
+                &mb.body_jacobians,
+                &mb.body_to_link,
+                &mut mb.contact_constraints,
+                &mut mb.contact_constraint_jacs,
+                &mut mb.contact_constraint_count,
+                &mb.dt,
+                args.batch_indices,
+                args.mprops,
+                args.collider_world_poses,
+                args.contacts,
+                args.contacts_len,
+                args.sim_params,
+            )?;
+        }
 
         // `finalize_contact_constraints` is cooperative (threads(32)): one
         // workgroup per articulation, the independent per-constraint LU
@@ -2208,19 +2272,42 @@ impl GpuMultibodySolver {
         // multibodies_per_batch · lanes → multibodies_per_batch workgroups.
         let finalize_contact_dispatch =
             [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
-        self.finalize_contact_constraints.call(
-            pass,
-            finalize_contact_dispatch,
-            &mb.multibody_info,
-            &mb.mass_matrices,
-            &mb.lu_pivots,
-            &mut mb.contact_constraints,
-            &mb.contact_constraint_jacs,
-            &mut mb.contact_constraint_columns,
-            &mb.contact_constraint_count,
-            &mb.num_multibodies,
-            args.batch_indices,
-        )?;
+        if soa_contacts() {
+            self.finalize_contact_constraints_soa.call(
+                pass,
+                [
+                    mb.num_batches
+                        * mb.multibodies_per_batch
+                        * crate::shaders::dynamics::MAX_MB_CONTACT_CONSTRAINTS_PER_MB,
+                    1,
+                    1,
+                ],
+                &mb.multibody_info,
+                &mb.mass_matrices_soa,
+                &mb.lu_pivots,
+                &mut mb.contact_constraints,
+                &mb.contact_constraint_jacs,
+                &mut mb.contact_constraint_columns,
+                &mb.contact_constraint_count,
+                &mb.num_multibodies,
+                &mb.num_batches_uniform,
+                args.batch_indices,
+            )?;
+        } else {
+            self.finalize_contact_constraints.call(
+                pass,
+                finalize_contact_dispatch,
+                &mb.multibody_info,
+                &mb.mass_matrices,
+                &mb.lu_pivots,
+                &mut mb.contact_constraints,
+                &mb.contact_constraint_jacs,
+                &mut mb.contact_constraint_columns,
+                &mb.contact_constraint_count,
+                &mb.num_multibodies,
+                args.batch_indices,
+            )?;
+        }
 
 
         Ok(())
@@ -2274,19 +2361,36 @@ impl GpuMultibodySolver {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
         for _ in 0..contact_sweeps {
-            self.solve_contact_constraints.call(
-                pass,
-                contact_solve_dispatch,
-                &mb.multibody_info,
-                &mut mb.contact_constraints,
-                &mb.contact_constraint_jacs,
-                &mb.contact_constraint_columns,
-                &mb.contact_constraint_count,
-                &mut mb.dof_state,
-                args.solver_vels,
-                &mb.num_multibodies,
-                args.batch_indices,
-            )?;
+            if soa_contacts() {
+                self.solve_contact_constraints_soa.call(
+                    pass,
+                    [mb.num_batches * mb.multibodies_per_batch, 1, 1],
+                    &mb.multibody_info,
+                    &mut mb.contact_constraints,
+                    &mb.contact_constraint_jacs,
+                    &mb.contact_constraint_columns,
+                    &mb.contact_constraint_count,
+                    &mut mb.dof_state,
+                    args.solver_vels,
+                    &mb.num_multibodies,
+                    &mb.num_batches_uniform,
+                    args.batch_indices,
+                )?;
+            } else {
+                self.solve_contact_constraints.call(
+                    pass,
+                    contact_solve_dispatch,
+                    &mb.multibody_info,
+                    &mut mb.contact_constraints,
+                    &mb.contact_constraint_jacs,
+                    &mb.contact_constraint_columns,
+                    &mb.contact_constraint_count,
+                    &mut mb.dof_state,
+                    args.solver_vels,
+                    &mb.num_multibodies,
+                    args.batch_indices,
+                )?;
+            }
         }
 
         // 3c. Multibody-touching impulse joints — generic (rb-mb / mb-mb)
@@ -2442,19 +2546,36 @@ impl GpuMultibodySolver {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
         for _ in 0..stab_sweeps.max(1) {
-            self.remove_solve_contact_no_bias.call(
-                pass,
-                remove_solve_contact_dispatch,
-                &mb.multibody_info,
-                &mut mb.contact_constraints,
-                &mb.contact_constraint_jacs,
-                &mb.contact_constraint_columns,
-                &mb.contact_constraint_count,
-                &mut mb.dof_state,
-                args.solver_vels,
-                &mb.num_multibodies,
-                args.batch_indices,
-            )?;
+            if soa_contacts() {
+                self.remove_solve_contact_no_bias_soa.call(
+                    pass,
+                    [mb.num_batches * mb.multibodies_per_batch, 1, 1],
+                    &mb.multibody_info,
+                    &mut mb.contact_constraints,
+                    &mb.contact_constraint_jacs,
+                    &mb.contact_constraint_columns,
+                    &mb.contact_constraint_count,
+                    &mut mb.dof_state,
+                    args.solver_vels,
+                    &mb.num_multibodies,
+                    &mb.num_batches_uniform,
+                    args.batch_indices,
+                )?;
+            } else {
+                self.remove_solve_contact_no_bias.call(
+                    pass,
+                    remove_solve_contact_dispatch,
+                    &mb.multibody_info,
+                    &mut mb.contact_constraints,
+                    &mb.contact_constraint_jacs,
+                    &mb.contact_constraint_columns,
+                    &mb.contact_constraint_count,
+                    &mut mb.dof_state,
+                    args.solver_vels,
+                    &mb.num_multibodies,
+                    args.batch_indices,
+                )?;
+            }
         }
         if mb.mb_imp_joints_per_batch > 0 {
             // Final stabilization sweep WITHOUT bias — colored, one
@@ -2590,6 +2711,21 @@ impl GpuMultibodySolver {
                 args.batch_indices,
                 &mb.dof_frictionloss,
                 &mut mb.motor_delay_state,
+            )?;
+        }
+
+        // SoA mirror of the freshly-written LᵀDL factors (once per step,
+        // outside the substep loop; both sides of the tiled transpose are
+        // coalesced). Only when the SoA contact pipeline is on.
+        if soa_contacts() {
+            let mm_cap = (mb.mass_matrices.len() as u32) / mb.num_batches.max(1);
+            self.transpose_factors_soa.call(
+                pass,
+                [((mb.num_batches + 31) / 32) * 32, (mm_cap + 31) / 32, 1],
+                &mb.mass_matrices,
+                &mut mb.mass_matrices_soa,
+                &mb.num_batches_uniform,
+                args.batch_indices,
             )?;
         }
 

@@ -106,6 +106,10 @@ fn fill_contact_jac_row(
     unit_torque: AngVector,
     out_jacs: &mut [f32],
     col_offset: usize,
+    // Distance between consecutive DOF elements of one row: 1 for the
+    // env-major (AoS) layout, `num_batches` for the batch-interleaved SoA
+    // layout (`NEXUS_SOA_CONTACTS=1`).
+    elem_stride: usize,
     accumulate: bool,
 ) {
     // Per-link SPATIAL_DIM × ndofs jacobian (rows 0..DIM = J_v, rows
@@ -139,11 +143,11 @@ fn fill_contact_jac_row(
             dot = unit_force.x * jv0 + unit_force.y * jv1 + unit_torque * jw0;
         }
         let prev = if accumulate {
-            out_jacs.read(col_offset + j as usize)
+            out_jacs.read(col_offset + (j as usize) * elem_stride)
         } else {
             0.0
         };
-        out_jacs.write(col_offset + j as usize, prev + dot);
+        out_jacs.write(col_offset + (j as usize) * elem_stride, prev + dot);
     }
 }
 
@@ -155,29 +159,36 @@ fn fill_contact_jac_row(
 /// (`mb_normal · J_v + (mb_shift × mb_normal) · J_w`) into
 /// `contact_constraint_jacs`. Friction tangents and multibody-multibody
 /// contacts are not yet handled — such contacts are skipped.
-#[spirv_bindgen]
-#[spirv(compute(threads(1)))]
-pub fn gpu_mb_init_contact_constraints(
-    #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_jacobians: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_to_link: &[[u32; 2]],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+/// Body of `gpu_mb_init_contact_constraints`, shared by the classic
+/// env-major entry and the `NEXUS_SOA_CONTACTS=1` batch-interleaved entry.
+/// Layout parameters: a jac row element `(slot s, dof j)` lives at
+/// `col_base + s·slot_stride + j·elem_stride`.
+///   - env-major: `col_base = col_start(b) + mb·MAXC·ds`, `slot_stride = ds`,
+///     `elem_stride = 1`.
+///   - SoA:       `col_base = (mb·MAXC·ds)·NB + b`, `slot_stride = ds·NB`,
+///     `elem_stride = NB`.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn init_contact_constraints_body(
+    batch_id: u32,
+    mb_idx: u32,
+    dt: f32,
+    col_base: usize,
+    slot_stride: usize,
+    elem_stride: usize,
+    multibody_info: &[MultibodyInfo],
+    body_jacobians: &[f32],
+    body_to_link: &[[u32; 2]],
     contact_constraints: &mut [MultibodyContactConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    contact_constraint_jacs: &mut [f32],
     contact_constraint_count: &mut [u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[SimParams],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
+    mprops: &[WorldMassProperties],
+    poses: &[Pose],
+    contacts: &[IndexedManifold],
+    contacts_len: &[u32],
+    all_params: &[SimParams],
+    batch_ids: &BatchIndices,
 ) {
-    let batch_id = invocation_id.y;
-    let mb_idx = invocation_id.x;
-    let dt = *dt_uniform;
     let inv_dt = if dt != 0.0 { 1.0 / dt } else { 0.0 };
     // Damped Baumgarte position correction from this env's `SimParams`, matching
     // the rigid-body path's `contact_erp_inv_dt` = ω / (dt·ω + 2ζ). Replaces the
@@ -246,8 +257,6 @@ pub fn gpu_mb_init_contact_constraints(
     // column buffer (matches the allocation in `from_rapier` and avoids any
     // overlap between multibodies of differing `ndofs`).
     let dofs_stride = batch_ids.dof_batch_capacity as usize;
-    let col_base =
-        col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
 
     let contacts_slice = batch_ids.contact_batch(batch_id, contacts);
     // Clamp to the allocated capacity: the narrow-phase atomic over-counts past
@@ -355,7 +364,7 @@ pub fn gpu_mb_init_contact_constraints(
             let rhs_wo_bias = if dist > 0.0 { dist * inv_dt } else { 0.0 };
 
             let normal_slot = count;
-            let normal_col_offset = col_base + (normal_slot as usize) * dofs_stride;
+            let normal_col_offset = col_base + (normal_slot as usize) * slot_stride;
 
             fill_contact_jac_row(
                 body_jacobians,
@@ -366,6 +375,7 @@ pub fn gpu_mb_init_contact_constraints(
                 torque_a_normal,
                 contact_constraint_jacs,
                 normal_col_offset,
+                elem_stride,
                 false,
             );
 
@@ -390,6 +400,7 @@ pub fn gpu_mb_init_contact_constraints(
                     torque_b_normal,
                     contact_constraint_jacs,
                     normal_col_offset,
+                    elem_stride,
                     true,
                 );
                 #[cfg(feature = "dim3")]
@@ -494,7 +505,7 @@ pub fn gpu_mb_init_contact_constraints(
                 };
                 let free_tangent = -mb_tangent;
                 let tang_slot = count;
-                let tang_col_offset = col_base + (tang_slot as usize) * dofs_stride;
+                let tang_col_offset = col_base + (tang_slot as usize) * slot_stride;
 
                 fill_contact_jac_row(
                     body_jacobians,
@@ -505,6 +516,7 @@ pub fn gpu_mb_init_contact_constraints(
                     torque_a_tang,
                     contact_constraint_jacs,
                     tang_col_offset,
+                    elem_stride,
                     false,
                 );
 
@@ -521,6 +533,7 @@ pub fn gpu_mb_init_contact_constraints(
                         torque_b_tang,
                         contact_constraint_jacs,
                         tang_col_offset,
+                        elem_stride,
                         true,
                     );
                     #[cfg(feature = "dim3")]
@@ -604,7 +617,7 @@ pub fn gpu_mb_init_contact_constraints(
                 for ax_i in 0..ANG_DIM {
                     let ax = ang_axes[ax_i as usize];
                     let ang_slot = count;
-                    let ang_col_offset = col_base + (ang_slot as usize) * dofs_stride;
+                    let ang_col_offset = col_base + (ang_slot as usize) * slot_stride;
                     fill_contact_jac_row(
                         body_jacobians,
                         mb_jac_base,
@@ -614,6 +627,7 @@ pub fn gpu_mb_init_contact_constraints(
                         ax,
                         contact_constraint_jacs,
                         ang_col_offset,
+                        elem_stride,
                         false,
                     );
                     let (afj, iiafj) = if is_self {
@@ -626,6 +640,7 @@ pub fn gpu_mb_init_contact_constraints(
                             -ax,
                             contact_constraint_jacs,
                             ang_col_offset,
+                            elem_stride,
                             true,
                         );
                         (AngVector::ZERO, AngVector::ZERO)
@@ -666,6 +681,109 @@ pub fn gpu_mb_init_contact_constraints(
     // The solve / finalize / remove-bias kernels iterate `0..count` so we
     // don't need to mark surplus slots inactive — they're never read.
     contact_constraint_count.write(mb_start + mb_idx as usize, count);
+}
+
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_mb_init_contact_constraints(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_jacobians: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_to_link: &[[u32; 2]],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    contact_constraint_count: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[SimParams],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let mb_idx = invocation_id.x;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
+    let col_start = batch_ids.mb_contact_constraint_columns_start(batch_id);
+    let col_base =
+        col_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize) * dofs_stride;
+    init_contact_constraints_body(
+        batch_id,
+        mb_idx,
+        *dt_uniform,
+        col_base,
+        dofs_stride,
+        1,
+        multibody_info,
+        body_jacobians,
+        body_to_link,
+        contact_constraints,
+        contact_constraint_jacs,
+        contact_constraint_count,
+        mprops,
+        poses,
+        contacts,
+        contacts_len,
+        all_params,
+        batch_ids,
+    );
+}
+
+/// `NEXUS_SOA_CONTACTS=1` entry: identical scan, but jac rows are written in
+/// the batch-interleaved SoA layout (`elem·NB + batch`), so the SoA
+/// finalize/solve kernels read them fully coalesced.
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_mb_init_contact_constraints_soa(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_jacobians: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_to_link: &[[u32; 2]],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    contact_constraints: &mut [MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    contact_constraint_count: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[SimParams],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] num_batches_u: &u32,
+) {
+    let batch_id = invocation_id.y;
+    let mb_idx = invocation_id.x;
+    let nb = *num_batches_u as usize;
+    let dofs_stride = batch_ids.dof_batch_capacity as usize;
+    let col_base = ((mb_idx as usize)
+        * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize)
+        * dofs_stride)
+        * nb
+        + batch_id as usize;
+    init_contact_constraints_body(
+        batch_id,
+        mb_idx,
+        *dt_uniform,
+        col_base,
+        dofs_stride * nb,
+        nb,
+        multibody_info,
+        body_jacobians,
+        body_to_link,
+        contact_constraints,
+        contact_constraint_jacs,
+        contact_constraint_count,
+        mprops,
+        poses,
+        contacts,
+        contacts_len,
+        all_params,
+        batch_ids,
+    );
 }
 
 /// Pass 2: for each emitted constraint, LU back-solve `M · column = Jᵀ`
