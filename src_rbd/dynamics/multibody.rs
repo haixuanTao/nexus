@@ -25,7 +25,8 @@ use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
     GpuIncJointColor, GpuMbComputeDynamicsPre, GpuMbComputeDynamicsWithoutCoriolisPre,
-    GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbInitContactConstraints,
+    GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbGravityRhs, GpuMbInitContactConstraints,
+    GpuMbLtdlLanes,
     GpuResetJointColor,
     GpuMbInitSolveJointWithBias, GpuMbIntegrate, GpuMbIntegrateVelocities,
     GpuMbIntegrateVelocitiesPackedDof, GpuMbRemoveSolveContactNoBias,
@@ -1870,10 +1871,24 @@ struct MotorScatterBundle {
     scatter: GpuScatterMotorTargets,
 }
 
+
+/// `NEXUS_ENV_PER_LANE=1`: run the tree-sparse LᵀDL factor + gravity solve
+/// one-multibody-per-LANE (`gpu_mb_gravity_rhs` + `gpu_mb_ltdl_lanes`)
+/// instead of serially on lane 0 of the fused `gpu_mb_gravity_and_lu`.
+fn env_per_lane() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("NEXUS_ENV_PER_LANE").is_ok_and(|v| v == "1"))
+}
+
 /// GPU shader bundle for multibody dynamics.
 #[derive(Shader)]
 pub struct GpuMultibodySolver {
     gravity_and_lu: GpuMbGravityAndLu,
+    /// `NEXUS_ENV_PER_LANE=1` path: phases 1–2 of `gravity_and_lu` only.
+    gravity_rhs: GpuMbGravityRhs,
+    /// `NEXUS_ENV_PER_LANE=1` path: tree-sparse LᵀDL factor + gravity solve,
+    /// one multibody per LANE (32 per warp) on global memory.
+    ltdl_lanes: GpuMbLtdlLanes,
     compute_dynamics_pre: GpuMbComputeDynamicsPre,
     compute_dynamics_without_coriolis_pre: GpuMbComputeDynamicsWithoutCoriolisPre,
     /// Fused init + solve-with-bias for joint limit/motor constraints.
@@ -2006,24 +2021,55 @@ impl GpuMultibodySolver {
         // (apply_gravity_with_coriolis → lu_factor_and_solve) — drops one
         // WebGPU dispatch per `compute_dynamics` call.
         let grav_lu_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
-        self.gravity_and_lu.call(
-            pass,
-            grav_lu_dispatch,
-            &mb.multibody_info,
-            &mb.links_static,
-            &mut mb.links_workspace,
-            &mb.links_mprops,
-            &mb.body_jacobians,
-            &mut mb.gen_forces,
-            &mut mb.mass_matrices,
-            &mut mb.lu_pivots,
-            &mb.dof_state,
-            &mb.num_multibodies,
-            &mb.gravity,
-            args.batch_indices,
-            &mb.dof_frictionloss,
-            &mut mb.motor_delay_state,
-        )?;
+        if env_per_lane() {
+            self.gravity_rhs.call(
+                pass,
+                grav_lu_dispatch,
+                &mb.multibody_info,
+                &mb.links_static,
+                &mut mb.links_workspace,
+                &mb.links_mprops,
+                &mb.body_jacobians,
+                &mut mb.gen_forces,
+                &mut mb.lu_pivots,
+                &mb.dof_state,
+                &mb.num_multibodies,
+                &mb.gravity,
+                args.batch_indices,
+                &mb.dof_frictionloss,
+                &mut mb.motor_delay_state,
+            )?;
+            self.ltdl_lanes.call(
+                pass,
+                [mb.num_batches * mb.multibodies_per_batch, 1, 1],
+                &mb.multibody_info,
+                &mut mb.mass_matrices,
+                &mut mb.gen_forces,
+                &mb.lu_pivots,
+                &mb.num_multibodies,
+                &mb.num_batches_uniform,
+                args.batch_indices,
+            )?;
+        } else {
+            self.gravity_and_lu.call(
+                pass,
+                grav_lu_dispatch,
+                &mb.multibody_info,
+                &mb.links_static,
+                &mut mb.links_workspace,
+                &mb.links_mprops,
+                &mb.body_jacobians,
+                &mut mb.gen_forces,
+                &mut mb.mass_matrices,
+                &mut mb.lu_pivots,
+                &mb.dof_state,
+                &mb.num_multibodies,
+                &mb.gravity,
+                args.batch_indices,
+                &mb.dof_frictionloss,
+                &mut mb.motor_delay_state,
+            )?;
+        }
 
         Ok(())
     }
@@ -2488,24 +2534,55 @@ impl GpuMultibodySolver {
 
         // Fused gravity + LU factor + LU solve.
         let grav_lu_dispatch = [mb.multibodies_per_batch * MB_LU_LANES, mb.num_batches, 1];
-        self.gravity_and_lu.call(
-            pass,
-            grav_lu_dispatch,
-            &mb.multibody_info,
-            &mb.links_static,
-            &mut mb.links_workspace,
-            &mb.links_mprops,
-            &mb.body_jacobians,
-            &mut mb.gen_forces,
-            &mut mb.mass_matrices,
-            &mut mb.lu_pivots,
-            &mb.dof_state,
-            &mb.num_multibodies,
-            &mb.gravity,
-            args.batch_indices,
-            &mb.dof_frictionloss,
-            &mut mb.motor_delay_state,
-        )?;
+        if env_per_lane() {
+            self.gravity_rhs.call(
+                pass,
+                grav_lu_dispatch,
+                &mb.multibody_info,
+                &mb.links_static,
+                &mut mb.links_workspace,
+                &mb.links_mprops,
+                &mb.body_jacobians,
+                &mut mb.gen_forces,
+                &mut mb.lu_pivots,
+                &mb.dof_state,
+                &mb.num_multibodies,
+                &mb.gravity,
+                args.batch_indices,
+                &mb.dof_frictionloss,
+                &mut mb.motor_delay_state,
+            )?;
+            self.ltdl_lanes.call(
+                pass,
+                [mb.num_batches * mb.multibodies_per_batch, 1, 1],
+                &mb.multibody_info,
+                &mut mb.mass_matrices,
+                &mut mb.gen_forces,
+                &mb.lu_pivots,
+                &mb.num_multibodies,
+                &mb.num_batches_uniform,
+                args.batch_indices,
+            )?;
+        } else {
+            self.gravity_and_lu.call(
+                pass,
+                grav_lu_dispatch,
+                &mb.multibody_info,
+                &mb.links_static,
+                &mut mb.links_workspace,
+                &mb.links_mprops,
+                &mb.body_jacobians,
+                &mut mb.gen_forces,
+                &mut mb.mass_matrices,
+                &mut mb.lu_pivots,
+                &mb.dof_state,
+                &mb.num_multibodies,
+                &mb.gravity,
+                args.batch_indices,
+                &mb.dof_frictionloss,
+                &mut mb.motor_delay_state,
+            )?;
+        }
 
         Ok(())
     }
