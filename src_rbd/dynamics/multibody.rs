@@ -1880,6 +1880,15 @@ fn env_per_lane() -> bool {
     *V.get_or_init(|| std::env::var("NEXUS_ENV_PER_LANE").is_ok_and(|v| v == "1"))
 }
 
+/// Standalone bundle for the layout microbench kernels (see
+/// `src_rbd_shaders/dynamics/multibody/layout_bench.rs`). Public so the
+/// zealot-side bench example can load them.
+#[derive(Shader)]
+pub struct LayoutBenchKernels {
+    pub env_major: crate::shaders::dynamics::GpuBenchFinalizeEnvMajor,
+    pub soa: crate::shaders::dynamics::GpuBenchFinalizeSoa,
+}
+
 /// GPU shader bundle for multibody dynamics.
 #[derive(Shader)]
 pub struct GpuMultibodySolver {
