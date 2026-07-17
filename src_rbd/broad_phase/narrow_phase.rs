@@ -64,13 +64,18 @@ impl GpuNarrowPhase {
     ) -> Result<(), GpuBackendError> {
         let num_batches = contacts_len.len() as u32;
         // Capacity-based grids for fixed-grid dispatch (see `crate::dispatch_grid`).
-        let nb = num_batches.max(1);
-        let pairs_grid = [
-            (collision_pairs.len() as u32 / nb).max(1).div_ceil(64),
-            num_batches,
-            1,
-        ];
-        let pfm_grid = [(pfm_pairs.len() as u32 / nb).max(1).div_ceil(64), num_batches, 1];
+        // These kernels are FLAT 1-D (post-#21 flatten): they thread off
+        // `global_invocation_id.x` with a grid-stride loop over ALL batches'
+        // pairs, using `num_threads = num_workgroups.x * WORKGROUP_SIZE` — the
+        // y/z dims are never read. The fixed grid MUST therefore be 1-D covering
+        // the whole flat capacity; the old `[x, num_batches, 1]` shape made every
+        // y-slice re-run the identical flat loop, so the atomic-append emitters
+        // (deferred site 7 / pfm_pfm site 8) wrote each contact `num_batches`
+        // times → contact/coloring blow-up (~19s/step, the known fixed-grid
+        // pathology). The indirect path was already 1-D (built by
+        // `flatten_batches`); this matches it.
+        let pairs_grid = [(collision_pairs.len() as u32).max(1).div_ceil(64), 1, 1];
+        let pfm_grid = [(pfm_pairs.len() as u32).max(1).div_ceil(64), 1, 1];
         self.reset_narrow_phase
             .call(pass, [1u32, num_batches, 1], contacts_len, pfm_pairs_len)?;
 
@@ -104,14 +109,14 @@ impl GpuNarrowPhase {
         // separate dispatch so each pass fits 8 storage buffers).
         self.narrow_phase_deferred.call(
             pass,
-            // KNOWN ISSUE: this kernel and pfm_pfm below, when BOTH launched with
-            // capacity-based fixed grids, trigger a host-side pathology on CUDA
-            // (~19s/step at 2048 batches, 100% host CPU; also the historical
-            // >16-batch illegal address before the len clamps). Either one on
-            // indirect dispatch is fine, and the two extra per-step syncs cost
-            // nothing measurable — so these two default to indirect until the
-            // interaction is understood. NEXUS_FIXED_MASK still overrides.
-            crate::dispatch_grid_tagged_default_indirect(collision_pairs_indirect, pairs_grid, 7),
+            // FIXED (was default-indirect): the "~19s/step, 100% host CPU"
+            // pathology was a stale 2-D fixed grid `[x, num_batches, 1]` — these
+            // flat kernels only thread off `num_workgroups.x`, so every y-slice
+            // re-ran the whole flat loop and the atomic-append emitters wrote each
+            // contact `num_batches` times, exploding contact/coloring. The grid is
+            // now 1-D (see above), so fixed dispatch is correct here and drops the
+            // per-step host sync that blocked CUDA-graph capture.
+            crate::dispatch_grid_tagged(collision_pairs_indirect, pairs_grid, 7),
             collision_pairs,
             pairs_offsets,
             poses,
@@ -133,7 +138,7 @@ impl GpuNarrowPhase {
         )?;
         self.narrow_phase_pfm_pfm.call(
             pass,
-            crate::dispatch_grid_tagged_default_indirect(&*pfm_pairs_indirect, pfm_grid, 8),
+            crate::dispatch_grid_tagged(&*pfm_pairs_indirect, pfm_grid, 8),
             contacts,
             contacts_len,
             pfm_pairs,

@@ -304,13 +304,17 @@ impl RbdPipeline {
 
         // Keep the fused-kernel color-count uniform in sync (the count only
         // moves when the Grow policy raises `max_colors`, so this is rare).
+        // Update IN PLACE via a stream-ordered H2D write — NOT a realloc:
+        // `Tensor::scalar` here would `cudaMalloc` inside the step, which is
+        // illegal during CUDA-graph capture (STREAM_CAPTURE_INVALIDATED). The
+        // buffer is pre-sized with COPY_DST at state build; `write_buffer` is a
+        // `cuMemcpyHtoDAsync` on the captured stream, so it is capture-safe. And
+        // during capture `num_colors` is constant (max_colors only ratchets in
+        // auto_resize, outside the captured region), so this branch is skipped
+        // then anyway.
         if state.num_colors_uniform_cpu != num_colors {
-            state.num_colors_uniform = vortx::tensor::Tensor::scalar(
-                backend,
-                num_colors,
-                BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            )
-            .unwrap();
+            backend
+                .write_buffer(state.num_colors_uniform.buffer_mut(), 0, &[num_colors])?;
             state.num_colors_uniform_cpu = num_colors;
         }
         // One 64-lane workgroup per env stages that env's velocities in shared
