@@ -131,6 +131,22 @@ pub struct RbdSimParams {
 
     /// The number of solver iterations run by the constraints solver for calculating forces (default: `4`).
     pub num_solver_iterations: u32,
+
+    /// Gravity applied to free (non-multibody) rigid bodies, in world space
+    /// (default: `[0, -9.81, 0]`, i.e. Y-down — the value this was hardcoded to
+    /// before it became configurable).
+    ///
+    /// Stored as three scalars rather than a `Vector`: `all_params` is a
+    /// storage buffer (std430), where a `vec3` member aligns to 16 bytes while
+    /// the host's `repr(C)` aligns it to 4 — the mismatch would silently
+    /// corrupt every field after it. Scalars align to 4 on both sides.
+    ///
+    /// Multibody links take their gravity from
+    /// [`GpuMultibodySet::set_gravity`](crate::dynamics::multibody) instead, so
+    /// a scene with both must set the two consistently.
+    pub gravity_x: f32,
+    pub gravity_y: f32,
+    pub gravity_z: f32,
 }
 
 impl RbdSimParams {
@@ -151,6 +167,9 @@ impl RbdSimParams {
             normalized_max_corrective_velocity: 10.0,
             normalized_prediction_distance: 0.002,
             length_unit: 1.0,
+            gravity_x: 0.0,
+            gravity_y: -9.81,
+            gravity_z: 0.0,
         }
     }
 }
@@ -162,6 +181,19 @@ impl Default for RbdSimParams {
 }
 
 impl RbdSimParams {
+    /// Gravity for free (non-multibody) bodies, as a `Vector`.
+    #[cfg(feature = "dim3")]
+    pub fn gravity(&self) -> crate::Vector {
+        crate::Vector::new(self.gravity_x, self.gravity_y, self.gravity_z)
+    }
+
+    /// Gravity for free (non-multibody) bodies, as a `Vector`. `gravity_z` is
+    /// ignored in 2D.
+    #[cfg(feature = "dim2")]
+    pub fn gravity(&self) -> crate::Vector {
+        crate::Vector::new(self.gravity_x, self.gravity_y)
+    }
+
     /// Computes the inverse timestep (1/dt). Returns 0.0 if dt is zero.
     pub fn inv_dt(&self) -> f32 {
         if self.dt == 0.0 { 0.0 } else { 1.0 / self.dt }

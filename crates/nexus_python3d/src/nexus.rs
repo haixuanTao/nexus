@@ -12,8 +12,9 @@ use khal::backend::GpuTimestamps as RGpuTimestamps;
 use nexus3d::prelude::{
     NexusPipeline as RNexusPipeline, NexusPipelineMask, NexusState as RNexusState,
 };
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use rapier3d::prelude as rp;
 
 /// Maps a GPU backend error to a Python exception.
@@ -268,6 +269,211 @@ impl NexusState {
     /// `viewer`; batch environments are physics-only (the viewer draws env 0).
     /// Returns scene info (suggested camera + whether the scene is Z-up).
     /// Call `finalize` after.
+    /// Reads the current simulation parameters (environment 0) as a dict.
+    ///
+    /// Keys match the `set_sim_params` keywords. `dt` is the outer timestep, not
+    /// the per-substep one the GPU consumes.
+    fn sim_params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let Some(sp) = self.0.rbd_sim_params().first() else {
+            return Ok(d);
+        };
+        d.set_item("dt", sp.dt)?;
+        d.set_item("num_solver_iterations", sp.num_solver_iterations)?;
+        d.set_item("gravity", (sp.gravity_x, sp.gravity_y, sp.gravity_z))?;
+        d.set_item("contact_natural_frequency", sp.contact_natural_frequency)?;
+        d.set_item("contact_damping_ratio", sp.contact_damping_ratio)?;
+        d.set_item("joint_natural_frequency", sp.joint_natural_frequency)?;
+        d.set_item("joint_damping_ratio", sp.joint_damping_ratio)?;
+        d.set_item("warmstart_coefficient", sp.warmstart_coefficient)?;
+        d.set_item("length_unit", sp.length_unit)?;
+        d.set_item(
+            "normalized_allowed_linear_error",
+            sp.normalized_allowed_linear_error,
+        )?;
+        d.set_item(
+            "normalized_max_corrective_velocity",
+            sp.normalized_max_corrective_velocity,
+        )?;
+        d.set_item(
+            "normalized_prediction_distance",
+            sp.normalized_prediction_distance,
+        )?;
+        Ok(d)
+    }
+
+    /// Overrides simulation parameters for every environment. Every argument is
+    /// optional; `None` (the default) leaves that parameter untouched, so this
+    /// never changes behaviour unless a value is passed.
+    ///
+    /// Defaults, from rapier's TGS-soft configuration:
+    ///   dt=1/60, num_solver_iterations=4, gravity=(0, -9.81, 0),
+    ///   contact_natural_frequency=30, contact_damping_ratio=5,
+    ///   joint_natural_frequency=1e6, joint_damping_ratio=1,
+    ///   warmstart_coefficient=1, length_unit=1,
+    ///   normalized_allowed_linear_error=0.001,
+    ///   normalized_max_corrective_velocity=10,
+    ///   normalized_prediction_distance=0.002
+    ///
+    /// `dt` matters for benchmarks: `simulate` advances one outer `dt`, which is
+    /// 1/60 by default no matter what timestep the scene's MJCF declares — the
+    /// importer does not read it. Set it explicitly to compare against engines
+    /// stepping at a different rate.
+    ///
+    /// `gravity` also updates the multibody gravity, so it stays equivalent to
+    /// `set_rbd_gravity`. Safe before or after `finalize`; `num_solver_iterations`
+    /// is the exception — it fixes a dispatch count at `finalize`, so changing it
+    /// afterwards rescales the substep dt without changing iterations actually run.
+    #[pyo3(signature = (viewer, *, dt=None, num_solver_iterations=None, gravity=None,
+                        contact_natural_frequency=None, contact_damping_ratio=None,
+                        joint_natural_frequency=None, joint_damping_ratio=None,
+                        warmstart_coefficient=None, length_unit=None,
+                        normalized_allowed_linear_error=None,
+                        normalized_max_corrective_velocity=None,
+                        normalized_prediction_distance=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn set_sim_params(
+        &mut self,
+        viewer: PyRef<NexusViewer>,
+        dt: Option<f32>,
+        num_solver_iterations: Option<u32>,
+        gravity: Option<(f32, f32, f32)>,
+        contact_natural_frequency: Option<f32>,
+        contact_damping_ratio: Option<f32>,
+        joint_natural_frequency: Option<f32>,
+        joint_damping_ratio: Option<f32>,
+        warmstart_coefficient: Option<f32>,
+        length_unit: Option<f32>,
+        normalized_allowed_linear_error: Option<f32>,
+        normalized_max_corrective_velocity: Option<f32>,
+        normalized_prediction_distance: Option<f32>,
+    ) -> PyResult<()> {
+        if let Some(dt) = dt {
+            if !(dt > 0.0) {
+                return Err(PyValueError::new_err(format!("dt must be > 0 (got {dt})")));
+            }
+        }
+        if let Some(n) = num_solver_iterations {
+            if n == 0 {
+                return Err(PyValueError::new_err("num_solver_iterations must be >= 1"));
+            }
+        }
+        let backend = viewer.backend();
+        self.0.update_rbd_sim_params(backend, |sp| {
+            if let Some(v) = dt {
+                sp.dt = v;
+            }
+            if let Some(v) = num_solver_iterations {
+                sp.num_solver_iterations = v;
+            }
+            if let Some((x, y, z)) = gravity {
+                sp.gravity_x = x;
+                sp.gravity_y = y;
+                sp.gravity_z = z;
+            }
+            if let Some(v) = contact_natural_frequency {
+                sp.contact_natural_frequency = v;
+            }
+            if let Some(v) = contact_damping_ratio {
+                sp.contact_damping_ratio = v;
+            }
+            if let Some(v) = joint_natural_frequency {
+                sp.joint_natural_frequency = v;
+            }
+            if let Some(v) = joint_damping_ratio {
+                sp.joint_damping_ratio = v;
+            }
+            if let Some(v) = warmstart_coefficient {
+                sp.warmstart_coefficient = v;
+            }
+            if let Some(v) = length_unit {
+                sp.length_unit = v;
+            }
+            if let Some(v) = normalized_allowed_linear_error {
+                sp.normalized_allowed_linear_error = v;
+            }
+            if let Some(v) = normalized_max_corrective_velocity {
+                sp.normalized_max_corrective_velocity = v;
+            }
+            if let Some(v) = normalized_prediction_distance {
+                sp.normalized_prediction_distance = v;
+            }
+        });
+        // Keep the multibody gravity in step with the free-body one.
+        if let Some((x, y, z)) = gravity {
+            self.0.set_rbd_gravity(backend, [x, y, z]);
+        }
+        Ok(())
+    }
+
+    /// Blocking readback of GPU body poses as `(x, y, z, qx, qy, qz, qw)`,
+    /// indexed by `gpu_id` (bodies of every environment, concatenated).
+    ///
+    /// Unlike `rapier_debug_bodies`, which reads the CPU-side staging world and
+    /// therefore always reports the *initial* pose, this observes what the GPU
+    /// solver actually computed. Stalls the pipeline — use it to check results,
+    /// not inside a timed loop.
+    fn rbd_body_poses(&mut self, viewer: PyRef<NexusViewer>) -> Vec<(f32, f32, f32, f32, f32, f32, f32)> {
+        self.0
+            .rbd_read_body_poses(viewer.backend())
+            .into_iter()
+            .map(|p| {
+                let t = p.translation;
+                let r = p.rotation;
+                (t.x, t.y, t.z, r.x, r.y, r.z, r.w)
+            })
+            .collect()
+    }
+
+    /// Solver color passes per stage, and the coloring iteration count.
+    ///
+    /// The first value is `max_colors + 1` — the configured *capacity*, not a
+    /// count of colors the scene actually needed. The solver walks it
+    /// sequentially (`for _ in 0..num_colors`, per stage, per solver iteration),
+    /// so it is a direct multiplier on dispatches per step regardless of how
+    /// many colors the contact graph really uses. Pair with `set_max_colors`.
+    ///
+    /// The second value is always 0: `coloring_iterations` is declared on
+    /// `RunStats` but never assigned by the pipeline.
+    /// Per-pass GPU times from the last `simulate` as `[(label, ms), ...]`,
+    /// plus the total, e.g. `state.gpu_pass_times()`. Empty unless that
+    /// `simulate` call was given a `GpuTimestamps` — timing queries are only
+    /// encoded when one is passed.
+    fn gpu_pass_times(&self) -> (Vec<(String, f64)>, f64) {
+        (
+            self.0.run_stats.gpu_pass_times.clone(),
+            self.0.run_stats.gpu_total_time_ms,
+        )
+    }
+
+    fn solver_color_passes(&self) -> (u32, u32) {
+        (
+            self.0.run_stats.num_colors,
+            self.0.run_stats.coloring_iterations,
+        )
+    }
+
+    /// Cap the solver's sequential color passes (default 8, i.e. 9 passes).
+    ///
+    /// The solver walks `0..max_colors + 1` per stage per substep, over this
+    /// *capacity* rather than the colors the contact graph actually needs — so
+    /// a scene simpler than the default pays for passes it never uses. A single
+    /// free cube needs 2 and runs ~2x faster set to 2; an articulated robot
+    /// needs ~7, where the default is already about right.
+    ///
+    /// This is a performance knob, not a correctness one. Setting it too low
+    /// makes the bounded coloring fail to converge, and the default `Grow`
+    /// policy then adds 5 until it does (rbd_step.rs), converging on identical
+    /// physics — measured bit-identical across 1..=8 on a 12-DOF robot. The
+    /// costs of under-provisioning are the overshoot (asking for 4 can settle
+    /// at 15 passes, worse than asking for 8) and a transient window during the
+    /// first frames, before the readback-driven growth catches up.
+    ///
+    /// Call before `finalize`.
+    fn set_max_colors(&mut self, max_colors: u32) {
+        self.0.set_rbd_solver_colors(max_colors);
+    }
+
     #[pyo3(signature = (viewer, scene_path, render_colliders=false, env=0))]
     fn insert_mjcf(
         &mut self,

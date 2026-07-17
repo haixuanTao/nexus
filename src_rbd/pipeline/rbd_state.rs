@@ -322,6 +322,37 @@ impl RbdState {
         self.multibodies.set_gravity(backend, gravity);
     }
 
+    /// Re-uploads the per-environment simulation parameters after the state has
+    /// been built, so `dt`, gravity, solver iterations etc. can be changed
+    /// without rebuilding the whole scene.
+    ///
+    /// `params` is one entry per environment, in batch order, holding the
+    /// *outer* dt. This applies the same substep division and constraint-softness
+    /// refresh as the initial build, so it must stay in sync with the tensor
+    /// construction in `rbd_state_from_rapier` / `insertion_removal`.
+    ///
+    /// Note `num_solver_iterations` only takes effect for the substep dt here —
+    /// the dispatch count baked in at build time is unchanged, so changing it
+    /// still needs a rebuild.
+    pub fn upload_sim_params(&mut self, backend: &GpuBackend, params: &[RbdSimParams]) {
+        if params.is_empty() {
+            return;
+        }
+        let substepped: Vec<RbdSimParams> = params
+            .iter()
+            .map(|sp| {
+                let mut sp = *sp;
+                sp.dt /= sp.num_solver_iterations as f32;
+                sp
+            })
+            .collect();
+        if let Ok(t) = Tensor::vector(backend, &substepped, BufferUsages::STORAGE) {
+            self.sim_params = t;
+        }
+        // Contact/joint softness is derived in-shader from these params on this
+        // line (no separate ConstraintSoftness buffer), so the upload is complete.
+    }
+
     /// Per-collider world pose.
     pub fn collider_world_poses(&self) -> &Tensor<Pose> {
         &self.collider_world_poses
