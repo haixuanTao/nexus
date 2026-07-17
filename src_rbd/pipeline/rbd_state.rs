@@ -1,5 +1,8 @@
 //! GPU-resident rigid-body state ([`RbdState`]): buffer definitions, accessors,
 //! run statistics and capacity/resize policies.
+use crate::math::Vector;
+#[cfg(feature = "dim3")]
+use crate::dynamics::GpuMultibodySnapshot;
 use crate::broad_phase::LbvhState;
 use crate::dynamics::GpuImpulseJointSet;
 #[cfg(feature = "dim3")]
@@ -500,5 +503,156 @@ pub(super) fn world_mprops_from_local(
             com: *pose * local.com,
             padding1: 0,
         }
+    }
+}
+
+impl RbdState {
+    /// Reset a single environment in-place to the state of a freshly built
+    /// single-env state `src` (which must describe one batch with the same scene
+    /// layout as this one). Copies the per-env carry-over state — body poses,
+    /// velocities, and the multibody joint-space state — so env `dst_env` starts
+    /// fresh while the other environments keep running. The per-step scratch
+    /// (contacts, constraints, colors, broad-phase) is recomputed each step and
+    /// needs no copy. This is the per-env "reset" RL environments need.
+    #[cfg(feature = "dim3")]
+    pub async fn reset_env_from(&mut self, backend: &GpuBackend, dst_env: u32, src: &RbdState) {
+        let nb = self.num_batches as u64;
+        // body_poses + velocities (per-batch slabs; stride = len / num_batches)
+        let mut bp = bytemuck::zeroed_vec(src.body_poses.len() as usize);
+        backend.slow_read_buffer(src.body_poses.buffer(), &mut bp).await.unwrap();
+        let bps = (self.body_poses.len() / nb) as usize;
+        backend
+            .write_buffer(self.body_poses.buffer_mut(), dst_env as u64 * bps as u64, &bp[..bps])
+            .unwrap();
+
+        let mut vv = bytemuck::zeroed_vec(src.vels.len() as usize);
+        backend.slow_read_buffer(src.vels.buffer(), &mut vv).await.unwrap();
+        let vs = (self.vels.len() / nb) as usize;
+        backend
+            .write_buffer(self.vels.buffer_mut(), dst_env as u64 * vs as u64, &vv[..vs])
+            .unwrap();
+
+        self.multibodies.reset_env_from(backend, dst_env, &src.multibodies).await;
+    }
+
+    /// Read this (template) physics state off the GPU into a CPU snapshot. Call
+    /// once per template at setup; pass the result to
+    /// [`Self::reset_env_from_snapshot`] for readback-free per-env resets.
+    #[cfg(feature = "dim3")]
+    pub async fn snapshot(&self, backend: &GpuBackend) -> RbdSnapshot {
+        let mut body_poses = bytemuck::zeroed_vec(self.body_poses.len() as usize);
+        backend.slow_read_buffer(self.body_poses.buffer(), &mut body_poses).await.unwrap();
+        let mut vels = bytemuck::zeroed_vec(self.vels.len() as usize);
+        backend.slow_read_buffer(self.vels.buffer(), &mut vels).await.unwrap();
+        let mb = self.multibodies.snapshot(backend).await;
+        RbdSnapshot { body_poses, vels, mb }
+    }
+
+    /// Reset env `dst_env` from a CPU snapshot using `write_buffer` only — no
+    /// GPU→CPU readback. Equivalent to [`Self::reset_env_from`] against a template
+    /// matching `snap`, but eliminates the ~6 per-reset sync stalls that dominate
+    /// reset cost on the WebGPU backend.
+    #[cfg(feature = "dim3")]
+    pub fn reset_env_from_snapshot(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &RbdSnapshot,
+    ) {
+        let nb = self.num_batches as u64;
+        let bps = (self.body_poses.len() / nb) as usize;
+        backend
+            .write_buffer(self.body_poses.buffer_mut(), dst_env as u64 * bps as u64, &snap.body_poses[..bps])
+            .unwrap();
+        let vs = (self.vels.len() / nb) as usize;
+        backend
+            .write_buffer(self.vels.buffer_mut(), dst_env as u64 * vs as u64, &snap.vels[..vs])
+            .unwrap();
+        self.multibodies.reset_env_from_snapshot(backend, dst_env, &snap.mb);
+    }
+
+    /// Pre-size the collision-pair / contact / constraint buffers to at least
+    /// `per_batch` entries per batch — the same allocations the lazy in-step
+    /// resize performs, done eagerly. Use before CUDA-graph capture on scenes
+    /// whose contact counts grow over time (e.g. terrain curricula): growth is
+    /// impossible after capture, and overflowing pairs are silently dropped.
+    #[cfg(feature = "dim3")]
+    pub fn reserve_contacts(&mut self, backend: &GpuBackend, per_batch: u32) {
+        let current = self.collision_pairs.len() as u32 / self.num_batches;
+        if per_batch <= current {
+            return;
+        }
+        let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+        let desired_len = per_batch.next_power_of_two();
+        let nb = self.num_batches;
+        self.collision_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.collision_pairs_per_batch_cpu = desired_len;
+        self.contacts_per_batch_cpu = desired_len;
+        self.contacts = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.pfm_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.old_constraints = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.old_constraint_builders =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.old_body_constraint_ids =
+            Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
+        self.new_constraints = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.new_constraint_builders =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.new_body_constraint_ids =
+            Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
+        self.constraints_colors =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.colored = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.constraints_rands =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.collision_pairs_per_batch_cpu = desired_len;
+        self.contacts_per_batch_cpu = desired_len;
+        self.rebuild_batch_indices(backend);
+    }
+
+    /// [`Self::reset_env_from_snapshot`] with the robot rigidly translated by
+    /// `offset` (world frame) — the teleport primitive for terrain-curriculum
+    /// style spawn placement. Only floating-base multibody links move; fixed
+    /// bodies (ground, terrain) keep their snapshot poses. Costs one small
+    /// snapshot clone per call (single-env sized).
+    #[cfg(feature = "dim3")]
+    pub fn reset_env_from_snapshot_offset(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &RbdSnapshot,
+        offset: Vector,
+    ) {
+        let moved = snap.translated(offset);
+        self.reset_env_from_snapshot(backend, dst_env, &moved);
+    }
+}
+
+/// CPU-side snapshot of one (single-batch) physics template — body poses,
+/// velocities, and the multibody joint-space state — read off the GPU once for
+/// readback-free resets. See [`RbdState::snapshot`].
+#[cfg(feature = "dim3")]
+#[derive(Clone)]
+pub struct RbdSnapshot {
+    body_poses: Vec<Pose>,
+    vels: Vec<GpuVelocity>,
+    mb: GpuMultibodySnapshot,
+}
+
+#[cfg(feature = "dim3")]
+impl RbdSnapshot {
+    /// A copy with every floating-base multibody translated by `offset`:
+    /// the affected links' `body_poses` plus the multibody workspace (root
+    /// free-joint coords, local_to_parent, per-link local_to_world). Fixed
+    /// bodies (ground/terrain) and velocities are untouched.
+    pub fn translated(&self, offset: Vector) -> RbdSnapshot {
+        let mut out = self.clone();
+        out.mb = self.mb.translated(offset);
+        self.mb.for_each_link_rb_id(|rb_id| {
+            if let Some(p) = out.body_poses.get_mut(rb_id as usize) {
+                p.translation += offset;
+            }
+        });
+        out
     }
 }
