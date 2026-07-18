@@ -16,6 +16,7 @@ use crate::{PaddedVector, Pose, Vector};
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
+use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::{
     iter::StepRng,
     sync::{atomic_add_u32, atomic_load_u32},
@@ -50,26 +51,41 @@ pub fn gpu_reset_narrow_phase(
 
 /// Initializes indirect dispatch arguments for constraint solver.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(256)))]
 pub fn gpu_narrow_phase_init_contacts_dispatch(
-    // NOTE: the `contacts_len` is mutable here even though we don’t modify it. That’s
-    //       because we access it with an atomic load otherwise it would occasionally read
-    //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
-    //       https://github.com/gfx-rs/wgpu/issues/9221
+    #[spirv(local_invocation_id)] lid_v: UVec3,
+    // NOTE: mutable only for `atomic_load_u32` (wgpu stale-read workaround).
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
+    #[spirv(workgroup)] partial: &mut [u32; 256],
 ) {
-    // For indirect dispatch, get the largest length along all batch dimensions.
+    // Parallel max-reduction over the per-batch lengths (contact grids). Replaces a
+    // single-thread serial loop (~num_batches dependent atomic loads). Max is
+    // associative — bit-identical result; host dispatch unchanged.
+    let lid = lid_v.x as usize;
     let num_batches = contacts_len.len();
-    let mut highest_contacts_len = 0;
-    for i in 0..num_batches {
-        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `contacts_len`).
-        highest_contacts_len = highest_contacts_len.max(atomic_load_u32(contacts_len.at_mut(i)));
+    let mut local = 0u32;
+    let mut i = lid;
+    while i < num_batches {
+        local = local.max(atomic_load_u32(contacts_len.at_mut(i)));
+        i += 256;
     }
-
-    *indirect_args.at_mut(0) = highest_contacts_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = num_batches as u32;
-    *indirect_args.at_mut(2) = 1;
+    partial.write(lid, local);
+    workgroup_memory_barrier_with_group_sync();
+    let mut stride = 128usize;
+    while stride > 0 {
+        if lid < stride {
+            let v = partial.read(lid).max(partial.read(lid + stride));
+            partial.write(lid, v);
+        }
+        workgroup_memory_barrier_with_group_sync();
+        stride /= 2;
+    }
+    if lid == 0 {
+        *indirect_args.at_mut(0) = partial.read(0).div_ceil(WORKGROUP_SIZE);
+        *indirect_args.at_mut(1) = num_batches as u32;
+        *indirect_args.at_mut(2) = 1;
+    }
 }
 
 /// Builds the flat-dispatch layout for a per-batch work-list: exclusive prefix
@@ -85,8 +101,9 @@ pub fn gpu_narrow_phase_init_contacts_dispatch(
 /// Serial over batches in one thread — same pattern (and cost) as the existing
 /// `gpu_narrow_phase_init_contacts_dispatch` max-scan.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(256)))]
 pub fn gpu_flatten_batches_dispatch(
+    #[spirv(local_invocation_id)] lid_v: UVec3,
     // NOTE: `lens` is mutable only for `atomic_load_u32` (see the note on
     //       `gpu_narrow_phase_init_contacts_dispatch`).
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] lens: &mut [u32],
@@ -94,21 +111,52 @@ pub fn gpu_flatten_batches_dispatch(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] offsets: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] indirect_args: &mut [u32; 3],
     #[spirv(uniform, descriptor_set = 0, binding = 3)] batch_ids: &BatchIndices,
+    #[spirv(workgroup)] partial: &mut [u32; 256],
 ) {
+    // Parallel chunked exclusive prefix sum. The old single-thread loop was
+    // ~num_batches dependent global atomic loads (~300 µs at 2048 batches,
+    // linear in envs — ~20%-of-physics bookkeeping together with the two
+    // init_dispatch reductions). Integer addition is associative, so this is
+    // BIT-IDENTICAL to the serial scan. Host dispatch is unchanged (thread
+    // count 1 rounds up to one 256-lane workgroup).
+    let lid = lid_v.x as usize;
     let num_batches = lens.len();
-    // Same clamp as the consuming kernels: a batch's list may overflow its
-    // capacity slot; the overflowing tail was never written and must not be
-    // walked.
     let capacity = batch_ids.contacts_batch_capacity;
-    let mut total = 0u32;
-    for i in 0..num_batches {
-        offsets.write(i, total);
-        total += atomic_load_u32(lens.at_mut(i)).min(capacity);
+    let chunk = num_batches.div_ceil(256);
+    let start = lid * chunk;
+    let end = (start + chunk).min(num_batches);
+
+    let mut sum = 0u32;
+    let mut i = start;
+    while i < end {
+        sum += atomic_load_u32(lens.at_mut(i)).min(capacity);
+        i += 1;
     }
-    offsets.write(num_batches, total);
-    *indirect_args.at_mut(0) = total.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = 1;
-    *indirect_args.at_mut(2) = 1;
+    partial.write(lid, sum);
+    workgroup_memory_barrier_with_group_sync();
+    if lid == 0 {
+        let mut acc = 0u32;
+        for t in 0..256usize {
+            let v = partial.read(t);
+            partial.write(t, acc);
+            acc += v;
+        }
+    }
+    workgroup_memory_barrier_with_group_sync();
+    let mut acc = partial.read(lid);
+    let mut i = start;
+    while i < end {
+        offsets.write(i, acc);
+        acc += atomic_load_u32(lens.at_mut(i)).min(capacity);
+        i += 1;
+    }
+    // The thread owning the final element publishes the total + indirect args.
+    if end == num_batches && start < num_batches || (num_batches == 0 && lid == 0) {
+        offsets.write(num_batches, acc);
+        *indirect_args.at_mut(0) = acc.div_ceil(WORKGROUP_SIZE);
+        *indirect_args.at_mut(1) = 1;
+        *indirect_args.at_mut(2) = 1;
+    }
 }
 
 /// Largest `b` with `offsets[b] <= t` — the batch owning flat item `t`.

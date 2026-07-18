@@ -66,28 +66,41 @@ pub fn gpu_lbvh_reset_collision_pairs(
 
 /// Initializes indirect dispatch arguments for narrow phase.
 #[spirv_bindgen]
-#[spirv(compute(threads(1)))]
+#[spirv(compute(threads(256)))]
 pub fn gpu_lbvh_init_dispatch(
-    // TODO: take the batch dimension as argument (instead of relying on the len of `collision_pairs_len`)?
-    // NOTE: the `collision_pairs_len` is mutable here even though we don’t modify it. That’s
-    //       because we access it with an atomic load otherwise it would occasionally read
-    //       stale data (on Windows+Nvidia+wgpu backend). This might be caused by:
-    //       https://github.com/gfx-rs/wgpu/issues/9221
+    #[spirv(local_invocation_id)] lid_v: UVec3,
+    // NOTE: mutable only for `atomic_load_u32` (wgpu stale-read workaround).
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] collision_pairs_len: &mut [u32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] indirect_args: &mut [u32; 3],
+    #[spirv(workgroup)] partial: &mut [u32; 256],
 ) {
-    // For indirect dispatch, get the largest length along all batch dimensions.
+    // Parallel max-reduction over the per-batch lengths (LBVH pair grids). Replaces a
+    // single-thread serial loop (~num_batches dependent atomic loads). Max is
+    // associative — bit-identical result; host dispatch unchanged.
+    let lid = lid_v.x as usize;
     let num_batches = collision_pairs_len.len();
-    let mut highest_pairs_len = 0;
-    for batch_id in 0..num_batches {
-        // NOTE: atomic_load is needed for correctness on some platforms (see comment above `collision_pairs_len`).
-        highest_pairs_len =
-            highest_pairs_len.max(atomic_load_u32(collision_pairs_len.at_mut(batch_id)));
+    let mut local = 0u32;
+    let mut i = lid;
+    while i < num_batches {
+        local = local.max(atomic_load_u32(collision_pairs_len.at_mut(i)));
+        i += 256;
     }
-
-    *indirect_args.at_mut(0) = highest_pairs_len.div_ceil(WORKGROUP_SIZE);
-    *indirect_args.at_mut(1) = num_batches as u32;
-    *indirect_args.at_mut(2) = 1;
+    partial.write(lid, local);
+    workgroup_memory_barrier_with_group_sync();
+    let mut stride = 128usize;
+    while stride > 0 {
+        if lid < stride {
+            let v = partial.read(lid).max(partial.read(lid + stride));
+            partial.write(lid, v);
+        }
+        workgroup_memory_barrier_with_group_sync();
+        stride /= 2;
+    }
+    if lid == 0 {
+        *indirect_args.at_mut(0) = partial.read(0).div_ceil(WORKGROUP_SIZE);
+        *indirect_args.at_mut(1) = num_batches as u32;
+        *indirect_args.at_mut(2) = 1;
+    }
 }
 
 /// Runs a reduction to compute the AABB of the collider positions.
