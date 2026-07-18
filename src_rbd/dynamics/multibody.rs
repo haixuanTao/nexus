@@ -1890,7 +1890,7 @@ struct MotorScatterBundle {
 /// instead of serially on lane 0 of the fused `gpu_mb_gravity_and_lu`.
 fn env_per_lane() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("NEXUS_ENV_PER_LANE").is_ok_and(|v| v == "1"))
+    *V.get_or_init(|| std::env::var("NEXUS_ENV_PER_LANE").map(|v| v != "0").unwrap_or(true))
 }
 
 /// Standalone bundle for the layout microbench kernels (see
