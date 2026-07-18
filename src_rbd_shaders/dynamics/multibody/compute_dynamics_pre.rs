@@ -42,6 +42,9 @@ use crate::utils::linalg::{
     gemm_omega_skew_tr_cross_buf_par, gemm_skew_tr_lhs_cross_buf_par, gemm_skew_tr_lhs_par,
     gemm_tr_par, quadform_spatial_par,
 };
+#[cfg(feature = "dim3")]
+use crate::utils::linalg::{quadform_spatial_chain_par,
+};
 use crate::utils::{BatchIndices, Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross_av};
 use parry::math::VectorExt;
@@ -533,6 +536,9 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
     #[spirv(workgroup)] _cpu_marker: &mut u32,
+    // Ancestor-chain DOF list for the current link (chain-bounded CRBA);
+    // slot 32 holds the length. Lane 0 writes, all lanes read after a barrier.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 33],
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -603,6 +609,31 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
             }
         }
 
+        // Build link k's ancestor-chain DOF list (the only nonzero jacobian
+        // columns) — lane 0 walks the link parents; uniform barrier before use.
+        #[cfg(feature = "dim3")]
+        {
+            if lane == 0 && k < num_links {
+                let mut clen = 0u32;
+                let mut a = k;
+                for _ in 0..MAX_MB_DOFS as u32 {
+                    let sd = stat_slice[a as usize];
+                    let mut t = 0u32;
+                    while t < sd.ndofs {
+                        chain_buf.write(clen as usize, sd.assembly_id + t);
+                        clen += 1;
+                        t += 1;
+                    }
+                    if a == 0 {
+                        break;
+                    }
+                    a = sd.parent_link_id;
+                }
+                chain_buf.write(32, clen);
+            }
+            workgroup_memory_barrier_with_group_sync();
+        }
+
         if active {
             let ws = &ws_slice[k as usize];
             let lmp = local_mprops_slice[k as usize];
@@ -615,6 +646,22 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
                 ndofs,
             );
 
+            #[cfg(feature = "dim3")]
+            quadform_spatial_chain_par(
+                mass_matrices,
+                acc_augmented_mass,
+                1.0,
+                mass,
+                inertia,
+                body_jacobians,
+                body_jacobian,
+                1.0,
+                chain_buf,
+                chain_buf.read(32),
+                lane,
+                LANES,
+            );
+            #[cfg(feature = "dim2")]
             quadform_spatial_par(
                 mass_matrices,
                 acc_augmented_mass,
