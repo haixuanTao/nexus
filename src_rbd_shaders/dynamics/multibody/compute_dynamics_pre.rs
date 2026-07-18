@@ -88,6 +88,8 @@ pub fn gpu_mb_compute_dynamics_pre(
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
     #[spirv(workgroup)] _cpu_marker: &mut u32,
+    // Per-link kinematic-tree DOF bitmasks (see update_body_jacobians).
+    #[spirv(workgroup)] jac_masks: &mut [u32; MAX_MB_DOFS as usize],
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -142,7 +144,7 @@ pub fn gpu_mb_compute_dynamics_pre(
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
+    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians, jac_masks);
 
     // 3) Propagate velocities (single-threaded)
     if lane == 0 {
@@ -539,6 +541,8 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     // Ancestor-chain DOF list for the current link (chain-bounded CRBA);
     // slot 32 holds the length. Lane 0 writes, all lanes read after a barrier.
     #[spirv(workgroup)] chain_buf: &mut [u32; 33],
+    // Per-link kinematic-tree DOF bitmasks (see update_body_jacobians).
+    #[spirv(workgroup)] jac_masks: &mut [u32; MAX_MB_DOFS as usize],
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -585,7 +589,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
+    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians, jac_masks);
 
     // 3) Velocities propagation (single-threaded)
     if lane == 0 {
@@ -802,6 +806,11 @@ fn update_body_jacobians(
     stat_slice: &Slice<MultibodyLinkStatic>,
     ws_slice: &Slice<MultibodyLinkWorkspace>,
     body_jacobians: &mut [f32],
+    // Per-link kinematic-tree DOF bitmask (the TODO below, implemented):
+    // mask[k] = mask[parent] | own-joint bits. Columns outside a link's mask
+    // are exactly zero (zero-initialized at build, never written — topology
+    // is static), so the copy / shift ops skip them via a dead-lane index.
+    jac_masks: &mut impl MaybeIndexUnchecked<u32>,
 ) {
 
     // TODO(PERF): on non-web platforms we could just use `mb.num_links` as the upper bound.
@@ -821,6 +830,21 @@ fn update_body_jacobians(
             let link_infos = &stat_slice[k as usize];
             let link = &ws_slice[k as usize];
 
+            if lane == 0 {
+                let nd = link_infos.ndofs;
+                let own = if nd >= 32 {
+                    0xFFFF_FFFFu32
+                } else {
+                    ((1u32 << nd) - 1) << link_infos.assembly_id
+                };
+                let m = if k == 0 {
+                    own
+                } else {
+                    jac_masks.read(link_infos.parent_link_id as usize) | own
+                };
+                jac_masks.write(k as usize, m);
+            }
+
             if k != 0 {
                 let parent_j = MatSlice::dense(
                     mb_jac_base
@@ -831,7 +855,31 @@ fn update_body_jacobians(
                 let parent_link = &ws_slice[link_infos.parent_link_id as usize];
                 parent_to_world = parent_link.local_to_world;
 
-                copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
+                // Dead-lane trick: parent columns outside the parent's chain
+                // mask are exactly zero — send those lanes out of range so the
+                // column helpers no-op (bit-identical: skipped ops copy 0 over
+                // 0 / add 0).
+                // CHILD mask = parent chain | own joint bits, computed
+                // locally by every lane (the smem slot for k was written by
+                // lane 0 in this same block — racy to read here; the parent's
+                // slot is barrier-published from its own iteration). The copy
+                // MUST cover the own columns too: joint_jacobian_accumulate_par
+                // ACCUMULATES, and copying the parent's zeros is what resets
+                // them each step.
+                let pmask = jac_masks.read(link_infos.parent_link_id as usize);
+                let nd = link_infos.ndofs;
+                let own = if nd >= 32 {
+                    0xFFFF_FFFFu32
+                } else {
+                    ((1u32 << nd) - 1) << link_infos.assembly_id
+                };
+                let cmask = pmask | own;
+                let elane = if lane < 32 && (cmask >> lane) & 1 != 0 {
+                    lane
+                } else {
+                    u32::MAX
+                };
+                copy_from_par(body_jacobians, link_j, parent_j, elane, LANES);
                 let link_j_v = link_j.fixed_rows(0, DIM);
                 let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
                 gemm_skew_tr_lhs_par(
@@ -841,7 +889,7 @@ fn update_body_jacobians(
                     link.shift02,
                     parent_j_w,
                     1.0,
-                    lane,
+                    elane,
                     LANES,
                 );
             } else {
@@ -869,6 +917,12 @@ fn update_body_jacobians(
         if k < num_links {
             let link = &ws_slice[k as usize];
             let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+            let cmask = jac_masks.read(k as usize);
+            let elane = if lane < 32 && (cmask >> lane) & 1 != 0 {
+                lane
+            } else {
+                u32::MAX
+            };
             gemm_skew_tr_lhs_par(
                 body_jacobians,
                 link_j_v,
@@ -876,7 +930,7 @@ fn update_body_jacobians(
                 link.shift23,
                 link_j_w,
                 1.0,
-                lane,
+                elane,
                 LANES,
             );
         }
