@@ -1114,17 +1114,111 @@ pub fn gpu_mb_ltdl_lanes(
     let mb_mm_base = batch_ids.mm_start(batch_id) + mb.mass_matrix_offset as usize;
     let m_view = MatSlice::dense(mb_mm_base, ndofs, ndofs);
 
-    // Factor M = Lᵀ·D·L in place in the dense storage (constraint init
-    // reuses the factors + parents exactly as in the fused path).
-    super::lu::ltdl_factor_global(mass_matrices, m_view, ndofs, lu_pivots, gen_base);
-    // Gravity rhs solve in place in `gen_forces`.
-    super::lu::ltdl_solve_global(
-        mass_matrices,
-        m_view,
-        ndofs,
-        lu_pivots,
-        gen_base,
-        gen_forces,
-        gen_base,
-    );
+    if ndofs <= 32 {
+        // Factor + solve with the workspace in per-thread LOCAL memory
+        // instead of read-modify-writing global storage: the elimination's
+        // ~4k dependent RMW steps each cost an L2 round-trip in global (GPU
+        // L1 is write-evict for global stores — the finalize-kernel lesson,
+        // 2.36×), while local memory is L1-backed AND, because every lane
+        // walks the SAME tree topology in lockstep, the interleaved
+        // per-thread layout coalesces each step's 32 lane accesses into one
+        // transaction. Copy-in/write-back are dependence-free streaming.
+        // Same operation order as `ltdl_factor_global`/`ltdl_solve_global`
+        // → bit-identical factors and accelerations.
+        let n = ndofs;
+        let n2 = (n * n) as usize;
+        let mut mloc = [0.0f32; 1024];
+        for f in 0..n2 {
+            mloc[f] = mass_matrices.read(mb_mm_base + f);
+        }
+        let mut par = [NO_PARENT; 32];
+        for i in 0..n {
+            par[i as usize] = lu_pivots.read(gen_base + i as usize);
+        }
+
+        // ---- Factor M = Lᵀ·D·L (elimination order of `ltdl_factor_global`).
+        for step in 0..n {
+            let k = n - 1 - step;
+            let d = mloc[(k * n + k) as usize];
+            let inv_d = if d != 0.0 { 1.0 / d } else { 0.0 };
+            let mut i = par[k as usize];
+            // Bounded loops (parents strictly decrease) so corrupt data
+            // can't hang the GPU.
+            for _ in 0..32u32 {
+                if i == NO_PARENT {
+                    break;
+                }
+                let a = mloc[(i * n + k) as usize] * inv_d;
+                let mut j = i;
+                for _ in 0..32u32 {
+                    if j == NO_PARENT {
+                        break;
+                    }
+                    let v = mloc[(j * n + i) as usize] - a * mloc[(j * n + k) as usize];
+                    mloc[(j * n + i) as usize] = v;
+                    j = par[j as usize];
+                }
+                mloc[(i * n + k) as usize] = a;
+                i = par[i as usize];
+            }
+        }
+
+        // Persist the factors (constraint init / finalize reuse them).
+        for f in 0..n2 {
+            mass_matrices.write(mb_mm_base + f, mloc[f]);
+        }
+
+        // ---- Solve M·x = τ with the rhs in registers/local.
+        let mut x = [0.0f32; 32];
+        for i in 0..n {
+            x[i as usize] = gen_forces.read(gen_base + i as usize);
+        }
+        // Lᵀ·z = b: scatter descending.
+        for step in 0..n {
+            let i = n - 1 - step;
+            let xi = x[i as usize];
+            let mut j = par[i as usize];
+            for _ in 0..32u32 {
+                if j == NO_PARENT {
+                    break;
+                }
+                x[j as usize] -= mloc[(j * n + i) as usize] * xi;
+                j = par[j as usize];
+            }
+        }
+        // z = D⁻¹·z.
+        for i in 0..n {
+            let d = mloc[(i * n + i) as usize];
+            x[i as usize] = if d != 0.0 { x[i as usize] / d } else { 0.0 };
+        }
+        // L·x = z: gather ascending.
+        for i in 0..n {
+            let mut s = x[i as usize];
+            let mut j = par[i as usize];
+            for _ in 0..32u32 {
+                if j == NO_PARENT {
+                    break;
+                }
+                s -= mloc[(j * n + i) as usize] * x[j as usize];
+                j = par[j as usize];
+            }
+            x[i as usize] = s;
+        }
+        for i in 0..n {
+            gen_forces.write(gen_base + i as usize, x[i as usize]);
+        }
+    } else {
+        // Oversized fallback (ndofs > 32 can't happen with the warp-32
+        // kernels, but keep the global path total).
+        super::lu::ltdl_factor_global(mass_matrices, m_view, ndofs, lu_pivots, gen_base);
+        super::lu::ltdl_solve_global(
+            mass_matrices,
+            m_view,
+            ndofs,
+            lu_pivots,
+            gen_base,
+            gen_forces,
+            gen_base,
+        );
+    }
 }
