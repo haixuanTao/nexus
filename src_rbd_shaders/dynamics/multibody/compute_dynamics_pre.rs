@@ -45,8 +45,9 @@ use crate::utils::linalg::{
 };
 #[cfg(feature = "dim3")]
 use crate::utils::linalg::{
-    chain_stored_col, gemm_omega_skew_tr_cross_buf_map_par, gemm_skew_lhs_cross_buf_map_par,
-    gemm_skew_tr_lhs_cross_buf_map_par, gemm_tr_chain_par, quadform_spatial_chain_sparse_par,
+    chain_stored_col, copy_from, fill, gemm_omega_skew_tr_cross_buf_map_par,
+    gemm_skew_lhs_cross_buf_map_par, gemm_skew_tr_lhs, gemm_skew_tr_lhs_cross_buf_map_par,
+    gemm_tr_chain_par, quadform_spatial_chain_sparse_par,
 };
 use crate::utils::{BatchIndices, Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross_av};
@@ -1203,5 +1204,279 @@ fn propagate_velocities(
         let link_mut = &mut ws_slice[k_usize];
         link_mut.joint_velocity = joint_velocity;
         link_mut.rb_vels = rb_vels;
+    }
+}
+/// FK + body-jacobian write + velocity propagation, ONE MULTIBODY PER LANE
+/// (3D). The fused warp-per-multibody kernel spends these phases either
+/// serially on lane 0 (FK, velocity propagation — 31 lanes idle) or in a
+/// `MAX_MB_DOFS`-bounded loop with three barriers per link (~200 barriers
+/// per call for ~30 real links). Here thread `t` owns multibody
+/// `(batch = t / mb_cap, mb = t % mb_cap)` outright: the walks run once,
+/// stop at the real `num_links`, zero barriers — 32 multibodies per warp
+/// (the `gpu_mb_gravity_rhs_lanes` recipe). The CRBA quadform genuinely
+/// uses its lanes cooperatively, so it stays warp-per-multibody in the
+/// follow-up `gpu_mb_crba` dispatch.
+///
+/// Serial jacobian write is value-identical to the cooperative
+/// `update_body_jacobians`: same prefix copy / zero-reset / shift ops per
+/// column, and the own-joint columns add `joint_jacobian_column` values
+/// (adding the zero halves of each column to the just-zeroed storage is
+/// exact: `+0.0 + +0.0`).
+#[cfg(feature = "dim3")]
+#[spirv_bindgen]
+#[spirv(compute(threads(32, 1, 1)))]
+pub fn gpu_mb_dynamics_pre_lanes(
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &mut [MultibodyLinkWorkspace],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_jacobians: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] num_batches_u: &u32,
+) {
+    let mb_cap = batch_ids.multibodies_batch_capacity;
+    let t = wg_id.x * LANES + lid.x;
+    let total = *num_batches_u * mb_cap;
+    if t >= total {
+        return;
+    }
+    let batch_id = t / mb_cap;
+    let mb_idx = t % mb_cap;
+    if mb_idx >= num_multibodies.read(batch_id as usize) {
+        return;
+    }
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
+    let num_links = mb.num_links;
+    if num_links == 0 {
+        return;
+    }
+    let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
+    let vel_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+
+    let stat_slice = batch_ids
+        .mb_links_batch(batch_id, links_static)
+        .offset(mb.first_link as usize);
+    let mut ws_slice = batch_ids
+        .mb_links_batch_mut(batch_id, links_workspace)
+        .offset(mb.first_link as usize);
+    let local_mprops_slice = batch_ids
+        .mb_links_batch(batch_id, links_local_mprops)
+        .offset(mb.first_link as usize);
+    let mut poses_slice = batch_ids.coll_batch_mut(batch_id, poses);
+    let vel_slice = Slice(dof_state, vel_base);
+
+    // 1) Forward kinematics (the same serial walk lane 0 ran).
+    forward_kinematics(
+        &mb,
+        &stat_slice,
+        &mut poses_slice,
+        &mut ws_slice,
+        &local_mprops_slice,
+        num_links,
+    );
+
+    // 2) Body jacobians — serial, chain-sparse (see `update_body_jacobians`).
+    for k in 0..num_links {
+        let stat = stat_slice[k as usize];
+        let clen = stat.jac_chain_mask.count_ones();
+        let link_j = MatSlice::dense(
+            mb_jac_base + stat.jac_offset as usize,
+            SPATIAL_DIM as u32,
+            clen,
+        );
+        let own_col0 = clen - stat.ndofs;
+
+        let parent_to_world = if k != 0 {
+            let pstat = stat_slice[stat.parent_link_id as usize];
+            let plen = pstat.jac_chain_mask.count_ones();
+            let parent_j = MatSlice::dense(
+                mb_jac_base + pstat.jac_offset as usize,
+                SPATIAL_DIM as u32,
+                plen,
+            );
+            let shift02 = ws_slice[k as usize].shift02;
+            copy_from(body_jacobians, link_j.columns(0, plen), parent_j);
+            fill(body_jacobians, link_j.columns(own_col0, stat.ndofs), 0.0);
+            let link_j_v = link_j.view(0, 0, DIM, plen);
+            let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
+            gemm_skew_tr_lhs(body_jacobians, link_j_v, 1.0, shift02, parent_j_w, 1.0);
+            ws_slice[stat.parent_link_id as usize].local_to_world
+        } else {
+            fill(body_jacobians, link_j, 0.0);
+            Pose::default()
+        };
+
+        // Own joint columns (LAST `ndofs` stored columns).
+        let rot = parent_to_world.rotation * stat.data.local_frame_a.rotation;
+        let part = link_j.columns(own_col0, stat.ndofs);
+        for c in 0..stat.ndofs {
+            let (jv, jw) = joint_jacobian_column(&stat, rot, c);
+            let i0 = part.idx(0, c);
+            let i1 = part.idx(1, c);
+            let i2 = part.idx(2, c);
+            let i3 = part.idx(3, c);
+            let i4 = part.idx(4, c);
+            let i5 = part.idx(5, c);
+            body_jacobians.write(i0, body_jacobians.read(i0) + jv.x);
+            body_jacobians.write(i1, body_jacobians.read(i1) + jv.y);
+            body_jacobians.write(i2, body_jacobians.read(i2) + jv.z);
+            body_jacobians.write(i3, body_jacobians.read(i3) + jw.x);
+            body_jacobians.write(i4, body_jacobians.read(i4) + jw.y);
+            body_jacobians.write(i5, body_jacobians.read(i5) + jw.z);
+        }
+
+        // v-rows += [shift23]xT · w-rows over the whole packed block.
+        let shift23 = ws_slice[k as usize].shift23;
+        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+        gemm_skew_tr_lhs(body_jacobians, link_j_v, 1.0, shift23, link_j_w, 1.0);
+    }
+
+    // 3) Velocity propagation (the same serial walk lane 0 ran).
+    propagate_velocities(
+        num_links,
+        &stat_slice,
+        &local_mprops_slice,
+        &vel_slice,
+        &mut ws_slice,
+    );
+}
+
+/// CRBA mass-matrix assembly only, warp-per-multibody — the cooperative
+/// half of the split `gpu_mb_dynamics_pre_lanes` pipeline (the quadform
+/// genuinely uses its lanes; env-per-lane is the wrong shape for it).
+/// Identical math to phase 4 of
+/// `gpu_mb_compute_dynamics_without_coriolis_pre`.
+#[cfg(feature = "dim3")]
+#[spirv_bindgen]
+#[spirv(compute(threads(32, 1, 1)))]
+pub fn gpu_mb_crba(
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &[MultibodyLinkWorkspace],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] dof_armature: &[f32],
+    // Ascending ancestor-chain DOF list; slot 32 holds the length.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 33],
+) {
+    let batch_id = wg_id.y;
+    let mb_idx = wg_id.x;
+    let lane = lid.x;
+    // No early-return — WGSL uniformity (see `gpu_mb_lu_decompose`); padding
+    // slots have zero links/DOFs so the loops no-op.
+    let _ = num_multibodies;
+
+    let dt = *dt_uniform;
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
+    let num_links = mb.num_links;
+    let ndofs = mb.ndofs;
+    let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
+    let mb_mm_base = batch_ids.mm_start(batch_id) + mb.mass_matrix_offset as usize;
+    let vel_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+
+    let stat_slice = batch_ids
+        .mb_links_batch(batch_id, links_static)
+        .offset(mb.first_link as usize);
+    let ws_slice = batch_ids
+        .mb_links_batch(batch_id, links_workspace)
+        .offset(mb.first_link as usize);
+    let local_mprops_slice = batch_ids
+        .mb_links_batch(batch_id, links_local_mprops)
+        .offset(mb.first_link as usize);
+    let damping_slice = Slice(
+        dof_state,
+        vel_base + batch_ids.dof_damping_section_offset as usize,
+    );
+    let armature_slice = Slice(dof_armature, vel_base);
+
+    let acc_augmented_mass = MatSlice::dense(mb_mm_base, ndofs, ndofs);
+    fill_par(mass_matrices, acc_augmented_mass, 0.0, lane, LANES);
+    workgroup_memory_barrier_with_group_sync();
+
+    // NOTE: fixed iteration count for uniform control flow (WGSL).
+    for k in 0..MAX_MB_DOFS as u32 {
+        let mut active = k < num_links;
+        if active {
+            let lmp = local_mprops_slice[k as usize];
+            if lmp.inv_mass.x == 0.0 {
+                active = false;
+            }
+        }
+
+        if k < num_links {
+            let mask = stat_slice[k as usize].jac_chain_mask;
+            if lane == 0 {
+                chain_buf.write(32, mask.count_ones());
+            }
+            if lane < 32 && (mask >> lane) & 1 != 0 {
+                let rank = (mask & ((1u32 << lane) - 1)).count_ones();
+                chain_buf.write(rank as usize, lane);
+            }
+        }
+        workgroup_memory_barrier_with_group_sync();
+
+        if active {
+            let ws = &ws_slice[k as usize];
+            let lmp = local_mprops_slice[k as usize];
+            let mass = 1.0 / lmp.inv_mass.x;
+            let inertia = link_world_inertia(ws, &lmp);
+
+            let stat = stat_slice[k as usize];
+            let body_jacobian = MatSlice::dense(
+                mb_jac_base + stat.jac_offset as usize,
+                SPATIAL_DIM as u32,
+                stat.jac_chain_mask.count_ones(),
+            );
+
+            quadform_spatial_chain_sparse_par(
+                mass_matrices,
+                acc_augmented_mass,
+                1.0,
+                mass,
+                inertia,
+                body_jacobians,
+                body_jacobian,
+                1.0,
+                chain_buf,
+                chain_buf.read(32),
+                lane,
+                LANES,
+            );
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+    }
+
+    // Damping diagonal: M[i, i] += damping[i] * dt + armature[i] — parallel.
+    let d = lane;
+    if d < ndofs {
+        let diag_idx = acc_augmented_mass.idx(d, d);
+        let cur = mass_matrices.read(diag_idx);
+        mass_matrices.write(
+            diag_idx,
+            cur + damping_slice[d as usize] * dt + armature_slice[d as usize],
+        );
     }
 }

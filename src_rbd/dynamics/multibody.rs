@@ -25,6 +25,7 @@ use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
     GpuIncJointColor, GpuMbComputeDynamicsPre, GpuMbComputeDynamicsWithoutCoriolisPre,
+    GpuMbCrba, GpuMbDynamicsPreLanes,
     GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbGravityRhs, GpuMbGravityRhsLanes,
     GpuMbInitContactConstraints,
     GpuMbLtdlLanes,
@@ -1946,6 +1947,20 @@ fn gravity_lanes() -> bool {
     *V.get_or_init(|| std::env::var("NEXUS_GRAVITY_LANES").map(|v| v != "0").unwrap_or(true))
 }
 
+/// `NEXUS_DYN_LANES=1`: run the explicit-Coriolis dynamics pre phase as the
+/// split env-per-lane FK/jacobians/velocities (`gpu_mb_dynamics_pre_lanes`)
+/// + warp-cooperative CRBA (`gpu_mb_crba`) pair instead of the fused
+/// warp-per-multibody kernel. Default OFF: measured 6% MORE kernel time on
+/// the G1 @8192 (653 + 726 µs vs 1303 µs fused) — the jacobian writer is a
+/// copy-heavy phase (~1500 uncoalesced scalar accesses per thread serial)
+/// where cooperative column work wins; env-per-lane pays only on
+/// compute-bound serial walks (gravity assembly: 7.8×). Kept behind the
+/// flag for A/B on other topologies.
+fn dyn_lanes() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("NEXUS_DYN_LANES").map(|v| v == "1").unwrap_or(false))
+}
+
 /// Standalone bundle for the layout microbench kernels (see
 /// `src_rbd_shaders/dynamics/multibody/layout_bench.rs`). Public so the
 /// zealot-side bench example can load them.
@@ -1971,6 +1986,13 @@ pub struct GpuMultibodySolver {
     /// `NEXUS_GRAVITY_LANES=1` (default): gravity assembly one multibody per
     /// LANE — no barriers, loop bounded by the real `num_links`.
     gravity_rhs_lanes: GpuMbGravityRhsLanes,
+    /// `NEXUS_DYN_LANES=1` (default): FK + jacobian write + velocity
+    /// propagation one multibody per LANE (the serial / barrier-bound phases
+    /// of the fused pre kernel)…
+    dynamics_pre_lanes: GpuMbDynamicsPreLanes,
+    /// …followed by the warp-cooperative CRBA-only kernel (the quadform
+    /// genuinely uses its 32 lanes).
+    crba: GpuMbCrba,
     /// `NEXUS_ENV_PER_LANE=1` path: tree-sparse LᵀDL factor + gravity solve,
     /// one multibody per LANE (32 per warp) on global memory.
     ltdl_lanes: GpuMbLtdlLanes,
@@ -2091,22 +2113,57 @@ impl GpuMultibodySolver {
                 &mb.dof_armature,
             )?;
         } else {
-            self.compute_dynamics_without_coriolis_pre.call(
-                pass,
-                pre_dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mut mb.links_workspace,
-                &mb.links_mprops,
-                args.poses,
-                &mut mb.body_jacobians,
-                &mut mb.mass_matrices,
-                &mb.dof_state,
-                &mb.num_multibodies,
-                &mb.dt,
-                args.batch_indices,
-                &mb.dof_armature,
-            )?;
+            if dyn_lanes() {
+                // Split pre phase: env-per-lane FK + jacobian write +
+                // velocity propagation (serial / barrier-bound phases),
+                // then warp-cooperative CRBA.
+                self.dynamics_pre_lanes.call(
+                    pass,
+                    [mb.num_batches * mb.multibodies_per_batch, 1, 1],
+                    &mb.multibody_info,
+                    &mb.links_static,
+                    &mut mb.links_workspace,
+                    &mb.links_mprops,
+                    args.poses,
+                    &mut mb.body_jacobians,
+                    &mb.dof_state,
+                    &mb.num_multibodies,
+                    args.batch_indices,
+                    &mb.num_batches_uniform,
+                )?;
+                self.crba.call(
+                    pass,
+                    pre_dispatch,
+                    &mb.multibody_info,
+                    &mb.links_static,
+                    &mb.links_workspace,
+                    &mb.links_mprops,
+                    &mb.body_jacobians,
+                    &mut mb.mass_matrices,
+                    &mb.dof_state,
+                    &mb.num_multibodies,
+                    &mb.dt,
+                    args.batch_indices,
+                    &mb.dof_armature,
+                )?;
+            } else {
+                self.compute_dynamics_without_coriolis_pre.call(
+                    pass,
+                    pre_dispatch,
+                    &mb.multibody_info,
+                    &mb.links_static,
+                    &mut mb.links_workspace,
+                    &mb.links_mprops,
+                    args.poses,
+                    &mut mb.body_jacobians,
+                    &mut mb.mass_matrices,
+                    &mb.dof_state,
+                    &mb.num_multibodies,
+                    &mb.dt,
+                    args.batch_indices,
+                    &mb.dof_armature,
+                )?;
+            }
         }
 
         // Fused: gravity / Coriolis force assembly + LU factor + LU solve in
@@ -2724,22 +2781,57 @@ impl GpuMultibodySolver {
                 &mb.dof_armature,
             )?;
         } else {
-            self.compute_dynamics_without_coriolis_pre.call(
-                pass,
-                pre_dispatch,
-                &mb.multibody_info,
-                &mb.links_static,
-                &mut mb.links_workspace,
-                &mb.links_mprops,
-                args.poses,
-                &mut mb.body_jacobians,
-                &mut mb.mass_matrices,
-                &mb.dof_state,
-                &mb.num_multibodies,
-                &mb.dt,
-                args.batch_indices,
-                &mb.dof_armature,
-            )?;
+            if dyn_lanes() {
+                // Split pre phase: env-per-lane FK + jacobian write +
+                // velocity propagation (serial / barrier-bound phases),
+                // then warp-cooperative CRBA.
+                self.dynamics_pre_lanes.call(
+                    pass,
+                    [mb.num_batches * mb.multibodies_per_batch, 1, 1],
+                    &mb.multibody_info,
+                    &mb.links_static,
+                    &mut mb.links_workspace,
+                    &mb.links_mprops,
+                    args.poses,
+                    &mut mb.body_jacobians,
+                    &mb.dof_state,
+                    &mb.num_multibodies,
+                    args.batch_indices,
+                    &mb.num_batches_uniform,
+                )?;
+                self.crba.call(
+                    pass,
+                    pre_dispatch,
+                    &mb.multibody_info,
+                    &mb.links_static,
+                    &mb.links_workspace,
+                    &mb.links_mprops,
+                    &mb.body_jacobians,
+                    &mut mb.mass_matrices,
+                    &mb.dof_state,
+                    &mb.num_multibodies,
+                    &mb.dt,
+                    args.batch_indices,
+                    &mb.dof_armature,
+                )?;
+            } else {
+                self.compute_dynamics_without_coriolis_pre.call(
+                    pass,
+                    pre_dispatch,
+                    &mb.multibody_info,
+                    &mb.links_static,
+                    &mut mb.links_workspace,
+                    &mb.links_mprops,
+                    args.poses,
+                    &mut mb.body_jacobians,
+                    &mut mb.mass_matrices,
+                    &mb.dof_state,
+                    &mb.num_multibodies,
+                    &mb.dt,
+                    args.batch_indices,
+                    &mb.dof_armature,
+                )?;
+            }
         }
 
         // Fused gravity + LU factor + LU solve.
