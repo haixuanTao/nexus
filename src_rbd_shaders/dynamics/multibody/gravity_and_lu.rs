@@ -797,6 +797,275 @@ pub fn gpu_mb_gravity_rhs(
     }
 }
 
+/// Gravity / Coriolis-force assembly, ONE MULTIBODY PER LANE (3D).
+///
+/// Drop-in replacement for `gpu_mb_gravity_rhs` on the
+/// `NEXUS_ENV_PER_LANE=1` path. The warp-per-multibody original pays for
+/// structure, not bytes (proven by the chain-sparse storage migration
+/// moving it 0%): every lane redundantly computes the kinematic
+/// acceleration, the per-link loop runs to the uniform bound
+/// `MAX_MB_DOFS` (= 64) with TWO barriers per iteration (~128 barriers
+/// for ~30 real links), and the motor-PD + pivot phases run serially on
+/// lane 0 with 31 lanes idle. Here thread `t = wg.x·32 + lane` owns
+/// multibody `(batch = t / mb_cap, mb = t % mb_cap)` outright: the walk
+/// runs once, stops at the real `num_links`, and needs ZERO barriers —
+/// 32 multibodies per warp, same operation order per DOF (ascending `k`,
+/// one contribution each) → bit-identical forces.
+///
+/// Dispatch: `[num_batches · multibodies_batch_capacity, 1, 1]` threads
+/// (like `gpu_mb_ltdl_lanes`, which this precedes).
+#[cfg(feature = "dim3")]
+#[spirv_bindgen]
+#[spirv(compute(threads(32, 1, 1)))]
+pub fn gpu_mb_gravity_rhs_lanes(
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &mut [MultibodyLinkWorkspace],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    links_local_mprops: &[LocalMassProperties],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] gen_forces: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] lu_pivots: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] num_multibodies: &[u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] gravity: &Vec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] dof_frictionloss: &[f32],
+    // See `gpu_mb_gravity_rhs` for the delay-state layout / tick-bump rules.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 12)] motor_delay_state: &mut [f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 13)] num_batches_u: &u32,
+) {
+    let mb_cap = batch_ids.multibodies_batch_capacity;
+    let t = wg_id.x * LANES + lid.x;
+    let total = *num_batches_u * mb_cap;
+    if t >= total {
+        return;
+    }
+    let batch_id = t / mb_cap;
+    let mb_idx = t % mb_cap;
+    if mb_idx >= num_multibodies.read(batch_id as usize) {
+        return;
+    }
+    let mb = batch_ids
+        .mb_batch(batch_id, multibody_info)
+        .read(mb_idx as usize);
+    let num_links = mb.num_links;
+    let ndofs = mb.ndofs;
+    if ndofs == 0 {
+        return;
+    }
+    let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
+    let gen_base = batch_ids.dof_start(batch_id) + mb.first_dof as usize;
+    let piv_offset = gen_base;
+
+    let stat_slice = batch_ids
+        .mb_links_batch(batch_id, links_static)
+        .offset(mb.first_link as usize);
+    let mut ws_slice = batch_ids
+        .mb_links_batch_mut(batch_id, links_workspace)
+        .offset(mb.first_link as usize);
+    let local_mprops_slice = batch_ids
+        .mb_links_batch(batch_id, links_local_mprops)
+        .offset(mb.first_link as usize);
+    let vel_slice = Slice(dof_state, gen_base);
+    let damping_slice = Slice(
+        dof_state,
+        batch_ids.dof_damping_section_offset as usize + gen_base,
+    );
+    let frictionloss_slice = Slice(dof_frictionloss, gen_base);
+
+    // ---- Phase 1: zero the generalized-force vector. ----
+    for i in 0..ndofs {
+        gen_forces.write(gen_base + i as usize, 0.0);
+    }
+
+    let g = Vec3::new(gravity.x, gravity.y, gravity.z);
+
+    // ---- Phase 2: per-link gravity / Coriolis-force assembly (serial —
+    // the walk is parent→child dependent anyway; parallelism comes from
+    // 32 multibodies per warp). Same math and per-DOF accumulation order
+    // as `gpu_mb_gravity_rhs`.
+    for k in 0..num_links {
+        let (
+            self_joint_vel_lin,
+            self_joint_vel_ang,
+            self_shift02,
+            self_shift23,
+            self_rb_ang,
+        ) = {
+            let ws = &ws_slice[k as usize];
+            (
+                ws.joint_velocity.linear,
+                ws.joint_velocity.angular,
+                ws.shift02,
+                ws.shift23,
+                ws.rb_vels.angular,
+            )
+        };
+
+        let mut acc_lin = Vector::ZERO;
+        let mut acc_ang: AngVector = AngVector::ZERO;
+        if k != 0 {
+            let stat = stat_slice[k as usize];
+            let parent_ws = &ws_slice[stat.parent_link_id as usize];
+            let parent_acc_lin = parent_ws.kinematic_acc.linear;
+            let parent_acc_ang = parent_ws.kinematic_acc.angular;
+            let parent_ang = parent_ws.rb_vels.angular;
+
+            acc_lin = parent_acc_lin;
+            acc_ang = parent_acc_ang;
+
+            acc_lin += gcross_av(parent_ang, self_joint_vel_lin) * 2.0;
+            acc_ang += parent_ang.cross(self_joint_vel_ang);
+            acc_lin += gcross_av(parent_ang, gcross_av(parent_ang, self_shift02));
+            acc_lin += gcross_av(parent_acc_ang, self_shift02);
+        }
+        let rb_ang = self_rb_ang;
+        acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
+        acc_lin += gcross_av(acc_ang, self_shift23);
+
+        ws_slice[k as usize].kinematic_acc = Velocity::new(acc_lin, acc_ang);
+
+        let lmp = local_mprops_slice[k as usize];
+        let inv_mass_x = lmp.inv_mass.x;
+        if inv_mass_x != 0.0 {
+            let mass = 1.0 / inv_mass_x;
+            let rb_inertia = link_world_inertia(&ws_slice[k as usize], &lmp);
+
+            let gyroscopic = {
+                let i_omega = rb_inertia * rb_ang;
+                rb_ang.cross(i_omega)
+            };
+            let i_acc_ang = rb_inertia * acc_ang;
+
+            let f_lin = (g - acc_lin) * mass;
+            let f_ang = -gyroscopic - i_acc_ang;
+
+            // Chain-sparse Jᵀ·f scatter: iterate the stored columns (set
+            // bits of the chain mask, ascending). Same dot expression and
+            // `cur + s` accumulation as `gemv_tr_spatial_split_sparse_par`.
+            let stat = stat_slice[k as usize];
+            let jac = MatSlice::dense(
+                mb_jac_base + stat.jac_offset as usize,
+                SPATIAL_DIM as u32,
+                stat.jac_chain_mask.count_ones(),
+            );
+            let mut m = stat.jac_chain_mask;
+            for sc in 0..32u32 {
+                if m == 0 {
+                    break;
+                }
+                let d = m.trailing_zeros();
+                m &= m - 1;
+                let s = body_jacobians.read(jac.idx(0, sc)) * f_lin.x
+                    + body_jacobians.read(jac.idx(1, sc)) * f_lin.y
+                    + body_jacobians.read(jac.idx(2, sc)) * f_lin.z
+                    + body_jacobians.read(jac.idx(3, sc)) * f_ang.x
+                    + body_jacobians.read(jac.idx(4, sc)) * f_ang.y
+                    + body_jacobians.read(jac.idx(5, sc)) * f_ang.z;
+                let idx = gen_base + d as usize;
+                let cur = gen_forces.read(idx);
+                gen_forces.write(idx, 1.0 * cur + 1.0 * s);
+            }
+        }
+    }
+
+    // ---- Damping + Coulomb joint friction (see `gpu_mb_gravity_rhs`). ----
+    for i in 0..ndofs {
+        let idx = gen_base + i as usize;
+        let cur = gen_forces.read(idx);
+        let v = vel_slice[i as usize];
+        let coulomb = frictionloss_slice[i as usize] * (v / 1.0).clamp(-1.0, 1.0);
+        gen_forces.write(idx, cur - damping_slice[i as usize] * v - coulomb);
+    }
+
+    // ---- Explicit force-based motor PD torque (see `gpu_mb_gravity_rhs`;
+    // identical loop, previously serial on lane 0 with 31 idle lanes). ----
+    {
+        let delay_stride = 2 + batch_ids.links_batch_capacity as usize;
+        let delay_base = batch_id as usize * delay_stride;
+        let tick = motor_delay_state.read(delay_base);
+        let delay_k = motor_delay_state.read(delay_base + 1);
+        let use_prev = tick < delay_k;
+        for k in 0..num_links {
+            let stat = stat_slice[k as usize];
+            if stat.kinematic != 0 {
+                continue;
+            }
+            let locked = stat.data.locked_axes;
+            let motor_axes = stat.data.motor_axes & !locked;
+            if motor_axes == 0 {
+                continue;
+            }
+            let ws = &ws_slice[k as usize];
+            let mut curr_free_dof = 0u32;
+            for axis in 0..(SPATIAL_DIM as u32) {
+                if (locked & (1 << axis)) != 0 {
+                    continue;
+                }
+                if (motor_axes & (1 << axis)) != 0 {
+                    let motor = stat.data.motors[axis as usize];
+                    if motor.model == crate::dynamics::joint::FORCE_BASED {
+                        let q = ws.coords.read(axis as usize);
+                        let abs_dof = stat.assembly_id + curr_free_dof;
+                        let v = vel_slice[abs_dof as usize];
+                        let target = if use_prev {
+                            motor_delay_state
+                                .read(delay_base + 2 + (mb.first_link + k) as usize)
+                        } else {
+                            motor.target_pos
+                        };
+                        let tau = (motor.stiffness * (target - q)
+                            - motor.damping * v)
+                            .clamp(-motor.max_force, motor.max_force);
+                        let idx = gen_base + abs_dof as usize;
+                        gen_forces.write(idx, gen_forces.read(idx) + tau);
+                    }
+                }
+                curr_free_dof += 1;
+            }
+        }
+        // Tick bump: one writer per batch (multibody 0), matching the
+        // warp version's `mb_idx == 0` rule.
+        if mb_idx == 0 {
+            motor_delay_state.write(delay_base, tick + 1.0);
+        }
+    }
+
+    // ---- Per-DOF parent array (see `gpu_mb_gravity_rhs`). ----
+    for k in 0..num_links {
+        let stat = stat_slice[k as usize];
+        if stat.ndofs > 0 {
+            let mut p = NO_PARENT;
+            if k != 0 {
+                let mut a = stat.parent_link_id;
+                for _ in 0..MAX_MB_DOFS as u32 {
+                    let s = stat_slice[a as usize];
+                    if s.ndofs > 0 {
+                        p = s.assembly_id + s.ndofs - 1;
+                        break;
+                    }
+                    if a == 0 {
+                        break;
+                    }
+                    a = s.parent_link_id;
+                }
+            }
+            lu_pivots.write(piv_offset + stat.assembly_id as usize, p);
+            for t in 1..stat.ndofs {
+                lu_pivots.write(
+                    piv_offset + (stat.assembly_id + t) as usize,
+                    stat.assembly_id + t - 1,
+                );
+            }
+        }
+    }
+}
+
 /// Tree-sparse LᵀDL factor + gravity solve, ONE MULTIBODY PER LANE.
 ///
 /// The serial factor/solve loops from `gpu_mb_gravity_and_lu` run on lane 0
