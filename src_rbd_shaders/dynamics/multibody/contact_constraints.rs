@@ -39,7 +39,7 @@ use crate::dynamics::joint::SPATIAL_DIM;
 use crate::dynamics::sim_params::SimParams;
 use crate::queries::IndexedManifold;
 use crate::utils::BatchIndices;
-use crate::utils::linalg::{MatSlice, lu_solve_in_place};
+use crate::utils::linalg::MatSlice;
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot};
 
 use super::types::{
@@ -898,26 +898,61 @@ pub fn gpu_mb_finalize_contact_constraints(
     let mut s = lane;
     while s < count {
         let col_offset = col_base + (s as usize) * dofs_stride;
-        // 1) Copy J^T row into the column buffer (it'll be overwritten by the
-        //    LU solve with the M⁻¹·Jᵀ result).
+        // The back-solve's dependence chain used to read-modify-write the
+        // column in GLOBAL memory (each step waiting on an L2 round-trip:
+        // GPU L1 is write-evict for global stores). Solve in a per-lane
+        // local array instead — the chain stays in registers / L1-backed
+        // local memory — and write the finished column out once. Same
+        // floats, same operation order as `lu_solve_in_place`.
+        let mut col = [0.0f32; 32];
+        // 1) J^T row into the local column.
         for i in 0..ndofs {
-            let v = contact_constraint_jacs.read(col_offset + i as usize);
-            contact_constraint_columns.write(col_offset + i as usize, v);
+            col[i as usize] = contact_constraint_jacs.read(col_offset + i as usize);
         }
-        // 2) Solve M · column = J^T  (in place).
-        lu_solve_in_place(
-            mass_matrices,
-            m,
-            lu_pivots,
-            piv_offset,
-            contact_constraint_columns,
-            col_offset,
-        );
-        // 3) inv_r_mb = J · column.
+        // 2) Solve M · column = J^T in place (tree-sparse LᵀDL; factor +
+        //    parents read from global — they're workgroup-shared and stay
+        //    cache-hot).
+        {
+            const NO_PARENT: u32 = u32::MAX;
+            // Lᵀ·z = b: scatter descending (descendants before ancestors).
+            for step in 0..ndofs {
+                let i = ndofs - 1 - step;
+                let xi = col[i as usize];
+                let mut j = lu_pivots.read(piv_offset + i as usize);
+                // Bounded (parents strictly decrease) so corrupt data can't hang.
+                for _ in 0..ndofs {
+                    if j == NO_PARENT {
+                        break;
+                    }
+                    col[j as usize] -= mass_matrices.read(m.idx(i, j)) * xi;
+                    j = lu_pivots.read(piv_offset + j as usize);
+                }
+            }
+            // z = D⁻¹·z.
+            for i in 0..ndofs {
+                let d = mass_matrices.read(m.idx(i, i));
+                col[i as usize] = if d != 0.0 { col[i as usize] / d } else { 0.0 };
+            }
+            // L·x = z: gather ascending (ancestors before descendants).
+            for i in 0..ndofs {
+                let mut acc = col[i as usize];
+                let mut j = lu_pivots.read(piv_offset + i as usize);
+                for _ in 0..ndofs {
+                    if j == NO_PARENT {
+                        break;
+                    }
+                    acc -= mass_matrices.read(m.idx(i, j)) * col[j as usize];
+                    j = lu_pivots.read(piv_offset + j as usize);
+                }
+                col[i as usize] = acc;
+            }
+        }
+        // 3) Write the column out + inv_r_mb = J · column in one pass.
         let mut inv_r_mb = 0.0f32;
         for i in 0..ndofs {
+            let c = col[i as usize];
+            contact_constraint_columns.write(col_offset + i as usize, c);
             let j = contact_constraint_jacs.read(col_offset + i as usize);
-            let c = contact_constraint_columns.read(col_offset + i as usize);
             inv_r_mb += j * c;
         }
         // 4) Add free body's contribution: im (since lin_jac is unit) +
