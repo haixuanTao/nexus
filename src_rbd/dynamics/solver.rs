@@ -337,7 +337,7 @@ impl GpuSolver {
             /*
              * P2/F2 — build + warmstart constraints.
              */
-            mb_phase!(substep_build_constraints);
+            mb_phase!(substep_build_constraints, substep_id);
             if !args.fuse_color_loops {
                 // Fused path folds the constraint refresh into
                 // gpu_warmstart_fused's prologue.

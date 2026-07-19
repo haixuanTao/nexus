@@ -1961,6 +1961,16 @@ fn dyn_lanes() -> bool {
     *V.get_or_init(|| std::env::var("NEXUS_DYN_LANES").map(|v| v == "1").unwrap_or(false))
 }
 
+/// `NEXUS_CONTACT_ONCE=1`: build + finalize the multibody contact-constraint
+/// rows once per STEP (first substep) instead of once per substep — TGS-style
+/// (see `substep_build_constraints`). Default OFF: changes solver dynamics
+/// (frozen lever arms + impulse warm-continuation across substeps), so it
+/// needs stability validation, not just the bit-identity gate.
+fn contact_once() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("NEXUS_CONTACT_ONCE").map(|v| v == "1").unwrap_or(false))
+}
+
 /// Standalone bundle for the layout microbench kernels (see
 /// `src_rbd_shaders/dynamics/multibody/layout_bench.rs`). Public so the
 /// zealot-side bench example can load them.
@@ -2313,7 +2323,9 @@ impl GpuMultibodySolver {
             return Ok(());
         }
         self.substep_integrate_velocities(pass, mb, args)?;
-        self.substep_build_constraints(pass, mb, args)?;
+        // The monolithic path has no substep counter — always rebuild
+        // (substep_id 0 = unconditional build even under NEXUS_CONTACT_ONCE).
+        self.substep_build_constraints(pass, mb, args, 0)?;
         self.substep_solve_with_bias(pass, mb, args)?;
         self.substep_integrate_positions(pass, mb, args, is_last_substep)?;
         self.substep_solve_no_bias(pass, mb, args)?;
@@ -2352,8 +2364,22 @@ impl GpuMultibodySolver {
     /// Granular substep phase (split of [`Self::apply_substep`]) so the
     /// pipeline can interleave multibody phases with the fused free-body
     /// color loops.
-    pub fn substep_build_constraints(&self, pass: &mut GpuPass, mb: &mut GpuMultibodySet, args: &mut MultibodySolverArgs<'_>) -> Result<(), GpuBackendError> {
+    pub fn substep_build_constraints(&self, pass: &mut GpuPass, mb: &mut GpuMultibodySet, args: &mut MultibodySolverArgs<'_>, substep_id: u32) -> Result<(), GpuBackendError> {
         if mb.is_empty() {
+            return Ok(());
+        }
+        // `NEXUS_CONTACT_ONCE=1`: TGS-style — build + finalize the contact
+        // rows on the FIRST substep only. Their inputs are already almost
+        // entirely step-constant (narrow-phase manifolds, body jacobians and
+        // the LᵀDL factors all refresh once per STEP — the dynamics kernels
+        // run 1× per step vs 8× for these); the per-substep rebuild only
+        // refreshed the contact lever arms / world normal from mm-scale
+        // intra-step pose drift, at the cost of ~2× the whole contact
+        // pipeline's time. Skipping it also stops zeroing `impulse` each
+        // substep, so the PGS sweeps warm-continue across substeps (PhysX/TGS
+        // semantics). NOT bit-identical to the per-substep rebuild — gate
+        // with the terrain-probe protocol, not the iter-0 band.
+        if substep_id != 0 && contact_once() {
             return Ok(());
         }
         let dispatch = [mb.multibodies_per_batch, mb.num_batches, 1];
