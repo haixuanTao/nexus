@@ -1295,6 +1295,252 @@ pub fn gemv_tr_spatial_split_par(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Chain-sparse jacobian-storage helpers (3D only).
+//
+// Body jacobians are stored chain-sparse: link `k` keeps a column-major
+// `SPATIAL_DIM × popcount(mask)` block holding ONLY its ancestor-chain DOF
+// columns (the set bits of `MultibodyLinkStatic::jac_chain_mask`, ascending).
+// Global DOF `d`'s stored column is `popcount(mask & ((1 << d) - 1))`; DOFs
+// outside the mask have an exactly-zero formal column that is not stored.
+// ---------------------------------------------------------------------------
+
+/// Stored-column index of global DOF `d` in a chain-sparse block, or
+/// `u32::MAX` when `d` is outside the chain (formal column is zero).
+#[cfg(feature = "dim3")]
+#[inline]
+pub fn chain_stored_col(mask: u32, d: u32) -> u32 {
+    if d < 32 && (mask >> d) & 1 != 0 {
+        (mask & ((1u32 << d) - 1)).count_ones()
+    } else {
+        u32::MAX
+    }
+}
+
+/// Chain-sparse [`gemv_tr_spatial_split_par`]: `a` is the stored
+/// `6 × chain_len` block, `mask` its chain bitmask. Lane `d` owns global DOF
+/// `d`; off-chain lanes skip entirely (their dense contribution is exactly
+/// `alpha·0`, and every call site uses `beta = 1.0`).
+#[cfg(feature = "dim3")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_tr_spatial_split_sparse_par(
+    buf_y: &mut [f32],
+    y_offset: usize,
+    alpha: f32,
+    buf_a: &[f32],
+    a: MatSlice,
+    mask: u32,
+    x_lin: Vec3,
+    x_ang: Vec3,
+    beta: f32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let sc = chain_stored_col(mask, lane);
+    if sc != u32::MAX {
+        let s = buf_a.read(a.idx(0, sc)) * x_lin.x
+            + buf_a.read(a.idx(1, sc)) * x_lin.y
+            + buf_a.read(a.idx(2, sc)) * x_lin.z
+            + buf_a.read(a.idx(3, sc)) * x_ang.x
+            + buf_a.read(a.idx(4, sc)) * x_ang.y
+            + buf_a.read(a.idx(5, sc)) * x_ang.z;
+        let idx = y_offset + lane as usize;
+        let cur = buf_y.read(idx);
+        buf_y.write(idx, beta * cur + alpha * s);
+    }
+}
+
+/// Chain-sparse [`quadform_spatial_chain_par`]: `j` is the stored
+/// `6 × len` block whose column `i` is global DOF `chain[i]` (ascending).
+/// Reads use stored indices, mass-matrix writes use the global ones.
+#[cfg(feature = "dim3")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn quadform_spatial_chain_sparse_par(
+    buf_m: &mut [f32],
+    m: MatSlice,
+    alpha: f32,
+    mass: f32,
+    inertia: Mat3,
+    buf_j: &[f32],
+    j: MatSlice,
+    beta: f32,
+    chain: &impl MaybeIndexUnchecked<u32>,
+    len: u32,
+    lane: u32,
+    _lanes: u32,
+) {
+    if lane < len {
+        let cc = chain.read(lane as usize);
+        let jvc = Vec3::new(
+            buf_j.read(j.idx(0, lane)),
+            buf_j.read(j.idx(1, lane)),
+            buf_j.read(j.idx(2, lane)),
+        );
+        let jwc = Vec3::new(
+            buf_j.read(j.idx(3, lane)),
+            buf_j.read(j.idx(4, lane)),
+            buf_j.read(j.idx(5, lane)),
+        );
+        let wjv = jvc * mass;
+        let wjw = inertia.x_axis * jwc.x + inertia.y_axis * jwc.y + inertia.z_axis * jwc.z;
+        for ri in 0..len {
+            let rr = chain.read(ri as usize);
+            let jvr = Vec3::new(
+                buf_j.read(j.idx(0, ri)),
+                buf_j.read(j.idx(1, ri)),
+                buf_j.read(j.idx(2, ri)),
+            );
+            let jwr = Vec3::new(
+                buf_j.read(j.idx(3, ri)),
+                buf_j.read(j.idx(4, ri)),
+                buf_j.read(j.idx(5, ri)),
+            );
+            let s = jvr.x * wjv.x
+                + jvr.y * wjv.y
+                + jvr.z * wjv.z
+                + jwr.x * wjw.x
+                + jwr.y * wjw.y
+                + jwr.z * wjw.z;
+            let idx = m.idx(rr, cc);
+            buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
+        }
+    }
+}
+
+/// Chain-sparse [`gemm_tr_par`]: `C := beta·C + alpha·Aᵀ·B` where `a` is a
+/// stored `6 × len` chain block; row `i` of `C` receives the stored column
+/// `si` with `i = chain[si]` (off-chain rows get exactly `alpha·0` in the
+/// dense form and are skipped; call sites use `beta = 1.0`).
+#[cfg(feature = "dim3")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_tr_chain_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    buf_a: &[f32],
+    a: MatSlice,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    chain: &impl MaybeIndexUnchecked<u32>,
+    len: u32,
+    lane: u32,
+    _lanes: u32,
+) {
+    let kmax = a.rows;
+    let j = lane;
+    if j < c.cols {
+        for si in 0..len {
+            let i = chain.read(si as usize);
+            let mut s = 0.0f32;
+            for kk in 0..kmax {
+                s += buf_a.read(a.idx(kk, si)) * buf_b.read(b.idx(kk, j));
+            }
+            let idx = c.idx(i, j);
+            let cur = buf_c.read(idx);
+            buf_c.write(idx, beta * cur + alpha * s);
+        }
+    }
+}
+
+/// Column-mapped [`gemm_skew_tr_lhs_cross_buf_par`]: writes `c[:, cj]` from
+/// `b[:, bj]` (a stored chain column). `bj == u32::MAX` skips the lane
+/// (off-chain: the dense contribution is exactly `alpha·0` with `beta = 1`).
+#[cfg(feature = "dim3")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_skew_tr_lhs_cross_buf_map_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    cj: u32,
+    bj: u32,
+) {
+    let a = skew_tr(t);
+    if cj < c.cols && bj != u32::MAX {
+        let bx = buf_b.read(b.idx(0, bj));
+        let by = buf_b.read(b.idx(1, bj));
+        let bz = buf_b.read(b.idx(2, bj));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, cj);
+        let i1 = c.idx(1, cj);
+        let i2 = c.idx(2, cj);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+/// Column-mapped [`gemm_omega_skew_tr_cross_buf_par`] — see
+/// [`gemm_skew_tr_lhs_cross_buf_map_par`].
+#[cfg(feature = "dim3")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_omega_skew_tr_cross_buf_map_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    parent_w: Vec3,
+    shift: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    cj: u32,
+    bj: u32,
+) {
+    let combined = skew(parent_w) * skew_tr(shift);
+    if cj < c.cols && bj != u32::MAX {
+        let bx = buf_b.read(b.idx(0, bj));
+        let by = buf_b.read(b.idx(1, bj));
+        let bz = buf_b.read(b.idx(2, bj));
+        let p = combined.x_axis * bx + combined.y_axis * by + combined.z_axis * bz;
+        let i0 = c.idx(0, cj);
+        let i1 = c.idx(1, cj);
+        let i2 = c.idx(2, cj);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
+/// Column-mapped [`gemm_skew_lhs_cross_buf_par`] — see
+/// [`gemm_skew_tr_lhs_cross_buf_map_par`].
+#[cfg(feature = "dim3")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_skew_lhs_cross_buf_map_par(
+    buf_c: &mut [f32],
+    c: MatSlice,
+    alpha: f32,
+    t: Vec3,
+    buf_b: &[f32],
+    b: MatSlice,
+    beta: f32,
+    cj: u32,
+    bj: u32,
+) {
+    let a = skew(t);
+    if cj < c.cols && bj != u32::MAX {
+        let bx = buf_b.read(b.idx(0, bj));
+        let by = buf_b.read(b.idx(1, bj));
+        let bz = buf_b.read(b.idx(2, bj));
+        let p = a.x_axis * bx + a.y_axis * by + a.z_axis * bz;
+        let i0 = c.idx(0, cj);
+        let i1 = c.idx(1, cj);
+        let i2 = c.idx(2, cj);
+        buf_c.write(i0, beta * buf_c.read(i0) + alpha * p.x);
+        buf_c.write(i1, beta * buf_c.read(i1) + alpha * p.y);
+        buf_c.write(i2, beta * buf_c.read(i2) + alpha * p.z);
+    }
+}
+
 // Note: parallel `lu_decompose_par` / `lu_solve_in_place_par` variants were
 // explored but did not pay off at typical multibody sizes. The kernels in
 // `super::dynamics::multibody::lu` use the sequential primitives instead.

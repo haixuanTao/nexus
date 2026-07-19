@@ -35,15 +35,18 @@ use glamx::{Mat3, Vec3};
 
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
-#[cfg(feature = "dim3")]
-use crate::utils::linalg::gemm_skew_lhs_cross_buf_par;
 use crate::utils::linalg::{
-    MAX_MB_DOFS, MatSlice, copy_from_par, fill_par, gemm_inertia_lhs_par,
-    gemm_omega_skew_tr_cross_buf_par, gemm_skew_tr_lhs_cross_buf_par, gemm_skew_tr_lhs_par,
-    gemm_tr_par, quadform_spatial_par,
+    MAX_MB_DOFS, MatSlice, copy_from_par, fill_par, gemm_inertia_lhs_par, gemm_skew_tr_lhs_par,
+};
+#[cfg(feature = "dim2")]
+use crate::utils::linalg::{
+    gemm_omega_skew_tr_cross_buf_par, gemm_skew_tr_lhs_cross_buf_par, gemm_tr_par,
+    quadform_spatial_par,
 };
 #[cfg(feature = "dim3")]
-use crate::utils::linalg::{quadform_spatial_chain_par,
+use crate::utils::linalg::{
+    chain_stored_col, gemm_omega_skew_tr_cross_buf_map_par, gemm_skew_lhs_cross_buf_map_par,
+    gemm_skew_tr_lhs_cross_buf_map_par, gemm_tr_chain_par, quadform_spatial_chain_sparse_par,
 };
 use crate::utils::{BatchIndices, Slice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross_av};
@@ -88,8 +91,10 @@ pub fn gpu_mb_compute_dynamics_pre(
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
     #[spirv(workgroup)] _cpu_marker: &mut u32,
-    // Per-link kinematic-tree DOF bitmasks (see update_body_jacobians).
-    #[spirv(workgroup)] jac_masks: &mut [u32; MAX_MB_DOFS as usize],
+    // Ascending ancestor-chain DOF list for the current link (chain-sparse
+    // jacobian storage); slot 32 holds the length. Built in parallel from the
+    // static chain mask, read after a barrier.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 33],
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -144,7 +149,7 @@ pub fn gpu_mb_compute_dynamics_pre(
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians, jac_masks);
+    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
 
     // 3) Propagate velocities (single-threaded)
     if lane == 0 {
@@ -168,6 +173,35 @@ pub fn gpu_mb_compute_dynamics_pre(
         let loop_is_active = k < num_links;
         let mut inv_mass_x = 0.0;
         let mut mass = 0.0;
+
+        // Chain-sparse jacobian views for link `k` (3D): the stored block is
+        // `6 × chain_len`, columns = ascending set bits of the chain mask.
+        // The chain list is built in parallel (lane `d` writes its rank) and
+        // published by the uniform barrier below.
+        #[cfg(feature = "dim3")]
+        let mut own_mask = 0u32;
+        #[cfg(feature = "dim3")]
+        let mut body_jacobian = MatSlice::dense(mb_jac_base, SPATIAL_DIM as u32, 0);
+        #[cfg(feature = "dim3")]
+        {
+            if loop_is_active {
+                let stat = stat_slice[k as usize];
+                own_mask = stat.jac_chain_mask;
+                body_jacobian = MatSlice::dense(
+                    mb_jac_base + stat.jac_offset as usize,
+                    SPATIAL_DIM as u32,
+                    own_mask.count_ones(),
+                );
+                if lane == 0 {
+                    chain_buf.write(32, own_mask.count_ones());
+                }
+                if lane < 32 && (own_mask >> lane) & 1 != 0 {
+                    let rank = (own_mask & ((1u32 << lane) - 1)).count_ones();
+                    chain_buf.write(rank as usize, lane);
+                }
+            }
+            workgroup_memory_barrier_with_group_sync();
+        }
 
         if loop_is_active {
             let lmp = local_mprops_slice[k as usize];
@@ -209,6 +243,7 @@ pub fn gpu_mb_compute_dynamics_pre(
             ANG_DIM,
             ndofs,
         );
+        #[cfg(feature = "dim2")]
         let body_jacobian = MatSlice::dense(
             mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
             SPATIAL_DIM as u32,
@@ -235,6 +270,22 @@ pub fn gpu_mb_compute_dynamics_pre(
             #[cfg(feature = "dim2")]
             let augmented_inertia = rb_inertia;
 
+            #[cfg(feature = "dim3")]
+            quadform_spatial_chain_sparse_par(
+                mass_matrices,
+                acc_augmented_mass,
+                1.0,
+                mass,
+                augmented_inertia,
+                body_jacobians,
+                body_jacobian,
+                1.0,
+                chain_buf,
+                chain_buf.read(32),
+                lane,
+                LANES,
+            );
+            #[cfg(feature = "dim2")]
             quadform_spatial_par(
                 mass_matrices,
                 acc_augmented_mass,
@@ -252,6 +303,22 @@ pub fn gpu_mb_compute_dynamics_pre(
                 let stat = stat_slice[k as usize];
                 let parent_id = stat.parent_link_id;
                 let parent_link = &ws_slice[parent_id as usize];
+                #[cfg(feature = "dim3")]
+                let (parent_j, pbj) = {
+                    let pstat = stat_slice[parent_id as usize];
+                    let pmask = pstat.jac_chain_mask;
+                    (
+                        MatSlice::dense(
+                            mb_jac_base + pstat.jac_offset as usize,
+                            SPATIAL_DIM as u32,
+                            pmask.count_ones(),
+                        ),
+                        // This lane's stored column in the parent block
+                        // (u32::MAX = off-chain → skip; dense contribution 0).
+                        chain_stored_col(pmask, lane),
+                    )
+                };
+                #[cfg(feature = "dim2")]
                 let parent_j = MatSlice::dense(
                     mb_jac_base + (parent_id as usize) * SPATIAL_DIM * (ndofs as usize),
                     SPATIAL_DIM as u32,
@@ -298,50 +365,84 @@ pub fn gpu_mb_compute_dynamics_pre(
 
                 let dvel = crate::gcross_av(ws.rb_vels.angular, ws.shift02)
                     + ws.joint_velocity.linear * 2.0;
-                gemm_skew_tr_lhs_cross_buf_par(
-                    coriolis_packed,
-                    coriolis_v_i,
-                    1.0,
-                    dvel,
-                    body_jacobians,
-                    parent_j_w,
-                    1.0,
-                    lane,
-                    LANES,
-                );
-
-                gemm_skew_tr_lhs_cross_buf_par(
-                    coriolis_packed,
-                    coriolis_v_i,
-                    1.0,
-                    ws.joint_velocity.linear,
-                    body_jacobians,
-                    parent_j_w,
-                    1.0,
-                    lane,
-                    LANES,
-                );
-
-                gemm_omega_skew_tr_cross_buf_par(
-                    coriolis_packed,
-                    coriolis_v_i,
-                    1.0,
-                    parent_w,
-                    ws.shift02,
-                    body_jacobians,
-                    parent_j_w,
-                    1.0,
-                    lane,
-                    LANES,
-                );
-
                 #[cfg(feature = "dim3")]
                 {
-                    gemm_skew_lhs_cross_buf_par(
+                    gemm_skew_tr_lhs_cross_buf_map_par(
+                        coriolis_packed,
+                        coriolis_v_i,
+                        1.0,
+                        dvel,
+                        body_jacobians,
+                        parent_j_w,
+                        1.0,
+                        lane,
+                        pbj,
+                    );
+                    gemm_skew_tr_lhs_cross_buf_map_par(
+                        coriolis_packed,
+                        coriolis_v_i,
+                        1.0,
+                        ws.joint_velocity.linear,
+                        body_jacobians,
+                        parent_j_w,
+                        1.0,
+                        lane,
+                        pbj,
+                    );
+                    gemm_omega_skew_tr_cross_buf_map_par(
+                        coriolis_packed,
+                        coriolis_v_i,
+                        1.0,
+                        parent_w,
+                        ws.shift02,
+                        body_jacobians,
+                        parent_j_w,
+                        1.0,
+                        lane,
+                        pbj,
+                    );
+                    gemm_skew_lhs_cross_buf_map_par(
                         coriolis_packed,
                         coriolis_w_i,
                         -1.0,
                         ws.joint_velocity.angular,
+                        body_jacobians,
+                        parent_j_w,
+                        1.0,
+                        lane,
+                        pbj,
+                    );
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    gemm_skew_tr_lhs_cross_buf_par(
+                        coriolis_packed,
+                        coriolis_v_i,
+                        1.0,
+                        dvel,
+                        body_jacobians,
+                        parent_j_w,
+                        1.0,
+                        lane,
+                        LANES,
+                    );
+                    gemm_skew_tr_lhs_cross_buf_par(
+                        coriolis_packed,
+                        coriolis_v_i,
+                        1.0,
+                        ws.joint_velocity.linear,
+                        body_jacobians,
+                        parent_j_w,
+                        1.0,
+                        lane,
+                        LANES,
+                    );
+                    gemm_omega_skew_tr_cross_buf_par(
+                        coriolis_packed,
+                        coriolis_v_i,
+                        1.0,
+                        parent_w,
+                        ws.shift02,
                         body_jacobians,
                         parent_j_w,
                         1.0,
@@ -426,30 +527,59 @@ pub fn gpu_mb_compute_dynamics_pre(
             );
 
             let dvel_23 = crate::gcross_av(ws.rb_vels.angular, ws.shift23);
-            gemm_skew_tr_lhs_cross_buf_par(
-                coriolis_packed,
-                coriolis_v_i,
-                1.0,
-                dvel_23,
-                body_jacobians,
-                rb_j_w,
-                1.0,
-                lane,
-                LANES,
-            );
-
-            gemm_omega_skew_tr_cross_buf_par(
-                coriolis_packed,
-                coriolis_v_i,
-                1.0,
-                ws.rb_vels.angular,
-                ws.shift23,
-                body_jacobians,
-                rb_j_w,
-                1.0,
-                lane,
-                LANES,
-            );
+            #[cfg(feature = "dim3")]
+            {
+                let obj = chain_stored_col(own_mask, lane);
+                gemm_skew_tr_lhs_cross_buf_map_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    dvel_23,
+                    body_jacobians,
+                    rb_j_w,
+                    1.0,
+                    lane,
+                    obj,
+                );
+                gemm_omega_skew_tr_cross_buf_map_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    ws.rb_vels.angular,
+                    ws.shift23,
+                    body_jacobians,
+                    rb_j_w,
+                    1.0,
+                    lane,
+                    obj,
+                );
+            }
+            #[cfg(feature = "dim2")]
+            {
+                gemm_skew_tr_lhs_cross_buf_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    dvel_23,
+                    body_jacobians,
+                    rb_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+                gemm_omega_skew_tr_cross_buf_par(
+                    coriolis_packed,
+                    coriolis_v_i,
+                    1.0,
+                    ws.rb_vels.angular,
+                    ws.shift23,
+                    body_jacobians,
+                    rb_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+            }
         }
 
         workgroup_memory_barrier_with_group_sync();
@@ -481,6 +611,22 @@ pub fn gpu_mb_compute_dynamics_pre(
         workgroup_memory_barrier_with_group_sync();
 
         if loop_is_active {
+            #[cfg(feature = "dim3")]
+            gemm_tr_chain_par(
+                mass_matrices,
+                acc_augmented_mass,
+                1.0,
+                body_jacobians,
+                body_jacobian,
+                coriolis_packed,
+                i_coriolis_dt_view,
+                1.0,
+                chain_buf,
+                chain_buf.read(32),
+                lane,
+                LANES,
+            );
+            #[cfg(feature = "dim2")]
             gemm_tr_par(
                 mass_matrices,
                 acc_augmented_mass,
@@ -538,11 +684,10 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     // path (for parity with the original kernels that needed it). Cheap on
     // GPU — unused.
     #[spirv(workgroup)] _cpu_marker: &mut u32,
-    // Ancestor-chain DOF list for the current link (chain-bounded CRBA);
-    // slot 32 holds the length. Lane 0 writes, all lanes read after a barrier.
+    // Ascending ancestor-chain DOF list for the current link (chain-sparse
+    // jacobian storage + chain-bounded CRBA); slot 32 holds the length.
+    // Built in parallel from the static chain mask, read after a barrier.
     #[spirv(workgroup)] chain_buf: &mut [u32; 33],
-    // Per-link kinematic-tree DOF bitmasks (see update_body_jacobians).
-    #[spirv(workgroup)] jac_masks: &mut [u32; MAX_MB_DOFS as usize],
 ) {
     let batch_id = wg_id.y;
     let mb_idx = wg_id.x;
@@ -589,7 +734,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     workgroup_memory_barrier_with_group_sync();
 
     // 2) Update body jacobians
-    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians, jac_masks);
+    update_body_jacobians(lane, mb_jac_base, ndofs, num_links, &stat_slice, &ws_slice.as_ref(), body_jacobians);
 
     // 3) Velocities propagation (single-threaded)
     if lane == 0 {
@@ -613,27 +758,20 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
             }
         }
 
-        // Build link k's ancestor-chain DOF list (the only nonzero jacobian
-        // columns) — lane 0 walks the link parents; uniform barrier before use.
+        // Build link k's ascending ancestor-chain DOF list (= the stored
+        // column order of its chain-sparse jacobian block): lane `d` with a
+        // set mask bit writes its rank; uniform barrier before use.
         #[cfg(feature = "dim3")]
         {
-            if lane == 0 && k < num_links {
-                let mut clen = 0u32;
-                let mut a = k;
-                for _ in 0..MAX_MB_DOFS as u32 {
-                    let sd = stat_slice[a as usize];
-                    let mut t = 0u32;
-                    while t < sd.ndofs {
-                        chain_buf.write(clen as usize, sd.assembly_id + t);
-                        clen += 1;
-                        t += 1;
-                    }
-                    if a == 0 {
-                        break;
-                    }
-                    a = sd.parent_link_id;
+            if k < num_links {
+                let mask = stat_slice[k as usize].jac_chain_mask;
+                if lane == 0 {
+                    chain_buf.write(32, mask.count_ones());
                 }
-                chain_buf.write(32, clen);
+                if lane < 32 && (mask >> lane) & 1 != 0 {
+                    let rank = (mask & ((1u32 << lane) - 1)).count_ones();
+                    chain_buf.write(rank as usize, lane);
+                }
             }
             workgroup_memory_barrier_with_group_sync();
         }
@@ -644,6 +782,16 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
             let mass = 1.0 / lmp.inv_mass.x;
             let inertia = link_world_inertia(ws, &lmp);
 
+            #[cfg(feature = "dim3")]
+            let body_jacobian = {
+                let stat = stat_slice[k as usize];
+                MatSlice::dense(
+                    mb_jac_base + stat.jac_offset as usize,
+                    SPATIAL_DIM as u32,
+                    stat.jac_chain_mask.count_ones(),
+                )
+            };
+            #[cfg(feature = "dim2")]
             let body_jacobian = MatSlice::dense(
                 mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
                 SPATIAL_DIM as u32,
@@ -651,7 +799,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
             );
 
             #[cfg(feature = "dim3")]
-            quadform_spatial_chain_par(
+            quadform_spatial_chain_sparse_par(
                 mass_matrices,
                 acc_augmented_mass,
                 1.0,
@@ -798,6 +946,14 @@ fn forward_kinematics(
     }
 }
 
+/// Chain-sparse body-jacobian assembly (3D): link `k` stores only its
+/// ancestor-chain DOF columns (`6 × chain_len` at `stat.jac_offset`, columns
+/// = ascending set bits of `stat.jac_chain_mask`). The parent's block is a
+/// strict prefix of the child's, so step 1 is a packed prefix copy; the own
+/// joint columns are the LAST `ndofs` stored columns and get an explicit
+/// zero-reset (the dense layout got that reset for free by copying the
+/// parent's zero columns — `joint_jacobian_accumulate_par` ACCUMULATES).
+#[cfg(feature = "dim3")]
 fn update_body_jacobians(
     lane: u32,
     mb_jac_base: usize,
@@ -806,18 +962,116 @@ fn update_body_jacobians(
     stat_slice: &Slice<MultibodyLinkStatic>,
     ws_slice: &Slice<MultibodyLinkWorkspace>,
     body_jacobians: &mut [f32],
-    // Per-link kinematic-tree DOF bitmask (the TODO below, implemented):
-    // mask[k] = mask[parent] | own-joint bits. Columns outside a link's mask
-    // are exactly zero (zero-initialized at build, never written — topology
-    // is static), so the copy / shift ops skip them via a dead-lane index.
-    jac_masks: &mut impl MaybeIndexUnchecked<u32>,
 ) {
-
+    let _ = ndofs;
     // TODO(PERF): on non-web platforms we could just use `mb.num_links` as the upper bound.
-    // TODO(PERF): instead of copying the body jacobian over and over for each body, we should
-    //             precompute a bit set that indicates which dofs are part of the kinematic tree
-    //             of each node. For a max number of DOFs set to 32, this means a single addition 32-bits
-    //             value per node.
+    for k in 0..MAX_MB_DOFS as u32 {
+        let mut parent_to_world = Pose::default();
+        let mut link_j = MatSlice::dense(mb_jac_base, SPATIAL_DIM as u32, 0);
+        let mut own_col0 = 0u32;
+
+        if k < num_links {
+            let link_infos = &stat_slice[k as usize];
+            let link = &ws_slice[k as usize];
+            let clen = link_infos.jac_chain_mask.count_ones();
+            link_j = MatSlice::dense(
+                mb_jac_base + link_infos.jac_offset as usize,
+                SPATIAL_DIM as u32,
+                clen,
+            );
+            own_col0 = clen - link_infos.ndofs;
+
+            if k != 0 {
+                let pstat = &stat_slice[link_infos.parent_link_id as usize];
+                let plen = pstat.jac_chain_mask.count_ones();
+                let parent_j = MatSlice::dense(
+                    mb_jac_base + pstat.jac_offset as usize,
+                    SPATIAL_DIM as u32,
+                    plen,
+                );
+                let parent_link = &ws_slice[link_infos.parent_link_id as usize];
+                parent_to_world = parent_link.local_to_world;
+
+                // 1) Prefix copy: the parent's stored block IS the first
+                //    `plen` stored columns of the child (same global DOFs).
+                copy_from_par(body_jacobians, link_j.columns(0, plen), parent_j, lane, LANES);
+                // 1b) Zero-reset the own joint columns (see doc comment).
+                fill_par(
+                    body_jacobians,
+                    link_j.columns(own_col0, link_infos.ndofs),
+                    0.0,
+                    lane,
+                    LANES,
+                );
+                // 2) v-rows of the chain-prefix columns += [shift02]×ᵀ · parent w-rows.
+                let link_j_v = link_j.view(0, 0, DIM, plen);
+                let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
+                gemm_skew_tr_lhs_par(
+                    body_jacobians,
+                    link_j_v,
+                    1.0,
+                    link.shift02,
+                    parent_j_w,
+                    1.0,
+                    lane,
+                    LANES,
+                );
+            } else {
+                fill_par(body_jacobians, link_j, 0.0, lane, LANES);
+            }
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+
+        if k < num_links {
+            let link_infos = &stat_slice[k as usize];
+            // 3) Own joint jacobian into the LAST `ndofs` stored columns.
+            let link_j_part = link_j.columns(own_col0, link_infos.ndofs);
+            joint_jacobian_accumulate_par(
+                link_infos,
+                parent_to_world.rotation * link_infos.data.local_frame_a.rotation,
+                body_jacobians,
+                link_j_part,
+                lane,
+                LANES,
+            );
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+
+        if k < num_links {
+            // 4) v-rows += [shift23]×ᵀ · w-rows over the whole (packed) block.
+            let link = &ws_slice[k as usize];
+            let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+            gemm_skew_tr_lhs_par(
+                body_jacobians,
+                link_j_v,
+                1.0,
+                link.shift23,
+                link_j_w,
+                1.0,
+                lane,
+                LANES,
+            );
+        }
+
+        workgroup_memory_barrier_with_group_sync();
+    }
+}
+
+/// Dense body-jacobian assembly (2D — the GPU multibody host pipeline is
+/// 3D-only, this keeps the 2D shader crate compiling with the original
+/// layout).
+#[cfg(feature = "dim2")]
+fn update_body_jacobians(
+    lane: u32,
+    mb_jac_base: usize,
+    ndofs: u32,
+    num_links: u32,
+    stat_slice: &Slice<MultibodyLinkStatic>,
+    ws_slice: &Slice<MultibodyLinkWorkspace>,
+    body_jacobians: &mut [f32],
+) {
     for k in 0..MAX_MB_DOFS as u32 {
         let mut parent_to_world = Pose::default();
         let link_j = MatSlice::dense(
@@ -830,21 +1084,6 @@ fn update_body_jacobians(
             let link_infos = &stat_slice[k as usize];
             let link = &ws_slice[k as usize];
 
-            if lane == 0 {
-                let nd = link_infos.ndofs;
-                let own = if nd >= 32 {
-                    0xFFFF_FFFFu32
-                } else {
-                    ((1u32 << nd) - 1) << link_infos.assembly_id
-                };
-                let m = if k == 0 {
-                    own
-                } else {
-                    jac_masks.read(link_infos.parent_link_id as usize) | own
-                };
-                jac_masks.write(k as usize, m);
-            }
-
             if k != 0 {
                 let parent_j = MatSlice::dense(
                     mb_jac_base
@@ -855,31 +1094,7 @@ fn update_body_jacobians(
                 let parent_link = &ws_slice[link_infos.parent_link_id as usize];
                 parent_to_world = parent_link.local_to_world;
 
-                // Dead-lane trick: parent columns outside the parent's chain
-                // mask are exactly zero — send those lanes out of range so the
-                // column helpers no-op (bit-identical: skipped ops copy 0 over
-                // 0 / add 0).
-                // CHILD mask = parent chain | own joint bits, computed
-                // locally by every lane (the smem slot for k was written by
-                // lane 0 in this same block — racy to read here; the parent's
-                // slot is barrier-published from its own iteration). The copy
-                // MUST cover the own columns too: joint_jacobian_accumulate_par
-                // ACCUMULATES, and copying the parent's zeros is what resets
-                // them each step.
-                let pmask = jac_masks.read(link_infos.parent_link_id as usize);
-                let nd = link_infos.ndofs;
-                let own = if nd >= 32 {
-                    0xFFFF_FFFFu32
-                } else {
-                    ((1u32 << nd) - 1) << link_infos.assembly_id
-                };
-                let cmask = pmask | own;
-                let elane = if lane < 32 && (cmask >> lane) & 1 != 0 {
-                    lane
-                } else {
-                    u32::MAX
-                };
-                copy_from_par(body_jacobians, link_j, parent_j, elane, LANES);
+                copy_from_par(body_jacobians, link_j, parent_j, lane, LANES);
                 let link_j_v = link_j.fixed_rows(0, DIM);
                 let parent_j_w = parent_j.fixed_rows(DIM, ANG_DIM);
                 gemm_skew_tr_lhs_par(
@@ -889,7 +1104,7 @@ fn update_body_jacobians(
                     link.shift02,
                     parent_j_w,
                     1.0,
-                    elane,
+                    lane,
                     LANES,
                 );
             } else {
@@ -917,12 +1132,6 @@ fn update_body_jacobians(
         if k < num_links {
             let link = &ws_slice[k as usize];
             let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
-            let cmask = jac_masks.read(k as usize);
-            let elane = if lane < 32 && (cmask >> lane) & 1 != 0 {
-                lane
-            } else {
-                u32::MAX
-            };
             gemm_skew_tr_lhs_par(
                 body_jacobians,
                 link_j_v,
@@ -930,7 +1139,7 @@ fn update_body_jacobians(
                 link.shift23,
                 link_j_w,
                 1.0,
-                elane,
+                lane,
                 LANES,
             );
         }

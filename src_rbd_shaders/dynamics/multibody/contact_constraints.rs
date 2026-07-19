@@ -99,6 +99,8 @@ fn orthonormal_vector(v: Vec2) -> Vec2 {
 #[inline]
 fn fill_contact_jac_row(
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_base: usize,
     mb_jac_base: usize,
     ndofs: u32,
     link_id: u32,
@@ -112,42 +114,72 @@ fn fill_contact_jac_row(
     elem_stride: usize,
     accumulate: bool,
 ) {
-    // Per-link SPATIAL_DIM × ndofs jacobian (rows 0..DIM = J_v, rows
-    // DIM..SPATIAL_DIM = J_w).
-    let link_jac_base = mb_jac_base + (link_id as usize) * SPATIAL_DIM * (ndofs as usize);
-    let link_j = MatSlice::dense(link_jac_base, SPATIAL_DIM as u32, ndofs);
-    let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
-    for j in 0..ndofs {
-        // Linear contribution: `unit_force · J_v[:, j]`.
-        let dot;
-        #[cfg(feature = "dim3")]
-        {
-            let jv0 = body_jacobians.read(link_j_v.idx(0, j));
-            let jv1 = body_jacobians.read(link_j_v.idx(1, j));
-            let jv2 = body_jacobians.read(link_j_v.idx(2, j));
-            let jw0 = body_jacobians.read(link_j_w.idx(0, j));
-            let jw1 = body_jacobians.read(link_j_w.idx(1, j));
-            let jw2 = body_jacobians.read(link_j_w.idx(2, j));
-            dot = unit_force.x * jv0
+    // 3D: the link's jacobian is stored chain-sparse (`6 × chain_len`,
+    // columns = ascending set bits of the chain mask, metadata in the 8-byte
+    // `jac_meta` record — NOT `links_static`, whose embedded `GenericJoint`
+    // makes a by-value load per constraint row cost more than the sparse
+    // reads save). Zero the row up front (skipped when accumulating into an
+    // already-written row), then add only the stored chain columns.
+    #[cfg(feature = "dim3")]
+    {
+        let meta = jac_meta.read(links_base + link_id as usize);
+        let mask = meta[1];
+        let link_j = MatSlice::dense(
+            mb_jac_base + meta[0] as usize,
+            SPATIAL_DIM as u32,
+            mask.count_ones(),
+        );
+        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+        if !accumulate {
+            for j in 0..ndofs {
+                out_jacs.write(col_offset + (j as usize) * elem_stride, 0.0);
+            }
+        }
+        // Set-bit iteration: `sc` is the stored column, `j` its global DOF.
+        // Bounded `for` + `break` (structured control flow — see the
+        // rust-gpu `while` note in `utils::linalg`).
+        let mut m = mask;
+        for sc in 0..32u32 {
+            if m == 0 {
+                break;
+            }
+            let j = m.trailing_zeros();
+            m &= m - 1;
+            let jv0 = body_jacobians.read(link_j_v.idx(0, sc));
+            let jv1 = body_jacobians.read(link_j_v.idx(1, sc));
+            let jv2 = body_jacobians.read(link_j_v.idx(2, sc));
+            let jw0 = body_jacobians.read(link_j_w.idx(0, sc));
+            let jw1 = body_jacobians.read(link_j_w.idx(1, sc));
+            let jw2 = body_jacobians.read(link_j_w.idx(2, sc));
+            let dot = unit_force.x * jv0
                 + unit_force.y * jv1
                 + unit_force.z * jv2
                 + unit_torque.x * jw0
                 + unit_torque.y * jw1
                 + unit_torque.z * jw2;
+            let idx = col_offset + (j as usize) * elem_stride;
+            out_jacs.write(idx, out_jacs.read(idx) + dot);
         }
-        #[cfg(feature = "dim2")]
-        {
+    }
+    // 2D keeps the dense per-link layout (no GPU multibody host path in 2D).
+    #[cfg(feature = "dim2")]
+    {
+        let _ = (jac_meta, links_base);
+        let link_jac_base = mb_jac_base + (link_id as usize) * SPATIAL_DIM * (ndofs as usize);
+        let link_j = MatSlice::dense(link_jac_base, SPATIAL_DIM as u32, ndofs);
+        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+        for j in 0..ndofs {
             let jv0 = body_jacobians.read(link_j_v.idx(0, j));
             let jv1 = body_jacobians.read(link_j_v.idx(1, j));
             let jw0 = body_jacobians.read(link_j_w.idx(0, j));
-            dot = unit_force.x * jv0 + unit_force.y * jv1 + unit_torque * jw0;
+            let dot = unit_force.x * jv0 + unit_force.y * jv1 + unit_torque * jw0;
+            let prev = if accumulate {
+                out_jacs.read(col_offset + (j as usize) * elem_stride)
+            } else {
+                0.0
+            };
+            out_jacs.write(col_offset + (j as usize) * elem_stride, prev + dot);
         }
-        let prev = if accumulate {
-            out_jacs.read(col_offset + (j as usize) * elem_stride)
-        } else {
-            0.0
-        };
-        out_jacs.write(col_offset + (j as usize) * elem_stride, prev + dot);
     }
 }
 
@@ -178,6 +210,7 @@ fn init_contact_constraints_body(
     elem_stride: usize,
     multibody_info: &[MultibodyInfo],
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
     body_to_link: &[[u32; 2]],
     contact_constraints: &mut [MultibodyContactConstraint],
     contact_constraint_jacs: &mut [f32],
@@ -252,6 +285,9 @@ fn init_contact_constraints_body(
         return;
     }
     let mb_jac_base = batch_ids.jac_start(batch_id) + mb.jacobian_offset as usize;
+    // This multibody's links in the per-batch static-links slab (chain-sparse
+    // jacobian metadata lives in `MultibodyLinkStatic`).
+    let links_base = batch_ids.links_start(batch_id) + mb.first_link as usize;
     let cons_base = cons_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize);
     // Each constraint slot reserves `dof_batch_capacity` floats in the
     // column buffer (matches the allocation in `from_rapier` and avoids any
@@ -368,6 +404,8 @@ fn init_contact_constraints_body(
 
             fill_contact_jac_row(
                 body_jacobians,
+                jac_meta,
+                links_base,
                 mb_jac_base,
                 ndofs,
                 mb_link_id_a,
@@ -393,6 +431,8 @@ fn init_contact_constraints_body(
                 let torque_b_normal = gcross(shift_b, lin_jac);
                 fill_contact_jac_row(
                     body_jacobians,
+                    jac_meta,
+                    links_base,
                     mb_jac_base,
                     ndofs,
                     mb_link_id_b,
@@ -509,6 +549,8 @@ fn init_contact_constraints_body(
 
                 fill_contact_jac_row(
                     body_jacobians,
+                    jac_meta,
+                    links_base,
                     mb_jac_base,
                     ndofs,
                     mb_link_id_a,
@@ -526,6 +568,8 @@ fn init_contact_constraints_body(
                     let torque_b_tang = gcross(shift_b, free_tangent);
                     fill_contact_jac_row(
                         body_jacobians,
+                        jac_meta,
+                        links_base,
                         mb_jac_base,
                         ndofs,
                         mb_link_id_b,
@@ -620,6 +664,8 @@ fn init_contact_constraints_body(
                     let ang_col_offset = col_base + (ang_slot as usize) * slot_stride;
                     fill_contact_jac_row(
                         body_jacobians,
+                        jac_meta,
+                        links_base,
                         mb_jac_base,
                         ndofs,
                         mb_link_id_a,
@@ -633,6 +679,8 @@ fn init_contact_constraints_body(
                     let (afj, iiafj) = if is_self {
                         fill_contact_jac_row(
                             body_jacobians,
+                            jac_meta,
+                            links_base,
                             mb_jac_base,
                             ndofs,
                             mb_link_id_b,
@@ -689,19 +737,20 @@ pub fn gpu_mb_init_contact_constraints(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_jacobians: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_to_link: &[[u32; 2]],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] jac_meta: &[[u32; 2]],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] body_to_link: &[[u32; 2]],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
     contact_constraints: &mut [MultibodyContactConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contact_constraint_jacs: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     contact_constraint_count: &mut [u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] dt_uniform: &f32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[SimParams],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
@@ -718,6 +767,7 @@ pub fn gpu_mb_init_contact_constraints(
         1,
         multibody_info,
         body_jacobians,
+        jac_meta,
         body_to_link,
         contact_constraints,
         contact_constraint_jacs,
@@ -740,20 +790,21 @@ pub fn gpu_mb_init_contact_constraints_soa(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] body_jacobians: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_to_link: &[[u32; 2]],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] jac_meta: &[[u32; 2]],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] body_to_link: &[[u32; 2]],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)]
     contact_constraints: &mut [MultibodyContactConstraint],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_constraint_jacs: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] contact_constraint_jacs: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
     contact_constraint_count: &mut [u32],
-    #[spirv(uniform, descriptor_set = 0, binding = 6)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] dt_uniform: &f32,
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 3)] contacts_len: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] all_params: &[SimParams],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] batch_ids: &BatchIndices,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] num_batches_u: &u32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] num_batches_u: &u32,
 ) {
     let batch_id = invocation_id.y;
     let mb_idx = invocation_id.x;
@@ -773,6 +824,7 @@ pub fn gpu_mb_init_contact_constraints_soa(
         nb,
         multibody_info,
         body_jacobians,
+        jac_meta,
         body_to_link,
         contact_constraints,
         contact_constraint_jacs,

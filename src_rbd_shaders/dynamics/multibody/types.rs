@@ -76,10 +76,25 @@ pub struct MultibodyLinkStatic {
     /// 1 if this joint's generalized velocities are user-controlled (ignored by the
     /// LU solve). 0 otherwise.
     pub kinematic: u32,
-    /// Pad to 16-byte alignment before `data` in 3D (Pose3 starts with a Quat).
-    /// In 2D, Pose2 only needs 4-byte alignment so no extra padding is required.
+    /// 3D only (these two u32s double as the 16-byte alignment padding before
+    /// `data`, whose Pose3 starts with a Quat; 2D needs no padding and keeps
+    /// the dense jacobian layout):
+    ///
+    /// Offset (in f32 entries, relative to the owning multibody's
+    /// `jacobian_offset`) of this link's CHAIN-SPARSE body jacobian: a
+    /// column-major `SPATIAL_DIM × popcount(jac_chain_mask)` block holding
+    /// only the ancestor-chain DOF columns (every other column of the formal
+    /// dense jacobian is exactly zero — branch-induced sparsity). Stored
+    /// columns are the set bits of `jac_chain_mask` in ascending DOF order,
+    /// so the parent's block is a strict prefix of the child's.
     #[cfg(feature = "dim3")]
-    pub _pad0: [u32; 2],
+    pub jac_offset: u32,
+    /// Kinematic-tree DOF bitmask: bit `d` set ⇔ generalized DOF `d` (assembly
+    /// index within the multibody) is on this link's root-to-link chain.
+    /// `mask = mask[parent] | own-joint bits`; requires `ndofs ≤ 32` (already
+    /// implied by the warp-32 column-per-lane kernels).
+    #[cfg(feature = "dim3")]
+    pub jac_chain_mask: u32,
     /// Joint configuration — reused directly from the impulse-joint infrastructure.
     pub data: GenericJoint,
 }
@@ -315,9 +330,11 @@ pub struct MultibodyInfo {
     pub first_dof: u32,
     /// Total DOFs (sum of each link's `ndofs`).
     pub ndofs: u32,
-    /// Offset (in f32 entries) into the `body_jacobians` tensor; each link has
-    /// `SPATIAL_DIM * ndofs` contiguous entries, stacked link-by-link in
-    /// assembly order.
+    /// Offset (in f32 entries) into the `body_jacobians` tensor. In 3D each
+    /// link stores a chain-sparse `SPATIAL_DIM × chain_len` block at
+    /// `jacobian_offset + link.jac_offset` (see `MultibodyLinkStatic`);
+    /// in 2D each link keeps the dense `SPATIAL_DIM * ndofs` block, stacked
+    /// link-by-link in assembly order.
     pub jacobian_offset: u32,
     /// Offset (in f32 entries) into the `mass_matrices` tensor. Block size: `ndofs * ndofs`.
     pub mass_matrix_offset: u32,

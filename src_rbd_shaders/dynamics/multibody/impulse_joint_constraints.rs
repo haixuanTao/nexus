@@ -44,7 +44,7 @@ use crate::utils::linalg::{MatSlice, lu_solve_in_place};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross, gdot, rotation_to_matrix};
 
 use super::lu::LANES;
-use super::types::{MultibodyInfo, MultibodyLinkStatic, MultibodyLinkWorkspace};
+use super::types::{MultibodyInfo, MultibodyLinkWorkspace};
 
 /// Maximum unit-axis constraints any single impulse joint can produce.
 ///
@@ -421,6 +421,8 @@ fn fill_mb_jacobians(
     unit_force: Vector,
     unit_torque: AngVector,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -429,37 +431,61 @@ fn fill_mb_jacobians(
 ) {
     let ndofs = mb.ndofs;
     let mb_jac_base = jac_start + mb.jacobian_offset as usize;
-    let link_jac_base = mb_jac_base + (link_id as usize) * SPATIAL_DIM * (ndofs as usize);
-    let link_j = MatSlice::dense(link_jac_base, SPATIAL_DIM as u32, ndofs);
-    let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
 
     // 1) j = link_J^T · (unit_force, unit_torque). Same kernel used by
-    //    `fill_contact_jac_row` in `contact_constraints`.
-    for k in 0..ndofs {
-        let dot;
-        #[cfg(feature = "dim3")]
-        {
-            let jv0 = body_jacobians.read(link_j_v.idx(0, k));
-            let jv1 = body_jacobians.read(link_j_v.idx(1, k));
-            let jv2 = body_jacobians.read(link_j_v.idx(2, k));
-            let jw0 = body_jacobians.read(link_j_w.idx(0, k));
-            let jw1 = body_jacobians.read(link_j_w.idx(1, k));
-            let jw2 = body_jacobians.read(link_j_w.idx(2, k));
-            dot = unit_force.x * jv0
+    //    `fill_contact_jac_row` in `contact_constraints`. 3D reads the
+    //    chain-sparse stored block (mask walk); 2D keeps the dense layout.
+    #[cfg(feature = "dim3")]
+    {
+        let meta = jac_meta.read(links_start + (mb.first_link + link_id) as usize);
+        let mask = meta[1];
+        let link_j = MatSlice::dense(
+            mb_jac_base + meta[0] as usize,
+            SPATIAL_DIM as u32,
+            mask.count_ones(),
+        );
+        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+        for k in 0..ndofs {
+            jacobians.write(j_id as usize + k as usize, 0.0);
+        }
+        // Set-bit iteration — `sc` = stored column, `k` = its global DOF.
+        // Bounded `for` + `break` (structured control flow — see the
+        // rust-gpu `while` note in `utils::linalg`).
+        let mut m = mask;
+        for sc in 0..32u32 {
+            if m == 0 {
+                break;
+            }
+            let k = m.trailing_zeros();
+            m &= m - 1;
+            let jv0 = body_jacobians.read(link_j_v.idx(0, sc));
+            let jv1 = body_jacobians.read(link_j_v.idx(1, sc));
+            let jv2 = body_jacobians.read(link_j_v.idx(2, sc));
+            let jw0 = body_jacobians.read(link_j_w.idx(0, sc));
+            let jw1 = body_jacobians.read(link_j_w.idx(1, sc));
+            let jw2 = body_jacobians.read(link_j_w.idx(2, sc));
+            let dot = unit_force.x * jv0
                 + unit_force.y * jv1
                 + unit_force.z * jv2
                 + unit_torque.x * jw0
                 + unit_torque.y * jw1
                 + unit_torque.z * jw2;
+            jacobians.write(j_id as usize + k as usize, dot);
         }
-        #[cfg(feature = "dim2")]
-        {
+    }
+    #[cfg(feature = "dim2")]
+    {
+        let _ = (jac_meta, links_start);
+        let link_jac_base = mb_jac_base + (link_id as usize) * SPATIAL_DIM * (ndofs as usize);
+        let link_j = MatSlice::dense(link_jac_base, SPATIAL_DIM as u32, ndofs);
+        let (link_j_v, link_j_w) = link_j.rows_range_pair(0, DIM, DIM, ANG_DIM);
+        for k in 0..ndofs {
             let jv0 = body_jacobians.read(link_j_v.idx(0, k));
             let jv1 = body_jacobians.read(link_j_v.idx(1, k));
             let jw0 = body_jacobians.read(link_j_w.idx(0, k));
-            dot = unit_force.x * jv0 + unit_force.y * jv1 + unit_torque * jw0;
+            let dot = unit_force.x * jv0 + unit_force.y * jv1 + unit_torque * jw0;
+            jacobians.write(j_id as usize + k as usize, dot);
         }
-        jacobians.write(j_id as usize + k as usize, dot);
     }
 
     // 2) wj = M⁻¹ · j (LU back-solve). Copy j into wj first so the in-place
@@ -640,6 +666,8 @@ fn lock_jacobians_generic(
     ang_jac1: AngVector,
     ang_jac2: AngVector,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -672,6 +700,8 @@ fn lock_jacobians_generic(
             lin_jac,
             ang_jac1,
             body_jacobians,
+            jac_meta,
+            links_start,
             jac_start,
             mass_matrices,
             mm_start,
@@ -704,6 +734,8 @@ fn lock_jacobians_generic(
             lin_jac,
             ang_jac2,
             body_jacobians,
+            jac_meta,
+            links_start,
             jac_start,
             mass_matrices,
             mm_start,
@@ -809,6 +841,8 @@ fn lock_linear_generic(
     j_id_a: u32,
     j_id_b: u32,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -838,6 +872,8 @@ fn lock_linear_generic(
         ang_jac1,
         ang_jac2,
         body_jacobians,
+        jac_meta,
+        links_start,
         jac_start,
         mass_matrices,
         mm_start,
@@ -870,6 +906,8 @@ fn lock_angular_generic(
     j_id_a: u32,
     j_id_b: u32,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -890,6 +928,8 @@ fn lock_angular_generic(
         ang_jac,
         ang_jac,
         body_jacobians,
+        jac_meta,
+        links_start,
         jac_start,
         mass_matrices,
         mm_start,
@@ -923,6 +963,8 @@ fn limit_linear_generic(
     j_id_a: u32,
     j_id_b: u32,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -952,6 +994,8 @@ fn limit_linear_generic(
         ang_jac1,
         ang_jac2,
         body_jacobians,
+        jac_meta,
+        links_start,
         jac_start,
         mass_matrices,
         mm_start,
@@ -991,6 +1035,8 @@ fn limit_angular_generic(
     j_id_a: u32,
     j_id_b: u32,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -1011,6 +1057,8 @@ fn limit_angular_generic(
         ang_jac,
         ang_jac,
         body_jacobians,
+        jac_meta,
+        links_start,
         jac_start,
         mass_matrices,
         mm_start,
@@ -1051,6 +1099,8 @@ fn motor_linear_generic(
     j_id_a: u32,
     j_id_b: u32,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -1081,6 +1131,8 @@ fn motor_linear_generic(
         ang_jac1,
         ang_jac2,
         body_jacobians,
+        jac_meta,
+        links_start,
         jac_start,
         mass_matrices,
         mm_start,
@@ -1123,6 +1175,8 @@ fn motor_angular_generic(
     j_id_a: u32,
     j_id_b: u32,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
+    links_start: usize,
     jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -1144,6 +1198,8 @@ fn motor_angular_generic(
         ang_jac,
         ang_jac,
         body_jacobians,
+        jac_meta,
+        links_start,
         jac_start,
         mass_matrices,
         mm_start,
@@ -1206,6 +1262,9 @@ pub fn gpu_mb_update_impulse_joint_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] lu_pivots: &[u32],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 5)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 6)] mprops: &[WorldMassProperties],
+    // Chain-sparse body-jacobian metadata (per-link offset + chain mask).
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 7)]
+    jac_meta: &[[u32; 2]],
     #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
 ) {
     let num_threads = num_workgroups.x * 64;
@@ -1249,6 +1308,7 @@ pub fn gpu_mb_update_impulse_joint_constraints(
                 links_workspace,
                 links_start,
                 body_jacobians,
+                jac_meta,
                 body_jac_start,
                 mass_matrices,
                 mm_start,
@@ -1276,6 +1336,7 @@ fn update_one_joint(
     links_workspace: &[MultibodyLinkWorkspace],
     links_start: usize,
     body_jacobians: &[f32],
+    jac_meta: &[[u32; 2]],
     body_jac_start: usize,
     mass_matrices: &[f32],
     mm_start: usize,
@@ -1424,6 +1485,8 @@ fn update_one_joint(
                 j_id_a,
                 j_id_b,
                 body_jacobians,
+                jac_meta,
+                links_start,
                 body_jac_start,
                 mass_matrices,
                 mm_start,
@@ -1461,6 +1524,8 @@ fn update_one_joint(
                 j_id_a,
                 j_id_b,
                 body_jacobians,
+                jac_meta,
+                links_start,
                 body_jac_start,
                 mass_matrices,
                 mm_start,
@@ -1498,6 +1563,8 @@ fn update_one_joint(
                 j_id_a,
                 j_id_b,
                 body_jacobians,
+                jac_meta,
+                links_start,
                 body_jac_start,
                 mass_matrices,
                 mm_start,
@@ -1535,6 +1602,8 @@ fn update_one_joint(
                 j_id_a,
                 j_id_b,
                 body_jacobians,
+                jac_meta,
+                links_start,
                 body_jac_start,
                 mass_matrices,
                 mm_start,
@@ -1574,6 +1643,8 @@ fn update_one_joint(
                 j_id_a,
                 j_id_b,
                 body_jacobians,
+                jac_meta,
+                links_start,
                 body_jac_start,
                 mass_matrices,
                 mm_start,
@@ -1613,6 +1684,8 @@ fn update_one_joint(
                 j_id_a,
                 j_id_b,
                 body_jacobians,
+                jac_meta,
+                links_start,
                 body_jac_start,
                 mass_matrices,
                 mm_start,

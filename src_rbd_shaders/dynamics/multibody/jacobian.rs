@@ -9,8 +9,13 @@
 //!   3. J_i columns for this joint's DOFs += joint jacobian (in world frame)
 //!   4. J_i.linear_rows += [shift23]×ᵀ · J_i.ang_rows
 //!
-//! Storage: column-major. `J[row, col] = jacobians[jac_base + col * SPATIAL_DIM + row]`
-//! with `jac_base = mb.jacobian_offset + (k - first_link) * SPATIAL_DIM * ndofs`.
+//! Storage: column-major. In 3D the layout is CHAIN-SPARSE: link `k` stores a
+//! `SPATIAL_DIM × popcount(jac_chain_mask)` block at
+//! `mb.jacobian_offset + stat.jac_offset`, whose columns are the set bits of
+//! `stat.jac_chain_mask` in ascending DOF order (every other formal column is
+//! exactly zero — branch-induced sparsity; the parent's block is a strict
+//! prefix of the child's). 2D keeps the dense
+//! `jac_base = mb.jacobian_offset + (k - first_link) * SPATIAL_DIM * ndofs`.
 
 use khal_std::glamx::UVec3;
 use khal_std::index::MaybeIndexUnchecked;

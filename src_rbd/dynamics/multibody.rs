@@ -112,6 +112,12 @@ pub struct GpuMultibodySet {
     multibody_info: Tensor<MultibodyInfo>,
     /// Per-batch static link data.
     links_static: Tensor<MultibodyLinkStatic>,
+    /// Per-link chain-sparse jacobian metadata `[jac_offset, jac_chain_mask]`
+    /// (same batch/link indexing as `links_static`). A dedicated 8-byte
+    /// record so the per-constraint-row readers (contact init, impulse
+    /// joints) don't pay a full `MultibodyLinkStatic` (embedded
+    /// `GenericJoint`) load per row.
+    jac_meta: Tensor<[u32; 2]>,
     /// CPU-side mirror of [`Self::links_static`] used to support runtime
     /// mutations like motor changes without round-tripping through a GPU read.
     links_static_mirror: Vec<MultibodyLinkStatic>,
@@ -901,7 +907,7 @@ impl GpuMultibodySet {
         for (env_idx, (set, body_ids, bodies)) in environments.iter().enumerate() {
             let env_friction = frictions.get(env_idx).copied().unwrap_or(0.5);
             let mut infos = Vec::new();
-            let mut statics = Vec::new();
+            let mut statics: Vec<MultibodyLinkStatic> = Vec::new();
             let mut workspaces = Vec::new();
             let mut mprops = Vec::new();
             let mut dof_vals = Vec::new();
@@ -996,6 +1002,7 @@ impl GpuMultibodySet {
                 // reconstruct it ourselves — rapier assigns ids in the same traversal
                 // order as `links()`.
                 let mut assembly_counter = 0u32;
+                let mut mb_link_jac_off = 0u32;
                 for (link_idx, link) in mb.links().enumerate() {
                     let rb_id = body_ids
                         .get(&link.rigid_body_handle())
@@ -1015,6 +1022,31 @@ impl GpuMultibodySet {
                         link.joint().ndofs() as u32
                     };
 
+                    // Chain-sparse jacobian metadata: this link's kinematic-tree
+                    // DOF bitmask (parent's mask | own joint bits — assembly
+                    // ids are parent-before-child so the parent's stored block
+                    // is a strict prefix of ours) and the offset of its
+                    // `6 × popcount(mask)` block within the multibody's
+                    // jacobian region.
+                    assert!(
+                        assembly_counter + link_ndofs <= 32,
+                        "multibody {mb_idx} has more than 32 DOFs — unsupported \
+                         by the warp-32 GPU multibody kernels",
+                    );
+                    let own_bits = if link_ndofs == 0 {
+                        0u32
+                    } else {
+                        ((1u32 << link_ndofs) - 1) << assembly_counter
+                    };
+                    let jac_chain_mask = if link_idx == 0 {
+                        own_bits
+                    } else {
+                        statics[first_link as usize + parent_id as usize].jac_chain_mask
+                            | own_bits
+                    };
+                    let jac_offset = mb_link_jac_off;
+                    mb_link_jac_off += 6 * jac_chain_mask.count_ones();
+
                     let stat = MultibodyLinkStatic {
                         rb_id,
                         parent_link_id: parent_id,
@@ -1022,7 +1054,8 @@ impl GpuMultibodySet {
                         assembly_id: assembly_counter,
                         ndofs: link_ndofs,
                         kinematic: if link.joint().kinematic { 1 } else { 0 },
-                        _pad0: [0; 2],
+                        jac_offset,
+                        jac_chain_mask,
                         data,
                     };
                     statics.push(stat);
@@ -1077,7 +1110,9 @@ impl GpuMultibodySet {
 
                 first_link += num_links;
                 first_dof += ndofs;
-                jac_off += num_links * 6 * ndofs;
+                // Chain-sparse: sum of `6 × chain_len` over links (was the
+                // dense `num_links * 6 * ndofs`).
+                jac_off += mb_link_jac_off;
                 mm_off += ndofs * ndofs;
                 cor_off += num_links * 3 * ndofs;
                 icdt_off += 6 * ndofs;
@@ -1232,6 +1267,15 @@ impl GpuMultibodySet {
 
             num_multibodies: Tensor::vector(backend, &all_num_mb, usage_u).unwrap(),
             multibody_info: Tensor::vector(backend, &all_infos, storage).unwrap(),
+            jac_meta: Tensor::vector(
+                backend,
+                &all_statics
+                    .iter()
+                    .map(|s| [s.jac_offset, s.jac_chain_mask])
+                    .collect::<Vec<[u32; 2]>>(),
+                storage,
+            )
+            .unwrap(),
             links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
                 .unwrap(),
             links_static_mirror: all_statics.clone(),
@@ -2233,6 +2277,7 @@ impl GpuMultibodySolver {
                 dispatch,
                 &mb.multibody_info,
                 &mb.body_jacobians,
+                &mb.jac_meta,
                 &mb.body_to_link,
                 &mut mb.contact_constraints,
                 &mut mb.contact_constraint_jacs,
@@ -2252,6 +2297,7 @@ impl GpuMultibodySolver {
                 dispatch,
                 &mb.multibody_info,
                 &mb.body_jacobians,
+                &mb.jac_meta,
                 &mb.body_to_link,
                 &mut mb.contact_constraints,
                 &mut mb.contact_constraint_jacs,
@@ -2413,6 +2459,7 @@ impl GpuMultibodySolver {
                 &mb.lu_pivots,
                 args.poses,
                 args.mprops,
+                &mb.jac_meta,
             )?;
             // Colored PGS sweep WITH bias: one dispatch per color, each
             // color's joints solved race-free in parallel (graph coloring

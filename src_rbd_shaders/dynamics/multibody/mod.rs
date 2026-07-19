@@ -21,7 +21,8 @@
 //! - `dof_values: Tensor<f32>`: generalized coordinates (flat, ndofs per multibody).
 //! - `dof_velocities: Tensor<f32>`: generalized velocities.
 //! - `gen_forces: Tensor<f32>`: generalized forces (receives gravity).
-//! - `body_jacobians: Tensor<f32>`: per-link `6 × ndofs` column-major.
+//! - `body_jacobians: Tensor<f32>`: per-link column-major; 3D chain-sparse
+//!   (`6 × chain_len`, see `jacobian.rs`), 2D dense `6 × ndofs`.
 //! - `mass_matrices: Tensor<f32>`: per-multibody `ndofs × ndofs` column-major.
 //!
 //! ### Kernel topology

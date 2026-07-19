@@ -18,7 +18,11 @@ use glamx::{Vec2, Vec3, Vec4};
 
 use crate::dynamics::body::{LocalMassProperties, Velocity};
 use crate::dynamics::joint::SPATIAL_DIM;
-use crate::utils::linalg::{MAX_MB_DOFS, MatSlice, fill_par, gemv_tr_spatial_split_par};
+use crate::utils::linalg::{MAX_MB_DOFS, MatSlice, fill_par};
+#[cfg(feature = "dim2")]
+use crate::utils::linalg::gemv_tr_spatial_split_par;
+#[cfg(feature = "dim3")]
+use crate::utils::linalg::gemv_tr_spatial_split_sparse_par;
 use crate::utils::{BatchIndices, Slice};
 use crate::{AngVector, Vector, gcross_av};
 
@@ -223,24 +227,51 @@ pub fn gpu_mb_gravity_and_lu(
                 let f_lin = (g - acc_lin) * mass;
                 let f_ang = -gyroscopic - i_acc_ang;
 
-                let body_jacobian = MatSlice::dense(
-                    mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
-                    SPATIAL_DIM as u32,
-                    ndofs,
-                );
-
-                gemv_tr_spatial_split_par(
-                    gen_forces,
-                    gen_base,
-                    1.0,
-                    body_jacobians,
-                    body_jacobian,
-                    f_lin,
-                    f_ang,
-                    1.0,
-                    lane,
-                    LANES,
-                );
+                // Chain-sparse jacobian: read only the stored ancestor-chain
+                // columns (lane = global DOF, rank via popcount); off-chain
+                // DOFs have exactly-zero formal columns and are skipped.
+                #[cfg(feature = "dim3")]
+                {
+                    let stat = stat_slice[k as usize];
+                    let body_jacobian = MatSlice::dense(
+                        mb_jac_base + stat.jac_offset as usize,
+                        SPATIAL_DIM as u32,
+                        stat.jac_chain_mask.count_ones(),
+                    );
+                    gemv_tr_spatial_split_sparse_par(
+                        gen_forces,
+                        gen_base,
+                        1.0,
+                        body_jacobians,
+                        body_jacobian,
+                        stat.jac_chain_mask,
+                        f_lin,
+                        f_ang,
+                        1.0,
+                        lane,
+                        LANES,
+                    );
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    let body_jacobian = MatSlice::dense(
+                        mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+                        SPATIAL_DIM as u32,
+                        ndofs,
+                    );
+                    gemv_tr_spatial_split_par(
+                        gen_forces,
+                        gen_base,
+                        1.0,
+                        body_jacobians,
+                        body_jacobian,
+                        f_lin,
+                        f_ang,
+                        1.0,
+                        lane,
+                        LANES,
+                    );
+                }
             }
         }
     }
@@ -587,24 +618,51 @@ pub fn gpu_mb_gravity_rhs(
                 let f_lin = (g - acc_lin) * mass;
                 let f_ang = -gyroscopic - i_acc_ang;
 
-                let body_jacobian = MatSlice::dense(
-                    mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
-                    SPATIAL_DIM as u32,
-                    ndofs,
-                );
-
-                gemv_tr_spatial_split_par(
-                    gen_forces,
-                    gen_base,
-                    1.0,
-                    body_jacobians,
-                    body_jacobian,
-                    f_lin,
-                    f_ang,
-                    1.0,
-                    lane,
-                    LANES,
-                );
+                // Chain-sparse jacobian: read only the stored ancestor-chain
+                // columns (lane = global DOF, rank via popcount); off-chain
+                // DOFs have exactly-zero formal columns and are skipped.
+                #[cfg(feature = "dim3")]
+                {
+                    let stat = stat_slice[k as usize];
+                    let body_jacobian = MatSlice::dense(
+                        mb_jac_base + stat.jac_offset as usize,
+                        SPATIAL_DIM as u32,
+                        stat.jac_chain_mask.count_ones(),
+                    );
+                    gemv_tr_spatial_split_sparse_par(
+                        gen_forces,
+                        gen_base,
+                        1.0,
+                        body_jacobians,
+                        body_jacobian,
+                        stat.jac_chain_mask,
+                        f_lin,
+                        f_ang,
+                        1.0,
+                        lane,
+                        LANES,
+                    );
+                }
+                #[cfg(feature = "dim2")]
+                {
+                    let body_jacobian = MatSlice::dense(
+                        mb_jac_base + (k as usize) * SPATIAL_DIM * (ndofs as usize),
+                        SPATIAL_DIM as u32,
+                        ndofs,
+                    );
+                    gemv_tr_spatial_split_par(
+                        gen_forces,
+                        gen_base,
+                        1.0,
+                        body_jacobians,
+                        body_jacobian,
+                        f_lin,
+                        f_ang,
+                        1.0,
+                        lane,
+                        LANES,
+                    );
+                }
             }
         }
     }
