@@ -19,7 +19,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 use khal_std::{
     iter::StepRng,
-    sync::{atomic_add_u32, atomic_load_u32},
+    sync::atomic_add_u32,
 };
 
 use crate::broad_phase::CollisionPair;
@@ -260,7 +260,7 @@ pub fn gpu_reduce_contacts(
     }
 }
 
-const PREDICTION: f32 = 2.0e-3; // TODO: make the prediction configurable.
+pub(crate) const PREDICTION: f32 = 2.0e-3; // TODO: make the prediction configurable.
 
 /// Narrow phase, pass 1 of 2: analytic shape-shape contacts for ball / cuboid
 /// pairs, written straight into the `contacts` buffer.
