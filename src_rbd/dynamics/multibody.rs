@@ -1961,14 +1961,22 @@ fn dyn_lanes() -> bool {
     *V.get_or_init(|| std::env::var("NEXUS_DYN_LANES").map(|v| v == "1").unwrap_or(false))
 }
 
-/// `NEXUS_CONTACT_ONCE=1`: build + finalize the multibody contact-constraint
-/// rows once per STEP (first substep) instead of once per substep — TGS-style
-/// (see `substep_build_constraints`). Default OFF: changes solver dynamics
-/// (frozen lever arms + impulse warm-continuation across substeps), so it
-/// needs stability validation, not just the bit-identity gate.
+/// `NEXUS_CONTACT_ONCE=0` disables (default ON): build + finalize the
+/// multibody contact-constraint rows once per STEP (first substep) instead of
+/// once per substep. This is the PhysX / Isaac-Gym norm — collision detection
+/// and contact-constraint PREP run once per step and the solver iterates on
+/// the frozen rows, warm-starting impulses across iterations; the previous
+/// per-substep rebuild did MORE work than any mainstream engine. Note the
+/// rows' `rhs` was ALREADY step-constant (bias derived from the frozen
+/// narrow-phase `dist`), so relative to the old default this changes only the
+/// per-substep lever-arm/`inv_lhs` refresh and re-adds impulse warm-
+/// continuation. It is NOT bit-identical; validate with the terrain-probe /
+/// convergence protocol, not the iter-0 band. (The genuine TGS "temporal"
+/// separation refresh — recomputing `dist` from the integrated Δpose each
+/// substep — is a SEPARATE feature zealot has never had; tracked apart.)
 fn contact_once() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("NEXUS_CONTACT_ONCE").map(|v| v == "1").unwrap_or(false))
+    *V.get_or_init(|| std::env::var("NEXUS_CONTACT_ONCE").map(|v| v != "0").unwrap_or(true))
 }
 
 /// Standalone bundle for the layout microbench kernels (see
