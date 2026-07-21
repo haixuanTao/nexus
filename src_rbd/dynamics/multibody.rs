@@ -434,6 +434,11 @@ impl GpuMultibodySet {
         self.links_per_batch
     }
 
+    /// TEMPORARY inert-motor diagnostic: the static link buffer tensor.
+    pub fn links_static(&self) -> &Tensor<MultibodyLinkStatic> {
+        &self.links_static
+    }
+
     /// Refreshes every link's joint parameters (motor targets/gains, limits) of
     /// environment `env` from a rapier multibody set laid out identically to the
     /// one this GPU set was built from (same multibody/link traversal order as
@@ -1334,7 +1339,7 @@ impl GpuMultibodySet {
                 storage,
             )
             .unwrap(),
-            links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
+            links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST | BufferUsages::COPY_SRC)
                 .unwrap(),
             links_static_mirror: all_statics.clone(),
             // COPY_DST on the dynamic joint-space buffers so `reset_env_from` can
@@ -1352,7 +1357,7 @@ impl GpuMultibodySet {
                 buf.extend_from_slice(&all_dof_vels);
                 buf.extend_from_slice(&all_dof_damping);
                 debug_assert_eq!(buf.len(), 2 * n);
-                Tensor::vector(backend, &buf, storage | BufferUsages::COPY_DST).unwrap()
+                Tensor::vector(backend, &buf, storage | BufferUsages::COPY_DST | BufferUsages::COPY_SRC).unwrap()
             },
             dof_frictionloss: Tensor::vector(
                 backend,
@@ -1429,7 +1434,7 @@ impl GpuMultibodySet {
             joint_constraints: Tensor::vector(
                 backend,
                 &vec![MultibodyJointConstraint::default(); (cons_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
             joint_constraint_columns: Tensor::vector(
