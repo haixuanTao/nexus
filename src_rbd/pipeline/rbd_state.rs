@@ -407,6 +407,19 @@ impl RbdState {
     }
 
     /// The contact manifold buffer (post narrow-phase + body resolution).
+    /// Debug accessors (fork-era names used by external probes).
+    pub fn dbg_contacts(&self) -> &Tensor<GpuIndexedContact> {
+        &self.contacts
+    }
+    pub fn dbg_contacts_len(&self) -> &Tensor<u32> {
+        &self.contacts_len
+    }
+    pub fn dbg_collision_pairs(&self) -> &Tensor<crate::shaders::broad_phase::CollisionPair> {
+        &self.collision_pairs
+    }
+    pub fn dbg_collision_pairs_len(&self) -> &Tensor<u32> {
+        &self.collision_pairs_len
+    }
     pub fn contacts(&self) -> &Tensor<GpuIndexedContact> {
         &self.contacts
     }
