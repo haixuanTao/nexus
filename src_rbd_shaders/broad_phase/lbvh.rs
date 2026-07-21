@@ -97,18 +97,25 @@ pub(crate) fn max_len_indirect_args(
     partial.write(lane as usize, m);
     workgroup_memory_barrier_with_group_sync();
 
-    // Lane-0 serial max over the 256 partials. A tree reduction
-    // (`for step { if lane < stride { .. } barrier }`) reads nicer, but
-    // rustc_codegen_nvvm's structurizer unrolls it and sinks the `bar.sync`
-    // into the divergent `lane < stride` branches — mismatched barrier
-    // counts across the block deadlock on CUDA (observed on sm_120; the
-    // SPIR-V path was fine). 256 serial reads once per dispatch is noise.
-    if lane == 0 {
-        let mut best = 0u32;
-        for t in 0..MAX_REDUCE_LANES {
-            best = best.max(partial.read(t as usize));
+    // Tree reduction over the 256 lanes. The bound goes through
+    // `opaque_bound` and the guard through `opaque_u32` so
+    // rustc_codegen_nvvm can neither unroll the loop nor unswitch the
+    // guard — both sink `bar.sync` into divergent branches and deadlock
+    // sm_90+ (a lane-0 serial fold avoids that too, but costs ~28 µs per
+    // dispatch on CUDA: a measurable slice of the small-batch step).
+    let mut stride = MAX_REDUCE_LANES / 2;
+    for _ in 0..crate::opaque_bound(8) {
+        if crate::opaque_u32(lane) < stride {
+            let v = partial
+                .read(lane as usize)
+                .max(partial.read((lane + stride) as usize));
+            partial.write(lane as usize, v);
         }
-        *indirect_args.at_mut(0) = best.div_ceil(WORKGROUP_SIZE);
+        stride /= 2;
+        workgroup_memory_barrier_with_group_sync();
+    }
+    if crate::opaque_u32(lane) == 0 {
+        *indirect_args.at_mut(0) = partial.read(0).div_ceil(WORKGROUP_SIZE);
         *indirect_args.at_mut(1) = num_batches as u32;
         *indirect_args.at_mut(2) = 1;
     }

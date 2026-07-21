@@ -29,6 +29,9 @@ use crate::utils::linalg::{
     gemm_omega_skew_tr_cross_buf_par, gemm_skew_tr_lhs_cross_buf_par, gemm_skew_tr_lhs_par,
     gemm_tr_par, quadform_spatial_par,
 };
+#[cfg(feature = "dim3")]
+use crate::utils::linalg::{MAX_MB_DOFS, quadform_spatial_chain_par,
+};
 use crate::utils::{BatchIndices, ISlice, SliceMut};
 use crate::{ANG_DIM, AngVector, DIM, Pose, Vector, gcross_av};
 use parry::math::VectorExt;
@@ -74,6 +77,10 @@ fn packed_decode(wg_id: UVec3, lid: UVec3, batch_ids: &BatchIndices) -> (u32, u3
 pub fn gpu_mb_compute_dynamics_pre(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
+    // Ancestor-chain DOF lists for the chain-bounded CRBA, one 33-slot
+    // region per packed slot (up to 8): 32 DOF indices + the length.
+    // Unconditional: the cuda-oxide entry glue drops cfg'd workgroup params.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 264],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     links_static: &[MultibodyLinkStatic],
@@ -94,6 +101,11 @@ pub fn gpu_mb_compute_dynamics_pre(
     // instead run every loop with a zeroed dummy `MultibodyInfo` (zero links /
     // DOFs ⇒ zero iterations, no stores).
     let (t, lane, batch_id, mb_idx, active_slot) = packed_decode(wg_id, lid, batch_ids);
+    // Slot-local base into `chain_buf` (chain-bounded CRBA).
+    #[cfg(feature = "dim2")]
+    let _ = chain_buf;
+    #[cfg(feature = "dim3")]
+    let chain_base = ((lid.x / t) * 33) as usize;
 
     let dt = *dt_uniform;
 
@@ -222,6 +234,35 @@ pub fn gpu_mb_compute_dynamics_pre(
         let rb_j_w = body_jacobian.fixed_rows(DIM, ANG_DIM);
         let mut rb_inertia = Default::default();
 
+        // Build link k's ancestor-chain DOF list (its jacobian's only
+        // nonzero columns) — slot lane 0 walks the parents; uniform barrier
+        // before use. Guard through opaque_u32: barriers live in this loop
+        // and an unswitched invariant guard deadlocks nvvm-compiled blocks.
+        // Packed tiers only (t >= 8): at t == 1 (serial) there are 64
+        // slots and the chain buffer only holds 8 regions; the serial tier
+        // keeps the dense quadform. `t` is uniform-buffer-sourced.
+        #[cfg(feature = "dim3")]
+        if t >= 8 {
+            if crate::opaque_u32(lane) == 0 && loop_is_active {
+                let mut clen = 0u32;
+                let mut a = k;
+                for _ in 0..MAX_MB_DOFS as u32 {
+                    let sd = stat_slice[a as usize];
+                    let mut ti = 0u32;
+                    while ti < sd.ndofs {
+                        chain_buf.write(chain_base + clen as usize, sd.assembly_id + ti);
+                        clen += 1;
+                        ti += 1;
+                    }
+                    if a == 0 {
+                        break;
+                    }
+                    a = sd.parent_link_id;
+                }
+                chain_buf.write(chain_base + 32, clen);
+            }
+            sync_slots(t);
+        }
         if loop_is_active {
             let lmp = stat_slice[k as usize].local_mprops;
             mass = 1.0 / inv_mass_x;
@@ -239,6 +280,38 @@ pub fn gpu_mb_compute_dynamics_pre(
             #[cfg(feature = "dim2")]
             let augmented_inertia = rb_inertia;
 
+            #[cfg(feature = "dim3")]
+            if t >= 8 {
+                quadform_spatial_chain_par(
+                    mass_matrices,
+                    acc_augmented_mass,
+                    1.0,
+                    mass,
+                    augmented_inertia,
+                    body_jacobians,
+                    body_jacobian,
+                    1.0,
+                    chain_buf,
+                    chain_base,
+                    chain_buf.read(chain_base + 32),
+                    lane,
+                    t,
+                );
+            } else {
+                quadform_spatial_par(
+                    mass_matrices,
+                    acc_augmented_mass,
+                    1.0,
+                    mass,
+                    augmented_inertia,
+                    body_jacobians,
+                    body_jacobian,
+                    1.0,
+                    lane,
+                    t,
+                );
+            }
+            #[cfg(feature = "dim2")]
             quadform_spatial_par(
                 mass_matrices,
                 acc_augmented_mass,
@@ -524,6 +597,10 @@ pub fn gpu_mb_compute_dynamics_pre(
 pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
+    // Ancestor-chain DOF lists for the chain-bounded CRBA, one 33-slot
+    // region per packed slot (up to 8): 32 DOF indices + the length.
+    // Unconditional: the cuda-oxide entry glue drops cfg'd workgroup params.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 264],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
     links_static: &[MultibodyLinkStatic],
@@ -539,6 +616,11 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     // Packed layout — see `packed_decode` and the uniformity note on
     // `gpu_mb_compute_dynamics_pre`.
     let (t, lane, batch_id, mb_idx, active_slot) = packed_decode(wg_id, lid, batch_ids);
+    // Slot-local base into `chain_buf` (chain-bounded CRBA).
+    #[cfg(feature = "dim2")]
+    let _ = chain_buf;
+    #[cfg(feature = "dim3")]
+    let chain_base = ((lid.x / t) * 33) as usize;
 
     let dt = *dt_uniform;
 
@@ -614,6 +696,35 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
             }
         }
 
+        // Build link k's ancestor-chain DOF list (its jacobian's only
+        // nonzero columns) — slot lane 0 walks the parents; uniform barrier
+        // before use. Guard through opaque_u32: barriers live in this loop
+        // and an unswitched invariant guard deadlocks nvvm-compiled blocks.
+        // Packed tiers only (t >= 8): at t == 1 (serial) there are 64
+        // slots and the chain buffer only holds 8 regions; the serial tier
+        // keeps the dense quadform. `t` is uniform-buffer-sourced.
+        #[cfg(feature = "dim3")]
+        if t >= 8 {
+            if crate::opaque_u32(lane) == 0 && active {
+                let mut clen = 0u32;
+                let mut a = k;
+                for _ in 0..MAX_MB_DOFS as u32 {
+                    let sd = stat_slice[a as usize];
+                    let mut ti = 0u32;
+                    while ti < sd.ndofs {
+                        chain_buf.write(chain_base + clen as usize, sd.assembly_id + ti);
+                        clen += 1;
+                        ti += 1;
+                    }
+                    if a == 0 {
+                        break;
+                    }
+                    a = sd.parent_link_id;
+                }
+                chain_buf.write(chain_base + 32, clen);
+            }
+            sync_slots(t);
+        }
         if active {
             let lmp = stat_slice[k as usize].local_mprops;
             let mass = 1.0 / lmp.inv_mass.x;
@@ -625,6 +736,38 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
                 ndofs,
             );
 
+            #[cfg(feature = "dim3")]
+            if t >= 8 {
+                quadform_spatial_chain_par(
+                    mass_matrices,
+                    acc_augmented_mass,
+                    1.0,
+                    mass,
+                    inertia,
+                    body_jacobians,
+                    body_jacobian,
+                    1.0,
+                    chain_buf,
+                    chain_base,
+                    chain_buf.read(chain_base + 32),
+                    lane,
+                    t,
+                );
+            } else {
+                quadform_spatial_par(
+                    mass_matrices,
+                    acc_augmented_mass,
+                    1.0,
+                    mass,
+                    inertia,
+                    body_jacobians,
+                    body_jacobian,
+                    1.0,
+                    lane,
+                    t,
+                );
+            }
+            #[cfg(feature = "dim2")]
             quadform_spatial_par(
                 mass_matrices,
                 acc_augmented_mass,

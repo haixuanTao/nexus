@@ -954,6 +954,68 @@ pub fn quadform_spatial_par(
     }
 }
 
+/// Chain-bounded [`quadform_spatial_par`]: identical accumulation, but rows
+/// and columns are restricted to the link's ancestor-chain DOF list (the only
+/// nonzero columns of its jacobian — branch-induced sparsity). Skipped
+/// entries would contribute exactly `+0.0` to independent writes, so results
+/// match the dense version bit-for-bit. `chain[chain_base..]` holds `len`
+/// DOF indices in workgroup memory (per-slot region in the packed tiers).
+#[cfg(feature = "dim3")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn quadform_spatial_chain_par(
+    buf_m: &mut [f32],
+    m: MatSlice,
+    alpha: f32,
+    mass: f32,
+    inertia: Mat3,
+    buf_j: &[f32],
+    j: MatSlice,
+    beta: f32,
+    chain: &impl MaybeIndexUnchecked<u32>,
+    chain_base: usize,
+    len: u32,
+    lane: u32,
+    _lanes: u32,
+) {
+    if lane < len {
+        let cc = chain.read(chain_base + lane as usize);
+        let jvc = Vec3::new(
+            buf_j.read(j.idx(0, cc)),
+            buf_j.read(j.idx(1, cc)),
+            buf_j.read(j.idx(2, cc)),
+        );
+        let jwc = Vec3::new(
+            buf_j.read(j.idx(3, cc)),
+            buf_j.read(j.idx(4, cc)),
+            buf_j.read(j.idx(5, cc)),
+        );
+        let wjv = jvc * mass;
+        let wjw = inertia.x_axis * jwc.x + inertia.y_axis * jwc.y + inertia.z_axis * jwc.z;
+        for ri in 0..len {
+            let rr = chain.read(chain_base + ri as usize);
+            let jvr = Vec3::new(
+                buf_j.read(j.idx(0, rr)),
+                buf_j.read(j.idx(1, rr)),
+                buf_j.read(j.idx(2, rr)),
+            );
+            let jwr = Vec3::new(
+                buf_j.read(j.idx(3, rr)),
+                buf_j.read(j.idx(4, rr)),
+                buf_j.read(j.idx(5, rr)),
+            );
+            let s = jvr.x * wjv.x
+                + jvr.y * wjv.y
+                + jvr.z * wjv.z
+                + jwr.x * wjw.x
+                + jwr.y * wjw.y
+                + jwr.z * wjw.z;
+            let idx = m.idx(rr, cc);
+            buf_m.write(idx, beta * buf_m.read(idx) + alpha * s);
+        }
+    }
+}
+
 #[cfg(feature = "dim2")]
 #[inline]
 pub fn quadform_spatial_par(
