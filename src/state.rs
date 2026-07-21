@@ -230,6 +230,16 @@ impl NexusState {
         self.rbd_dirty = true;
     }
 
+    /// Sets every environment's solver substep count (marks the state dirty so
+    /// `finalize` rebuilds with it). Headless-eval convenience for matching an
+    /// external engine's integration cadence (e.g. MuJoCo Euler = 1).
+    pub fn set_rbd_solver_iterations(&mut self, iterations: usize) {
+        for p in &mut self.rbd_sim_params {
+            p.num_solver_iterations = iterations as u32;
+        }
+        self.rbd_dirty = true;
+    }
+
     pub fn set_rbd_sim_params(&mut self, env: usize, params: RbdSimParams) {
         self.rbd_sim_params[env] = params;
         self.rbd_dirty = true;

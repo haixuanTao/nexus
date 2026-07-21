@@ -334,6 +334,13 @@ impl NexusState {
         self.0.set_rbd_dt(dt);
     }
 
+    /// Sets every environment's solver substep count (call before `finalize`;
+    /// triggers a rebuild). Headless-eval surface — match an external engine's
+    /// integration cadence (e.g. MuJoCo Euler = 1; nexus default = 4).
+    fn set_rbd_solver_iterations(&mut self, iterations: usize) {
+        self.0.set_rbd_solver_iterations(iterations);
+    }
+
     /// Physics-only MJCF load (robot + auto floor, no renderer).
     #[pyo3(signature = (scene_path, env=0))]
     fn insert_mjcf_headless(
