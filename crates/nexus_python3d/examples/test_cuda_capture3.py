@@ -45,6 +45,9 @@ for e in range(N_ENVS):
 print("[stage] envs inserted", flush=True)
 pipeline = NexusPipeline()
 state.finalize(viewer)
+if os.environ.get("NEXUS_SMOKE_EXPLICIT"):
+    state.set_implicit_coriolis(False)
+    print("[mode] explicit coriolis", flush=True)
 print("[stage] finalized", flush=True)
 
 # Warmup (buffer growth after capture invalidates the graph).
@@ -59,9 +62,9 @@ coords0 = viewer.read_multibody_links(state, 0)[0].copy()
 t0 = time.perf_counter()
 for _ in range(50):
     pipeline.simulate(viewer, state)
-t_simulate = (time.perf_counter() - t0) / 50
-
+# Sync-bounded: the readback fences queued work before the clock stops.
 coords1 = viewer.read_multibody_links(state, 0)[0].copy()
+t_simulate = (time.perf_counter() - t0) / 50
 check(
     "CUDA backend simulates (physics advances, finite)",
     np.isfinite(coords1).all() and np.abs(coords1 - coords0).max() > 1e-6,

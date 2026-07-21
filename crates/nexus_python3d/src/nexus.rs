@@ -271,6 +271,17 @@ impl NexusState {
     /// Per-environment collision-pair capacity (default 4096). Lower this
     /// before `finalize` when batching many small environments — pair-keyed
     /// GPU workspaces scale with `capacity x num_envs`.
+    /// Selects the multibody integration mode: `False` = MuJoCo/Genesis-style
+    /// explicit coriolis — the mass matrix / LU / gravity solve runs ONCE per
+    /// step instead of once per substep (~4x less dynamics work at 4
+    /// substeps; slightly different integration semantics). Call after
+    /// `finalize`.
+    fn set_implicit_coriolis(&mut self, enabled: bool) {
+        if let Some(rbd) = self.0.rbd.as_mut() {
+            rbd.multibodies_mut().set_implicit_coriolis(enabled);
+        }
+    }
+
     fn set_rbd_collisions_capacity(&mut self, capacity: u32) {
         self.0.set_rbd_collisions_capacity(capacity);
     }

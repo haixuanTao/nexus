@@ -126,6 +126,13 @@ impl NexusViewer {
         self.inner_mut().init_backend();
     }
 
+    /// Prints the per-kernel timing table accumulated under
+    /// `KHAL_CUDA_PROFILE=1` (serialized launches) and clears it.
+    #[cfg(feature = "cuda")]
+    fn dump_cuda_profile(&self) {
+        khal::backend::cuda::dump_kernel_profile();
+    }
+
     // --- camera & lighting ------------------------------------------------
 
     fn set_camera(&mut self, eye: Vec3, target: Vec3) {
