@@ -74,7 +74,7 @@ pub fn gpu_sort_scatter(
     let wg_block_start = BLOCK_SIZE * group_id;
     let mut data_index = wg_block_start + local_id;
 
-    for _ in 0..ELEMENTS_PER_THREAD {
+    for _ in 0..crate::opaque_bound(ELEMENTS_PER_THREAD) {
         // Reset local histogram
         if local_id < BIN_COUNT {
             local_histogram.write(local_id as usize, 0);
@@ -101,7 +101,7 @@ pub fn gpu_sort_scatter(
             // Workgroup prefix sum
             let mut sum = packed_histogram;
             lds_scratch.write(local_id as usize, sum);
-            for i in 0..8u32 {
+            for i in 0..crate::opaque_bound(8) {
                 workgroup_memory_barrier_with_group_sync();
                 if local_id >= (1 << i) {
                     sum = sum.wrapping_add(lds_scratch.read((local_id - (1 << i)) as usize));
@@ -160,7 +160,7 @@ pub fn gpu_sort_scatter(
             lds_scratch.write(local_id as usize, histogram_prefix_sum);
         }
 
-        for i in 0..4u32 {
+        for i in 0..crate::opaque_bound(4) {
             workgroup_memory_barrier_with_group_sync();
             if local_id >= (1 << i) && local_id < BIN_COUNT {
                 histogram_prefix_sum = histogram_prefix_sum

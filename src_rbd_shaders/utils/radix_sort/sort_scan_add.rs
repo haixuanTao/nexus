@@ -83,7 +83,7 @@ pub fn gpu_sort_scan_add(
 
     // Workgroup prefix sum
     sums.write(local_id.x as usize, sum);
-    for i in 0..8u32 {
+    for i in 0..crate::opaque_bound(8) {
         workgroup_memory_barrier_with_group_sync();
         if local_id.x >= (1 << i) {
             sum = sum.wrapping_add(sums.read((local_id.x - (1 << i)) as usize));

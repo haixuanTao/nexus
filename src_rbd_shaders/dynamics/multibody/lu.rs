@@ -40,7 +40,7 @@ pub(super) fn lu_factor_in_shared(
     // NOTE: uniform trip count (from a uniform buffer) for the barriers below.
     for k in 0..max_n {
         let active = k < n;
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let mut pivot_row = k;
             let mut pivot_val = {
                 let v = mat.read(sm_idx(k, k));
@@ -69,7 +69,7 @@ pub(super) fn lu_factor_in_shared(
         }
         workgroup_memory_barrier_with_group_sync();
 
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let akk = mat.read(sm_idx(k, k));
             *inv_akk_shared = if akk != 0.0 { 1.0 / akk } else { 0.0 };
         }
@@ -133,7 +133,7 @@ pub(super) fn lu_triangular_solve_in_place(
             }
             workgroup_memory_barrier_with_group_sync();
         }
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let cur = x.read(i as usize);
             x.write(i as usize, cur - partial.read(0));
         }
@@ -153,7 +153,7 @@ pub(super) fn lu_triangular_solve_in_place(
         };
         partial.write(lane as usize, s);
         workgroup_memory_barrier_with_group_sync();
-        for r in 0..6u32 {
+        for r in 0..crate::opaque_bound(6) {
             let stride = 1u32 << (5 - r);
             if lane < stride {
                 let v = partial.read(lane as usize) + partial.read((lane + stride) as usize);
@@ -161,7 +161,7 @@ pub(super) fn lu_triangular_solve_in_place(
             }
             workgroup_memory_barrier_with_group_sync();
         }
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let u = mat.read(sm_idx(i, i));
             let cur = x.read(i as usize) - partial.read(0);
             x.write(i as usize, if u != 0.0 { cur / u } else { 0.0 });
@@ -207,7 +207,7 @@ pub(super) fn lu_factor_in_shared_packed<const T: u32, const MATN: usize, const 
     // NOTE: uniform trip count (from a uniform buffer) for the barriers below.
     for k in 0..max_n {
         let active = active_slot && k < n;
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let mut pivot_row = k;
             let mut pivot_val = {
                 let v = mat.read(sm_idx_packed::<T>(slot, k, k));
@@ -236,7 +236,7 @@ pub(super) fn lu_factor_in_shared_packed<const T: u32, const MATN: usize, const 
         }
         workgroup_memory_barrier_with_group_sync();
 
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let akk = mat.read(sm_idx_packed::<T>(slot, k, k));
             inv_akk_shared.write(slot as usize, if akk != 0.0 { 1.0 / akk } else { 0.0 });
         }
@@ -305,7 +305,7 @@ pub(super) fn lu_triangular_solve_in_place_packed<const T: u32, const MATN: usiz
             }
             workgroup_memory_barrier_with_group_sync();
         }
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let cur = x.read(seg + i as usize);
             x.write(seg + i as usize, cur - partial.read(seg));
         }
@@ -325,7 +325,8 @@ pub(super) fn lu_triangular_solve_in_place_packed<const T: u32, const MATN: usiz
         };
         partial.write(seg + lane as usize, s);
         workgroup_memory_barrier_with_group_sync();
-        for r in 0..log2_t {
+        // Opaque bound: see `crate::opaque_bound`.
+        for r in 0..crate::opaque_bound(log2_t) {
             let stride = T >> (r + 1);
             if lane < stride {
                 let v = partial.read(seg + lane as usize)
@@ -334,7 +335,7 @@ pub(super) fn lu_triangular_solve_in_place_packed<const T: u32, const MATN: usiz
             }
             workgroup_memory_barrier_with_group_sync();
         }
-        if active && lane == 0 {
+        if active && crate::opaque_u32(lane) == 0 {
             let u = mat.read(sm_idx_packed::<T>(slot, i, i));
             let cur = x.read(seg + i as usize) - partial.read(seg);
             x.write(seg + i as usize, if u != 0.0 { cur / u } else { 0.0 });
@@ -355,7 +356,7 @@ pub(super) fn lu_apply_pivots_packed<const T: u32>(
     x: &mut [f32; 64],
 ) {
     let seg = (slot * T) as usize;
-    if active_slot && lane == 0 {
+    if active_slot && crate::opaque_u32(lane) == 0 {
         for k in 0..n {
             let p = buf_pivots.read(piv.at(k));
             if p != k {

@@ -249,7 +249,7 @@ pub fn gpu_mb_solve_impulse_joint_constraints(
 
     // TODO(PERF): load jacobians into shared memory and keep the velocity deltat on shared
     //             memory and only writeback after all the axis constraints are solved.
-    for s in 0..MAX_AXIS_CONSTRAINTS {
+    for s in 0..crate::opaque_bound(MAX_AXIS_CONSTRAINTS) {
         let c = constraints.at_mut(cons_base + s as usize);
         let active = workgroup_is_active && c.kind != 0;
 

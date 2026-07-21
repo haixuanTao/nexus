@@ -209,15 +209,27 @@ impl GpuMultibodySet {
         //   `NEXUS_SERIAL_MB=auto`     → upstream's measured-crossover
         let mode = std::env::var("NEXUS_SERIAL_MB");
         let serial = match mode.as_deref() {
+            // The <=8 gate is CORRECTNESS: forcing serial on an 18-dof
+            // robot freezes the joints (verified on WebGPU) — the serial
+            // kernel's fixed small-dof assumptions silently no-op beyond it.
             Ok("1") => self.max_ndofs <= 8,
             Ok("auto") => self.max_ndofs <= 8 && total_mb >= 1024,
             _ => false,
         };
         if serial {
-            1
-        } else {
-            self.max_ndofs.next_power_of_two().clamp(8, MB_LU_LANES)
+            return 1;
         }
+        // `NEXUS_MB_PACK=<8|16|32|64>` forces a specific packed tier (>=
+        // max_ndofs required; 64 selects the unpacked warp-per-multibody
+        // fallback). A/B and backend-workaround hook.
+        if let Ok(v) = std::env::var("NEXUS_MB_PACK") {
+            if let Ok(t) = v.parse::<u32>() {
+                if t >= self.max_ndofs.next_power_of_two().min(MB_LU_LANES) {
+                    return t.clamp(8, MB_LU_LANES);
+                }
+            }
+        }
+        self.max_ndofs.next_power_of_two().clamp(8, MB_LU_LANES)
     }
 
     /// Thread-count grid for the packed per-multibody WORKGROUP kernels

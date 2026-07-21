@@ -263,7 +263,7 @@ pub fn gpu_mb_gravity_and_lu(
             acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
             acc_lin += gcross_av(acc_ang, self_shift23);
 
-            if lane == 0 {
+            if crate::opaque_u32(lane) == 0 {
                 ws_set_vel(links_workspace, wa, k, WS_KIN_ACC, Velocity::new(acc_lin, acc_ang));
             }
         }
@@ -530,7 +530,7 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
             acc_lin += gcross_av(rb_ang, gcross_av(rb_ang, self_shift23));
             acc_lin += gcross_av(acc_ang, self_shift23);
 
-            if lane == 0 {
+            if crate::opaque_u32(lane) == 0 {
                 ws_set_vel(links_workspace, wa, k, WS_KIN_ACC, Velocity::new(acc_lin, acc_ang));
             }
         }

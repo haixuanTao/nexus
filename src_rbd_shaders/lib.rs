@@ -418,6 +418,29 @@ pub fn opaque_bound(n: u32) -> u32 {
     }
 }
 
+/// An optimization-opaque value for lane guards inside barriered loops.
+///
+/// A loop-INVARIANT guard like `if lane == 0 { .. }` inside a loop whose
+/// body contains barriers invites LLVM loop unswitching under
+/// rustc_codegen_nvvm: the loop is cloned per guard value, and the clones
+/// carry different `bar.sync` counts per iteration — lane 0 then syncs a
+/// different number of times than its peers every iteration, deadlocking
+/// the block on sm_90+. Routing the lane through a per-iteration
+/// `black_box` makes the condition unhoistable, keeping ONE loop body with
+/// uniform barrier placement. Pass-through on SPIR-V (no `black_box` on
+/// rust-gpu; naga's uniformity analysis already rejects unsound placement).
+#[inline(always)]
+pub fn opaque_u32(x: u32) -> u32 {
+    #[cfg(target_arch = "spirv")]
+    {
+        x
+    }
+    #[cfg(not(target_arch = "spirv"))]
+    {
+        core::hint::black_box(x)
+    }
+}
+
 /// Panic-free matrix column access for GPU shader code.
 ///
 /// glam's `col` panics with a message on an out-of-range index, which GPU

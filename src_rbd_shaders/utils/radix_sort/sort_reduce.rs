@@ -61,7 +61,7 @@ pub fn gpu_sort_reduce(
     sums.write(local_id.x as usize, sum);
 
     // Parallel reduction
-    for i in 0..8u32 {
+    for i in 0..crate::opaque_bound(8) {
         workgroup_memory_barrier_with_group_sync();
         if local_id.x < ((WG / 2) >> i) {
             sum = sum.wrapping_add(sums.read((local_id.x + ((WG / 2) >> i)) as usize));

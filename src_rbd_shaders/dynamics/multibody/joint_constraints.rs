@@ -122,7 +122,9 @@ fn emit_joint_constraints(
                     curr_pos,
                     inv_dt,
                     dt,
-                    &stat.data.motors[axis as usize],
+                    // By-value element load — CUDA codegen drops the dynamic
+                    // index on `&motors[axis]` (fork-documented; faults).
+                    &{ stat.data.motors[axis as usize] },
                     has_limits,
                     limit_min,
                     limit_max,
@@ -184,7 +186,9 @@ fn emit_joint_constraints(
                     curr_pos,
                     inv_dt,
                     dt,
-                    &stat.data.motors[axis as usize],
+                    // By-value element load — CUDA codegen drops the dynamic
+                    // index on `&motors[axis]` (fork-documented; faults).
+                    &{ stat.data.motors[axis as usize] },
                     has_limits,
                     limit_min,
                     limit_max,
@@ -270,7 +274,8 @@ pub fn gpu_mb_refresh_joint_constraints(
                 curr_pos,
                 inv_dt,
                 dt,
-                &stat.data.motors[axis as usize],
+                // By-value element load — see the note above.
+                &{ stat.data.motors[axis as usize] },
                 has_limits,
                 stat.data.limits[axis as usize].min,
                 stat.data.limits[axis as usize].max,

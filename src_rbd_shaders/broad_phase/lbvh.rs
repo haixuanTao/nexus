@@ -407,7 +407,8 @@ pub fn gpu_lbvh_refit_internal(
 
         // Process the tree level by level with uniform barriers.
         // Maximum tree depth is log2(num_colliders), but we use 32 as a safe upper bound.
-        for _level in 0..32u32 {
+        // Opaque bound: see `crate::opaque_bound`.
+        for _level in 0..crate::opaque_bound(32) {
             if thread_is_active {
                 let refit_count = atomic_add_u32(&mut tree.at_mut(curr_id as usize).refit_count, 1);
 
