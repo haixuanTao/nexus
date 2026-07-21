@@ -88,7 +88,11 @@ fn build_state(stack_height: usize) -> (NexusState, usize) {
 }
 
 async fn select_backend() -> GpuBackend {
-    if std::env::var("BACKEND").as_deref() == Ok("webgpu") {
+    #[cfg(feature = "metal")]
+    if std::env::var("BACKEND").as_deref() != Ok("webgpu") {
+        return GpuBackend::Metal(khal::backend::metal::Metal::new().expect("Metal init failed"));
+    }
+    {
         let limits = wgpu::Limits {
             max_buffer_size: 1_000_000_000,
             max_storage_buffer_binding_size: 1_000_000_000,
@@ -101,8 +105,6 @@ async fn select_backend() -> GpuBackend {
             .expect("Failed to initialize WebGPU backend");
         webgpu.force_buffer_copy_src = true;
         GpuBackend::WebGpu(webgpu)
-    } else {
-        GpuBackend::Metal(khal::backend::metal::Metal::new().expect("Metal init failed"))
     }
 }
 
