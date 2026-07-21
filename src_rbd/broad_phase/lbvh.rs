@@ -353,9 +353,12 @@ impl Lbvh {
             batch_indices,
             vertex_buffers,
         )?;
+        // This fork's reset kernel takes the batch id from `workgroup_id.y`
+        // (dispatched `[1, num_batches, 1]` by the LBVH path); an x-major grid
+        // here would only ever reset batch 0's counter.
         self.shaders.reset_collision_pairs.call(
             pass,
-            [num_batches, 1, 1],
+            [1u32, num_batches, 1],
             collision_pairs_len,
         )?;
         self.shaders.bf_find_pairs.call(

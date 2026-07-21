@@ -42,7 +42,10 @@ pub fn gpu_bf_compute_aabbs(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] vertices: &[PaddedVector],
 ) {
     let n = batch_ids.colliders_len;
-    if invocation_id.x >= n * batch_ids.num_batches {
+    // This fork's `BatchIndices` carries no `num_batches`; derive it from the
+    // strided output buffer, like `gpu_lbvh_find_collision_pairs` does.
+    let num_batches = (aabbs.len() / batch_ids.colliders_batch_capacity as usize) as u32;
+    if invocation_id.x >= n * num_batches {
         return;
     }
     let batch_id = invocation_id.x / n;
@@ -74,7 +77,10 @@ pub fn gpu_bf_find_pairs(
 ) {
     let n = batch_ids.colliders_len;
     let nn = n * n;
-    if invocation_id.x >= nn * batch_ids.num_batches {
+    // One `collision_pairs_len` counter per batch (same invariant the LBVH
+    // traversal relies on).
+    let num_batches = collision_pairs_len.len() as u32;
+    if invocation_id.x >= nn * num_batches {
         return;
     }
     let batch_id = invocation_id.x / nn;

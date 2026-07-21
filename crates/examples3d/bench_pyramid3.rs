@@ -101,13 +101,9 @@ async fn webgpu_backend() -> GpuBackend {
     GpuBackend::WebGpu(webgpu)
 }
 
-/// `BACKEND=cpu|metal|webgpu` (default: webgpu).
+/// `BACKEND=metal|webgpu` (default: webgpu).
 async fn select_backend() -> GpuBackend {
     match std::env::var("BACKEND").as_deref() {
-        Ok("cpu") => {
-            println!("backend: CPU");
-            GpuBackend::Cpu
-        }
         #[cfg(feature = "metal")]
         Ok("metal") => {
             println!("backend: Metal");
