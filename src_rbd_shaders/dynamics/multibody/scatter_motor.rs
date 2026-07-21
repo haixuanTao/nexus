@@ -40,7 +40,13 @@ pub fn gpu_scatter_motor_targets(
     let global_idx = (link_id * *num_envs + env) as usize;
     let target = motor_targets[(j * *num_envs + env) as usize];
 
-    let link = &mut links_static[global_idx];
-    link.data.motors[*axis_id as usize].target_pos = target;
-    link.data.motor_axes |= 1u32 << *axis_id;
+    // NOTE: the silly single-iteration loop matches
+    // `gpu_lbvh_reset_collision_pairs`: rust-gpu occasionally prunes the
+    // SPIR-V for kernels it deems too trivial; the loop shell keeps the
+    // entry point emitted.
+    for _ in 0..1 {
+        let link = &mut links_static[global_idx];
+        link.data.motors[*axis_id as usize].target_pos = target;
+        link.data.motor_axes |= 1u32 << *axis_id;
+    }
 }
