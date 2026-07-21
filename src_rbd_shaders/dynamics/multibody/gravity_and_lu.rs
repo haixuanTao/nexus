@@ -151,6 +151,10 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
     // Actuator-delay state for the force-based PD (see `apply_force_based_pd`).
     #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] motor_delay_state: &mut [f32],
+    // Persistent external generalized forces (RL torque input; host-set,
+    // applied every substep until overwritten). Same interleaved layout as
+    // `gen_forces`.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] external_gen_forces: &[f32],
     // Mass-matrix tile in shared memory.
     #[spirv(workgroup)] mat: &mut [f32; MAX_MB_DOFS * MAX_MB_DOFS],
     // RHS / solution vector.
@@ -329,7 +333,13 @@ pub fn gpu_mb_gravity_and_lu(
     if i < ndofs {
         let idx = batch_ids.mbi(batch_id, gen_base + i as usize);
         let cur = gen_forces.read(idx);
-        gen_forces.write(idx, cur - damping_slice[i as usize] * vel_slice[i as usize]);
+        // External generalized forces (RL torque input) enter here, with
+        // the same per-substep persistence as gravity.
+        gen_forces.write(
+            idx,
+            cur - damping_slice[i as usize] * vel_slice[i as usize]
+                + external_gen_forces.read(idx),
+        );
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -413,6 +423,7 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
     gravity: &Vec4,
     batch_ids: &BatchIndices,
     motor_delay_state: &mut [f32],
+    external_gen_forces: &[f32],
     mat: &mut impl MaybeIndexUnchecked<f32>,
     x: &mut impl MaybeIndexUnchecked<f32>,
     partial: &mut impl MaybeIndexUnchecked<f32>,
@@ -589,7 +600,13 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
     if i < ndofs {
         let idx = batch_ids.mbi(batch_id, gen_base + i as usize);
         let cur = gen_forces.read(idx);
-        gen_forces.write(idx, cur - damping_slice[i as usize] * vel_slice[i as usize]);
+        // External generalized forces (RL torque input) enter here, with
+        // the same per-substep persistence as gravity.
+        gen_forces.write(
+            idx,
+            cur - damping_slice[i as usize] * vel_slice[i as usize]
+                + external_gen_forces.read(idx),
+        );
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -698,6 +715,8 @@ pub fn gpu_mb_gravity_and_lu_t1(
     #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
     // Actuator-delay state for the force-based PD (see `apply_force_based_pd`).
     #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] motor_delay_state: &mut [f32],
+    // Persistent external generalized forces — see `gpu_mb_gravity_and_lu`.
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] external_gen_forces: &[f32],
 ) {
     let num_mb = batch_ids.multibodies_len;
     if invocation_id.x >= num_mb * batch_ids.num_batches {
@@ -836,7 +855,13 @@ pub fn gpu_mb_gravity_and_lu_t1(
     for i in 0..ndofs {
         let idx = batch_ids.mbi(batch_id, gen_base + i as usize);
         let cur = gen_forces.read(idx);
-        gen_forces.write(idx, cur - damping_slice[i as usize] * vel_slice[i as usize]);
+        // External generalized forces (RL torque input) enter here, with
+        // the same per-substep persistence as gravity.
+        gen_forces.write(
+            idx,
+            cur - damping_slice[i as usize] * vel_slice[i as usize]
+                + external_gen_forces.read(idx),
+        );
     }
 
     // ---- Phase 2.9: explicit force-based motor PD (this thread owns the
@@ -892,6 +917,8 @@ macro_rules! gravity_and_lu_packed_entry {
             #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
             #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
             motor_delay_state: &mut [f32],
+            #[spirv(storage_buffer, descriptor_set = 0, binding = 11)]
+            external_gen_forces: &[f32],
             #[spirv(workgroup)] mat: &mut [f32; $matn],
             #[spirv(workgroup)] x: &mut [f32; 64],
             #[spirv(workgroup)] partial: &mut [f32; 64],
@@ -912,6 +939,7 @@ macro_rules! gravity_and_lu_packed_entry {
                 gravity,
                 batch_ids,
                 motor_delay_state,
+                external_gen_forces,
                 mat,
                 x,
                 partial,

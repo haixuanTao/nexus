@@ -64,6 +64,10 @@ pub struct GpuMultibodySet {
     /// Lazily-created shader bundle + staging buffers for the per-env RL
     /// reset scatter (`gpu_mb_env_reset`).
     pub(super) env_reset: Option<EnvResetBundle>,
+    /// Persistent external generalized forces (RL torque input), same
+    /// interleaved layout as `gen_forces`; zeroed = none. Applied every
+    /// substep by the gravity kernels until overwritten.
+    pub(super) external_gen_forces: Tensor<f32>,
     /// Actuator-delay state for the force-based PD, per-batch stride
     /// `2 + links_per_batch`: `[tick, k, prev_target × links]`. Zeroed =
     /// delay off. See `apply_force_based_pd` in the gravity kernels.
@@ -512,6 +516,12 @@ impl GpuMultibodySet {
         self.links_per_batch
     }
 
+    /// Generalized-DOF slots per environment (free-base DOFs first, then
+    /// actuated joints in link order).
+    pub fn dofs_per_batch(&self) -> u32 {
+        self.dofs_per_batch
+    }
+
     /// Refreshes every link's joint parameters (motor targets/gains, limits) of
     /// environment `env` from a rapier multibody set laid out identically to the
     /// one this GPU set was built from (same multibody/link traversal order as
@@ -561,6 +571,27 @@ impl GpuMultibodySet {
             &self.links_static_mirror,
         )
     }
+    /// Sets environment `env`'s persistent external generalized forces
+    /// (RL torque input; length = DOF capacity per env, free-base DOFs
+    /// first). Applied every substep by the dynamics kernels until the next
+    /// call. Interleaved scatter: one small write per DOF.
+    pub fn set_external_gen_forces(
+        &mut self,
+        backend: &GpuBackend,
+        env: u32,
+        forces: &[f32],
+    ) -> Result<(), GpuBackendError> {
+        let nb = self.num_batches as usize;
+        for (d, v) in forces.iter().enumerate().take(self.dofs_per_batch as usize) {
+            backend.write_buffer(
+                self.external_gen_forces.buffer_mut(),
+                (d * nb + env as usize) as u64,
+                core::slice::from_ref(v),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Upload a new gravity vector.
     pub fn set_gravity(&mut self, backend: &GpuBackend, g: [f32; 3]) {
         self.gravity = Tensor::scalar(

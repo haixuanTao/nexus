@@ -121,6 +121,77 @@ struct VisualMeshReg {
 pub type MjcfHandles =
     rapier3d_mjcf::MjcfRobotHandles<Option<rapier3d::prelude::MultibodyJointHandle>>;
 
+
+/// Physics-only MJCF load — no viewer, no render registration. The robot is
+/// inserted into environment `env`'s rapier world plus the auto-sized floor,
+/// exactly like [`insert_mjcf`]'s physics half (keep the two in sync).
+/// Headless-eval path (sim2sim's `NexusSimulator`).
+pub fn insert_mjcf_headless(
+    state: &mut nexus3d::prelude::NexusState,
+    scene_path: &std::path::Path,
+    env: usize,
+) -> PyResult<(MjcfSceneInfo, Option<MjcfHandles>)> {
+    use pyo3::exceptions::PyRuntimeError;
+    use rapier3d::parry::bounding_volume::BoundingVolume;
+    use rapier3d_mjcf::{MjcfLoaderOptions, MjcfMultibodyOptions, MjcfRobot};
+
+    let options = MjcfLoaderOptions {
+        skip_plane_geoms: true,
+        make_roots_fixed: false,
+        create_colliders_from_visual_shapes: false,
+        collider_blueprint: rp::ColliderBuilder::default().density(0.0),
+        mesh_converter: Some(rapier3d::prelude::MeshConverter::ConvexHull),
+        ..Default::default()
+    };
+
+    let mut floor: Option<(glamx::Vec3, glamx::Vec3)> = None;
+    let mut loaded = false;
+    let mut robot_handles: Option<MjcfHandles> = None;
+    match MjcfRobot::from_file(scene_path, options) {
+        Ok((robot, _model)) => {
+            let world = state.rbd_world_mut(env);
+            let handles = robot.clone().insert_using_multibody_joints(
+                &mut world.bodies,
+                &mut world.colliders,
+                &mut world.multibody_joints,
+                &mut world.impulse_joints,
+                MjcfMultibodyOptions::DISABLE_SELF_CONTACTS,
+            );
+            let ctrl = vec![0.0; handles.actuators.len()];
+            handles.apply_controls_multibody(&mut world.bodies, &mut world.multibody_joints, &ctrl);
+
+            let mut aabb = rp::Aabb::new_invalid();
+            for (_, collider) in world.colliders.iter() {
+                aabb.merge(&collider.compute_aabb());
+            }
+            if aabb.mins.x <= aabb.maxs.x {
+                let center = aabb.center();
+                let he = aabb.half_extents();
+                let footprint = he.x.max(he.y).max(0.5);
+                let floor_thick = 0.1;
+                let floor_he = glamx::Vec3::new(footprint * 6.0, footprint * 6.0, floor_thick);
+                let floor_center =
+                    glamx::Vec3::new(center.x, center.y, center.z - he.z - floor_thick - 0.005);
+                floor = Some((floor_center, floor_he));
+                loaded = true;
+            }
+            robot_handles = Some(handles);
+        }
+        Err(e) => {
+            return Err(PyRuntimeError::new_err(format!(
+                "failed to load MJCF {}: {e}",
+                scene_path.display()
+            )));
+        }
+    }
+    if let Some((center, he)) = floor {
+        let body = rp::RigidBodyBuilder::fixed().translation(center).build();
+        let collider = rp::ColliderBuilder::cuboid(he.x, he.y, he.z).build();
+        state.insert_rigid_body_in(env, body, collider);
+    }
+    Ok((MjcfSceneInfo { z_up: true, loaded }, robot_handles))
+}
+
 pub fn insert_mjcf(
     state: &mut nexus3d::prelude::NexusState,
     mut viewer: PyRefMut<crate::viewer::NexusViewer>,

@@ -421,6 +421,12 @@ impl GpuMultibodySet {
                 storage | BufferUsages::COPY_DST,
             )
             .unwrap(),
+            external_gen_forces: Tensor::vector(
+                backend,
+                &vec![0.0f32; (dofs_cap * num_batches) as usize],
+                storage | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
             // COPY_SRC so hosts can read joint/link state back (observation
             // pipelines); see `GpuMultibodySet::read_links`.
             links_workspace: Tensor::vector(

@@ -49,6 +49,52 @@ impl GpuTimestamps {
     fn new(viewer: PyRef<NexusViewer>, capacity: u32) -> Self {
         GpuTimestamps(RGpuTimestamps::new(viewer.backend(), capacity))
     }
+
+    /// Viewerless constructor for headless evaluation.
+    #[staticmethod]
+    fn headless(backend: PyRef<NexusBackend>, capacity: u32) -> Self {
+        GpuTimestamps(RGpuTimestamps::new(&backend.0, capacity))
+    }
+}
+
+/// A viewerless GPU backend for headless evaluation (no window, no
+/// swapchain). `NexusBackend()` = headless WebGPU with the standard limits;
+/// `NexusBackend("cuda")` = the native CUDA backend (cuda feature builds).
+#[pyclass(unsendable)]
+pub struct NexusBackend(pub khal::backend::GpuBackend);
+
+#[pymethods]
+impl NexusBackend {
+    #[new]
+    #[pyo3(signature = (kind = "webgpu"))]
+    fn new(kind: &str) -> PyResult<Self> {
+        use pyo3::exceptions::PyRuntimeError;
+        match kind {
+            #[cfg(feature = "cuda")]
+            "cuda" => khal::backend::cuda::Cuda::new(0)
+                .map(|c| NexusBackend(khal::backend::GpuBackend::Cuda(c)))
+                .map_err(|e| PyRuntimeError::new_err(format!("CUDA init failed: {e:?}"))),
+            "webgpu" => {
+                let limits = khal::re_exports::wgpu::Limits {
+                    max_buffer_size: 1_000_000_000,
+                    max_storage_buffer_binding_size: 1_000_000_000,
+                    max_storage_buffers_per_shader_stage: 14,
+                    max_compute_workgroup_storage_size: 19_904,
+                    ..Default::default()
+                };
+                let mut webgpu = pollster::block_on(khal::backend::WebGpu::new(
+                    khal::re_exports::wgpu::Features::default(),
+                    limits,
+                ))
+                .map_err(|e| PyRuntimeError::new_err(format!("WebGPU init failed: {e:?}")))?;
+                webgpu.force_buffer_copy_src = true;
+                Ok(NexusBackend(khal::backend::GpuBackend::WebGpu(webgpu)))
+            }
+            other => Err(PyRuntimeError::new_err(format!(
+                "unknown backend kind {other:?} (use \"webgpu\" or \"cuda\")"
+            ))),
+        }
+    }
 }
 
 /// The GPU-resident state of a multiphysics simulation
@@ -280,6 +326,125 @@ impl NexusState {
         if let Some(rbd) = self.0.rbd.as_mut() {
             rbd.multibodies_mut().set_implicit_coriolis(enabled);
         }
+    }
+
+    /// Sets every environment's physics timestep (call before `finalize`;
+    /// triggers a rebuild). Headless-eval surface.
+    fn set_rbd_dt(&mut self, dt: f32) {
+        self.0.set_rbd_dt(dt);
+    }
+
+    /// Physics-only MJCF load (robot + auto floor, no renderer).
+    #[pyo3(signature = (scene_path, env=0))]
+    fn insert_mjcf_headless(
+        &mut self,
+        scene_path: std::path::PathBuf,
+        env: usize,
+    ) -> PyResult<MjcfSceneInfo> {
+        let (info, handles) = crate::loaders::insert_mjcf_headless(&mut self.0, &scene_path, env)?;
+        if env == 0 {
+            self.1 = handles;
+        }
+        Ok(info)
+    }
+
+    /// Windowless `finalize`: uploads the scene to the GPU.
+    fn finalize_headless(&mut self, backend: PyRef<NexusBackend>) -> PyResult<()> {
+        pollster::block_on(self.0.finalize(&backend.0)).map_err(gpu_err)
+    }
+
+    /// Windowless gravity setter (call after `finalize_headless`).
+    fn set_rbd_gravity_headless(&mut self, backend: PyRef<NexusBackend>, gravity: Vec3) {
+        self.0
+            .set_rbd_gravity(&backend.0, [gravity.0.x, gravity.0.y, gravity.0.z]);
+    }
+
+    /// Sets environment `env`'s persistent external generalized forces (RL
+    /// torque input: free-base DOFs first, then joints in link order).
+    /// Applied every substep until the next call.
+    fn set_multibody_gen_forces_headless(
+        &mut self,
+        backend: PyRef<NexusBackend>,
+        env: u32,
+        forces: Vec<f32>,
+    ) -> PyResult<()> {
+        let Some(rbd) = self.0.rbd.as_mut() else {
+            return Err(PyRuntimeError::new_err("state not finalized"));
+        };
+        rbd.multibodies_mut()
+            .set_external_gen_forces(&backend.0, env, &forces)
+            .map_err(gpu_err)
+    }
+
+    /// Environment 0's per-link generalized joint coordinates as an
+    /// `(n_links, 6)` float32 array (GPU link traversal order).
+    fn link_coords<'py>(
+        &self,
+        py: Python<'py>,
+        backend: PyRef<NexusBackend>,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<f32>>> {
+        let Some(rbd) = self.0.rbd.as_ref() else {
+            return Err(PyRuntimeError::new_err("state not finalized"));
+        };
+        let links = pollster::block_on(rbd.multibodies().read_links(&backend.0, 0));
+        let rows: Vec<Vec<f32>> = links.iter().map(|w| w.coords.to_vec()).collect();
+        Ok(numpy::PyArray2::from_vec2(py, &rows).map_err(|e| PyRuntimeError::new_err(e.to_string()))?)
+    }
+
+    /// Environment 0's generalized velocities (free-base spatial velocity
+    /// first — linear 0:3, angular 3:6, world frame — then joint rates in
+    /// link order) as a float32 array.
+    fn dof_velocities<'py>(
+        &self,
+        py: Python<'py>,
+        backend: PyRef<NexusBackend>,
+    ) -> PyResult<Bound<'py, numpy::PyArray1<f32>>> {
+        use khal::backend::Backend as _;
+        let Some(rbd) = self.0.rbd.as_ref() else {
+            return Err(PyRuntimeError::new_err("state not finalized"));
+        };
+        let mb = rbd.multibodies();
+        let nb = mb.num_batches() as usize;
+        let dpb = mb.dofs_per_batch() as usize;
+        let mut all = vec![0.0f32; mb.dof_state().len() as usize];
+        pollster::block_on(backend.0.slow_read_buffer(mb.dof_state().buffer(), &mut all))
+            .map_err(gpu_err)?;
+        // Velocity section, batch-interleaved: DOF d of env 0 at d*nb.
+        let vels: Vec<f32> = (0..dpb).map(|d| all[d * nb]).collect();
+        Ok(numpy::PyArray1::from_vec(py, vels))
+    }
+
+    /// Environment 0's rigid-body poses as an `(n_bodies, 7)` float32 array,
+    /// rows `[tx, ty, tz, qx, qy, qz, qw]`.
+    fn body_poses<'py>(
+        &self,
+        py: Python<'py>,
+        backend: PyRef<NexusBackend>,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<f32>>> {
+        use khal::backend::Backend as _;
+        let Some(rbd) = self.0.rbd.as_ref() else {
+            return Err(PyRuntimeError::new_err("state not finalized"));
+        };
+        let mut all: Vec<glamx::Pose3> = vec![Default::default(); rbd.body_poses().len() as usize];
+        pollster::block_on(backend.0.slow_read_buffer(rbd.body_poses().buffer(), &mut all))
+            .map_err(gpu_err)?;
+        let nb = self.0.num_environments().max(1);
+        let stride = all.len() / nb;
+        let rows: Vec<Vec<f32>> = all[..stride]
+            .iter()
+            .map(|p| {
+                vec![
+                    p.translation.x,
+                    p.translation.y,
+                    p.translation.z,
+                    p.rotation.x,
+                    p.rotation.y,
+                    p.rotation.z,
+                    p.rotation.w,
+                ]
+            })
+            .collect();
+        Ok(numpy::PyArray2::from_vec2(py, &rows).map_err(|e| PyRuntimeError::new_err(e.to_string()))?)
     }
 
     fn set_rbd_collisions_capacity(&mut self, capacity: u32) {
@@ -610,6 +775,25 @@ impl NexusPipeline {
     #[cfg(feature = "cuda")]
     fn replay_cuda_graph(&mut self) -> PyResult<bool> {
         self.0.replay_rbd_graph().map_err(gpu_err)
+    }
+
+    /// Compiles all GPU pipelines up-front on a viewerless backend.
+    fn preload_pipelines_headless(&mut self, backend: PyRef<NexusBackend>) -> PyResult<()> {
+        self.0
+            .preload_pipelines(&backend.0, nexus3d::pipeline::NexusPipelineMask::all())
+            .map_err(gpu_err)
+    }
+
+    /// Advances the simulation by one frame on a viewerless backend.
+    #[pyo3(signature = (backend, state, timestamps=None))]
+    fn simulate_headless(
+        &mut self,
+        backend: PyRef<NexusBackend>,
+        mut state: PyRefMut<NexusState>,
+        mut timestamps: Option<PyRefMut<GpuTimestamps>>,
+    ) -> PyResult<()> {
+        let ts = timestamps.as_deref_mut().map(|t| &mut t.0);
+        pollster::block_on(self.0.simulate(&backend.0, &mut state.0, ts)).map_err(gpu_err)
     }
 
     /// Advances the simulation by one frame. Blocks on the async GPU work.

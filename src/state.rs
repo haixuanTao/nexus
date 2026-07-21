@@ -221,6 +221,15 @@ impl NexusState {
     /// Marks the rbd state dirty so [`Self::finalize`] rebuilds with them.
     /// Mainly for tests that need to match an external engine's
     /// `IntegrationParameters` exactly (e.g. `num_solver_iterations = 1`).
+    /// Sets every environment's physics timestep (marks the state dirty so
+    /// `finalize` rebuilds with it). Headless-eval convenience.
+    pub fn set_rbd_dt(&mut self, dt: f32) {
+        for p in &mut self.rbd_sim_params {
+            p.dt = dt;
+        }
+        self.rbd_dirty = true;
+    }
+
     pub fn set_rbd_sim_params(&mut self, env: usize, params: RbdSimParams) {
         self.rbd_sim_params[env] = params;
         self.rbd_dirty = true;

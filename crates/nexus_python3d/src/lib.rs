@@ -26,6 +26,7 @@ fn nexus3d(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(math::vec4, m)?)?;
 
     // Rigid bodies, colliders, shapes, handles
+    m.add_class::<nexus::NexusBackend>()?;
     m.add_class::<rbd::RigidBodyHandle>()?;
     m.add_class::<rbd::ImpulseJointHandle>()?;
     m.add_class::<rbd::MultibodyJointHandle>()?;

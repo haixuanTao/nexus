@@ -748,6 +748,7 @@ impl GpuMultibodySolver {
                     &mb.gravity,
                     args.batch_indices,
                     &mut mb.motor_delay_state,
+                    &mb.external_gen_forces,
                 )?
             };
         }
@@ -773,6 +774,7 @@ impl GpuMultibodySolver {
                     &mb.gravity,
                     args.batch_indices,
                     &mut mb.motor_delay_state,
+                    &mb.external_gen_forces,
                 )?;
             }
         }
