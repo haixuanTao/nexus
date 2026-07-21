@@ -307,9 +307,7 @@ pub fn gpu_init_solver_vels_inc(
         // TODO: this isn't a very pretty way of detecting static bodies.
         if mprops[idx].inv_mass != Vector::ZERO {
             // TODO: this currently only handles gravity.
-            // TODO: make the gravity configurable
-            let gravity = Vector::Y * -9.81;
-            solver_vels_inc[idx].linear = gravity * params.dt;
+            solver_vels_inc[idx].linear = params.gravity() * params.dt;
         }
     }
 }

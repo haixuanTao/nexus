@@ -5,7 +5,7 @@ use crate::rapier::prelude::{
 };
 use crate::rbd::dynamics::RbdSimParams;
 use crate::rbd::pipeline::{RbdCapacities, RbdResizePolicy, RbdState, RunStats};
-use khal::backend::{GpuBackend, GpuBackendError};
+use khal::backend::{GpuBackend, GpuBackendError, GpuReadback};
 
 /// Handle referencing a rigid-body managed by a [`NexusState`].
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
@@ -141,14 +141,50 @@ impl NexusState {
         // TODO: resize the GPU buffers too.
     }
 
-    /// Sets the rigid-body multibody gravity vector, e.g. `[0.0, 0.0, -9.81]`
-    /// for a Z-up scene. No-op until the rigid-body state is built, so call it
-    /// after [`Self::finalize`]. Free (non-multibody) bodies keep the solver's
-    /// fixed gravity.
+    /// Sets the gravity vector for *all* bodies, e.g. `[0.0, 0.0, -9.81]` for a
+    /// Z-up scene.
+    ///
+    /// Multibody links and free rigid bodies read gravity from two different
+    /// places, so this sets both: the multibody set (immediate, needs the state
+    /// built) and the per-environment [`RbdSimParams`] consumed by the solver's
+    /// free-body path. Safe to call before or after [`Self::finalize`] — the
+    /// sim-params half is re-uploaded when the state already exists and applied
+    /// at build time otherwise.
+    ///
+    /// Previously free bodies ignored this and always fell along `-Y` at
+    /// 9.81 m/s², which silently broke every Z-up scene built from free bodies.
     #[cfg(all(feature = "dim3", feature = "rbd"))]
     pub fn set_rbd_gravity(&mut self, backend: &GpuBackend, gravity: [f32; 3]) {
+        for sp in &mut self.rbd_sim_params {
+            sp.gravity_x = gravity[0];
+            sp.gravity_y = gravity[1];
+            sp.gravity_z = gravity[2];
+        }
         if let Some(rbd) = self.rbd.as_mut() {
             rbd.set_gravity(backend, gravity);
+            rbd.upload_sim_params(backend, &self.rbd_sim_params);
+        }
+    }
+
+    /// Per-environment simulation parameters (timestep, solver iterations,
+    /// contact/joint regularization, gravity). Mutate via
+    /// [`Self::update_rbd_sim_params`].
+    pub fn rbd_sim_params(&self) -> &[RbdSimParams] {
+        &self.rbd_sim_params
+    }
+
+    /// Applies `f` to every environment's simulation parameters, then uploads
+    /// them if the GPU state is already built.
+    ///
+    /// Everything except `num_solver_iterations` takes effect immediately; that
+    /// one also determines a build-time dispatch count, so changing it after
+    /// [`Self::finalize`] alters the substep dt without changing the iteration
+    /// count actually run.
+    #[cfg(feature = "rbd")]
+    pub fn update_rbd_sim_params(&mut self, backend: &GpuBackend, f: impl FnMut(&mut RbdSimParams)) {
+        self.rbd_sim_params.iter_mut().for_each(f);
+        if let Some(rbd) = self.rbd.as_mut() {
+            rbd.upload_sim_params(backend, &self.rbd_sim_params);
         }
     }
 
@@ -167,6 +203,49 @@ impl NexusState {
     /// which at 2048 envs binds ~9 GiB unless this is lowered.
     pub fn set_rbd_collisions_capacity(&mut self, capacity: u32) {
         self.capacities.rbd.collisions_capacity = capacity.max(1);
+    }
+
+    /// Blocking readback of every GPU body pose, indexed by `gpu_id`.
+    ///
+    /// The GPU owns the simulation state; the CPU-side rapier worlds are only
+    /// staging for insertion and are never written back by a step, so reading
+    /// them (e.g. via `rapier_debug_bodies`) reports the *initial* pose forever.
+    /// This is the only way to observe what the solver actually produced.
+    ///
+    /// Spins until the copy completes, so it is a hard pipeline stall — meant
+    /// for tests and correctness checks, not for a stepping loop.
+    pub fn rbd_read_body_poses(&self, backend: &GpuBackend) -> Vec<crate::rbd::math::Pose> {
+        let Some(rbd) = self.rbd.as_ref() else {
+            return Vec::new();
+        };
+        let poses = rbd.body_poses();
+        let len = poses.len() as usize;
+        if len == 0 {
+            return Vec::new();
+        }
+        let mut readback = match GpuReadback::<crate::rbd::math::Pose>::new(backend, len) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        if readback.request_copy(backend, poses.buffer(), 0).is_err() {
+            return Vec::new();
+        }
+        let mut out = vec![crate::rbd::math::Pose::IDENTITY; len];
+        // `try_take` drives the backend's non-blocking poll internally, and
+        // returns true on map failure too, so this cannot spin forever.
+        while !readback.try_take(backend, &mut out) {}
+        out
+    }
+
+    /// Overrides the solver's color capacity, applied at `finalize` (default 8).
+    ///
+    /// The constraint solver walks `0..max_colors + 1` sequentially per stage
+    /// per iteration, over the *capacity* rather than the colors the contact
+    /// graph actually uses — so scenes simpler than the default still pay for
+    /// every pass. Too low makes the bounded coloring fail to converge, and the
+    /// `Grow` policy then adds 5 back at runtime.
+    pub fn set_rbd_solver_colors(&mut self, colors: u32) {
+        self.capacities.rbd.solver_colors = colors.max(1);
     }
 
     /// Number of rigid-body solver steps per [`NexusPipeline::simulate`](crate::pipeline::NexusPipeline::simulate) call.
@@ -240,6 +319,37 @@ impl NexusState {
     pub fn rbd_world_mut(&mut self, env: usize) -> &mut PhysicsWorld {
         self.rbd_dirty = true;
         &mut self.rbd_envs[env]
+    }
+
+    /// Runtime actuation entry point: mutates environment `env`'s rapier
+    /// multibody joints through `f` (e.g. `rapier3d-mjcf`'s
+    /// `apply_controls_multibody`, which implements MJCF actuator semantics),
+    /// then pushes the refreshed joint data — motor targets/gains, limits — to
+    /// the GPU multibody links in one buffer write.
+    ///
+    /// Unlike [`Self::rbd_world_mut`] this does NOT mark the world dirty: motor
+    /// updates are per-step control, not a topology change, so no GPU rebuild
+    /// is triggered. Call after [`Self::finalize`]; a no-op before it.
+    pub fn control_multibody_motors<F>(
+        &mut self,
+        backend: &GpuBackend,
+        env: usize,
+        f: F,
+    ) -> Result<(), GpuBackendError>
+    where
+        F: FnOnce(&mut PhysicsWorld),
+    {
+        let world = &mut self.rbd_envs[env];
+        f(world);
+        if let Some(rbd) = self.rbd.as_mut() {
+            rbd.multibodies_mut().sync_joint_data_from_rapier(
+                backend,
+                env as u32,
+                &world.multibody_joints,
+                &world.bodies,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn insert_rigid_body(&mut self, body: RigidBody, collider: Collider) -> RigidBodyHandle {
