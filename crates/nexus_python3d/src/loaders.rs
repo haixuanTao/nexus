@@ -127,6 +127,7 @@ pub fn insert_mjcf(
     scene_path: &std::path::Path,
     render_colliders: bool,
     env: usize,
+    convex_meshes: bool,
 ) -> PyResult<(MjcfSceneInfo, Option<MjcfHandles>)> {
     use pyo3::exceptions::PyRuntimeError;
     use rapier3d::parry::bounding_volume::BoundingVolume; // for `Aabb::merge`
@@ -163,6 +164,45 @@ pub fn insert_mjcf(
             // hold their stance instead of collapsing under gravity.
             let ctrl = vec![0.0; handles.actuators.len()];
             handles.apply_controls_multibody(&mut world.bodies, &mut world.multibody_joints, &ctrl);
+
+            // Cap mesh-collision hull complexity (MuJoCo's `maxhullvert`
+            // analogue). `<compiler convexhull>` already turned mesh geoms into
+            // convex hulls, but a hull of a dense STL keeps hundreds-to-
+            // thousands of vertices and the GPU narrow-phase evaluates support
+            // functions by iterating every hull vertex per contact lane — on
+            // the LeRobot biped that made narrow-phase ~1/3 of the whole step.
+            // Rebuild oversized hulls (and any raw trimeshes) from a
+            // farthest-point subsample of their vertices.
+            // `convex_meshes=False` leaves collision shapes exactly as loaded.
+            if convex_meshes {
+                const MAX_HULL_VERTS: usize = 64;
+                for bh in handles.bodies.iter().flatten() {
+                    for collider in &bh.colliders {
+                        let c = &mut world.colliders[collider.handle];
+                        let verts: Option<Vec<_>> = if let Some(t) = c.shape().as_trimesh() {
+                            Some(t.vertices().to_vec())
+                        } else {
+                            c.shape()
+                                .as_convex_polyhedron()
+                                .filter(|p| p.points().len() > MAX_HULL_VERTS)
+                                .map(|p| p.points().to_vec())
+                        };
+                        let Some(verts) = verts else { continue };
+                        // Subsample before hulling: farthest-point keeps the
+                        // extremal spread (tight cover) and qhull is far more
+                        // robust on 64 spread points than on a dense cloud.
+                        let picked = if verts.len() > MAX_HULL_VERTS {
+                            farthest_point_subsample(&verts, MAX_HULL_VERTS)
+                        } else {
+                            verts
+                        };
+                        let Some(hull) = rp::SharedShape::convex_hull(&picked) else {
+                            continue;
+                        };
+                        c.set_shape(hull);
+                    }
+                }
+            }
 
             for (i, body_handle) in handles.bodies.iter().enumerate() {
                 let Some(bh) = body_handle else { continue };
@@ -292,4 +332,33 @@ pub fn insert_mjcf(
     }
 
     Ok((MjcfSceneInfo { z_up: true, loaded }, robot_handles))
+}
+
+/// Greedy farthest-point subsample of `pts` down to `k` points — keeps the
+/// hull's extremal spread so the re-hulled shape stays a tight cover.
+fn farthest_point_subsample(
+    pts: &[rapier3d::parry::math::Vector],
+    k: usize,
+) -> Vec<rapier3d::parry::math::Vector> {
+    let mut picked = Vec::with_capacity(k);
+    let mut dist = vec![f32::MAX; pts.len()];
+    let mut cur = 0usize; // start anywhere; extremes are found immediately
+    for _ in 0..k.min(pts.len()) {
+        picked.push(pts[cur]);
+        let p = pts[cur];
+        let mut best = 0usize;
+        let mut best_d = -1.0f32;
+        for (i, q) in pts.iter().enumerate() {
+            let d = (*q - p).length_squared();
+            if d < dist[i] {
+                dist[i] = d;
+            }
+            if dist[i] > best_d {
+                best_d = dist[i];
+                best = i;
+            }
+        }
+        cur = best;
+    }
+    picked
 }

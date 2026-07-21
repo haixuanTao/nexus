@@ -415,7 +415,10 @@ impl NexusState {
     /// therefore always reports the *initial* pose, this observes what the GPU
     /// solver actually computed. Stalls the pipeline — use it to check results,
     /// not inside a timed loop.
-    fn rbd_body_poses(&mut self, viewer: PyRef<NexusViewer>) -> Vec<(f32, f32, f32, f32, f32, f32, f32)> {
+    fn rbd_body_poses(
+        &mut self,
+        viewer: PyRef<NexusViewer>,
+    ) -> Vec<(f32, f32, f32, f32, f32, f32, f32)> {
         self.0
             .rbd_read_body_poses(viewer.backend())
             .into_iter()
@@ -476,16 +479,27 @@ impl NexusState {
         self.0.set_rbd_solver_colors(max_colors);
     }
 
-    #[pyo3(signature = (viewer, scene_path, render_colliders=false, env=0))]
+    /// `convex_meshes` (default `True`) collides mesh geoms as the convex hull
+    /// of their vertices — MuJoCo's compile-time behavior — instead of raw
+    /// trimeshes (~30x cheaper GPU narrow-phase); pass `False` for exact
+    /// concave trimesh collision.
+    #[pyo3(signature = (viewer, scene_path, render_colliders=false, env=0, convex_meshes=true))]
     fn insert_mjcf(
         &mut self,
         viewer: PyRefMut<NexusViewer>,
         scene_path: std::path::PathBuf,
         render_colliders: bool,
         env: usize,
+        convex_meshes: bool,
     ) -> PyResult<MjcfSceneInfo> {
-        let (info, handles) =
-            crate::loaders::insert_mjcf(&mut self.0, viewer, &scene_path, render_colliders, env)?;
+        let (info, handles) = crate::loaders::insert_mjcf(
+            &mut self.0,
+            viewer,
+            &scene_path,
+            render_colliders,
+            env,
+            convex_meshes,
+        )?;
         if env == 0 {
             self.1 = handles;
         }
