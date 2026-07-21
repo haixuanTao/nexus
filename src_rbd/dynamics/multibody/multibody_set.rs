@@ -191,7 +191,22 @@ impl GpuMultibodySet {
     /// despite the barriers).
     pub(crate) fn pack_lanes(&self) -> u32 {
         let total_mb = self.num_active_multibodies * self.num_batches;
-        if self.max_ndofs <= 8 && total_mb >= 1024 {
+        // The serial tier's dynamics numerically diverge from the lane tier
+        // (~1e-4 relative after ONE step on a contact-free chain, ~3% after
+        // 25 — beyond FP-reordering noise; likely the in-place unpivoted LU).
+        // Upstream's total_mb >= 1024 auto-switch therefore changes the
+        // physics an RL policy sees depending on how many envs it trains
+        // with. On this branch physics consistency wins by default:
+        //   unset / `NEXUS_SERIAL_MB=0` → lane-parallel always
+        //   `NEXUS_SERIAL_MB=1`        → force serial (small robots)
+        //   `NEXUS_SERIAL_MB=auto`     → upstream's measured-crossover
+        let mode = std::env::var("NEXUS_SERIAL_MB");
+        let serial = match mode.as_deref() {
+            Ok("1") => self.max_ndofs <= 8,
+            Ok("auto") => self.max_ndofs <= 8 && total_mb >= 1024,
+            _ => false,
+        };
+        if serial {
             1
         } else {
             self.max_ndofs.next_power_of_two().clamp(8, MB_LU_LANES)

@@ -294,7 +294,12 @@ async fn run(
         "batches", "avg/step", "p50/step", "env·steps/s", "µs/env/step"
     );
 
-    let mut bs = 1usize;
+    // `NEXUS_BENCH_ONLY_MAX=1`: run only the max_batches point (bisection aid).
+    let mut bs = if std::env::var("NEXUS_BENCH_ONLY_MAX").is_ok() {
+        max_batches
+    } else {
+        1usize
+    };
     while bs <= max_batches {
         let last = bs * 4 > max_batches;
         let (avg, p50) =
