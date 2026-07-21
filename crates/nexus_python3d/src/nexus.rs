@@ -579,6 +579,36 @@ impl NexusState {
         self.0.rbd_dbg_joint_constraints(viewer.backend())
     }
 
+    /// TEMPORARY: generalized accelerations raw readback.
+    fn dbg_gen_accelerations(&self, viewer: PyRef<NexusViewer>) -> Vec<f32> {
+        self.0.rbd_dbg_gen_accelerations(viewer.backend())
+    }
+
+    /// TEMPORARY: narrow-phase per-batch contact counts.
+    fn dbg_contacts_len(&self, viewer: PyRef<NexusViewer>) -> Vec<u32> {
+        self.0.rbd_dbg_contacts_len(viewer.backend())
+    }
+
+    /// TEMPORARY: per-multibody contact-constraint counts.
+    fn dbg_mb_contact_count(&self, viewer: PyRef<NexusViewer>) -> Vec<u32> {
+        self.0.rbd_dbg_mb_contact_count(viewer.backend())
+    }
+
+    /// TEMPORARY: mass-matrix / LTDL-factor raw readback.
+    fn dbg_mass_matrices(&self, viewer: PyRef<NexusViewer>) -> Vec<f32> {
+        self.0.rbd_dbg_mass_matrices(viewer.backend())
+    }
+
+    /// TEMPORARY: body-jacobians raw readback.
+    fn dbg_body_jacobians(&self, viewer: PyRef<NexusViewer>) -> Vec<f32> {
+        self.0.rbd_dbg_body_jacobians(viewer.backend())
+    }
+
+    /// TEMPORARY: links_workspace raw readback (f32 words).
+    fn dbg_links_workspace(&self, viewer: PyRef<NexusViewer>) -> Vec<f32> {
+        self.0.rbd_dbg_links_workspace(viewer.backend())
+    }
+
     fn set_rbd_collisions_capacity(&mut self, capacity: u32) {
         self.0.set_rbd_collisions_capacity(capacity);
     }

@@ -577,6 +577,16 @@ impl GpuMultibodySet {
         &self.dof_values
     }
 
+    /// Diagnostic accessor: raw body-jacobians buffer (chain-sparse blocks).
+    pub fn body_jacobians(&self) -> &Tensor<f32> {
+        &self.body_jacobians
+    }
+
+    /// Diagnostic accessor: mass-matrix / LTDL-factor buffer.
+    pub fn mass_matrices(&self) -> &Tensor<f32> {
+        &self.mass_matrices
+    }
+
 
     /// GPU buffer for the last-computed generalized accelerations (populated by
     /// `GpuMultibodySolver::solve_gravity`).
@@ -1413,13 +1423,13 @@ impl GpuMultibodySet {
             body_jacobians: Tensor::vector(
                 backend,
                 &vec![0.0f32; (jac_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
             mass_matrices: Tensor::vector(
                 backend,
                 &vec![0.0f32; (mm_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
             mass_matrices_soa: Tensor::vector(
@@ -1479,7 +1489,7 @@ impl GpuMultibodySet {
             contact_constraint_count: Tensor::vector(
                 backend,
                 &vec![0u32; (mb_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
 
