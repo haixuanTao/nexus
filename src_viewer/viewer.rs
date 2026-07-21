@@ -966,23 +966,7 @@ impl NexusViewer {
         let Some(rbd) = state.rbd.as_ref() else {
             return Vec::new();
         };
-        let mbs = rbd.multibodies();
-        let stride = mbs.links_per_batch() as usize;
-        if stride == 0 {
-            return Vec::new();
-        }
-        let mut all = bytemuck::zeroed_vec(mbs.links_workspace().len() as usize);
-        if self
-            .backend()
-            .slow_read_buffer(mbs.links_workspace().buffer(), &mut all)
-            .await
-            .is_err()
-        {
-            return Vec::new();
-        }
-        let start = (env as usize * stride).min(all.len());
-        let end = (start + stride).min(all.len());
-        all[start..end].to_vec()
+        rbd.multibodies().read_links(self.backend(), env).await
     }
 
     /// Draws example-specific egui widgets into the current frame's UI pass.

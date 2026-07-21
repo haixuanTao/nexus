@@ -61,6 +61,10 @@ name = "bench_pyramid3"
 path = "bench_pyramid3.rs"
 
 [[bin]]
+name = "test_actuation3"
+path = "test_actuation3.rs"
+
+[[bin]]
 name = "test_motor3"
 path = "test_motor3.rs"
 

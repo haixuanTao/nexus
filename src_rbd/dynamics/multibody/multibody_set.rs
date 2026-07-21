@@ -785,6 +785,22 @@ impl EnvResetBundle {
     }
 }
 
+/// De-SoA one link's workspace quads back into the AoS struct (inverse of
+/// `ws_soa_from_structs`, via the same shared layout accessors).
+fn ws_struct_from_soa(ws_soa: &[Vec4], a: WsAddr, k: u32) -> MultibodyLinkWorkspace {
+    let mut w: MultibodyLinkWorkspace = bytemuck::Zeroable::zeroed();
+    w.joint_rot = ws_rot(ws_soa, a, k, WS_JOINT_ROT);
+    w.coords = ws_coords(ws_soa, a, k);
+    w.local_to_parent = ws_pose(ws_soa, a, k, WS_LTP);
+    w.local_to_world = ws_pose(ws_soa, a, k, WS_LTW);
+    w.shift02 = ws_vec(ws_soa, a, k, WS_SHIFT02);
+    w.shift23 = ws_vec(ws_soa, a, k, WS_SHIFT23);
+    w.joint_velocity = ws_vel(ws_soa, a, k, WS_JOINT_VEL);
+    w.rb_vels = ws_vel(ws_soa, a, k, WS_RB_VELS);
+    w.kinematic_acc = ws_vel(ws_soa, a, k, WS_KIN_ACC);
+    w
+}
+
 impl GpuMultibodySet {
     /// Read this (typically single-env template) set's batch-0 state off the
     /// GPU into a CPU snapshot. Call once per template at setup; pass the
@@ -820,26 +836,44 @@ impl GpuMultibodySet {
         // Gather batch 0 out of the interleave; de-SoA the workspace through
         // the shared layout accessors (one source of truth with the kernels).
         let a = WsAddr::new(0, nb, 0);
-        let mut links_workspace = Vec::with_capacity(lpb);
-        for k in 0..lpb as u32 {
-            let mut w: MultibodyLinkWorkspace = bytemuck::Zeroable::zeroed();
-            w.joint_rot = ws_rot(&ws_soa, a, k, WS_JOINT_ROT);
-            w.coords = ws_coords(&ws_soa, a, k);
-            w.local_to_parent = ws_pose(&ws_soa, a, k, WS_LTP);
-            w.local_to_world = ws_pose(&ws_soa, a, k, WS_LTW);
-            w.shift02 = ws_vec(&ws_soa, a, k, WS_SHIFT02);
-            w.shift23 = ws_vec(&ws_soa, a, k, WS_SHIFT23);
-            w.joint_velocity = ws_vel(&ws_soa, a, k, WS_JOINT_VEL);
-            w.rb_vels = ws_vel(&ws_soa, a, k, WS_RB_VELS);
-            w.kinematic_acc = ws_vel(&ws_soa, a, k, WS_KIN_ACC);
-            links_workspace.push(w);
-        }
+        let links_workspace = (0..lpb as u32)
+            .map(|k| ws_struct_from_soa(&ws_soa, a, k))
+            .collect();
         GpuMultibodySnapshot {
             links_workspace,
             links_static: (0..lpb).map(|k| ls_all[k * nb as usize]).collect(),
             dof_values: (0..dpb).map(|d| dv_all[d * nb as usize]).collect(),
             dof_vels: (0..dpb).map(|d| ds_all[d * nb as usize]).collect(),
         }
+    }
+
+    /// Reads back environment `env`'s per-link workspaces (generalized joint
+    /// coordinates, joint rotation, world pose, world-space velocities),
+    /// de-SoA'd to AoS structs in the GPU build's link traversal order. One
+    /// whole-buffer readback per call. Empty on readback failure or when the
+    /// set holds no links.
+    pub async fn read_links(
+        &self,
+        backend: &GpuBackend,
+        env: u32,
+    ) -> Vec<MultibodyLinkWorkspace> {
+        let nb = self.num_batches;
+        let lpb = self.links_per_batch as usize;
+        if lpb == 0 || env >= nb {
+            return Vec::new();
+        }
+        let mut ws_soa: Vec<Vec4> = bytemuck::zeroed_vec(self.links_workspace.len() as usize);
+        if backend
+            .slow_read_buffer(self.links_workspace.buffer(), &mut ws_soa)
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        let a = WsAddr::new(0, nb, env);
+        (0..lpb as u32)
+            .map(|k| ws_struct_from_soa(&ws_soa, a, k))
+            .collect()
     }
 
     /// Reset env `dst_env` in-place from the single-env template `src`
