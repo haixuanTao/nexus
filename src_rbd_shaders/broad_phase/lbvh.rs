@@ -96,20 +96,18 @@ pub(crate) fn max_len_indirect_args(
     partial.write(lane as usize, m);
     workgroup_memory_barrier_with_group_sync();
 
-    // Tree reduction over the 256 lanes (8 halving steps).
-    for step in 0..8u32 {
-        let stride = MAX_REDUCE_LANES >> (step + 1);
-        if lane < stride {
-            let v = partial
-                .read(lane as usize)
-                .max(partial.read((lane + stride) as usize));
-            partial.write(lane as usize, v);
-        }
-        workgroup_memory_barrier_with_group_sync();
-    }
-
+    // Lane-0 serial max over the 256 partials. A tree reduction
+    // (`for step { if lane < stride { .. } barrier }`) reads nicer, but
+    // rustc_codegen_nvvm's structurizer unrolls it and sinks the `bar.sync`
+    // into the divergent `lane < stride` branches — mismatched barrier
+    // counts across the block deadlock on CUDA (observed on sm_120; the
+    // SPIR-V path was fine). 256 serial reads once per dispatch is noise.
     if lane == 0 {
-        *indirect_args.at_mut(0) = partial.read(0).div_ceil(WORKGROUP_SIZE);
+        let mut best = 0u32;
+        for t in 0..MAX_REDUCE_LANES {
+            best = best.max(partial.read(t as usize));
+        }
+        *indirect_args.at_mut(0) = best.div_ceil(WORKGROUP_SIZE);
         *indirect_args.at_mut(1) = num_batches as u32;
         *indirect_args.at_mut(2) = 1;
     }

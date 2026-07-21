@@ -395,6 +395,29 @@ pub fn abs(x: f32) -> f32 {
     Float::abs(x)
 }
 
+/// An optimization-opaque loop bound for barriered scan/reduce loops.
+///
+/// `for _ in 0..8 { barrier(); if lane < d { .. } }` is correct as written,
+/// but rustc_codegen_nvvm fully unrolls constant-bound loops and its
+/// structurizer then sinks the `bar.sync` into the divergent guards —
+/// mismatched barrier counts across the block deadlock on sm_90+. Routing
+/// the bound through `black_box` keeps the loop rolled (barrier dominates
+/// the guard at the loop head), which every CUDA scan/reduction relies on.
+/// On SPIR-V the bound stays a plain constant: rust-gpu does not lower
+/// `black_box`, and naga's uniformity analysis already keeps the barrier
+/// placement sound there.
+#[inline(always)]
+pub fn opaque_bound(n: u32) -> u32 {
+    #[cfg(target_arch = "spirv")]
+    {
+        n
+    }
+    #[cfg(not(target_arch = "spirv"))]
+    {
+        core::hint::black_box(n)
+    }
+}
+
 /// Panic-free matrix column access for GPU shader code.
 ///
 /// glam's `col` panics with a message on an out-of-range index, which GPU

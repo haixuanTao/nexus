@@ -123,7 +123,9 @@ pub(super) fn lu_triangular_solve_in_place(
         };
         partial.write(lane as usize, s);
         workgroup_memory_barrier_with_group_sync();
-        for step in 0..6u32 {
+        // Opaque bound: keep rolled so nvvm can't sink the barrier into
+        // the divergent guard (see `crate::opaque_bound`).
+        for step in 0..crate::opaque_bound(6) {
             let stride = 1u32 << (5 - step);
             if lane < stride {
                 let v = partial.read(lane as usize) + partial.read((lane + stride) as usize);
@@ -293,7 +295,8 @@ pub(super) fn lu_triangular_solve_in_place_packed<const T: u32, const MATN: usiz
         };
         partial.write(seg + lane as usize, s);
         workgroup_memory_barrier_with_group_sync();
-        for step in 0..log2_t {
+        // Opaque bound: see `crate::opaque_bound`.
+        for step in 0..crate::opaque_bound(log2_t) {
             let stride = T >> (step + 1);
             if lane < stride {
                 let v = partial.read(seg + lane as usize)

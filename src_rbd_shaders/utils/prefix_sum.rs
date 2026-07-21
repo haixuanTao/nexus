@@ -9,6 +9,8 @@ use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use khal_std::index::MaybeIndexUnchecked;
 
+use crate::opaque_bound;
+
 /// Workgroup size: number of elements processed per workgroup.
 pub const WORKGROUP_SIZE: usize = 256;
 
@@ -52,8 +54,8 @@ pub fn gpu_prefix_sum_sweep(
     {
         let mut d = WORKGROUP_SIZE / 2;
         let mut offset = 1usize;
-        // log2(256) = 8 iterations
-        for _ in 0..8u32 {
+        // log2(256) = 8 iterations (opaque: see `opaque_bound`)
+        for _ in 0..opaque_bound(8) {
             workgroup_memory_barrier_with_group_sync();
             if tid < d {
                 let ia = tid * 2 * offset + offset - 1;
@@ -80,8 +82,8 @@ pub fn gpu_prefix_sum_sweep(
     {
         let mut d = 1usize;
         let mut offset = WORKGROUP_SIZE / 2;
-        // log2(256) = 8 iterations
-        for _ in 0..8u32 {
+        // log2(256) = 8 iterations (opaque: see `opaque_bound`)
+        for _ in 0..opaque_bound(8) {
             workgroup_memory_barrier_with_group_sync();
             if tid < d {
                 let ia = tid * 2 * offset + offset - 1;
