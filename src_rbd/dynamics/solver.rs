@@ -582,7 +582,11 @@ impl GpuSolver {
             /*
              * P5/F5 — solve ALL joints + contacts WITHOUT bias (stabilization).
              */
-            mb_phase!("[RBD] slv/mb-solve-nobias", substep_solve_no_bias);
+            mb_phase!(
+                "[RBD] slv/mb-solve-nobias",
+                substep_solve_no_bias,
+                is_last_substep
+            );
             if !skip_rb || !joints_empty {
                 let mut pass =
                     encoder.begin_pass("[RBD] slv/rb-solve-nobias", timestamps.as_deref_mut());

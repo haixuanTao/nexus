@@ -101,6 +101,25 @@ pub struct GpuMultibodySet {
     /// Per-body lookup `[multibody_idx, link_idx]` (`u32::MAX` sentinel for
     /// free / non-multibody bodies). Indexed by the per-batch local body id.
     pub(super) body_to_link: Tensor<[u32; 2]>,
+    /// Host copy of `body_to_link` (batch-major, `body_to_link_cap` per
+    /// batch) so callers can translate a local body/collider id into the
+    /// `[mb_idx, link_idx]` the contact force sensor matches against.
+    pub(super) body_to_link_host: Vec<[u32; 2]>,
+    /// Per-batch stride of `body_to_link_host` (= colliders per batch).
+    pub(super) body_to_link_cap: u32,
+
+    /// Contact force-sensor config: `MAX_CONTACT_SENSORS` multibody link ids
+    /// to sense (`u32::MAX` = unused slot), shared by every multibody in
+    /// every batch. See [`Self::set_contact_sensor_links`].
+    pub(super) contact_sensor_links: Tensor<u32>,
+    /// Contact force-sensor readout: per (multibody, sensor slot), the
+    /// accumulated NORMAL-constraint impulse at the end of the step (see
+    /// `gpu_mb_sense_contact_impulses`). Interleaved:
+    /// `[(mb_idx · num_batches + batch) · MAX_CONTACT_SENSORS + slot]`.
+    pub(super) contact_sensor_out: Tensor<f32>,
+    /// Number of configured contact sensors (0 = kernel never dispatched —
+    /// the default path is untouched).
+    pub(super) num_contact_sensors: u32,
 
     /// Per-multibody bank of contact constraints (1 normal + 2 friction per
     /// touched contact point).
@@ -506,6 +525,47 @@ impl GpuMultibodySet {
     /// (motor targets live here). Not a stable API.
     pub fn dbg_links_static(&self) -> &Tensor<MultibodyLinkStatic> {
         &self.links_static
+    }
+
+    /// Configure the contact force sensor: sense the summed normal-contact
+    /// impulse on these multibody links (at most
+    /// [`crate::shaders::dynamics::MAX_CONTACT_SENSORS`]; the same links are
+    /// sensed on every multibody in every batch). Translate a local body /
+    /// collider id with [`Self::link_of_body`] first. Empty slice = disabled.
+    pub fn set_contact_sensor_links(&mut self, backend: &GpuBackend, links: &[u32]) {
+        const MAX: usize = crate::shaders::dynamics::MAX_CONTACT_SENSORS as usize;
+        assert!(
+            links.len() <= MAX,
+            "at most {MAX} contact sensors supported (got {})",
+            links.len()
+        );
+        let mut padded = [u32::MAX; MAX];
+        padded[..links.len()].copy_from_slice(links);
+        backend
+            .write_buffer(self.contact_sensor_links.buffer_mut(), 0, &padded)
+            .unwrap();
+        self.num_contact_sensors = links.len() as u32;
+    }
+
+    /// `[mb_idx, link_idx]` of a local body/collider id within `batch`, or
+    /// `[u32::MAX; 2]` if that body is not a multibody link.
+    pub fn link_of_body(&self, batch: u32, local_body_id: u32) -> [u32; 2] {
+        let idx = batch as usize * self.body_to_link_cap as usize + local_body_id as usize;
+        self.body_to_link_host
+            .get(idx)
+            .copied()
+            .unwrap_or([u32::MAX; 2])
+    }
+
+    /// The contact force-sensor readout tensor (interleaved; see the field
+    /// docs). Read after a step; values are accumulated normal impulses.
+    pub fn contact_sensor_out(&self) -> &Tensor<f32> {
+        &self.contact_sensor_out
+    }
+
+    /// Number of configured contact sensors (0 = sensing disabled).
+    pub fn num_contact_sensors(&self) -> u32 {
+        self.num_contact_sensors
     }
 
     // ---- fork-era compat accessors (external RL envs: zealot) ----------

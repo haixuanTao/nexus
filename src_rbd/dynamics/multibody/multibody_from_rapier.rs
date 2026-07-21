@@ -494,6 +494,25 @@ impl GpuMultibodySet {
             )
             .unwrap(),
             body_to_link: Tensor::vector(backend, &all_body_to_link, storage).unwrap(),
+            body_to_link_host: all_body_to_link.clone(),
+            body_to_link_cap,
+            contact_sensor_links: Tensor::vector(
+                backend,
+                &[u32::MAX; crate::shaders::dynamics::MAX_CONTACT_SENSORS as usize],
+                storage,
+            )
+            .unwrap(),
+            contact_sensor_out: Tensor::vector(
+                backend,
+                &vec![
+                    0.0f32;
+                    (mb_cap * crate::shaders::dynamics::MAX_CONTACT_SENSORS * num_batches)
+                        as usize
+                ],
+                storage,
+            )
+            .unwrap(),
+            num_contact_sensors: 0,
             contact_constraints: Tensor::vector(
                 backend,
                 vec![

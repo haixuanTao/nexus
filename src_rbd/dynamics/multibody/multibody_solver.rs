@@ -10,7 +10,8 @@ use crate::shaders::dynamics::{
     GpuMbGravityAndLuT16, GpuMbGravityAndLuT32, GpuMbInitContactConstraints,
     GpuMbInitJointConstraints, GpuMbIntegrate, GpuMbIntegrateVelocities,
     GpuMbRefreshJointConstraints, GpuMbRemoveImpulseJointConstraintBias,
-    GpuMbResetContactWarmstart, GpuMbStashContactsLen, GpuMbWarmstartContactConstraints,
+    GpuMbResetContactWarmstart, GpuMbSenseContactImpulses, GpuMbStashContactsLen,
+    GpuMbWarmstartContactConstraints,
     GpuMbSolveConstraints, GpuMbSolveContactsDelassus, GpuMbSolveImpulseJointConstraints,
     GpuMbSolveJoints,
     GpuMbFinalizeImpulseJointConstraints,
@@ -43,6 +44,10 @@ pub struct GpuMultibodySolver {
     /// there, so the full build + back-solves run once per step).
     refresh_joint_constraints: GpuMbRefreshJointConstraints,
     init_contact_constraints: GpuMbInitContactConstraints,
+    /// Contact force-sensor readout (see `gpu_mb_sense_contact_impulses`) —
+    /// dispatched once per step at the end of the last substep's
+    /// stabilization sweep, only when sensors are configured.
+    sense_contact_impulses: GpuMbSenseContactImpulses,
     finalize_contact_constraints: GpuMbFinalizeContactConstraints,
     /// Fused joint+contact PGS sweep (one workgroup per multibody, shared-
     /// memory dof velocities). `use_bias = 0` runs the stabilization form,
@@ -633,6 +638,7 @@ impl GpuMultibodySolver {
         pass: &mut GpuPass,
         mb: &mut GpuMultibodySet,
         args: &mut MultibodySolverArgs<'_>,
+        is_last_substep: bool,
     ) -> Result<(), GpuBackendError> {
         if mb.is_empty() {
             return Ok(());
@@ -678,6 +684,22 @@ impl GpuMultibodySolver {
                     args.solver_vels,
                 )?;
             }
+        }
+
+        // Contact force-sensor readout: after the final substep's
+        // stabilization sweep, fold each sensed link's NORMAL impulses into
+        // `contact_sensor_out` (zeroed in-kernel; no host clear pass). Not
+        // dispatched at all when no sensors are configured.
+        if is_last_substep && mb.num_contact_sensors > 0 {
+            self.sense_contact_impulses.call(
+                pass,
+                [mb.multibodies_per_batch, mb.num_batches, 1],
+                &mb.multibody_info,
+                &mb.contact_constraints,
+                &mb.contact_sensor_links,
+                &mut mb.contact_sensor_out,
+                args.batch_indices,
+            )?;
         }
 
         Ok(())
