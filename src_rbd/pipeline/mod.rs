@@ -10,5 +10,5 @@ mod rbd_state;
 mod rbd_state_from_rapier;
 mod rbd_step;
 
-pub use rbd_state::{RbdCapacities, RbdResizePolicy, RbdSnapshot, RbdState, RunStats};
+pub use rbd_state::{RbdCapacities, RbdResizePolicy, RbdState, RunStats};
 pub use rbd_step::RbdPipeline;
