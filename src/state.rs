@@ -237,6 +237,65 @@ impl NexusState {
         out
     }
 
+    /// TEMPORARY: raw readback of the multibody dof_state buffer.
+    pub fn rbd_dbg_dof_state(&self, backend: &GpuBackend) -> Vec<f32> {
+        let Some(rbd) = self.rbd.as_ref() else { return Vec::new() };
+        let t = rbd.multibodies().dof_state();
+        let len = t.len() as usize;
+        if len == 0 { return Vec::new() }
+        let mut readback = match GpuReadback::<f32>::new(backend, len) {
+            Ok(r) => r, Err(_) => return Vec::new(),
+        };
+        if readback.request_copy(backend, t.buffer(), 0).is_err() { return Vec::new() }
+        let mut out = vec![0f32; len];
+        while !readback.try_take(backend, &mut out) {}
+        out
+    }
+
+    /// TEMPORARY: raw f32-word readback of links_static as the GPU sees it.
+    pub fn rbd_dbg_links_static(&self, backend: &GpuBackend) -> Vec<f32> {
+        let Some(rbd) = self.rbd.as_ref() else { return Vec::new() };
+        let t = rbd.multibodies().links_static();
+        let len = t.len() as usize;
+        if len == 0 { return Vec::new() }
+        type LS = crate::rbd::shaders::dynamics::MultibodyLinkStatic;
+        let mut readback = match GpuReadback::<LS>::new(backend, len) {
+            Ok(r) => r, Err(_) => return Vec::new(),
+        };
+        if readback.request_copy(backend, t.buffer(), 0).is_err() { return Vec::new() }
+        let mut out: Vec<LS> = vec![unsafe { std::mem::zeroed() }; len];
+        while !readback.try_take(backend, &mut out) {}
+        let n_words = out.len() * (std::mem::size_of::<LS>() / 4);
+        unsafe { std::slice::from_raw_parts(out.as_ptr() as *const f32, n_words) }.to_vec()
+    }
+
+    /// TEMPORARY inert-motor diagnostic: raw readback of the multibody
+    /// limit/motor constraint slots (12 f32-words per slot; words 0..4 are the
+    /// u32 fields dof_id/kind/extra/pad reinterpreted). Not a stable API.
+    pub fn rbd_dbg_joint_constraints(&self, backend: &GpuBackend) -> Vec<f32> {
+        let Some(rbd) = self.rbd.as_ref() else {
+            return Vec::new();
+        };
+        let t = rbd.multibodies().joint_constraints();
+        let len = t.len() as usize;
+        if len == 0 {
+            return Vec::new();
+        }
+        let mut readback =
+            match GpuReadback::<crate::rbd::shaders::dynamics::MultibodyJointConstraint>::new(backend, len) {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+        if readback.request_copy(backend, t.buffer(), 0).is_err() {
+            return Vec::new();
+        }
+        let mut out = vec![crate::rbd::shaders::dynamics::MultibodyJointConstraint::default(); len];
+        while !readback.try_take(backend, &mut out) {}
+        // reinterpret as f32 words (the struct is Pod: 12 x 4-byte fields)
+        let n_words = out.len() * (std::mem::size_of::<crate::rbd::shaders::dynamics::MultibodyJointConstraint>() / 4);
+        unsafe { std::slice::from_raw_parts(out.as_ptr() as *const f32, n_words) }.to_vec()
+    }
+
     /// Overrides the solver's color capacity, applied at `finalize` (default 8).
     ///
     /// The constraint solver walks `0..max_colors + 1` sequentially per stage
