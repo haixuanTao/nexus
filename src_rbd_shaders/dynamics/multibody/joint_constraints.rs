@@ -577,7 +577,7 @@ fn compute_joint_columns_par(
     while s < mb.max_constraints {
         let mut cons = joint_constraints.read(cons_base + s as usize);
         if cons.kind != 0 {
-            let inv_lhs = compute_constraint_column(
+            let lhs = compute_constraint_column(
                 joint_constraint_columns,
                 col_base,
                 s,
@@ -589,15 +589,31 @@ fn compute_joint_columns_par(
                 lu_pivots,
                 piv_offset,
             );
-            cons.inv_lhs = inv_lhs;
+            // rapier `finalize_generic_constraints` (run after the unit
+            // limit/motor constraint sets the preliminary lhs):
+            //   cfm_gain = lhs·cfm_coeff + cfm_gain_init
+            //   inv_lhs  = 1/(lhs + cfm_gain)
+            // The PGS sweep then applies `cfm_gain` directly
+            // (`impulse + inv_lhs·(rhs − cfm_gain·impulse)`). This is the
+            // ACCELERATION-based motor's compliance: for a position servo
+            // (`<position kp>`), `cfm_coeff` is large (∝ 1/(dt²·stiffness)),
+            // so the fold dominates and makes the effective gain
+            // inertia-independent — without it the servo is far too stiff on
+            // heavy joints and far too weak relative to rapier's reference.
+            // For limits (cfm_coeff = 0, cfm_gain = 0) this reduces to the
+            // old `inv_lhs = 1/lhs`.
+            cons.cfm_gain = lhs * cons.cfm_coeff + cons.cfm_gain;
+            let denom = lhs + cons.cfm_gain;
+            cons.inv_lhs = if denom != 0.0 { 1.0 / denom } else { 0.0 };
             joint_constraints.write(cons_base + s as usize, cons);
         }
         s += num_lanes;
     }
 }
 
-/// Solve `M · column = e_{dof_id}` and pack `inv_lhs = 1 / column[dof_id]`,
-/// matching `inv_lhs = 1 / (Jᵀ M⁻¹ J)` for J = e_{dof_id}.
+/// Solve `M · column = e_{dof_id}` (writes the M⁻¹ column) and return the raw
+/// `lhs = column[dof_id]` (= Jᵀ M⁻¹ J for J = e_{dof_id}). Callers fold the
+/// cfm compliance and invert (rapier's `finalize_generic_constraints`).
 ///
 /// Per-constraint column stride is `dofs_stride` (= batch-wide
 /// `dof_batch_capacity`), not this multibody's `ndofs` — see the matching
@@ -626,8 +642,13 @@ fn compute_constraint_column(
         col_offset,
         dof_id,
     );
-    let lhs = joint_constraint_columns.read(col_offset + dof_id as usize);
-    if lhs != 0.0 { 1.0 / lhs } else { 0.0 }
+    joint_constraint_columns.read(col_offset + dof_id as usize)
+}
+
+/// `1 / x`, or 0 when `x == 0` — matches rapier's `crate::utils::inv`.
+#[inline]
+fn inv(x: f32) -> f32 {
+    if x != 0.0 { 1.0 / x } else { 0.0 }
 }
 
 /// Initialize a single limit constraint slot. Mirrors rapier's
@@ -681,10 +702,14 @@ fn emit_limit_constraint(
     let rhs_bias = (hi_excess - lo_excess) * erp_inv_dt;
     let rhs_wo_bias = 0.0f32;
 
-    let inv_lhs = if defer_column {
-        0.0
+    // Inline (non-deferred) path: fold the cfm compliance exactly like the
+    // deferred `compute_joint_columns_par` phase (rapier's
+    // `finalize_generic_constraints`). For limits cfm_coeff = 0 so this is
+    // 1/lhs, but the formula is kept uniform.
+    let (inv_lhs, cfm_gain) = if defer_column {
+        (0.0, 0.0)
     } else {
-        compute_constraint_column(
+        let lhs = compute_constraint_column(
             joint_constraint_columns,
             col_base,
             slot,
@@ -695,7 +720,9 @@ fn emit_limit_constraint(
             m,
             lu_pivots,
             piv_offset,
-        )
+        );
+        let cfm_gain = lhs * cfm_coeff;
+        (inv(lhs + cfm_gain), cfm_gain)
     };
 
     let max_neg_impulse = if min_enabled { -1.0e30f32 } else { 0.0 };
@@ -713,7 +740,7 @@ fn emit_limit_constraint(
         impulse_lo: max_neg_impulse,
         impulse_hi: max_pos_impulse,
         cfm_coeff,
-        cfm_gain: 0.0,
+        cfm_gain,
     };
     joint_constraints.write(cons_base + slot as usize, cons);
 }
@@ -777,10 +804,15 @@ fn emit_motor_constraint(
     }
     rhs_wo_bias += -target_vel;
 
-    let inv_lhs = if defer_column {
-        0.0
+    // Inline (non-deferred) path: rapier `finalize_generic_constraints` fold
+    // (see `compute_joint_columns_par` for the deferred equivalent):
+    //   cfm_gain = lhs·cfm_coeff + cfm_gain_init; inv_lhs = 1/(lhs + cfm_gain).
+    // In deferred mode `cfm_gain` carries the un-folded `cfm_gain_init` from
+    // `motor_params` for the parallel phase to fold.
+    let (inv_lhs, cfm_gain) = if defer_column {
+        (0.0, cfm_gain)
     } else {
-        compute_constraint_column(
+        let lhs = compute_constraint_column(
             joint_constraint_columns,
             col_base,
             slot,
@@ -791,7 +823,9 @@ fn emit_motor_constraint(
             m,
             lu_pivots,
             piv_offset,
-        )
+        );
+        let folded = lhs * cfm_coeff + cfm_gain;
+        (inv(lhs + folded), folded)
     };
 
     let cons = MultibodyJointConstraint {

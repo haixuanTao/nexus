@@ -326,6 +326,14 @@ fn init_contact_constraints_body(
         }
 
         let is_self = mb_on_1 && mb_on_2;
+        // Honor rapier's `Multibody::self_contacts_enabled` (MJCF
+        // `DISABLE_SELF_CONTACTS`): the GPU narrow phase emits manifolds
+        // between a robot's own overlapping link colliders (rapier's CPU
+        // narrow phase would have filtered them), and solving those deep
+        // interpenetrations explodes the articulation.
+        if is_self && mb.self_contacts_enabled == 0 {
+            continue;
+        }
         let (mb_link_id_a, mb_link_id_b, free_body_id) = if is_self {
             (l1[1], l2[1], u32::MAX)
         } else if mb_on_1 {

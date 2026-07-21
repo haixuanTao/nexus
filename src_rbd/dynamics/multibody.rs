@@ -577,6 +577,7 @@ impl GpuMultibodySet {
         &self.dof_values
     }
 
+
     /// GPU buffer for the last-computed generalized accelerations (populated by
     /// `GpuMultibodySolver::solve_gravity`).
     pub fn gen_accelerations(&self) -> &Tensor<f32> {
@@ -676,6 +677,15 @@ impl GpuMultibodySet {
         };
         entry.data.motors[axis_id].target_vel = target_vel;
         entry.data.motor_axes |= 1u32 << axis_id;
+        // Auto-enabling the motor must also leave it a usable force budget:
+        // MJCF `<motor>` actuators are encoded at load time as
+        // far-target-velocity + `max_force = |ctrl|·gear`, which is 0 until a
+        // control is applied — so a velocity command through this native API
+        // would be silently clamped to zero impulse. Mirror rapier's default
+        // (`JointMotor::max_force = Real::MAX`) when the budget is unset.
+        if entry.data.motors[axis_id].max_force == 0.0 {
+            entry.data.motors[axis_id].max_force = f32::MAX;
+        }
         let snapshot = *entry;
         backend.write_buffer(
             self.links_static.buffer_mut(),
@@ -1051,6 +1061,7 @@ impl GpuMultibodySet {
                     first_constraint: cons_off,
                     max_constraints,
                     friction: env_friction,
+                    self_contacts_enabled: if mb.self_contacts_enabled() { 1 } else { 0 },
                 });
 
                 // `assembly_id` is not exposed publicly on `MultibodyLink`, so we
@@ -2041,6 +2052,7 @@ fn contact_once() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("NEXUS_CONTACT_ONCE").map(|v| v != "0").unwrap_or(true))
 }
+
 
 /// Standalone bundle for the layout microbench kernels (see
 /// `src_rbd_shaders/dynamics/multibody/layout_bench.rs`). Public so the

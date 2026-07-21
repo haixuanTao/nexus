@@ -470,10 +470,18 @@ impl RbdState {
                         .unwrap_or(0.5)
                 })
                 .collect();
+            // Multibody gravity from env 0's sim params (was hardcoded
+            // `[0, -9.81, 0]`, which silently broke Z-up MJCF scenes unless
+            // the caller re-set gravity AFTER finalize — before finalize the
+            // NexusState setter only reaches the sim-params half).
+            let mb_gravity = environments
+                .first()
+                .map(|(_, _, _, _, sp)| [sp.gravity_x, sp.gravity_y, sp.gravity_z])
+                .unwrap_or([0.0, -9.81, 0.0]);
             let mut mb = GpuMultibodySet::from_rapier(
                 backend,
                 &mb_refs,
-                [0.0, -9.81, 0.0],
+                mb_gravity,
                 max_colliders as u32,
                 &mb_frictions,
             );
