@@ -97,10 +97,10 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 # (is_cuda, as_cuda, owned capture stream) required by the ported capture
 # commits, reconciled with khal 0.2.1. NOTE: the pre-unified fork branches
 # (e.g. fix/portable-cuda-device-dep) cost ~2ms/step extra on WebGPU.
-khal = { path = "../khal/crates/khal" }
-khal-derive = { path = "../khal/crates/khal-derive" }
-khal-std = { path = "../khal/crates/khal-std" }
-khal-builder = { path = "../khal/crates/khal-builder" }
+khal = { path = "../khal-unified/crates/khal" }
+khal-derive = { path = "../khal-unified/crates/khal-derive" }
+khal-std = { path = "../khal-unified/crates/khal-std" }
+khal-builder = { path = "../khal-unified/crates/khal-builder" }
 #kiss3d = { git = "https://github.com/dimforge/kiss3d", branch = "render-2d" }
 #rapier3d = { git = "https://github.com/dimforge/rapier", branch = "multibody-fixes" }
 #rapier3d-mjcf = { git = "https://github.com/dimforge/rapier", branch = "multibody-fixes" }
