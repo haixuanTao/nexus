@@ -1052,3 +1052,61 @@ pub fn gpu_mb_remove_solve_contact_no_bias(
         shared_delta,
     );
 }
+
+/// Maximum sensed links per multibody for the contact force-sensor readout.
+pub const MAX_CONTACT_SENSORS: u32 = 4;
+
+/// Contact "force sensor" readout: per sensed link, sum the solved
+/// NORMAL-constraint impulses of the substep that just finished. Dispatched
+/// once per step (after the last substep's stabilization sweep), so the value
+/// read back is the final converged normal impulse of the step's last substep
+/// — divide by the substep dt to get an average normal force. Slots whose
+/// sensed link had no active contact rows read back as exactly 0.0 (the
+/// kernel zeroes its slots before accumulating, so no host-side clear pass is
+/// needed and the dispatch is graph-capture friendly).
+///
+/// `contact_sensor_links` holds `MAX_CONTACT_SENSORS` multibody link ids
+/// (`u32::MAX` = unused slot); the same set is sensed for every multibody in
+/// every batch (zealot's fleet is N copies of one robot). Output layout:
+/// `contact_sensor_out[(mb_start(batch) + mb_idx) * MAX_CONTACT_SENSORS + slot]`.
+#[spirv_bindgen]
+#[spirv(compute(threads(1)))]
+pub fn gpu_mb_sense_contact_impulses(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)]
+    contact_constraints: &[MultibodyContactConstraint],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contact_constraint_count: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] num_multibodies: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] contact_sensor_links: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] contact_sensor_out: &mut [f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let mb_idx = invocation_id.x;
+    let mb_start = batch_ids.mb_start(batch_id);
+    let out_base = (mb_start + mb_idx as usize) * (MAX_CONTACT_SENSORS as usize);
+    for s in 0..MAX_CONTACT_SENSORS {
+        contact_sensor_out.write(out_base + s as usize, 0.0);
+    }
+    let num_mb = num_multibodies.read(batch_id as usize);
+    if mb_idx >= num_mb {
+        return;
+    }
+
+    let cons_start = batch_ids.mb_contact_constraints_start(batch_id);
+    let cons_base = cons_start + (mb_idx as usize) * (MAX_MB_CONTACT_CONSTRAINTS_PER_MB as usize);
+    let count = contact_constraint_count.read(mb_start + mb_idx as usize);
+
+    for c in 0..count {
+        let cons = contact_constraints.read(cons_base + c as usize);
+        if cons.kind != MB_CONTACT_KIND_NORMAL {
+            continue;
+        }
+        for s in 0..MAX_CONTACT_SENSORS {
+            if contact_sensor_links.read(s as usize) == cons.link_id {
+                let cur = contact_sensor_out.read(out_base + s as usize);
+                contact_sensor_out.write(out_base + s as usize, cur + cons.impulse);
+            }
+        }
+    }
+}

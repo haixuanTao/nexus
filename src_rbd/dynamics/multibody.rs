@@ -32,7 +32,8 @@ use crate::shaders::dynamics::{
     GpuMbTransposeDofStateFromPacked, GpuMbTransposeDofStateToPacked,
     GpuMbTransposeGenForcesToPacked,
     GpuMbRemoveContactConstraintBias, GpuMbRemoveImpulseJointConstraintBias,
-    GpuMbRemoveSolveJointNoBias, GpuMbSolveContactConstraints, GpuMbSolveImpulseJointConstraints,
+    GpuMbRemoveSolveJointNoBias, GpuMbSenseContactImpulses, GpuMbSolveContactConstraints,
+    GpuMbSolveImpulseJointConstraints, MAX_CONTACT_SENSORS,
     GpuMbUpdateImpulseJointConstraints, GpuScatterMotorTargets, LocalMassProperties, MAX_AXIS_CONSTRAINTS,
     SimParams as GpuSimParams,
     MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MbImpulseJointBuilder, MbImpulseJointConstraint,
@@ -208,6 +209,26 @@ pub struct GpuMultibodySet {
     /// Per-multibody count of currently-active contact constraints. Filled
     /// by the init kernel; read by the solve / finalize kernels.
     contact_constraint_count: Tensor<u32>,
+
+    /// Contact force-sensor config: `MAX_CONTACT_SENSORS` multibody link ids
+    /// to sense (`u32::MAX` = unused slot), shared by every multibody in
+    /// every batch. See [`Self::set_contact_sensor_links`].
+    contact_sensor_links: Tensor<u32>,
+    /// Contact force-sensor readout: per (multibody, sensor slot), the summed
+    /// NORMAL-constraint impulse of the step's last substep. Layout
+    /// `[(mb_start(batch) + mb_idx) * MAX_CONTACT_SENSORS + slot]`; slots with
+    /// no active contact read 0.0. Written once per step by
+    /// `gpu_mb_sense_contact_impulses` when sensors are configured.
+    contact_sensor_out: Tensor<f32>,
+    /// Number of configured contact sensors (0 = the sense kernel is not
+    /// dispatched at all — the default path is untouched).
+    num_contact_sensors: u32,
+    /// Host copy of `body_to_link` (batch-major, `body_to_link_cap` per
+    /// batch) so callers can translate a local body/collider id into the
+    /// `[mb_idx, link_idx]` the sensor kernel matches against.
+    body_to_link_host: Vec<[u32; 2]>,
+    /// Per-batch stride of `body_to_link_host` (= colliders per batch).
+    body_to_link_cap: u32,
 
     /// Per-batch number of multibody-touching impulse joints. Counts
     /// joints whose body1 OR body2 is part of any multibody — these go
@@ -792,6 +813,49 @@ impl GpuMultibodySet {
     /// DEBUG: the per-multibody contact-constraint bank (effective inv-mass
     /// `inv_lhs`, `rhs`, accumulated `impulse`, jacobians) and the per-batch
     /// active counts. Used to diagnose contact-solve instability on WebGpu.
+    /// Configure the contact force sensor: sense the summed normal-contact
+    /// impulse on these multibody links (at most [`MAX_CONTACT_SENSORS`]; the
+    /// same links are sensed on every multibody in every batch). `links` are
+    /// `[mb_idx, link_idx]`-style LINK indices — translate a local body /
+    /// collider id with [`Self::link_of_body`] first. Passing an empty slice
+    /// disables sensing (the kernel is not dispatched).
+    pub fn set_contact_sensor_links(&mut self, backend: &GpuBackend, links: &[u32]) {
+        assert!(
+            links.len() <= MAX_CONTACT_SENSORS as usize,
+            "at most {MAX_CONTACT_SENSORS} contact sensors supported (got {})",
+            links.len()
+        );
+        let mut padded = [u32::MAX; MAX_CONTACT_SENSORS as usize];
+        padded[..links.len()].copy_from_slice(links);
+        backend
+            .write_buffer(self.contact_sensor_links.buffer_mut(), 0, &padded)
+            .unwrap();
+        self.num_contact_sensors = links.len() as u32;
+    }
+
+    /// `[mb_idx, link_idx]` of a local body/collider id within `batch`, or
+    /// `[u32::MAX; 2]` if that body is not a multibody link. Use to build the
+    /// link list for [`Self::set_contact_sensor_links`].
+    pub fn link_of_body(&self, batch: u32, local_body_id: u32) -> [u32; 2] {
+        let idx = batch as usize * self.body_to_link_cap as usize + local_body_id as usize;
+        self.body_to_link_host
+            .get(idx)
+            .copied()
+            .unwrap_or([u32::MAX; 2])
+    }
+
+    /// The contact force-sensor readout tensor (see the field docs for the
+    /// layout). Read it back after a step; values are the last substep's
+    /// summed normal impulses per sensed link.
+    pub fn contact_sensor_out(&self) -> &Tensor<f32> {
+        &self.contact_sensor_out
+    }
+
+    /// Number of configured contact sensors (0 = sensing disabled).
+    pub fn num_contact_sensors(&self) -> u32 {
+        self.num_contact_sensors
+    }
+
     pub fn dbg_contact_constraints(
         &self,
     ) -> &Tensor<crate::shaders::dynamics::MultibodyContactConstraint> {
@@ -1323,6 +1387,21 @@ impl GpuMultibodySet {
             )
             .unwrap(),
             body_to_link: Tensor::vector(backend, &all_body_to_link, storage).unwrap(),
+            contact_sensor_links: Tensor::vector(
+                backend,
+                &[u32::MAX; MAX_CONTACT_SENSORS as usize],
+                storage,
+            )
+            .unwrap(),
+            contact_sensor_out: Tensor::vector(
+                backend,
+                &vec![0.0f32; (mb_cap * MAX_CONTACT_SENSORS * num_batches) as usize],
+                storage,
+            )
+            .unwrap(),
+            num_contact_sensors: 0,
+            body_to_link_host: all_body_to_link.clone(),
+            body_to_link_cap,
             contact_constraints: Tensor::vector(
                 backend,
                 &vec![
@@ -1898,6 +1977,10 @@ pub struct GpuMultibodySolver {
     /// dispatch per substep on the multibody side. Mirrors
     /// `remove_solve_joint_no_bias` (same pattern for joint constraints).
     remove_solve_contact_no_bias: GpuMbRemoveSolveContactNoBias,
+    /// Contact force-sensor readout (see `gpu_mb_sense_contact_impulses`).
+    /// Dispatched once per step, after the last substep's stabilization
+    /// sweep, and only when sensors are configured.
+    sense_contact_impulses: GpuMbSenseContactImpulses,
     update_impulse_joint_constraints: GpuMbUpdateImpulseJointConstraints,
     solve_impulse_joint_constraints: GpuMbSolveImpulseJointConstraints,
     /// Color cursor reset / increment for the colored impulse-joint solve
@@ -2369,6 +2452,24 @@ impl GpuMultibodySolver {
                 self.inc_imp_joint_color
                     .call(pass, 1u32, &mut mb.mb_imp_joint_curr_color)?;
             }
+        }
+
+        // Contact force-sensor readout: after the final substep's
+        // stabilization sweep, fold each sensed link's NORMAL impulses into
+        // `contact_sensor_out` (zeroed in-kernel; no host clear pass). Not
+        // dispatched at all when no sensors are configured, so the default
+        // path is bit-identical.
+        if is_last_substep && mb.num_contact_sensors > 0 {
+            self.sense_contact_impulses.call(
+                pass,
+                [mb.multibodies_per_batch, mb.num_batches, 1],
+                &mb.contact_constraints,
+                &mb.contact_constraint_count,
+                &mb.num_multibodies,
+                &mb.contact_sensor_links,
+                &mut mb.contact_sensor_out,
+                args.batch_indices,
+            )?;
         }
 
         Ok(())
