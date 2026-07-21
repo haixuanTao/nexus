@@ -61,6 +61,9 @@ pub struct GpuMultibodySet {
     /// CPU-side mirror of [`Self::links_static`] used to support runtime
     /// mutations like motor changes without round-tripping through a GPU read.
     pub(super) links_static_mirror: Vec<MultibodyLinkStatic>,
+    /// Lazily-created shader bundle + staging buffers for the per-env RL
+    /// reset scatter (`gpu_mb_env_reset`).
+    pub(super) env_reset: Option<EnvResetBundle>,
     /// Per-batch per-step link workspace, SoA quad layout — see
     /// `crate::shaders::dynamics::ws_soa`.
     pub(super) links_workspace: Tensor<glamx::Vec4>,
@@ -447,4 +450,280 @@ pub(super) fn make_workspace_init() -> MultibodyLinkWorkspace {
     w.local_to_parent = Pose::default();
     w.local_to_world = Pose::default();
     w
+}
+
+/*
+ * RL primitives: per-env snapshot / teleport-reset.
+ */
+
+use crate::shaders::dynamics::{
+    GpuMbEnvReset, MULTIBODY_ROOT, WS_JOINT_ROT, WS_JOINT_VEL, WS_KIN_ACC, WS_LTP, WS_LTW,
+    WS_QUADS, WS_RB_VELS, WS_SHIFT02, WS_SHIFT23, WsAddr, ws_coords, ws_pose, ws_rot,
+    ws_soa_from_structs, ws_vec, ws_vel,
+};
+use glamx::UVec4;
+use khal::Shader;
+use khal::backend::Encoder;
+
+/// CPU snapshot of one environment's multibody carry-over state (the state a
+/// per-env RL reset must restore): AoS link workspace, static link
+/// descriptors (motor targets/impulses live here), generalized coordinates
+/// and generalized velocities. Captured from batch 0 of a (typically
+/// single-env template) [`GpuMultibodySet`]; applied to any env of a live set
+/// with [`GpuMultibodySet::reset_env_from_snapshot`] — write/dispatch only,
+/// no per-reset GPU→CPU readback.
+#[derive(Clone)]
+pub struct GpuMultibodySnapshot {
+    /// AoS per-link workspace of batch 0 (`links_per_batch` entries,
+    /// including padding slots). Converted to the SoA quad layout on upload.
+    links_workspace: Vec<MultibodyLinkWorkspace>,
+    links_static: Vec<MultibodyLinkStatic>,
+    /// Generalized coordinates of batch 0 (`dofs_per_batch`).
+    dof_values: Vec<f32>,
+    /// Generalized velocities of batch 0 (`dofs_per_batch`; the velocity
+    /// section of `dof_state` — the damping section is static config).
+    dof_vels: Vec<f32>,
+}
+
+impl GpuMultibodySnapshot {
+    /// True for entries that describe a real link (the buffers are padded to
+    /// `links_per_batch` with zeroed slots: rb_id 0, parent 0, ndofs 0 — a
+    /// combination no real link can have, since a chain's body-0 link is its
+    /// root and roots carry `parent_link_id == MULTIBODY_ROOT`).
+    fn link_is_valid(ls: &MultibodyLinkStatic) -> bool {
+        ls.parent_link_id == MULTIBODY_ROOT || ls.ndofs > 0 || ls.rb_id != 0
+    }
+
+    /// True if this link's multibody has a FREE root joint (floating base).
+    /// Only such multibodies can be rigidly translated; a fixed-base chain is
+    /// welded to the world and must not move.
+    fn mb_root_is_free(&self, multibody_id: u32) -> bool {
+        self.links_static.iter().any(|ls| {
+            Self::link_is_valid(ls)
+                && ls.multibody_id == multibody_id
+                && ls.parent_link_id == MULTIBODY_ROOT
+                && ls.data.locked_axes == 0
+        })
+    }
+
+    /// Calls `f(rb_id)` for every rigid body backing a link of a FREE-rooted
+    /// (floating-base) multibody — the set of bodies an offset-reset moves.
+    pub(crate) fn for_each_link_rb_id(&self, mut f: impl FnMut(u32)) {
+        for ls in &self.links_static {
+            if Self::link_is_valid(ls) && self.mb_root_is_free(ls.multibody_id) {
+                f(ls.rb_id);
+            }
+        }
+    }
+
+    /// A copy of this snapshot with every FLOATING-BASE multibody translated
+    /// by `offset` (world frame). Rotations, joint coordinates past the free
+    /// linear DOFs, velocities and `dof_values` are translation-invariant;
+    /// the free root's world position lives in `coords[0..3]` +
+    /// `local_to_parent` (the root's parent frame IS the world), and every
+    /// link's `local_to_world` carries its body pose. Fixed-base multibodies
+    /// are left untouched. `body_poses` (owned by `RbdSnapshot`) must be
+    /// translated by the caller for the same rb_ids.
+    pub(crate) fn translated(&self, offset: glamx::Vec3) -> GpuMultibodySnapshot {
+        let mut out = self.clone();
+        for (ws, ls) in out.links_workspace.iter_mut().zip(&self.links_static) {
+            if !Self::link_is_valid(ls) || !self.mb_root_is_free(ls.multibody_id) {
+                continue;
+            }
+            ws.local_to_world.translation += offset;
+            if ls.parent_link_id == MULTIBODY_ROOT {
+                ws.local_to_parent.translation += offset;
+                ws.coords[0] += offset.x;
+                ws.coords[1] += offset.y;
+                ws.coords[2] += offset.z;
+            }
+        }
+        out
+    }
+}
+
+/// Standalone shader bundle + persistent staging buffers for the per-env
+/// reset scatter. Lazily created on first reset (allocations stay outside
+/// any captured region).
+pub(super) struct EnvResetBundle {
+    shader: EnvResetShader,
+    staging_ws: Tensor<Vec4>,
+    staging_links: Tensor<MultibodyLinkStatic>,
+    staging_dofs: Tensor<f32>,
+    params: Tensor<UVec4>,
+}
+
+/// `#[derive(Shader)]` supplies `from_backend`, which loads the embedded
+/// `gpu_mb_env_reset` entry point.
+#[derive(Shader)]
+struct EnvResetShader {
+    kernel: GpuMbEnvReset,
+}
+
+impl EnvResetBundle {
+    fn new(backend: &GpuBackend, lpb: u32, dpb: u32) -> Self {
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        Self {
+            shader: EnvResetShader::from_backend(backend).unwrap(),
+            staging_ws: Tensor::vector_uninit(backend, lpb * WS_QUADS, storage).unwrap(),
+            staging_links: Tensor::vector_uninit(backend, lpb, storage).unwrap(),
+            staging_dofs: Tensor::vector_uninit(backend, (dpb * 2).max(1), storage).unwrap(),
+            params: Tensor::scalar(
+                backend,
+                UVec4::ZERO,
+                BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
+        }
+    }
+}
+
+impl GpuMultibodySet {
+    /// Read this (typically single-env template) set's batch-0 state off the
+    /// GPU into a CPU snapshot. Call once per template at setup; pass the
+    /// result to [`Self::reset_env_from_snapshot`] for readback-free per-env
+    /// resets.
+    pub async fn snapshot(&self, backend: &GpuBackend) -> GpuMultibodySnapshot {
+        let nb = self.num_batches;
+        let lpb = self.links_per_batch as usize;
+        let dpb = self.dofs_per_batch as usize;
+
+        let mut ws_soa: Vec<Vec4> = bytemuck::zeroed_vec(self.links_workspace.len() as usize);
+        backend
+            .slow_read_buffer(self.links_workspace.buffer(), &mut ws_soa)
+            .await
+            .unwrap();
+        let mut ls_all: Vec<MultibodyLinkStatic> =
+            bytemuck::zeroed_vec(self.links_static.len() as usize);
+        backend
+            .slow_read_buffer(self.links_static.buffer(), &mut ls_all)
+            .await
+            .unwrap();
+        let mut dv_all: Vec<f32> = bytemuck::zeroed_vec(self.dof_values.len() as usize);
+        backend
+            .slow_read_buffer(self.dof_values.buffer(), &mut dv_all)
+            .await
+            .unwrap();
+        let mut ds_all: Vec<f32> = bytemuck::zeroed_vec(self.dof_state.len() as usize);
+        backend
+            .slow_read_buffer(self.dof_state.buffer(), &mut ds_all)
+            .await
+            .unwrap();
+
+        // Gather batch 0 out of the interleave; de-SoA the workspace through
+        // the shared layout accessors (one source of truth with the kernels).
+        let a = WsAddr::new(0, nb, 0);
+        let mut links_workspace = Vec::with_capacity(lpb);
+        for k in 0..lpb as u32 {
+            let mut w: MultibodyLinkWorkspace = bytemuck::Zeroable::zeroed();
+            w.joint_rot = ws_rot(&ws_soa, a, k, WS_JOINT_ROT);
+            w.coords = ws_coords(&ws_soa, a, k);
+            w.local_to_parent = ws_pose(&ws_soa, a, k, WS_LTP);
+            w.local_to_world = ws_pose(&ws_soa, a, k, WS_LTW);
+            w.shift02 = ws_vec(&ws_soa, a, k, WS_SHIFT02);
+            w.shift23 = ws_vec(&ws_soa, a, k, WS_SHIFT23);
+            w.joint_velocity = ws_vel(&ws_soa, a, k, WS_JOINT_VEL);
+            w.rb_vels = ws_vel(&ws_soa, a, k, WS_RB_VELS);
+            w.kinematic_acc = ws_vel(&ws_soa, a, k, WS_KIN_ACC);
+            links_workspace.push(w);
+        }
+        GpuMultibodySnapshot {
+            links_workspace,
+            links_static: (0..lpb).map(|k| ls_all[k * nb as usize]).collect(),
+            dof_values: (0..dpb).map(|d| dv_all[d * nb as usize]).collect(),
+            dof_vels: (0..dpb).map(|d| ds_all[d * nb as usize]).collect(),
+        }
+    }
+
+    /// Reset env `dst_env` in-place from the single-env template `src`
+    /// (readback + scatter). Prefer snapshotting the template once and using
+    /// [`Self::reset_env_from_snapshot`] in reset loops.
+    pub async fn reset_env_from(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        src: &GpuMultibodySet,
+    ) {
+        if self.is_empty() {
+            return;
+        }
+        let snap = src.snapshot(backend).await;
+        self.reset_env_from_snapshot(backend, dst_env, &snap);
+    }
+
+    /// Reset env `dst_env` from a CPU snapshot: one staging upload + one
+    /// scatter dispatch — no GPU→CPU readback, no per-element strided writes.
+    pub fn reset_env_from_snapshot(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &GpuMultibodySnapshot,
+    ) {
+        if self.is_empty() {
+            return;
+        }
+        let nb = self.num_batches;
+        let lpb = self.links_per_batch;
+        let dpb = self.dofs_per_batch;
+        debug_assert_eq!(snap.links_static.len(), lpb as usize);
+        debug_assert_eq!(snap.dof_values.len(), dpb as usize);
+
+        // Keep the host mirror in lockstep (the motor setters read-modify-
+        // write it).
+        for k in 0..lpb as usize {
+            self.links_static_mirror[k * nb as usize + dst_env as usize] = snap.links_static[k];
+        }
+
+        // Take the bundle out to sidestep the simultaneous &mut borrows of
+        // the live buffers below.
+        let mut bundle = match self.env_reset.take() {
+            Some(b) => b,
+            None => EnvResetBundle::new(backend, lpb, dpb),
+        };
+
+        let ws = ws_soa_from_structs(&snap.links_workspace, lpb, 1);
+        backend
+            .write_buffer(bundle.staging_ws.buffer_mut(), 0, &ws)
+            .unwrap();
+        backend
+            .write_buffer(bundle.staging_links.buffer_mut(), 0, &snap.links_static)
+            .unwrap();
+        let mut dofs = snap.dof_values.clone();
+        dofs.extend_from_slice(&snap.dof_vels);
+        if !dofs.is_empty() {
+            backend
+                .write_buffer(bundle.staging_dofs.buffer_mut(), 0, &dofs)
+                .unwrap();
+        }
+        bundle.params = Tensor::scalar(
+            backend,
+            UVec4::new(dst_env, nb, lpb, dpb),
+            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        )
+        .unwrap();
+
+        let mut encoder = backend.begin_encoding();
+        {
+            let mut pass = encoder.begin_pass("[RBD] mb-env-reset", None);
+            let pass = &mut pass;
+            bundle
+                .shader
+                .kernel
+                .call(
+                    pass,
+                    lpb * WS_QUADS,
+                    &bundle.staging_ws,
+                    &bundle.staging_links,
+                    &bundle.staging_dofs,
+                    &mut self.links_workspace,
+                    &mut self.links_static,
+                    &mut self.dof_values,
+                    &mut self.dof_state,
+                    &bundle.params,
+                )
+                .unwrap();
+        }
+        backend.submit(encoder).unwrap();
+        self.env_reset = Some(bundle);
+    }
 }

@@ -13,5 +13,5 @@ mod multibody_from_rapier;
 mod multibody_set;
 mod multibody_solver;
 
-pub use multibody_set::GpuMultibodySet;
+pub use multibody_set::{GpuMultibodySet, GpuMultibodySnapshot};
 pub use multibody_solver::{GpuMultibodySolver, MultibodySolverArgs};

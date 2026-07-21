@@ -60,6 +60,10 @@ name = "bench_pyramid3"
 path = "bench_pyramid3.rs"
 
 [[bin]]
+name = "test_env_reset3"
+path = "test_env_reset3.rs"
+
+[[bin]]
 name = "bench_batch_sweep3"
 path = "bench_batch_sweep3.rs"
 

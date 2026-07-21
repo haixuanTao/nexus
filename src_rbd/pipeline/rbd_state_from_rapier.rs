@@ -791,7 +791,13 @@ impl RbdState {
             num_colliders_per_batch: num_colliders_per_batch as u32,
             num_solver_iterations,
             sim_params: Tensor::vector(backend, &all_sim_params, BufferUsages::STORAGE).unwrap(),
-            vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
+            // COPY_DST: written by the RL per-env reset (`reset_env_from_*`).
+            vels: Tensor::vector(
+                backend,
+                &all_vels,
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
             solver_vels: Tensor::vector(backend, &all_vels, storage).unwrap(),
             solver_vels_inc: Tensor::vector(backend, &all_vels, storage).unwrap(),
             joints,
@@ -800,10 +806,11 @@ impl RbdState {
             body_group,
             local_mprops: Tensor::vector(backend, &all_local_mprops, storage).unwrap(),
             mprops: Tensor::vector(backend, &all_mprops, storage).unwrap(),
+            // COPY_DST: written by the RL per-env reset (`reset_env_from_*`).
             body_poses: Tensor::vector(
                 backend,
                 &all_poses,
-                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             )
             .unwrap(),
             // Sized like `body_poses`. Will be (re-)seeded each step before

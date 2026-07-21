@@ -667,8 +667,14 @@ impl RbdState {
             Tensor::vector_uninit(backend, desired_len * 2 * nb, storage).unwrap();
         self.constraints_colors =
             Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        // Zeroed (not uninit): 0 = "uncolored" disables color seeding for the
+        // frame right after the resize (mirrors the in-step auto-resize).
+        self.old_constraints_colors =
+            Tensor::vector(backend, &vec![0u32; (desired_len * nb) as usize], storage).unwrap();
         self.colored = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
         self.constraints_rands =
+            Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.color_sorted_ids =
             Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
         self.collision_pairs_per_batch_cpu = desired_len;
         self.contacts_per_batch_cpu = desired_len;

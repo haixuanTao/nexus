@@ -414,6 +414,7 @@ impl GpuMultibodySet {
             links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
                 .unwrap(),
             links_static_mirror: all_statics.clone(),
+            env_reset: None,
             links_workspace: Tensor::vector(
                 backend,
                 &crate::shaders::dynamics::ws_soa_from_structs(&all_ws, links_cap, num_batches),
