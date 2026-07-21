@@ -64,6 +64,10 @@ pub struct GpuMultibodySet {
     /// Lazily-created shader bundle + staging buffers for the per-env RL
     /// reset scatter (`gpu_mb_env_reset`).
     pub(super) env_reset: Option<EnvResetBundle>,
+    /// Actuator-delay state for the force-based PD, per-batch stride
+    /// `2 + links_per_batch`: `[tick, k, prev_target × links]`. Zeroed =
+    /// delay off. See `apply_force_based_pd` in the gravity kernels.
+    pub(super) motor_delay_state: Tensor<f32>,
     /// Per-batch per-step link workspace, SoA quad layout — see
     /// `crate::shaders::dynamics::ws_soa`.
     pub(super) links_workspace: Tensor<glamx::Vec4>,
@@ -340,6 +344,152 @@ impl GpuMultibodySet {
             global_idx as u64,
             std::slice::from_ref(&snapshot),
         )
+    }
+
+    /// Sets a motor's target *position* on a multibody joint and uploads the
+    /// updated link to the GPU. The companion of
+    /// [`set_motor_velocity`](Self::set_motor_velocity) for PD position
+    /// control: the solver drives the joint toward `target_pos` using the
+    /// motor's `stiffness`/`damping`/`max_force`, configured once at build
+    /// time on the rapier joint and carried through `from_rapier`. This
+    /// setter is the per-step hot path: it writes only the target.
+    ///
+    /// `link_id` is the link index within the batch; `axis` is the joint axis
+    /// (0..=2 linear, 3..=5 angular). The motor axis bit is auto-enabled.
+    /// `target_vel` is left untouched, so the velocity term acts as damping.
+    pub fn set_motor_position(
+        &mut self,
+        backend: &GpuBackend,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_pos: f32,
+    ) -> Result<(), GpuBackendError> {
+        // Batch-interleaved links layout (mirror included).
+        let global_idx = (link_id * self.num_batches + batch) as usize;
+        let axis_id = axis as usize;
+        let entry = match self.links_static_mirror.get_mut(global_idx) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+        entry.data.motors[axis_id].target_pos = target_pos;
+        entry.data.motor_axes |= 1u32 << axis_id;
+        let snapshot = *entry;
+        backend.write_buffer(
+            self.links_static.buffer_mut(),
+            global_idx as u64,
+            std::slice::from_ref(&snapshot),
+        )
+    }
+
+    /// Bulk version of [`set_motor_position`](Self::set_motor_position):
+    /// stage updates into the host mirror without touching the GPU, then call
+    /// [`flush_links_static`](Self::flush_links_static) once to push the
+    /// whole mirror in a single `write_buffer`. Avoids the
+    /// `N_envs · N_joints` per-step write_buffer overhead.
+    pub fn stage_motor_position(
+        &mut self,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        target_pos: f32,
+    ) {
+        let global_idx = (link_id * self.num_batches + batch) as usize;
+        let axis_id = axis as usize;
+        let Some(entry) = self.links_static_mirror.get_mut(global_idx) else {
+            return;
+        };
+        entry.data.motors[axis_id].target_pos = target_pos;
+        entry.data.motor_axes |= 1u32 << axis_id;
+    }
+
+    /// Push the entire host-side `links_static_mirror` to the GPU in a single
+    /// `write_buffer` call. Pairs with
+    /// [`stage_motor_position`](Self::stage_motor_position) for batched
+    /// per-step motor target updates.
+    pub fn flush_links_static(&mut self, backend: &GpuBackend) -> Result<(), GpuBackendError> {
+        backend.write_buffer(self.links_static.buffer_mut(), 0, &self.links_static_mirror)
+    }
+
+    /// Per-batch stride of the actuator-delay state buffer:
+    /// `[tick, k, prev_target × links_per_batch]`.
+    pub fn motor_delay_stride(&self) -> u32 {
+        2 + self.links_per_batch
+    }
+
+    /// Upload the actuator-delay state for all batches (see
+    /// [`Self::motor_delay_stride`] for the layout; `data.len()` must be
+    /// `stride × num_batches`). Zeroed state = delay off. Call BEFORE the
+    /// step's kernels are queued: an H2D copy issued between queued substeps
+    /// stalls the stream — exactly what this GPU-side delay removes.
+    pub fn write_motor_delay_state(
+        &mut self,
+        backend: &GpuBackend,
+        data: &[f32],
+    ) -> Result<(), GpuBackendError> {
+        backend.write_buffer(self.motor_delay_state.buffer_mut(), 0, data)
+    }
+
+    /// Scatter per-(actuated-joint, env) motor target positions into
+    /// `links_static` on the GPU — the on-device equivalent of
+    /// [`stage_motor_position`](Self::stage_motor_position) +
+    /// [`flush_links_static`](Self::flush_links_static). `targets` is
+    /// row-major `[num_actuated × num_batches]` (element `(j, env)` at
+    /// `j·num_batches+env`); `actuated_link_ids[j]` is the link index of
+    /// actuated joint `j`. Writes `motors[axis].target_pos` and sets the
+    /// `motor_axes` bit. Prerequisite for applying RL actions without a host
+    /// round-trip (CUDA-graph-capturable rollout).
+    ///
+    /// NOTE: bypasses `links_static_mirror` (targets live only on the GPU
+    /// afterwards) — don't interleave with the mirror-based setters for the
+    /// same axis.
+    pub fn scatter_motor_targets(
+        &mut self,
+        backend: &GpuBackend,
+        targets: &[f32],
+        actuated_link_ids: &[u32],
+        axis: u32,
+    ) -> Result<(), GpuBackendError> {
+        use crate::shaders::dynamics::GpuScatterMotorTargets;
+        use khal::backend::Encoder;
+
+        /// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.
+        #[derive(Shader)]
+        struct MotorScatterBundle {
+            scatter: GpuScatterMotorTargets,
+        }
+
+        let num_actuated = actuated_link_ids.len() as u32;
+        let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
+        let t_targets =
+            Tensor::vector(backend, targets, BufferUsages::STORAGE | BufferUsages::COPY_DST)?;
+        let t_links = Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?;
+        let u_na = Tensor::scalar(backend, num_actuated, uu)?;
+        let u_ne = Tensor::scalar(backend, self.num_batches, uu)?;
+        let u_ax = Tensor::scalar(backend, axis, uu)?;
+        let bundle = MotorScatterBundle::from_backend(backend)?;
+        let mut enc = backend.begin_encoding();
+        {
+            let mut pass = enc.begin_pass("scatter_motor_targets", None);
+            bundle.scatter.call(
+                &mut pass,
+                [num_actuated, self.num_batches, 1],
+                &t_targets,
+                &mut self.links_static,
+                &t_links,
+                &u_na,
+                &u_ne,
+                &u_ax,
+            )?;
+        }
+        backend.submit(enc)?;
+        Ok(())
+    }
+
+    /// Diagnostic readback accessor for the static link descriptors
+    /// (motor targets live here). Not a stable API.
+    pub fn dbg_links_static(&self) -> &Tensor<MultibodyLinkStatic> {
+        &self.links_static
     }
 
     /// Upload a new gravity vector.

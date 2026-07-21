@@ -16,6 +16,7 @@
 mod compute_dynamics_pre;
 mod contact_constraints;
 mod env_reset;
+mod scatter_motor;
 mod gravity_and_lu;
 mod impulse_joint_constraints;
 mod integrate;
@@ -31,6 +32,7 @@ mod ws_soa;
 pub use compute_dynamics_pre::*;
 pub use contact_constraints::*;
 pub use env_reset::*;
+pub use scatter_motor::*;
 pub use gravity_and_lu::*;
 pub use impulse_joint_constraints::*;
 pub use integrate::*;

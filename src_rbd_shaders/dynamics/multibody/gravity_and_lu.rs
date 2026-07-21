@@ -16,7 +16,7 @@ use glamx::Vec3;
 use glamx::Vec4;
 
 use crate::dynamics::body::Velocity;
-use crate::dynamics::joint::SPATIAL_DIM;
+use crate::dynamics::joint::{FORCE_BASED, SPATIAL_DIM};
 use crate::utils::linalg::{
     MAX_MB_DOFS, fill_par, gemv_tr_spatial_split_par, lu_decompose, lu_solve_in_place,
 };
@@ -30,9 +30,106 @@ use super::lu::{
 };
 use super::types::{MultibodyInfo, MultibodyLinkStatic};
 use super::ws_soa::{
-    WS_JOINT_VEL, WS_KIN_ACC, WS_LTW, WS_RB_VELS, WS_SHIFT02, WS_SHIFT23, WsAddr, ws_pose,
-    ws_set_vel, ws_vec, ws_vel, ws_vel_ang, ws_world_inertia,
+    WS_JOINT_VEL, WS_KIN_ACC, WS_LTW, WS_RB_VELS, WS_SHIFT02, WS_SHIFT23, WsAddr, ws_coord,
+    ws_pose, ws_set_vel, ws_vec, ws_vel, ws_vel_ang, ws_world_inertia,
 };
+
+/// Explicit force-based motor PD torque + GPU actuator delay.
+///
+/// For motors with `model == FORCE_BASED`, applies the actuator torque
+/// `τ = clamp(stiffness·(target − q) − damping·q̇, ±max_force)` DIRECTLY as a
+/// generalized force (added to `gen_forces` before the LU solve, so it enters
+/// the accelerations like any applied force) instead of as the soft cfm_gain
+/// motor constraint — which under-realizes kp on low-inertia leg joints, so
+/// robots sag under gravity. Matches the real robot and MuJoCo's position
+/// actuator exactly: `τ = kp·err − kv·q̇` with fixed gains.
+/// `ACCELERATION_BASED` motors are untouched: they keep the constraint path.
+///
+/// STABILITY: this is an EXPLICIT force at the substep rate `h`; unlike the
+/// implicit constraint motor it has a stability envelope — roughly
+/// `stiffness·h²/I ≲ 1` and `damping·h/I ≲ 2` per joint (I = the joint's
+/// effective inertia). Gains beyond it diverge (contact coupling can mask
+/// the margin). Real-robot PD gains at 4+ substeps sit comfortably inside.
+///
+/// Actuator delay (`motor_delay_state`, per-batch stride
+/// `2 + links_batch_capacity`: `[tick, k, prev_target × links]`): while the
+/// control step's physics-step counter `tick` is below the batch's delay `k`,
+/// the PD tracks the PREVIOUS control step's target — zero mid-step host
+/// writes. `bump_tick` must be true for exactly one caller per batch per
+/// kernel run (multibody 0); with several multibodies per batch the extra
+/// ones race the bump by one step at worst.
+///
+/// Serial over the links — call from ONE lane per multibody, AFTER the
+/// damping pass (`gen_forces` for this multibody must be final).
+#[allow(clippy::too_many_arguments)]
+fn apply_force_based_pd(
+    links_static: &[MultibodyLinkStatic],
+    links_workspace: &[Vec4],
+    dof_state: &[f32],
+    gen_forces: &mut [f32],
+    motor_delay_state: &mut [f32],
+    batch_ids: &BatchIndices,
+    batch_id: u32,
+    mb: &MultibodyInfo,
+    bump_tick: bool,
+) {
+    let num_links = mb.num_links;
+    let gen_base = mb.first_dof as usize;
+    let stat_slice = batch_ids
+        .ib(batch_id, links_static)
+        .offset(mb.first_link as usize);
+    let wa = WsAddr::new(mb.first_link as usize, batch_ids.num_batches, batch_id);
+    let vel_slice = batch_ids.ib(batch_id, dof_state).offset(gen_base);
+
+    let delay_stride = 2 + batch_ids.links_batch_capacity as usize;
+    let delay_base = batch_id as usize * delay_stride;
+    let tick = motor_delay_state.read(delay_base);
+    let delay_k = motor_delay_state.read(delay_base + 1);
+    let use_prev = tick < delay_k;
+
+    for k in 0..num_links {
+        let stat = stat_slice[k as usize];
+        if stat.kinematic != 0 {
+            continue;
+        }
+        let locked = stat.data.locked_axes;
+        let motor_axes = stat.data.motor_axes & !locked;
+        if motor_axes == 0 {
+            continue;
+        }
+        // Walk the free axes in DOF order (mirrors `init_joint_constraints`),
+        // tracking the DOF offset within this joint's slice.
+        let mut curr_free_dof = 0u32;
+        for axis in 0..(SPATIAL_DIM as u32) {
+            if (locked & (1 << axis)) != 0 {
+                continue;
+            }
+            if (motor_axes & (1 << axis)) != 0 {
+                // By-value element load — cuda-oxide drops the dynamic index
+                // on `&motors[axis]` (see init_joint_constraints).
+                let motor = stat.data.motors[axis as usize];
+                if motor.model == FORCE_BASED {
+                    let q = ws_coord(links_workspace, wa, k, axis);
+                    let abs_dof = stat.assembly_id + curr_free_dof;
+                    let v = vel_slice[abs_dof as usize];
+                    let target = if use_prev {
+                        motor_delay_state.read(delay_base + 2 + (mb.first_link + k) as usize)
+                    } else {
+                        motor.target_pos
+                    };
+                    let tau = (motor.stiffness * (target - q) - motor.damping * v)
+                        .clamp(-motor.max_force, motor.max_force);
+                    let idx = batch_ids.mbi(batch_id, gen_base + abs_dof as usize);
+                    gen_forces.write(idx, gen_forces.read(idx) + tau);
+                }
+            }
+            curr_free_dof += 1;
+        }
+    }
+    if bump_tick {
+        motor_delay_state.write(delay_base, tick + 1.0);
+    }
+}
 
 /// Fused gravity / Coriolis-force assembly + LU factor + LU solve.
 #[spirv_bindgen]
@@ -52,6 +149,8 @@ pub fn gpu_mb_gravity_and_lu(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] gravity: &Vec4,
     #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    // Actuator-delay state for the force-based PD (see `apply_force_based_pd`).
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] motor_delay_state: &mut [f32],
     // Mass-matrix tile in shared memory.
     #[spirv(workgroup)] mat: &mut [f32; MAX_MB_DOFS * MAX_MB_DOFS],
     // RHS / solution vector.
@@ -234,6 +333,22 @@ pub fn gpu_mb_gravity_and_lu(
     }
     workgroup_memory_barrier_with_group_sync();
 
+    // ---- Phase 2.9: explicit force-based motor PD (serial on lane 0). ----
+    if lane == 0 {
+        apply_force_based_pd(
+            links_static,
+            links_workspace,
+            dof_state,
+            gen_forces,
+            motor_delay_state,
+            batch_ids,
+            batch_id,
+            &mb,
+            mb_idx == 0,
+        );
+    }
+    workgroup_memory_barrier_with_group_sync();
+
     // ---- Phase 3: load M into shared memory, factor in place. ----
     let m_view = batch_ids.imat(batch_id, mb_mm_base, ndofs, ndofs);
     if lane < ndofs {
@@ -297,6 +412,7 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
     dof_state: &[f32],
     gravity: &Vec4,
     batch_ids: &BatchIndices,
+    motor_delay_state: &mut [f32],
     mat: &mut [f32; MATN],
     x: &mut [f32; 64],
     partial: &mut [f32; 64],
@@ -477,6 +593,23 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
     }
     workgroup_memory_barrier_with_group_sync();
 
+    // ---- Phase 2.9: explicit force-based motor PD (serial on the slot's
+    // lane 0; inactive slots skip). ----
+    if lane == 0 && active_slot {
+        apply_force_based_pd(
+            links_static,
+            links_workspace,
+            dof_state,
+            gen_forces,
+            motor_delay_state,
+            batch_ids,
+            batch_id,
+            &mb,
+            mb_idx == 0,
+        );
+    }
+    workgroup_memory_barrier_with_group_sync();
+
     // ---- Phase 3: load M into this slot's shared tile, factor in place. ----
     let m_view = batch_ids.imat(batch_id, mb_mm_base, ndofs, ndofs);
     if lane < ndofs {
@@ -563,6 +696,8 @@ pub fn gpu_mb_gravity_and_lu_t1(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
     #[spirv(uniform, descriptor_set = 0, binding = 8)] gravity: &Vec4,
     #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    // Actuator-delay state for the force-based PD (see `apply_force_based_pd`).
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] motor_delay_state: &mut [f32],
 ) {
     let num_mb = batch_ids.multibodies_len;
     if invocation_id.x >= num_mb * batch_ids.num_batches {
@@ -704,6 +839,20 @@ pub fn gpu_mb_gravity_and_lu_t1(
         gen_forces.write(idx, cur - damping_slice[i as usize] * vel_slice[i as usize]);
     }
 
+    // ---- Phase 2.9: explicit force-based motor PD (this thread owns the
+    // whole multibody in the serial tier). ----
+    apply_force_based_pd(
+        links_static,
+        links_workspace,
+        dof_state,
+        gen_forces,
+        motor_delay_state,
+        batch_ids,
+        batch_id,
+        &mb,
+        mb_idx == 0,
+    );
+
     // ---- Phase 3 + 4: factor M in place in global memory, then solve
     // M·x = τ in place on the gravity rhs. ----
     let m_view = batch_ids.imat(batch_id, mb_mm_base, ndofs, ndofs);
@@ -741,6 +890,8 @@ macro_rules! gravity_and_lu_packed_entry {
             #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
             #[spirv(uniform, descriptor_set = 0, binding = 8)] gravity: &Vec4,
             #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+            #[spirv(storage_buffer, descriptor_set = 0, binding = 10)]
+            motor_delay_state: &mut [f32],
             #[spirv(workgroup)] mat: &mut [f32; $matn],
             #[spirv(workgroup)] x: &mut [f32; 64],
             #[spirv(workgroup)] partial: &mut [f32; 64],
@@ -760,6 +911,7 @@ macro_rules! gravity_and_lu_packed_entry {
                 dof_state,
                 gravity,
                 batch_ids,
+                motor_delay_state,
                 mat,
                 x,
                 partial,

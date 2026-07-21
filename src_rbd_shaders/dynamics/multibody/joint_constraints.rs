@@ -12,7 +12,7 @@ use khal_std::macros::{spirv, spirv_bindgen};
 use khal_std::sync::control_barrier;
 
 use crate::dynamics::ConstraintSoftness;
-use crate::dynamics::joint::SPATIAL_DIM;
+use crate::dynamics::joint::{FORCE_BASED, SPATIAL_DIM};
 use crate::utils::BatchIndices;
 use crate::utils::linalg::{MatSlice, VSlice, lu_solve_in_place};
 use crate::{DIM, MAX_FLT};
@@ -415,6 +415,14 @@ fn build_motor_constraint(
     limit_min: f32,
     limit_max: f32,
 ) -> MultibodyJointConstraint {
+    // FORCE_BASED motors are actuated by the explicit PD feed-forward in the
+    // gravity kernels (`apply_force_based_pd`), not by the soft cfm_gain
+    // constraint (which under-realizes kp on low-inertia joints, so robots
+    // sag under gravity). Return the inactive `kind = 0` constraint so the
+    // solver and back-solve sweeps skip the slot — slot accounting unchanged.
+    if motor.model == FORCE_BASED {
+        return MultibodyJointConstraint::default();
+    }
     let (erp_inv_dt, cfm_coeff, cfm_gain, _, max_impulse) = motor_params(motor, dt);
 
     let mut rhs_wo_bias = 0.0f32;
