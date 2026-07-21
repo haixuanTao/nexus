@@ -434,6 +434,11 @@ impl GpuMultibodySet {
         self.links_per_batch
     }
 
+    /// TEMPORARY inert-motor diagnostic: the static link buffer tensor.
+    pub fn links_static(&self) -> &Tensor<MultibodyLinkStatic> {
+        &self.links_static
+    }
+
     /// Refreshes every link's joint parameters (motor targets/gains, limits) of
     /// environment `env` from a rapier multibody set laid out identically to the
     /// one this GPU set was built from (same multibody/link traversal order as
@@ -572,6 +577,17 @@ impl GpuMultibodySet {
         &self.dof_values
     }
 
+    /// Diagnostic accessor: raw body-jacobians buffer (chain-sparse blocks).
+    pub fn body_jacobians(&self) -> &Tensor<f32> {
+        &self.body_jacobians
+    }
+
+    /// Diagnostic accessor: mass-matrix / LTDL-factor buffer.
+    pub fn mass_matrices(&self) -> &Tensor<f32> {
+        &self.mass_matrices
+    }
+
+
     /// GPU buffer for the last-computed generalized accelerations (populated by
     /// `GpuMultibodySolver::solve_gravity`).
     pub fn gen_accelerations(&self) -> &Tensor<f32> {
@@ -671,6 +687,15 @@ impl GpuMultibodySet {
         };
         entry.data.motors[axis_id].target_vel = target_vel;
         entry.data.motor_axes |= 1u32 << axis_id;
+        // Auto-enabling the motor must also leave it a usable force budget:
+        // MJCF `<motor>` actuators are encoded at load time as
+        // far-target-velocity + `max_force = |ctrl|·gear`, which is 0 until a
+        // control is applied — so a velocity command through this native API
+        // would be silently clamped to zero impulse. Mirror rapier's default
+        // (`JointMotor::max_force = Real::MAX`) when the budget is unset.
+        if entry.data.motors[axis_id].max_force == 0.0 {
+            entry.data.motors[axis_id].max_force = f32::MAX;
+        }
         let snapshot = *entry;
         backend.write_buffer(
             self.links_static.buffer_mut(),
@@ -1046,6 +1071,7 @@ impl GpuMultibodySet {
                     first_constraint: cons_off,
                     max_constraints,
                     friction: env_friction,
+                    self_contacts_enabled: if mb.self_contacts_enabled() { 1 } else { 0 },
                 });
 
                 // `assembly_id` is not exposed publicly on `MultibodyLink`, so we
@@ -1334,7 +1360,7 @@ impl GpuMultibodySet {
                 storage,
             )
             .unwrap(),
-            links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
+            links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST | BufferUsages::COPY_SRC)
                 .unwrap(),
             links_static_mirror: all_statics.clone(),
             // COPY_DST on the dynamic joint-space buffers so `reset_env_from` can
@@ -1352,7 +1378,7 @@ impl GpuMultibodySet {
                 buf.extend_from_slice(&all_dof_vels);
                 buf.extend_from_slice(&all_dof_damping);
                 debug_assert_eq!(buf.len(), 2 * n);
-                Tensor::vector(backend, &buf, storage | BufferUsages::COPY_DST).unwrap()
+                Tensor::vector(backend, &buf, storage | BufferUsages::COPY_DST | BufferUsages::COPY_SRC).unwrap()
             },
             dof_frictionloss: Tensor::vector(
                 backend,
@@ -1397,13 +1423,13 @@ impl GpuMultibodySet {
             body_jacobians: Tensor::vector(
                 backend,
                 &vec![0.0f32; (jac_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
             mass_matrices: Tensor::vector(
                 backend,
                 &vec![0.0f32; (mm_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
             mass_matrices_soa: Tensor::vector(
@@ -1429,7 +1455,7 @@ impl GpuMultibodySet {
             joint_constraints: Tensor::vector(
                 backend,
                 &vec![MultibodyJointConstraint::default(); (cons_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
             joint_constraint_columns: Tensor::vector(
@@ -1463,7 +1489,7 @@ impl GpuMultibodySet {
             contact_constraint_count: Tensor::vector(
                 backend,
                 &vec![0u32; (mb_cap * num_batches) as usize],
-                storage,
+                storage | BufferUsages::COPY_SRC,
             )
             .unwrap(),
 
@@ -2036,6 +2062,7 @@ fn contact_once() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("NEXUS_CONTACT_ONCE").map(|v| v != "0").unwrap_or(true))
 }
+
 
 /// Standalone bundle for the layout microbench kernels (see
 /// `src_rbd_shaders/dynamics/multibody/layout_bench.rs`). Public so the

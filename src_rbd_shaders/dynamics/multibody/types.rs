@@ -362,4 +362,18 @@ pub struct MultibodyInfo {
     /// domain-randomization actually reaches the GPU solver. Falls back to
     /// `FRICTION_DEFAULT` (0.5) when no collider friction is found.
     pub friction: f32,
+    /// `1` if contacts between two links of THIS multibody are allowed, `0` if
+    /// disabled (rapier's `Multibody::self_contacts_enabled`, set by MJCF's
+    /// `DISABLE_SELF_CONTACTS`). The contact-constraint kernel skips self
+    /// contacts when this is `0`.
+    ///
+    /// The GPU narrow phase does NOT replicate rapier's CPU-side multibody
+    /// contact filtering (adjacent-link and self-contact suppression happen in
+    /// rapier's `NarrowPhase`), so a robot whose link colliders overlap at the
+    /// joints produces deeply-penetrating self manifolds every step. Without
+    /// this gate the contact solver fights those with Baumgarte biases and the
+    /// articulation explodes within a few steps — this field (present before
+    /// the PD-motor port, dropped by it) is the only thing standing between a
+    /// loaded MJCF robot and NaN.
+    pub self_contacts_enabled: u32,
 }
