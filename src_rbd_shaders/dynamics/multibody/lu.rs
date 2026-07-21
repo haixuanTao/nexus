@@ -198,11 +198,11 @@ pub(super) fn lu_factor_in_shared_packed<const T: u32, const MATN: usize, const 
     slot: u32,
     lane: u32,
     active_slot: bool,
-    mat: &mut [f32; MATN],
+    mat: &mut impl MaybeIndexUnchecked<f32>,
     pivots_dst: &mut [u32],
     piv: VSlice,
-    pivot_row_shared: &mut [u32; SLOTS],
-    inv_akk_shared: &mut [f32; SLOTS],
+    pivot_row_shared: &mut impl MaybeIndexUnchecked<u32>,
+    inv_akk_shared: &mut impl MaybeIndexUnchecked<f32>,
 ) {
     // NOTE: uniform trip count (from a uniform buffer) for the barriers below.
     for k in 0..max_n {
@@ -278,9 +278,9 @@ pub(super) fn lu_triangular_solve_in_place_packed<const T: u32, const MATN: usiz
     slot: u32,
     lane: u32,
     active_slot: bool,
-    mat: &[f32; MATN],
-    x: &mut [f32; 64],
-    partial: &mut [f32; 64],
+    mat: &impl MaybeIndexUnchecked<f32>,
+    x: &mut impl MaybeIndexUnchecked<f32>,
+    partial: &mut impl MaybeIndexUnchecked<f32>,
 ) {
     let seg = (slot * T) as usize;
     let log2_t = T.trailing_zeros();
@@ -353,7 +353,7 @@ pub(super) fn lu_apply_pivots_packed<const T: u32>(
     active_slot: bool,
     buf_pivots: &[u32],
     piv: VSlice,
-    x: &mut [f32; 64],
+    x: &mut impl MaybeIndexUnchecked<f32>,
 ) {
     let seg = (slot * T) as usize;
     if active_slot && crate::opaque_u32(lane) == 0 {

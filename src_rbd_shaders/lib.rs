@@ -408,11 +408,14 @@ pub fn abs(x: f32) -> f32 {
 /// placement sound there.
 #[inline(always)]
 pub fn opaque_bound(n: u32) -> u32 {
-    #[cfg(target_arch = "spirv")]
+    // Pass-through on SPIR-V (rust-gpu has no black_box) and on cuda-oxide
+    // (no black_box either, and loop unrolling is opt-in there); the
+    // black_box arm targets rustc_codegen_nvvm only.
+    #[cfg(any(target_arch = "spirv", feature = "cuda-oxide"))]
     {
         n
     }
-    #[cfg(not(target_arch = "spirv"))]
+    #[cfg(not(any(target_arch = "spirv", feature = "cuda-oxide")))]
     {
         core::hint::black_box(n)
     }
@@ -431,11 +434,12 @@ pub fn opaque_bound(n: u32) -> u32 {
 /// rust-gpu; naga's uniformity analysis already rejects unsound placement).
 #[inline(always)]
 pub fn opaque_u32(x: u32) -> u32 {
-    #[cfg(target_arch = "spirv")]
+    // See `opaque_bound` for the backend split.
+    #[cfg(any(target_arch = "spirv", feature = "cuda-oxide"))]
     {
         x
     }
-    #[cfg(not(target_arch = "spirv"))]
+    #[cfg(not(any(target_arch = "spirv", feature = "cuda-oxide")))]
     {
         core::hint::black_box(x)
     }

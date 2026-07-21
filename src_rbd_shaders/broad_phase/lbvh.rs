@@ -85,7 +85,8 @@ pub(crate) fn max_len_indirect_args(
     lane: u32,
     lens: &mut [u32],
     indirect_args: &mut [u32; 3],
-    partial: &mut [u32; MAX_REDUCE_LANES as usize],
+    // Generic so cuda-oxide's SmemBuf workgroup glue fits.
+    partial: &mut impl MaybeIndexUnchecked<u32>,
 ) {
     let num_batches = lens.len();
 

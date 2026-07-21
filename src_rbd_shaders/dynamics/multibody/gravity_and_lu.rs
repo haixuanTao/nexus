@@ -413,11 +413,11 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
     gravity: &Vec4,
     batch_ids: &BatchIndices,
     motor_delay_state: &mut [f32],
-    mat: &mut [f32; MATN],
-    x: &mut [f32; 64],
-    partial: &mut [f32; 64],
-    pivot_row_shared: &mut [u32; SLOTS],
-    inv_akk_shared: &mut [f32; SLOTS],
+    mat: &mut impl MaybeIndexUnchecked<f32>,
+    x: &mut impl MaybeIndexUnchecked<f32>,
+    partial: &mut impl MaybeIndexUnchecked<f32>,
+    pivot_row_shared: &mut impl MaybeIndexUnchecked<u32>,
+    inv_akk_shared: &mut impl MaybeIndexUnchecked<f32>,
 ) {
     let slot = lid.x / T;
     let lane = lid.x % T;

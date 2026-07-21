@@ -271,7 +271,13 @@ impl GpuMultibodySolver {
             // when no batch has any contact this step.
             self.warmstart_contact_constraints.call(
                 &mut pass,
-                args.mb_sweep_indirect,
+                // Fixed-grid on CUDA (indirect dispatch reads the grid
+                // back on the host: a sync, capture-illegal). The
+                // capacity grid runs the zero-contact case as a no-op.
+                crate::dispatch_grid(
+                    args.mb_sweep_indirect,
+                    [mb.multibodies_per_batch(), mb.num_batches(), 1],
+                ),
                 &mb.multibody_info,
                 &mb.contact_constraints,
                 &mb.contact_constraint_columns,
@@ -360,7 +366,13 @@ impl GpuMultibodySolver {
                 encoder.begin_pass("[RBD] mbb/finalize-contact", timestamps.as_deref_mut());
             self.finalize_contact_constraints.call(
                 &mut pass,
-                args.mb_sweep_indirect,
+                // Fixed-grid on CUDA (indirect dispatch reads the grid
+                // back on the host: a sync, capture-illegal). The
+                // capacity grid runs the zero-contact case as a no-op.
+                crate::dispatch_grid(
+                    args.mb_sweep_indirect,
+                    [mb.multibodies_per_batch(), mb.num_batches(), 1],
+                ),
                 &mb.multibody_info,
                 &mb.mass_matrices,
                 &mb.lu_pivots,
@@ -373,12 +385,19 @@ impl GpuMultibodySolver {
 
         // Delassus blocks for the constraint-space contact sweep (consumes
         // the columns finalized just above).
+        let mb_fixed_grid = [mb.multibodies_per_batch(), mb.num_batches(), 1];
         if let Some(delassus) = &mut mb.contact_delassus {
             let mut pass =
                 encoder.begin_pass("[RBD] mbb/build-delassus", timestamps.as_deref_mut());
             self.build_contact_delassus.call(
                 &mut pass,
-                args.mb_sweep_indirect,
+                // Fixed-grid on CUDA (indirect dispatch reads the grid
+                // back on the host: a sync, capture-illegal). The
+                // capacity grid runs the zero-contact case as a no-op.
+                crate::dispatch_grid(
+                    args.mb_sweep_indirect,
+                    mb_fixed_grid,
+                ),
                 &mb.multibody_info,
                 &mb.contact_constraints,
                 &mb.contact_constraint_jacs,
@@ -404,6 +423,7 @@ impl GpuMultibodySolver {
         use_bias_idx: usize,
     ) -> Result<(), GpuBackendError> {
         let use_bias = &args.color_uniforms[use_bias_idx];
+        let mb_fixed_grid = [mb.multibodies_per_batch(), mb.num_batches(), 1];
         if let Some(delassus) = &mb.contact_delassus {
             if mb.has_joint_constraints {
                 self.solve_joints.call(
@@ -421,7 +441,13 @@ impl GpuMultibodySolver {
             // on contact-free steps.
             self.solve_contacts_delassus.call(
                 pass,
-                args.mb_sweep_indirect,
+                // Fixed-grid on CUDA (indirect dispatch reads the grid
+                // back on the host: a sync, capture-illegal). The
+                // capacity grid runs the zero-contact case as a no-op.
+                crate::dispatch_grid(
+                    args.mb_sweep_indirect,
+                    mb_fixed_grid,
+                ),
                 &mb.multibody_info,
                 &mut mb.contact_constraints,
                 &mb.contact_constraint_jacs,
@@ -453,7 +479,13 @@ impl GpuMultibodySolver {
             // steps) replaces the full per-(multibody, batch) launch.
             self.solve_constraints.call(
                 pass,
-                args.mb_sweep_indirect,
+                // Fixed-grid on CUDA (indirect dispatch reads the grid
+                // back on the host: a sync, capture-illegal). The
+                // capacity grid runs the zero-contact case as a no-op.
+                crate::dispatch_grid(
+                    args.mb_sweep_indirect,
+                    [mb.multibodies_per_batch(), mb.num_batches(), 1],
+                ),
                 &mb.multibody_info,
                 &mut mb.joint_constraints,
                 &mb.joint_constraint_columns,

@@ -72,11 +72,12 @@ ok = pipeline.capture_cuda_graph(viewer, state)
 check("capture_cuda_graph", bool(ok))
 
 t0 = time.perf_counter()
-for _ in range(200):
+N_REPLAY = 500
+for _ in range(N_REPLAY):
     pipeline.replay_cuda_graph()
-t_replay = (time.perf_counter() - t0) / 200
-
+# The readback forces completion of the async replays — sync-bounded timing.
 coords2 = viewer.read_multibody_links(state, 0)[0].copy()
+t_replay = (time.perf_counter() - t0) / N_REPLAY
 check(
     "replayed graph advances physics (finite)",
     np.isfinite(coords2).all() and np.abs(coords2 - coords1).max() > 1e-6,

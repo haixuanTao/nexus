@@ -26,10 +26,12 @@ exclude = ["**/.DS_Store"]
 [workspace.dependencies]
 glamx = { version = "0.3", default-features = false, features = ["nostd-libm", "bytemuck"] }
 include_dir = "0.7"
-# khal-std defaults ON = the rust-cuda device backend (cuda_std) for `cargo
-# cuda` PTX builds. The cuda-oxide route needs them OFF plus a prebuilt cubin
-# via CUDA_OXIDE_SHADERS_PTX_* — flip when that pipeline lands in-repo.
-khal-std = "0.2"
+# Defaults OFF: the canonical device route is CUDA-OXIDE (prebuilt cubins via
+# tools/build_unified_cubins_local.sh + CUDA_OXIDE_SHADERS_PTX_* env). The
+# default `rust-cuda` feature would pull cuda_std/half into device builds,
+# which don't compile under -Zbuild-std=core (and that backend miscompiles
+# our barriered kernels anyway — see M6 notes).
+khal-std = { version = "0.2", default-features = false }
 khal = { version = "0.2", features = ["derive"]}
 vortx = { version = "0.3", features = ["unsafe_remove_boundchecks"] }
 bytemuck = { version = "1", features = ["derive"] }
