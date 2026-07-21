@@ -24,8 +24,15 @@ build_one () { # $1 workspace dir, $2 package, $3 features, $4 ll name
   echo "ll: $(grep -c '^define' "$LL") defines"
   "$TOOL"/llvm-as "$LL" -o /tmp/u.bc
   "$TOOL"/llvm-link /tmp/u.bc "$LIBDEV" -o /tmp/u_linked.bc
-  "$TOOL"/opt -passes="internalize,globaldce" /tmp/u_linked.bc -o /tmp/u_pruned.bc
-  "$TOOL"/llc -mcpu=sm_120 -O3 /tmp/u_pruned.bc -o /tmp/u.ptx
+  # Post-link optimization: inline (incl. libdevice) + scalar passes only.
+  # NO loop passes (unswitch/unroll clone bar.sync into divergent branches ->
+  # sm_120 deadlock; cuda-oxide emits no `convergent` attrs so full O3 is
+  # unsafe). Measured on gpu_mb_gravity_and_lu (unpacked tier): 208 regs /
+  # 1208B stack -> 88 regs / 192B stack; G1@1024 +54%, quad12@1024 +35%.
+  # -fp-contract=fast matches the Vulkan driver's FMA contraction (FMA alone
+  # measured wall-clock-neutral; the win is inlining+SROA).
+  "$TOOL"/opt -passes="internalize,globaldce,cgscc(inline),function(sroa,early-cse,instcombine<no-verify-fixpoint>,reassociate,gvn,dse,simplifycfg),globaldce" /tmp/u_linked.bc -o /tmp/u_pruned.bc
+  "$TOOL"/llc -mcpu=sm_120 -O3 -fp-contract=fast /tmp/u_pruned.bc -o /tmp/u.ptx
   "$PTXAS" -arch=sm_120 -O3 /tmp/u.ptx -o "$CUDA_OXIDE_PTX_DIR/$4.cubin"
   ls -la "$CUDA_OXIDE_PTX_DIR/$4.cubin"
 }
