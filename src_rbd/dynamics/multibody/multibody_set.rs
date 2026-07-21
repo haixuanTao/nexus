@@ -508,6 +508,118 @@ impl GpuMultibodySet {
         &self.links_static
     }
 
+    // ---- fork-era compat accessors (external RL envs: zealot) ----------
+    // Buffer layouts on this base are BATCH-INTERLEAVED (element `k` of env
+    // `e` at `k · num_batches + e`) — callers ported from the fork's
+    // env-major layout must transpose their indexing.
+
+    /// Mutable dof_state access for direct velocity-section writes (push
+    /// perturbations / reset-velocity randomization). Velocity of dof `d`,
+    /// env `b` lives at `d · num_batches + b`; damping and armature sections
+    /// follow at 1× and 2× `dofs_per_batch · num_batches`.
+    pub fn dof_state_mut(&mut self) -> &mut Tensor<f32> {
+        &mut self.dof_state
+    }
+
+    /// DOF slots per environment (fork name; per-dof-buffer stride factor).
+    pub fn dofs_per_batch_count(&self) -> u32 {
+        self.dofs_per_batch
+    }
+
+    /// Mutable links_static access (fork-era motor debug probes).
+    pub fn links_static_mut(&mut self) -> &mut Tensor<MultibodyLinkStatic> {
+        &mut self.links_static
+    }
+
+    /// Overwrite the per-DOF armature (reflected rotor inertia) section of
+    /// `dof_state`. `values` is `dofs_per_batch × num_batches` in the fork's
+    /// ENV-MAJOR layout (env outer, dof inner) — transposed here into the
+    /// batch-interleaved armature section. Post-build override for callers
+    /// whose rapier scenes don't carry armature (the native path reads
+    /// `mb.armature()` at from_rapier time).
+    pub fn set_dof_armature(&mut self, backend: &GpuBackend, values: &[f32]) {
+        let cap = self.dofs_per_batch as usize;
+        let nb = self.num_batches as usize;
+        assert_eq!(values.len(), cap * nb, "armature: expected dofs_cap*num_batches");
+        let mut interleaved = vec![0.0f32; cap * nb];
+        for b in 0..nb {
+            for k in 0..cap {
+                interleaved[k * nb + b] = values[b * cap + k];
+            }
+        }
+        // Armature section = third N-sized block of dof_state (element offset).
+        let section = (cap * nb) as u64 * 2;
+        backend
+            .write_buffer(self.dof_state.buffer_mut(), section, &interleaved)
+            .unwrap();
+    }
+
+    /// Fork-era Coulomb joint-friction setter. The upstream solver base has
+    /// NO frictionloss path — accept all-zero uploads (no-op) and refuse
+    /// non-zero ones loudly instead of silently changing the physics.
+    pub fn set_dof_frictionloss(&mut self, _backend: &GpuBackend, values: &[f32]) {
+        assert!(
+            values.iter().all(|v| *v == 0.0),
+            "dof frictionloss is not implemented on the upstream-base solver"
+        );
+    }
+
+    /// Diagnostic: packed dof state (velocities, then damping, then armature).
+    pub fn dbg_dof_state(&self) -> &Tensor<f32> {
+        &self.dof_state
+    }
+
+    /// Diagnostic: mass matrices (LU-factored in place after the LU pass).
+    pub fn dbg_mass_matrices(&self) -> &Tensor<f32> {
+        &self.mass_matrices
+    }
+
+    /// Diagnostic: multibody contact constraints (batch-interleaved).
+    pub fn dbg_contact_constraints(&self) -> &Tensor<MultibodyContactConstraint> {
+        &self.contact_constraints
+    }
+
+    /// Contact constraints (fork-era alias of the dbg accessor).
+    pub fn contact_constraints(&self) -> &Tensor<MultibodyContactConstraint> {
+        &self.contact_constraints
+    }
+
+    /// Per-constraint multibody-side Jᵀ rows.
+    pub fn contact_constraint_jacs(&self) -> &Tensor<f32> {
+        &self.contact_constraint_jacs
+    }
+
+    /// Diagnostic alias of [`Self::contact_constraint_jacs`].
+    pub fn dbg_contact_constraint_jacs(&self) -> &Tensor<f32> {
+        &self.contact_constraint_jacs
+    }
+
+    /// Diagnostic: per-constraint M⁻¹·Jᵀ columns.
+    pub fn dbg_contact_constraint_columns(&self) -> &Tensor<f32> {
+        &self.contact_constraint_columns
+    }
+
+    /// Diagnostic strides: `(columns_per_batch, dofs_per_batch,
+    /// constraints_per_batch)` for slicing the jac/column banks.
+    pub fn dbg_contact_constraint_strides(&self) -> (u32, u32, u32) {
+        let cols_per_batch = self.contact_constraints_per_batch * self.dofs_per_batch;
+        (
+            cols_per_batch,
+            self.dofs_per_batch,
+            self.contact_constraints_per_batch,
+        )
+    }
+
+    /// Multibody joint (limit/motor) constraints.
+    pub fn joint_constraints(&self) -> &Tensor<MultibodyJointConstraint> {
+        &self.joint_constraints
+    }
+
+    /// Joint-constraint slots per batch.
+    pub fn joint_constraints_per_batch(&self) -> u32 {
+        self.joint_constraints_per_batch
+    }
+
 
     /// Number of link slots per environment (the per-link-buffer stride
     /// factor; buffers are batch-interleaved, element `link` of env `e` at
