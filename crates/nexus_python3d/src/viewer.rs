@@ -10,7 +10,7 @@ use crate::nexus::{GpuTimestamps, NexusState};
 use crate::rbd::{RigidBodyHandle, SharedShape};
 use khal::backend::GpuBackend;
 use nexus_viewer3d::NexusViewer as RViewer;
-use numpy::{IntoPyArray, PyArray2, PyArray3, PyArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -54,7 +54,12 @@ impl NexusViewer {
     }
 
     /// Wraps raw RGB pixels as an `(H, W, 3)` numpy array.
-    fn to_array(py: Python<'_>, w: u32, h: u32, rgb: Vec<u8>) -> PyResult<Bound<'_, PyArray3<u8>>> {
+    fn to_array(
+        py: Python<'_>,
+        w: u32,
+        h: u32,
+        rgb: Vec<u8>,
+    ) -> PyResult<Bound<'_, PyArray3<u8>>> {
         rgb.into_pyarray(py)
             .reshape([h as usize, w as usize, 3])
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))
@@ -219,6 +224,13 @@ impl NexusViewer {
         self.inner_mut().set_raytracer_denoise(enabled);
     }
 
+    /// Resolution scale used while the camera/scene moves, in `(0, 1]`
+    /// (default 0.5: traced at half resolution and upscaled). Set `1.0` for
+    /// full-resolution tracing of animated scenes (e.g. benchmarks).
+    fn set_raytracer_interactive_scale(&mut self, scale: f32) {
+        self.inner_mut().set_raytracer_interactive_scale(scale);
+    }
+
     /// Which intersection backend the path tracer uses: `"hardware"` (RT-core
     /// ray queries) or `"software"` (portable compute-shader BVH fallback).
     fn raytracer_backend(&mut self) -> &'static str {
@@ -247,10 +259,7 @@ impl NexusViewer {
     /// first call. Unlike `snap_rgb` this never stalls the GPU pipeline waiting
     /// for the copy. Call [`snap_rgb_flush`][Self::snap_rgb_flush] after the loop
     /// to collect the final frame.
-    fn snap_rgb_async<'py>(
-        &mut self,
-        py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
+    fn snap_rgb_async<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
         match self.inner_mut().snap_rgb_async() {
             Some((w, h, rgb)) => Ok(Some(Self::to_array(py, w, h, rgb)?)),
             None => Ok(None),
@@ -259,10 +268,7 @@ impl NexusViewer {
 
     /// Completes and returns the capture left in flight by
     /// [`snap_rgb_async`][Self::snap_rgb_async], or `None` when there is none.
-    fn snap_rgb_flush<'py>(
-        &mut self,
-        py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
+    fn snap_rgb_flush<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyArray3<u8>>>> {
         match self.inner_mut().snap_rgb_flush() {
             Some((w, h, rgb)) => Ok(Some(Self::to_array(py, w, h, rgb)?)),
             None => Ok(None),
@@ -280,6 +286,74 @@ impl NexusViewer {
         let ts = timestamps.as_deref_mut().map(|t| &mut t.0);
         pollster::block_on(self.inner_mut().sync(&mut state.0, ts))
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))
+    }
+
+    /// World poses of several rigid bodies, read back from the GPU in a single
+    /// readback (positions match rapier's `RigidBody::position`).
+    ///
+    /// Returns `(positions, quaternions)` float32 numpy arrays of shapes
+    /// `(len(handles), 3)` and `(len(handles), 4)`; quaternions are scalar
+    /// first, `(w, x, y, z)` — the MuJoCo (`data.xpos`/`data.xquat`), Genesis
+    /// and Isaac Lab convention. Rows are NaN for bodies not active on the GPU
+    /// yet. Prefer this over per-body `body_pose` calls when querying many
+    /// bodies.
+    #[pyo3(signature = (state, handles, env=0))]
+    fn body_poses<'py>(
+        &mut self,
+        py: Python<'py>,
+        state: PyRef<NexusState>,
+        handles: Vec<RigidBodyHandle>,
+        env: u32,
+    ) -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>) {
+        let handles: Vec<_> = handles.iter().map(|h| h.0).collect();
+        let poses = pollster::block_on(self.inner_mut().read_body_poses(&state.0, env, &handles));
+        let (mut pos, mut quat) = (Vec::new(), Vec::new());
+        for p in poses {
+            match p {
+                Some(p) => {
+                    let (t, q) = (p.translation, p.rotation);
+                    pos.push(vec![t.x, t.y, t.z]);
+                    quat.push(vec![q.w, q.x, q.y, q.z]);
+                }
+                None => {
+                    pos.push(vec![f32::NAN; 3]);
+                    quat.push(vec![f32::NAN; 4]);
+                }
+            }
+        }
+        (
+            PyArray2::from_vec2(py, &pos).unwrap(),
+            PyArray2::from_vec2(py, &quat).unwrap(),
+        )
+    }
+
+    /// World pose of one rigid body: `(position, quaternion)` float32 numpy
+    /// arrays of shapes `(3,)` and `(4,)`, quaternion scalar first
+    /// `(w, x, y, z)` — same convention as `body_poses`. `None` when the body
+    /// isn't active on the GPU yet.
+    #[pyo3(signature = (state, handle, env=0))]
+    fn body_pose<'py>(
+        &mut self,
+        py: Python<'py>,
+        state: PyRef<NexusState>,
+        handle: RigidBodyHandle,
+        env: u32,
+    ) -> Option<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f32>>)> {
+        let p = pollster::block_on(self.inner_mut().read_body_pose(&state.0, env, handle.0))?;
+        let (t, q) = (p.translation, p.rotation);
+        Some((
+            PyArray1::from_vec(py, vec![t.x, t.y, t.z]),
+            PyArray1::from_vec(py, vec![q.w, q.x, q.y, q.z]),
+        ))
+    }
+
+    /// The most recently harvested per-pass GPU timings as a list of
+    /// `(label, milliseconds)` pairs plus their sum. Populated when a
+    /// `GpuTimestamps` is threaded through `simulate`/`sync`; empty otherwise.
+    /// Timing readbacks complete every few frames, so values lag slightly.
+    fn gpu_pass_times(&mut self) -> (Vec<(String, f64)>, f64) {
+        let (passes, total) = self.inner_mut().gpu_pass_times();
+        (passes.to_vec(), total)
     }
 
     /// Reads back environment `env`'s multibody link states from the GPU in one
@@ -328,6 +402,14 @@ impl NexusViewer {
             PyArray2::from_vec2(py, &linvels).unwrap(),
             PyArray2::from_vec2(py, &angvels).unwrap(),
         )
+    }
+
+    /// Pushes CPU-side rapier body poses into the renderer — the counterpart
+    /// of `sync` for scenes stepped with `NexusState.step_rapier` (no GPU
+    /// physics involved).
+    #[pyo3(signature = (state, env=0))]
+    fn sync_rapier(&mut self, state: PyRef<NexusState>, env: usize) {
+        self.inner_mut().sync_rapier(&state.0, env);
     }
 
     // --- misc -------------------------------------------------------------

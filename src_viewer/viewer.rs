@@ -947,6 +947,61 @@ impl NexusViewer {
             .set_denoise(enabled);
     }
 
+    /// Resolution scale the path tracer uses while the camera or scene is in
+    /// motion, in `(0, 1]` (kiss3d defaults to 0.5: half-resolution traced then
+    /// upscaled). Set `1.0` to always trace at full resolution — required for
+    /// benchmarking animated scenes, where every frame counts as "in motion".
+    #[cfg(feature = "dim3")]
+    pub fn set_raytracer_interactive_scale(&mut self, scale: f32) {
+        self.raytracer
+            .get_or_insert_with(RayTracer::new)
+            .set_interactive_scale(scale);
+    }
+
+    /// Reads the world-origin poses of several rigid bodies back from the GPU
+    /// in one readback (positions match rapier's `RigidBody::position`).
+    /// Entries are `None` for bodies that aren't active on the GPU or unknown
+    /// `env`/handles.
+    ///
+    /// This is a blocking readback of the whole pose buffer; prefer one call
+    /// with many handles over many single-handle calls.
+    pub async fn read_body_poses(
+        &mut self,
+        state: &NexusState,
+        env: u32,
+        handles: &[RigidBodyHandle],
+    ) -> Vec<Option<Pose>> {
+        let Some(rbd) = state.rbd.as_ref() else {
+            return vec![None; handles.len()];
+        };
+        let poses = rbd.body_poses();
+        let mut cache = vec![Pose::default(); poses.len() as usize];
+        if self
+            .backend()
+            .slow_read_buffer(poses.buffer(), &mut cache)
+            .await
+            .is_err()
+        {
+            return vec![None; handles.len()];
+        }
+        handles
+            .iter()
+            .map(|handle| {
+                let gpu_id = state.rbd2gpu.get(env as usize)?.get(handle.0)?.gpu_id;
+                cache.get(gpu_id as usize).copied()
+            })
+            .collect()
+    }
+
+    /// The most recently harvested per-pass GPU timings, as `(label, ms)`
+    /// pairs, and their sum. Populated by [`Self::sync`] when a
+    /// [`GpuTimestamps`] is threaded through `simulate`/`sync`; empty
+    /// otherwise. Readbacks only complete every few frames, so these lag the
+    /// current frame slightly — fine for profiling.
+    pub fn gpu_pass_times(&self) -> (&[(String, f64)], f64) {
+        (&self.last_gpu_pass_times, self.last_gpu_total_time_ms)
+    }
+
     /// Reads back environment `env`'s multibody link workspaces from the GPU in
     /// one readback: per link, the generalized joint coordinates, accumulated
     /// joint rotation, world pose, and world-space velocity. Links are in the
@@ -967,6 +1022,47 @@ impl NexusViewer {
             return Vec::new();
         };
         rbd.multibodies().read_links(self.backend(), env).await
+    }
+
+    /// Single-body convenience wrapper around [`Self::read_body_poses`].
+    pub async fn read_body_pose(
+        &mut self,
+        state: &NexusState,
+        env: u32,
+        handle: RigidBodyHandle,
+    ) -> Option<Pose> {
+        self.read_body_poses(state, env, &[handle]).await.pop()?
+    }
+
+    /// Pushes CPU-side body poses (e.g. from stepping the rapier
+    /// [`PhysicsWorld`](nexus::rapier::prelude::PhysicsWorld) natively) into the
+    /// render instances — the zero-GPU-physics counterpart of [`Self::sync`].
+    ///
+    /// Poses are read from `state.rbd_world(env)` and routed through the same
+    /// `rbd2gpu` slot mapping the GPU path uses, so it works on any scene built
+    /// through [`NexusState`] (including MJCF/URDF robots with visual meshes).
+    pub fn sync_rapier(&mut self, state: &NexusState, env: usize) {
+        let Some(map) = state.rbd2gpu.get(env) else {
+            return;
+        };
+        let world = state.rbd_world(env);
+        let n = world
+            .bodies
+            .iter()
+            .filter_map(|(h, _)| map.get(h.0).map(|r| r.gpu_id as usize + 1))
+            .max()
+            .unwrap_or(0);
+        let mut cache = vec![Pose::IDENTITY; n];
+        for (h, body) in world.bodies.iter() {
+            if let Some(r) = map.get(h.0) {
+                cache[r.gpu_id as usize] = *body.position();
+            }
+        }
+        self.nexus_render.update_instances_from_poses(state, &cache);
+        #[cfg(feature = "dim3")]
+        if self.nexus_render.has_visual_nodes() {
+            self.nexus_render.update_visual_nodes(state, &cache);
+        }
     }
 
     /// Draws example-specific egui widgets into the current frame's UI pass.

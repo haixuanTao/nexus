@@ -268,16 +268,26 @@ impl NexusState {
     /// Loads a MuJoCo MJCF scene into environment 0 as multibodies, registering
     /// its render shapes (and a sized floor) with `viewer`. Returns scene info
     /// (suggested camera + whether the scene is Z-up). Call `finalize` after.
-    #[pyo3(signature = (viewer, scene_path, render_colliders=false))]
+    /// Per-environment collision-pair capacity (default 4096). Lower this
+    /// before `finalize` when batching many small environments — pair-keyed
+    /// GPU workspaces scale with `capacity x num_envs`.
+    fn set_rbd_collisions_capacity(&mut self, capacity: u32) {
+        self.0.set_rbd_collisions_capacity(capacity);
+    }
+
+    #[pyo3(signature = (viewer, scene_path, render_colliders=false, env=0))]
     fn insert_mjcf(
         &mut self,
         viewer: PyRefMut<NexusViewer>,
         scene_path: std::path::PathBuf,
         render_colliders: bool,
+        env: usize,
     ) -> PyResult<MjcfSceneInfo> {
         let (info, handles) =
-            crate::loaders::insert_mjcf(&mut self.0, viewer, &scene_path, render_colliders)?;
-        self.1 = handles;
+            crate::loaders::insert_mjcf(&mut self.0, viewer, &scene_path, render_colliders, env)?;
+        if env == 0 {
+            self.1 = handles;
+        }
         Ok(info)
     }
 
@@ -353,6 +363,159 @@ impl NexusState {
     fn set_rbd_gravity(&mut self, viewer: PyRef<NexusViewer>, gravity: Vec3) {
         self.0
             .set_rbd_gravity(viewer.backend(), [gravity.0.x, gravity.0.y, gravity.0.z]);
+    }
+
+    /// Sets the gravity of the CPU-side rapier world used by `step_rapier`
+    /// (independent of the GPU state's gravity set by `set_rbd_gravity`).
+    #[pyo3(signature = (gravity, env=0))]
+    fn set_rapier_gravity(&mut self, gravity: Vec3, env: usize) {
+        self.0.rbd_world_mut(env).gravity = gravity.0;
+    }
+
+    /// Advances the CPU-side rapier world natively (no GPU physics at all) by
+    /// `steps` timesteps of its `integration_parameters.dt` (default 1/60 s).
+    ///
+    /// This steps the same rapier world the scene was built into — including
+    /// multibody joints and the position servos imported from MJCF actuators —
+    /// so robots hold their actuated stance. Pair with
+    /// `NexusViewer.sync_rapier(state)` to push the resulting poses into the
+    /// renderer. Orders of magnitude faster than the GPU pipeline for a single
+    /// environment (no per-kernel dispatch overhead).
+    /// Debug: (bodies, colliders, contact_pairs, active_contact_points, min_dynamic_mass).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug(&mut self, env: usize) -> (usize, usize, usize, usize, f32) {
+        let world = self.0.rbd_world_mut(env);
+        let mut pairs = 0usize;
+        let mut points = 0usize;
+        for c in world.narrow_phase.contact_pairs() {
+            pairs += 1;
+            points += c.manifolds.iter().map(|m| m.points.len()).sum::<usize>();
+        }
+        let min_mass = world
+            .bodies
+            .iter()
+            .filter(|(_, b)| b.is_dynamic())
+            .map(|(_, b)| b.mass())
+            .fold(f32::INFINITY, f32::min);
+        (world.bodies.len(), world.colliders.len(), pairs, points, min_mass)
+    }
+
+    /// Debug: raises every dynamic body's mass (and inertia, proportionally)
+    /// to at least `min_mass` kg. Workaround for near-massless connector links
+    /// destabilizing multibody contact resolution. Returns how many bodies
+    /// were boosted.
+    #[pyo3(signature = (min_mass, env=0))]
+    fn boost_light_rapier_links(&mut self, min_mass: f32, env: usize) -> u32 {
+        use rp::MassProperties;
+        let world = self.0.rbd_world_mut(env);
+        let mut boosted = 0;
+        for (_, body) in world.bodies.iter_mut() {
+            if !body.is_dynamic() {
+                continue;
+            }
+            let mass = body.mass();
+            if mass <= 0.0 || mass >= min_mass {
+                continue;
+            }
+            let f = min_mass / mass;
+            let local = body.mass_properties().local_mprops;
+            let props = MassProperties::new(
+                local.local_com,
+                mass * f,
+                local.principal_inertia() * f,
+            );
+            body.set_additional_mass_properties(props, true);
+            boosted += 1;
+        }
+        boosted
+    }
+
+    /// Debug: scales every multibody motor's stiffness/damping (0 = disable).
+    #[pyo3(signature = (scale, env=0))]
+    fn scale_rapier_motors(&mut self, scale: f32, env: usize) {
+        let world = self.0.rbd_world_mut(env);
+        let links: Vec<_> = {
+            let joints = &world.multibody_joints;
+            world
+                .bodies
+                .iter()
+                .filter_map(|(h, _)| joints.rigid_body_link(h).copied())
+                .collect()
+        };
+        for lid in links {
+            let Some(mb) = world.multibody_joints.get_multibody_mut(lid.multibody) else {
+                continue;
+            };
+            let Some(link) = mb.link_mut(lid.id) else { continue };
+            for motor in link.joint.data.motors.iter_mut() {
+                motor.stiffness *= scale;
+                motor.damping *= scale;
+            }
+        }
+    }
+
+    /// Debug: per multibody link, motors with any nonzero parameter:
+    /// (link_id, axis, stiffness, damping, target_pos, max_force).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug_motors(&mut self, env: usize) -> Vec<(usize, usize, f32, f32, f32, f32)> {
+        let world = self.0.rbd_world_mut(env);
+        let mut out = Vec::new();
+        for mb in world.multibody_joints.multibodies() {
+            for (i, link) in mb.links().enumerate() {
+                for (axis, m) in link.joint().data.motors.iter().enumerate() {
+                    if m.stiffness != 0.0 || m.damping != 0.0 || m.max_force != 0.0 {
+                        out.push((i, axis, m.stiffness, m.damping, m.target_pos, m.max_force));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Debug: per-body (is_dynamic, z, vz, mass).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug_bodies(&mut self, env: usize) -> Vec<(bool, f32, f32, f32)> {
+        let world = self.0.rbd_world_mut(env);
+        world
+            .bodies
+            .iter()
+            .map(|(_, b)| {
+                (
+                    b.is_dynamic(),
+                    b.position().translation.z,
+                    b.linvel().z,
+                    b.mass(),
+                )
+            })
+            .collect()
+    }
+
+    /// Debug: per-collider (has_parent, world_z, groups_bits).
+    #[pyo3(signature = (env=0))]
+    fn rapier_debug_colliders(&mut self, env: usize) -> Vec<(bool, f32, u32)> {
+        let world = self.0.rbd_world_mut(env);
+        world
+            .colliders
+            .iter()
+            .map(|(_, c)| {
+                (
+                    c.parent().is_some(),
+                    c.position().translation.z,
+                    c.collision_groups().memberships.bits(),
+                )
+            })
+            .collect()
+    }
+
+    #[pyo3(signature = (steps=1, env=0, dt=None))]
+    fn step_rapier(&mut self, steps: u32, env: usize, dt: Option<f32>) {
+        let world = self.0.rbd_world_mut(env);
+        if let Some(dt) = dt {
+            world.integration_parameters.dt = dt;
+        }
+        for _ in 0..steps {
+            world.step();
+        }
     }
 
     fn set_multibody_motor_velocity(

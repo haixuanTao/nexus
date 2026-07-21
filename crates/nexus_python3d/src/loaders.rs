@@ -126,6 +126,7 @@ pub fn insert_mjcf(
     mut viewer: PyRefMut<crate::viewer::NexusViewer>,
     scene_path: &std::path::Path,
     render_colliders: bool,
+    env: usize,
 ) -> PyResult<(MjcfSceneInfo, Option<MjcfHandles>)> {
     use pyo3::exceptions::PyRuntimeError;
     use rapier3d::parry::bounding_volume::BoundingVolume; // for `Aabb::merge`
@@ -136,6 +137,10 @@ pub fn insert_mjcf(
         make_roots_fixed: false,
         create_colliders_from_visual_shapes: false,
         collider_blueprint: rp::ColliderBuilder::default().density(0.0),
+        // Dynamic trimesh colliders are hollow and unreliable for contact
+        // resolution (bodies sink through the ground when stepped with
+        // rapier natively); convex hulls are the standard robotics choice.
+        mesh_converter: Some(rapier3d::prelude::MeshConverter::ConvexHull),
         ..Default::default()
     };
 
@@ -146,9 +151,10 @@ pub fn insert_mjcf(
     let mut floor: Option<(glamx::Vec3, glamx::Vec3)> = None;
     let mut camera: Option<(glamx::Vec3, glamx::Vec3)> = None;
 
-    let robot_handles: Option<MjcfHandles> = match MjcfRobot::from_file(scene_path, options) {
+    let mut robot_handles: Option<MjcfHandles> = None;
+    match MjcfRobot::from_file(scene_path, options) {
         Ok((robot, _model)) => {
-            let world = state.rbd_world_mut(0);
+            let world = state.rbd_world_mut(env);
             let handles = robot.clone().insert_using_multibody_joints(
                 &mut world.bodies,
                 &mut world.colliders,
@@ -221,8 +227,11 @@ pub fn insert_mjcf(
                 let footprint = he.x.max(he.y).max(0.5);
                 let floor_thick = 0.1;
                 let floor_he = glamx::Vec3::new(footprint * 6.0, footprint * 6.0, floor_thick);
+                // Leave a small clearance below the model: an exactly-touching
+                // floor starts the scene in penetration, and the contact
+                // solver's recovery impulse can launch a multibody upward.
                 let floor_center =
-                    glamx::Vec3::new(center.x, center.y, center.z - he.z - floor_thick);
+                    glamx::Vec3::new(center.x, center.y, center.z - he.z - floor_thick - 0.005);
                 floor = Some((floor_center, floor_he));
 
                 let radius = (he.x * he.x + he.y * he.y + he.z * he.z).sqrt().max(0.5);
@@ -230,7 +239,7 @@ pub fn insert_mjcf(
                 let eye = target + glamx::Vec3::new(radius * 2.2, -radius * 2.2, radius * 1.6);
                 camera = Some((eye, target));
             }
-            Some(handles)
+            robot_handles = Some(handles);
         }
         Err(e) => {
             return Err(PyRuntimeError::new_err(format!(
@@ -238,7 +247,7 @@ pub fn insert_mjcf(
                 scene_path.display()
             )));
         }
-    };
+    }
 
     let loaded = camera.is_some();
     let v = viewer.rust_mut();
@@ -248,11 +257,15 @@ pub fn insert_mjcf(
         let body = rp::RigidBodyBuilder::fixed().translation(center).build();
         let collider = rp::ColliderBuilder::cuboid(he.x, he.y, he.z).build();
         let shape = collider.shared_shape().clone();
-        let handle = state.insert_rigid_body(body, collider);
-        v.insert_shape(handle, &shape, rp::Pose::IDENTITY);
+        let handle = state.insert_rigid_body_in(env, body, collider);
+        if env == 0 {
+            v.insert_shape(handle, &shape, rp::Pose::IDENTITY);
+        }
     }
 
-    if render_colliders {
+    if env != 0 {
+        // Batch environments are physics-only: the viewer draws environment 0.
+    } else if render_colliders {
         for (body, shape, local_pose, _) in &collider_shapes {
             v.insert_visual_shape(0, *body, shape, *local_pose);
         }
@@ -277,11 +290,13 @@ pub fn insert_mjcf(
         }
     }
 
-    if let Some((eye, target)) = camera {
-        v.set_camera(eye, target);
+    if env == 0 {
+        if let Some((eye, target)) = camera {
+            v.set_camera(eye, target);
+        }
+        v.scene3d_mut()
+            .add_directional_light(glamx::Vec3::new(-1.0, 1.0, -1.0));
     }
-    v.scene3d_mut()
-        .add_directional_light(glamx::Vec3::new(-1.0, 1.0, -1.0));
 
     Ok((MjcfSceneInfo { z_up: true, loaded }, robot_handles))
 }
