@@ -271,6 +271,10 @@ impl GpuColoring {
         args: ColorBucketsArgs<'_>,
         color_buckets_stride: u32,
         num_batches: u32,
+        // Capacity grid standing in for the indirect dispatch on fixed-grid
+        // backends (CUDA: indirect = host readback + stream sync,
+        // capture-illegal).
+        contacts_grid: [u32; 3],
     ) -> Result<(), GpuBackendError> {
         self.color_buckets_reset.call(
             pass,
@@ -280,7 +284,7 @@ impl GpuColoring {
         )?;
         self.color_buckets_count.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, contacts_grid),
             args.constraints_colors,
             args.contacts_len,
             args.color_bucket_counts,
@@ -296,7 +300,7 @@ impl GpuColoring {
         )?;
         self.color_buckets_scatter.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, contacts_grid),
             args.constraints_colors,
             args.contacts_len,
             args.color_bucket_cursors,

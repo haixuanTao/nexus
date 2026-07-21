@@ -104,10 +104,13 @@ impl GpuWarmstart {
         &self,
         pass: &mut GpuPass,
         args: SeedColorsArgs<'_>,
+        // Capacity grid for fixed-grid backends — see
+        // `GpuColoring::dispatch_build_color_buckets`.
+        contacts_grid: [u32; 3],
     ) -> Result<(), GpuBackendError> {
         self.seed_colors_kernel.call(
             pass,
-            args.contacts_len_indirect,
+            crate::dispatch_grid(args.contacts_len_indirect, contacts_grid),
             args.old_body_constraint_counts,
             args.old_body_constraint_ids,
             args.old_constraints,

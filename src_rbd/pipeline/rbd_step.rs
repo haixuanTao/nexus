@@ -387,7 +387,12 @@ impl RbdPipeline {
                 contacts_len_indirect: &state.contacts_indirect,
                 batch_indices: &state.batch_indices,
             };
-            self.warmstart.seed_colors_from_warmstart(&mut pass, seed_args)?;
+            let contacts_grid = [
+                state.contacts_per_batch_cpu.max(1).div_ceil(64),
+                state.num_batches,
+                1,
+            ];
+            self.warmstart.seed_colors_from_warmstart(&mut pass, seed_args, contacts_grid)?;
 
             let coloring_args = ColoringArgs {
                 contacts_len_indirect: &state.contacts_indirect,
@@ -424,6 +429,11 @@ impl RbdPipeline {
                 bucket_args,
                 state.max_colors + 3,
                 state.num_batches,
+                [
+                    state.contacts_per_batch_cpu.max(1).div_ceil(64),
+                    state.num_batches,
+                    1,
+                ],
             )?;
 
             // `+1` because solver iterates 1..=max_colors (color 0 is unassigned).
