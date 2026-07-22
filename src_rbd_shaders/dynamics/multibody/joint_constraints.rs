@@ -264,9 +264,38 @@ pub fn gpu_mb_refresh_joint_constraints(
         // Rebuild the per-substep fields with the SAME formulas as the full
         // emission, then graft the per-step constants (column-derived
         // `inv_lhs` and folded `cfm_gain`) from the existing slot.
+        // Constant-index dispatch: a runtime `arr[axis]` through a storage
+        // reference makes the cuda-oxide translator copy the WHOLE array to a
+        // per-thread stack slot and index the copy — this loop had one copy
+        // of `motors[6]` plus four of `limits[6]` = 456 bytes of local-memory
+        // traffic per thread (measured 6.5x slower than the WGPU build of the
+        // same kernel at 8192 envs). A `match` makes every index a constant,
+        // so each arm is a direct global load of one element.
+        let (limit_min, limit_max) = {
+            let l = &stat.data.limits;
+            match axis {
+                0 => (l[0].min, l[0].max),
+                1 => (l[1].min, l[1].max),
+                2 => (l[2].min, l[2].max),
+                3 => (l[3].min, l[3].max),
+                4 => (l[4].min, l[4].max),
+                _ => (l[5].min, l[5].max),
+            }
+        };
         let mut fresh = if old.kind == MB_JOINT_KIND_MOTOR {
             let locked = stat.data.locked_axes;
             let has_limits = (stat.data.limit_axes & !locked & (1 << axis)) != 0;
+            let motor = {
+                let m = &stat.data.motors;
+                match axis {
+                    0 => m[0],
+                    1 => m[1],
+                    2 => m[2],
+                    3 => m[3],
+                    4 => m[4],
+                    _ => m[5],
+                }
+            };
             build_motor_constraint(
                 old.dof_id,
                 link_id,
@@ -274,11 +303,10 @@ pub fn gpu_mb_refresh_joint_constraints(
                 curr_pos,
                 inv_dt,
                 dt,
-                // By-value element load — see the note above.
-                &{ stat.data.motors[axis as usize] },
+                &motor,
                 has_limits,
-                stat.data.limits[axis as usize].min,
-                stat.data.limits[axis as usize].max,
+                limit_min,
+                limit_max,
             )
         } else {
             build_limit_constraint(
@@ -286,10 +314,7 @@ pub fn gpu_mb_refresh_joint_constraints(
                 link_id,
                 axis,
                 curr_pos,
-                [
-                    stat.data.limits[axis as usize].min,
-                    stat.data.limits[axis as usize].max,
-                ],
+                [limit_min, limit_max],
                 softness.joint_erp_inv_dt,
                 softness.joint_cfm_coeff,
             )
