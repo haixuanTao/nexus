@@ -38,26 +38,48 @@ use super::ws_soa::{WsAddr, ws_coord};
 #[inline(always)]
 fn limits_at(stat: &MultibodyLinkStatic, axis: u32) -> (f32, f32) {
     let l = &stat.data.limits;
-    match axis {
-        0 => (l[0].min, l[0].max),
-        1 => (l[1].min, l[1].max),
-        2 => (l[2].min, l[2].max),
-        3 => (l[3].min, l[3].max),
-        4 => (l[4].min, l[4].max),
-        _ => (l[5].min, l[5].max),
+    #[cfg(feature = "dim3")]
+    {
+        match axis {
+            0 => (l[0].min, l[0].max),
+            1 => (l[1].min, l[1].max),
+            2 => (l[2].min, l[2].max),
+            3 => (l[3].min, l[3].max),
+            4 => (l[4].min, l[4].max),
+            _ => (l[5].min, l[5].max),
+        }
+    }
+    #[cfg(feature = "dim2")]
+    {
+        match axis {
+            0 => (l[0].min, l[0].max),
+            1 => (l[1].min, l[1].max),
+            _ => (l[2].min, l[2].max),
+        }
     }
 }
 
 #[inline(always)]
 fn motor_at(stat: &MultibodyLinkStatic, axis: u32) -> crate::dynamics::joint::JointMotor {
     let m = &stat.data.motors;
-    match axis {
-        0 => m[0],
-        1 => m[1],
-        2 => m[2],
-        3 => m[3],
-        4 => m[4],
-        _ => m[5],
+    #[cfg(feature = "dim3")]
+    {
+        match axis {
+            0 => m[0],
+            1 => m[1],
+            2 => m[2],
+            3 => m[3],
+            4 => m[4],
+            _ => m[5],
+        }
+    }
+    #[cfg(feature = "dim2")]
+    {
+        match axis {
+            0 => m[0],
+            1 => m[1],
+            _ => m[2],
+        }
     }
 }
 

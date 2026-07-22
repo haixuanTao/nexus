@@ -162,8 +162,12 @@ impl GpuMultibodySolver {
                 args.batch_indices,
             )?;
         }
-        let mut pass = encoder.begin_pass("[RBD] mbi/dynamics", timestamps.as_deref_mut());
-        self.compute_dynamics(&mut pass, mb, args)
+        {
+            let mut pass = encoder.begin_pass("[RBD] mbi/pre", timestamps.as_deref_mut());
+            self.dispatch_dynamics_pre(&mut pass, mb, args)?;
+        }
+        let mut pass = encoder.begin_pass("[RBD] mbi/gravity-lu", timestamps.as_deref_mut());
+        self.dispatch_gravity_lu(&mut pass, mb, args)
     }
 
     /// Stash `contacts_len[batch]` into each `MultibodyInfo` — must run after
@@ -714,6 +718,20 @@ impl GpuMultibodySolver {
         mb: &mut GpuMultibodySet,
         args: &mut MultibodySolverArgs<'_>,
     ) -> Result<(), GpuBackendError> {
+        self.dispatch_dynamics_pre(pass, mb, args)?;
+        self.dispatch_gravity_lu(pass, mb, args)
+    }
+
+    /// First half of `compute_dynamics`: fused FK + body-jacobians +
+    /// velocity propagation + mass-matrix assembly. Split out so the
+    /// explicit-mode init can put it in its own timestamp pass (per-kernel
+    /// backend comparisons need `pre` and `gravity_lu` separated).
+    fn dispatch_dynamics_pre(
+        &self,
+        pass: &mut GpuPass,
+        mb: &mut GpuMultibodySet,
+        args: &mut MultibodySolverArgs<'_>,
+    ) -> Result<(), GpuBackendError> {
         // Fused FK + body-jacobians + velocity propagation + Mass-matrix
         // assembly. Packed: `64 / mb_pack_lanes` multibodies per workgroup,
         // flattened (multibody, batch) grid.
@@ -749,11 +767,21 @@ impl GpuMultibodySolver {
             )?;
         }
 
-        // Fused gravity + LU factor + LU solve. Packed tiers put `64/T`
-        // multibodies in each workgroup (T×T shared tile per slot, flattened
-        // (multibody, batch) grid — the shared tile size forces compile-time
-        // variants, unlike the runtime-tiered `pre` kernel); the 64×64-tile
-        // fallback keeps the legacy one-workgroup-per-multibody 2D grid.
+        Ok(())
+    }
+
+    /// Second half of `compute_dynamics`: fused gravity + LU factor + LU
+    /// solve. Packed tiers put `64/T` multibodies in each workgroup (T×T
+    /// shared tile per slot, flattened (multibody, batch) grid — the shared
+    /// tile size forces compile-time variants, unlike the runtime-tiered
+    /// `pre` kernel); the 64×64-tile fallback keeps the legacy
+    /// one-workgroup-per-multibody 2D grid.
+    fn dispatch_gravity_lu(
+        &self,
+        pass: &mut GpuPass,
+        mb: &mut GpuMultibodySet,
+        args: &mut MultibodySolverArgs<'_>,
+    ) -> Result<(), GpuBackendError> {
         macro_rules! grav_lu {
             ($kernel:ident) => {
                 self.$kernel.call(
