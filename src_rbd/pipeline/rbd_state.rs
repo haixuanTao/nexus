@@ -325,6 +325,26 @@ impl RbdState {
         }
     }
 
+    /// Pre-creates every tiny per-step uniform the solver loop may lazily
+    /// allocate (currently the per-color-index uniforms, sized off
+    /// `max_colors` and the joint/multibody color counts).
+    ///
+    /// Called at the top of every `step`, and — critically — BEFORE CUDA
+    /// graph capture begins: an allocation recorded inside a capture becomes
+    /// a `MEM_ALLOC` graph node, and a graph holding un-freed alloc nodes
+    /// cannot be relaunched (`cuGraphLaunch` → `CUDA_ERROR_INVALID_VALUE`).
+    /// That is exactly what happened when a warmup-phase `max_colors` bump
+    /// deferred uniform creation into the first captured step.
+    pub fn ensure_step_uniforms(&mut self, backend: &GpuBackend) {
+        let mut needed = self.max_colors + 2;
+        needed = needed.max(self.joints.num_colors() + 1);
+        #[cfg(feature = "dim3")]
+        {
+            needed = needed.max(self.multibodies.mb_imp_joint_num_colors() + 1);
+        }
+        self.ensure_color_uniforms(backend, needed);
+    }
+
     /// Returns the configured max color count.
     pub fn max_colors(&self) -> u32 {
         self.max_colors

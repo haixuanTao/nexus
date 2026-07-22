@@ -73,6 +73,11 @@ impl NexusPipeline {
         self.preload_pipelines(backend, NexusPipelineMask::RBD)?;
         let pipeline = self.rbd_pipeline.as_mut().unwrap_or_else(|| unreachable!());
         let steps = state.rbd_steps_per_frame.max(1);
+        // Pre-create every lazily-allocated per-step uniform BEFORE capture:
+        // an allocation recorded during capture becomes a MEM_ALLOC graph
+        // node, and CUDA refuses to relaunch a graph with un-freed alloc
+        // nodes (every replay after the first fails with INVALID_VALUE).
+        rbd.ensure_step_uniforms(backend);
         cuda.begin_capture().map_err(khal::backend::GpuBackendError::Cuda)?;
         let mut step_result = Ok(state.run_stats.clone());
         for _ in 0..steps {

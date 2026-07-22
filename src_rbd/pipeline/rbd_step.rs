@@ -75,15 +75,7 @@ impl RbdPipeline {
         // Make sure the per-color-index uniforms cover every colored sweep:
         // contact colors go up to `max_colors + 1`, impulse-joint and
         // multibody-impulse-joint colors are fixed at init time.
-        {
-            let mut needed = state.max_colors + 2;
-            needed = needed.max(state.joints.num_colors() + 1);
-            #[cfg(feature = "dim3")]
-            {
-                needed = needed.max(state.multibodies.mb_imp_joint_num_colors() + 1);
-            }
-            state.ensure_color_uniforms(backend, needed);
-        }
+        state.ensure_step_uniforms(backend);
 
         // Phase 0 + 1 share one encoder/submit: the multibody init-step's GPU
         // work is tiny, so a dedicated submit cost more than the encoding
