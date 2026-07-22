@@ -315,6 +315,46 @@ impl RbdState {
         self.max_colors = max_colors.max(1);
     }
 
+    /// Shrinks `max_colors` to fit the coloring's most recent converged color
+    /// count, and rebuilds the color-bucket buffers for the new stride.
+    /// Returns `true` if a shrink happened.
+    ///
+    /// Rationale: `max_colors` only ever GROWS (auto-resize bumps it while a
+    /// scene settles), and the capture-safe solver path runs a FIXED
+    /// `max_colors`-iteration coloring loop plus `max_colors` bucket sweeps —
+    /// so a CUDA graph captured after a chaotic warmup replays several times
+    /// the iterations the settled scene needs, forever. Call this right
+    /// before graph capture: it reads the converged color count the coloring
+    /// left in `uncolored[0]` (the fix-conflicts pass `atomic_max`es the final
+    /// color there) and re-fits `max_colors` to it plus slack. No-ops when
+    /// the coloring is inert (robot-only scenes), hasn't converged (flag 0),
+    /// or would not shrink.
+    pub async fn shrink_max_colors_to_fit(&mut self, backend: &GpuBackend, slack: u32) -> bool {
+        if self.rb_contacts_inert {
+            return false;
+        }
+        let flag = backend
+            .slow_read_vec(self.uncolored.buffer())
+            .await
+            .unwrap_or_default();
+        let Some(&converged_colors) = flag.first() else {
+            return false;
+        };
+        let fitted = converged_colors.saturating_add(slack).max(2);
+        if converged_colors == 0 || fitted >= self.max_colors {
+            return false;
+        }
+        self.max_colors = fitted;
+        let storage: BufferUsages = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
+        let stride = self.max_colors + 3;
+        let nb = self.num_batches;
+        self.color_bucket_counts = Tensor::vector_uninit(backend, stride * nb, storage).unwrap();
+        self.color_bucket_starts = Tensor::vector_uninit(backend, stride * nb, storage).unwrap();
+        self.color_bucket_cursors = Tensor::vector_uninit(backend, stride * nb, storage).unwrap();
+        self.rebuild_batch_indices(backend);
+        true
+    }
+
     /// Grows [`Self::color_uniforms`] so indices `0..n` are available. Each
     /// entry is a tiny immutable uniform holding its own index; existing
     /// entries are never reallocated.

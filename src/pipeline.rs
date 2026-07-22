@@ -73,6 +73,11 @@ impl NexusPipeline {
         self.preload_pipelines(backend, NexusPipelineMask::RBD)?;
         let pipeline = self.rbd_pipeline.as_mut().unwrap_or_else(|| unreachable!());
         let steps = state.rbd_steps_per_frame.max(1);
+        // Re-fit `max_colors` to the settled scene before freezing the graph:
+        // it only ever grows (warmup-phase chaos can push it far above what
+        // the steady state needs), and the captured solver replays a FIXED
+        // `max_colors`-iteration coloring loop + bucket sweeps forever.
+        rbd.shrink_max_colors_to_fit(backend, 2).await;
         // Pre-create every lazily-allocated per-step uniform BEFORE capture:
         // an allocation recorded during capture becomes a MEM_ALLOC graph
         // node, and CUDA refuses to relaunch a graph with un-freed alloc
