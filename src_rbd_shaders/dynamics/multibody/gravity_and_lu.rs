@@ -194,6 +194,10 @@ pub fn gpu_mb_gravity_and_lu(
     let damping_slice = batch_ids
         .ib(batch_id, dof_state)
         .offset(batch_ids.dof_batch_capacity as usize + gen_base);
+    // Coulomb joint friction (`frictionloss`, N·m) — 4th dof_state section.
+    let frictionloss_slice = batch_ids
+        .ib(batch_id, dof_state)
+        .offset(3 * batch_ids.dof_batch_capacity as usize + gen_base);
 
     // ---- Phase 1: zero the generalized-force vector (parallel across DOFs). ----
     let accelerations = batch_ids.imat(batch_id, gen_base, ndofs, 1);
@@ -339,9 +343,14 @@ pub fn gpu_mb_gravity_and_lu(
         let cur = gen_forces.read(idx);
         // External generalized forces (RL torque input) enter here, with
         // the same per-substep persistence as gravity.
+        let v = vel_slice[i as usize];
+        // Coulomb frictionloss: −fl·sign(v), the fork's form (MuJoCo
+        // `frictionloss` semantics; 0 = off, the default).
+        let fl = frictionloss_slice[i as usize];
+        let fric = if v > 0.0 { fl } else if v < 0.0 { -fl } else { 0.0 };
         gen_forces.write(
             idx,
-            cur - damping_slice[i as usize] * vel_slice[i as usize]
+            cur - damping_slice[i as usize] * v - fric
                 + external_gen_forces.read(idx),
         );
     }
@@ -474,6 +483,10 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
     let damping_slice = batch_ids
         .ib(batch_id, dof_state)
         .offset(batch_ids.dof_batch_capacity as usize + gen_base);
+    // Coulomb joint friction (`frictionloss`, N·m) — 4th dof_state section.
+    let frictionloss_slice = batch_ids
+        .ib(batch_id, dof_state)
+        .offset(3 * batch_ids.dof_batch_capacity as usize + gen_base);
 
     // ---- Phase 1: zero the generalized-force vector (parallel across DOFs). ----
     let accelerations = batch_ids.imat(batch_id, gen_base, ndofs, 1);
@@ -606,9 +619,14 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
         let cur = gen_forces.read(idx);
         // External generalized forces (RL torque input) enter here, with
         // the same per-substep persistence as gravity.
+        let v = vel_slice[i as usize];
+        // Coulomb frictionloss: −fl·sign(v), the fork's form (MuJoCo
+        // `frictionloss` semantics; 0 = off, the default).
+        let fl = frictionloss_slice[i as usize];
+        let fric = if v > 0.0 { fl } else if v < 0.0 { -fl } else { 0.0 };
         gen_forces.write(
             idx,
-            cur - damping_slice[i as usize] * vel_slice[i as usize]
+            cur - damping_slice[i as usize] * v - fric
                 + external_gen_forces.read(idx),
         );
     }
@@ -750,6 +768,10 @@ pub fn gpu_mb_gravity_and_lu_t1(
     let damping_slice = batch_ids
         .ib(batch_id, dof_state)
         .offset(batch_ids.dof_batch_capacity as usize + gen_base);
+    // Coulomb joint friction (`frictionloss`, N·m) — 4th dof_state section.
+    let frictionloss_slice = batch_ids
+        .ib(batch_id, dof_state)
+        .offset(3 * batch_ids.dof_batch_capacity as usize + gen_base);
 
     // ---- Phase 1: zero the generalized-force vector. ----
     for d in 0..ndofs {
@@ -861,9 +883,14 @@ pub fn gpu_mb_gravity_and_lu_t1(
         let cur = gen_forces.read(idx);
         // External generalized forces (RL torque input) enter here, with
         // the same per-substep persistence as gravity.
+        let v = vel_slice[i as usize];
+        // Coulomb frictionloss: −fl·sign(v), the fork's form (MuJoCo
+        // `frictionloss` semantics; 0 = off, the default).
+        let fl = frictionloss_slice[i as usize];
+        let fric = if v > 0.0 { fl } else if v < 0.0 { -fl } else { 0.0 };
         gen_forces.write(
             idx,
-            cur - damping_slice[i as usize] * vel_slice[i as usize]
+            cur - damping_slice[i as usize] * v - fric
                 + external_gen_forces.read(idx),
         );
     }

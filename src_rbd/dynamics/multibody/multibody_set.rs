@@ -614,14 +614,24 @@ impl GpuMultibodySet {
             .unwrap();
     }
 
-    /// Fork-era Coulomb joint-friction setter. The upstream solver base has
-    /// NO frictionloss path — accept all-zero uploads (no-op) and refuse
-    /// non-zero ones loudly instead of silently changing the physics.
-    pub fn set_dof_frictionloss(&mut self, _backend: &GpuBackend, values: &[f32]) {
-        assert!(
-            values.iter().all(|v| *v == 0.0),
-            "dof frictionloss is not implemented on the upstream-base solver"
-        );
+    /// Coulomb joint friction (`frictionloss`, N·m): overwrite the 4th
+    /// section of `dof_state`, applied as `−fl·sign(q̇)` by the gravity
+    /// kernels (MuJoCo semantics). `values` is `dofs_per_batch × num_batches`
+    /// in the fork's ENV-MAJOR layout, transposed here to batch-interleaved.
+    pub fn set_dof_frictionloss(&mut self, backend: &GpuBackend, values: &[f32]) {
+        let cap = self.dofs_per_batch as usize;
+        let nb = self.num_batches as usize;
+        assert_eq!(values.len(), cap * nb, "frictionloss: expected dofs_cap*num_batches");
+        let mut interleaved = vec![0.0f32; cap * nb];
+        for b in 0..nb {
+            for k in 0..cap {
+                interleaved[k * nb + b] = values[b * cap + k];
+            }
+        }
+        let section = (cap * nb) as u64 * 3;
+        backend
+            .write_buffer(self.dof_state.buffer_mut(), section, &interleaved)
+            .unwrap();
     }
 
     /// Diagnostic: packed dof state (velocities, then damping, then armature).

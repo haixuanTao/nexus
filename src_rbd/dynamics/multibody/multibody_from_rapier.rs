@@ -437,16 +437,19 @@ impl GpuMultibodySet {
             .unwrap(),
             dof_values: Tensor::vector(backend, &all_dof_vals, storage).unwrap(),
             dof_state: {
-                // Pack [velocities (N), damping (N), armature (N)] back-to-back
-                // where N = dofs_cap * num_batches. The damping section starts at
-                // `N` (`dof_damping_section_offset`) and the armature section at
-                // `2·N` (computed in-shader as `2 · dof_damping_section_offset`).
+                // Pack [velocities (N), damping (N), armature (N),
+                // frictionloss (N)] back-to-back, N = dofs_cap * num_batches.
+                // Sections at 0 / N (`dof_damping_section_offset`) / 2·N /
+                // 3·N (offsets computed in-shader from the damping offset).
+                // Frictionloss defaults to 0 (off) — set post-build via
+                // `set_dof_frictionloss` (rapier carries no such quantity).
                 let n = (dofs_cap * num_batches) as usize;
-                let mut buf = Vec::with_capacity(3 * n);
+                let mut buf = Vec::with_capacity(4 * n);
                 buf.extend_from_slice(&all_dof_vels);
                 buf.extend_from_slice(&all_dof_damping);
                 buf.extend_from_slice(&all_dof_armature);
-                debug_assert_eq!(buf.len(), 3 * n);
+                buf.resize(4 * n, 0.0);
+                debug_assert_eq!(buf.len(), 4 * n);
                 Tensor::vector(backend, &buf, storage).unwrap()
             },
             gen_forces: Tensor::vector(
