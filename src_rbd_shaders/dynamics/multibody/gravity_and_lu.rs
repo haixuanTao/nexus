@@ -88,7 +88,12 @@ fn apply_force_based_pd(
     let use_prev = tick < delay_k;
 
     for k in 0..num_links {
-        let stat = stat_slice[k as usize];
+        // Borrow, don't copy: `stat_slice[k]` by value materializes the whole
+        // MultibodyLinkStatic (motors, limits, mass props) into a per-thread
+        // stack slot every iteration — this function carried the 896-byte
+        // cumulative frame every gravity tier paid (measured 1.67x vs the
+        // WGPU build of the same kernel at quad12@8192).
+        let stat = &stat_slice[k as usize];
         if stat.kinematic != 0 {
             continue;
         }
@@ -105,9 +110,8 @@ fn apply_force_based_pd(
                 continue;
             }
             if (motor_axes & (1 << axis)) != 0 {
-                // By-value element load — cuda-oxide drops the dynamic index
-                // on `&motors[axis]` (see init_joint_constraints).
-                let motor = stat.data.motors[axis as usize];
+                // Constant-index load — see `joint_constraints::motor_at`.
+                let motor = super::joint_constraints::motor_at(stat, axis);
                 if motor.model == FORCE_BASED {
                     let q = ws_coord(links_workspace, wa, k, axis);
                     let abs_dof = stat.assembly_id + curr_free_dof;

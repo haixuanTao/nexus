@@ -36,7 +36,7 @@ use super::ws_soa::{WsAddr, ws_coord};
 /// amortized once per link, and A/B showed the per-site `match` branches cost
 /// ~3% there (quad12@8192 2.53M -> 2.46M) — the copies were the cheaper evil.
 #[inline(always)]
-fn limits_at(stat: &MultibodyLinkStatic, axis: u32) -> (f32, f32) {
+pub(crate) fn limits_at(stat: &MultibodyLinkStatic, axis: u32) -> (f32, f32) {
     let l = &stat.data.limits;
     #[cfg(feature = "dim3")]
     {
@@ -60,7 +60,7 @@ fn limits_at(stat: &MultibodyLinkStatic, axis: u32) -> (f32, f32) {
 }
 
 #[inline(always)]
-fn motor_at(stat: &MultibodyLinkStatic, axis: u32) -> crate::dynamics::joint::JointMotor {
+pub(crate) fn motor_at(stat: &MultibodyLinkStatic, axis: u32) -> crate::dynamics::joint::JointMotor {
     let m = &stat.data.motors;
     #[cfg(feature = "dim3")]
     {
