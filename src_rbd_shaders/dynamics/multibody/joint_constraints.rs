@@ -23,6 +23,45 @@ use super::types::{
 };
 use super::ws_soa::{WsAddr, ws_coord};
 
+/// Constant-index loads of `stat.data.limits[axis]` / `stat.data.motors[axis]`.
+///
+/// A runtime `arr[axis]` through a storage reference makes the cuda-oxide
+/// translator copy the WHOLE array into a per-thread stack slot and index the
+/// copy — measured as hundreds of bytes of local-memory frame per access site
+/// (6.5x on `gpu_mb_refresh_joint_constraints` vs the WGPU build). A `match`
+/// turns every index into a constant, so each arm is one direct global load.
+///
+/// Used in the PER-SUBSTEP refresh kernel only. The once-per-step emission
+/// kernel deliberately keeps the plain dynamic indexing: its stack copies are
+/// amortized once per link, and A/B showed the per-site `match` branches cost
+/// ~3% there (quad12@8192 2.53M -> 2.46M) — the copies were the cheaper evil.
+#[inline(always)]
+fn limits_at(stat: &MultibodyLinkStatic, axis: u32) -> (f32, f32) {
+    let l = &stat.data.limits;
+    match axis {
+        0 => (l[0].min, l[0].max),
+        1 => (l[1].min, l[1].max),
+        2 => (l[2].min, l[2].max),
+        3 => (l[3].min, l[3].max),
+        4 => (l[4].min, l[4].max),
+        _ => (l[5].min, l[5].max),
+    }
+}
+
+#[inline(always)]
+fn motor_at(stat: &MultibodyLinkStatic, axis: u32) -> crate::dynamics::joint::JointMotor {
+    let m = &stat.data.motors;
+    match axis {
+        0 => m[0],
+        1 => m[1],
+        2 => m[2],
+        3 => m[3],
+        4 => m[4],
+        _ => m[5],
+    }
+}
+
+
 /// Compute joint motor parameters mirroring rapier's `JointMotor::motor_params`.
 #[inline]
 fn motor_params(motor: &crate::dynamics::joint::JointMotor, dt: f32) -> (f32, f32, f32, f32, f32) {
@@ -271,31 +310,11 @@ pub fn gpu_mb_refresh_joint_constraints(
         // traffic per thread (measured 6.5x slower than the WGPU build of the
         // same kernel at 8192 envs). A `match` makes every index a constant,
         // so each arm is a direct global load of one element.
-        let (limit_min, limit_max) = {
-            let l = &stat.data.limits;
-            match axis {
-                0 => (l[0].min, l[0].max),
-                1 => (l[1].min, l[1].max),
-                2 => (l[2].min, l[2].max),
-                3 => (l[3].min, l[3].max),
-                4 => (l[4].min, l[4].max),
-                _ => (l[5].min, l[5].max),
-            }
-        };
+        let (limit_min, limit_max) = limits_at(stat, axis);
         let mut fresh = if old.kind == MB_JOINT_KIND_MOTOR {
             let locked = stat.data.locked_axes;
             let has_limits = (stat.data.limit_axes & !locked & (1 << axis)) != 0;
-            let motor = {
-                let m = &stat.data.motors;
-                match axis {
-                    0 => m[0],
-                    1 => m[1],
-                    2 => m[2],
-                    3 => m[3],
-                    4 => m[4],
-                    _ => m[5],
-                }
-            };
+            let motor = motor_at(stat, axis);
             build_motor_constraint(
                 old.dof_id,
                 link_id,
