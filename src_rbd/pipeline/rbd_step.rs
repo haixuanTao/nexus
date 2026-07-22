@@ -562,6 +562,12 @@ impl RbdPipeline {
             let collision_pairs_len = counts[0];
             let coloring_converged = counts[1];
             state.collision_pairs_len_cpu = collision_pairs_len;
+            // High-water mark of converged color counts, across the whole run
+            // so far. `shrink_max_colors_to_fit` sizes the captured solver
+            // loop from this rather than the instantaneous value: a scene
+            // captured mid-flight (no contacts yet) must still budget for
+            // the colors its densest landing needed.
+            state.colors_high_water = state.colors_high_water.max(coloring_converged);
 
             // TODO: Fit will act like Grow. To be able to auto-shrink the max color count, we need
             //       to readback the actual color count. This would also allow us to grow the color

@@ -250,6 +250,10 @@ pub struct RbdState {
     pub(super) prefix_sum_workspace: PrefixSumWorkspace,
     /// Maximum number of constraint colors the solver will iterate.
     pub(super) max_colors: u32,
+    /// Highest converged color count observed across the run (fed by the
+    /// auto-resize readback). Capture-time shrinking sizes from this, not the
+    /// instantaneous count, so an airborne capture still budgets for landing.
+    pub(super) colors_high_water: u32,
     /// `true` when every body is either non-dynamic or multibody-controlled
     /// (its rb-side `inv_mass` is zero) — i.e. every rigid-body CONTACT
     /// constraint is provably a no-op, so the contact-constraint pipeline
@@ -340,7 +344,12 @@ impl RbdState {
         let Some(&converged_colors) = flag.first() else {
             return false;
         };
-        let fitted = converged_colors.saturating_add(slack).max(2);
+        // Size from the run's high-water mark, not the instant: a capture
+        // taken while everything is airborne (zero contacts, trivial
+        // coloring) must still budget the colors the densest contact state
+        // needed. Keep a hard floor as belt-and-braces.
+        let observed = converged_colors.max(self.colors_high_water);
+        let fitted = observed.saturating_add(slack).max(4);
         if converged_colors == 0 || fitted >= self.max_colors {
             return false;
         }

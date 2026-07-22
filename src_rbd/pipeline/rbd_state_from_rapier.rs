@@ -897,6 +897,7 @@ impl RbdState {
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
             max_colors: capacities.solver_colors,
+            colors_high_water: 0,
             rb_contacts_inert,
             num_active_colliders: num_colliders as u32,
             num_active_bodies: num_bodies as u32,

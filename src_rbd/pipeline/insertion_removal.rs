@@ -328,6 +328,7 @@ impl RbdState {
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
             max_colors: capacities.solver_colors,
+            colors_high_water: 0,
             // Conservative: an empty state built incrementally runs the full
             // pipeline; only `from_rapier` proves inertness.
             rb_contacts_inert: false,
