@@ -28,6 +28,8 @@ use khal_std::sync::workgroup_memory_barrier_with_group_sync;
 
 use crate::dynamics::body::Velocity;
 use crate::gdot;
+use crate::DIM;
+use crate::sqrt as fsqrt;
 use crate::utils::BatchIndices;
 use crate::utils::linalg::MAX_MB_DOFS;
 
@@ -202,8 +204,24 @@ pub fn gpu_mb_solve_constraints(
             // `±μ · normal_impulse` (box friction), reading the paired normal
             // slot's CURRENT impulse from shared memory.
             let new_imp = if cons.kind == MB_CONTACT_KIND_TANGENT {
-                let limit =
-                    cons.friction_coeff * imp_shared[cons.normal_constraint_slot as usize];
+                let ns = cons.normal_constraint_slot as usize;
+                let mu_n = cons.friction_coeff * imp_shared[ns];
+                // Friction-CONE coupling (3D): budget this tangent by
+                // sqrt((μN)² − other_tangent²) instead of an independent
+                // ±μN box clamp — box friction over-grants combined
+                // tangential force by up to √2 at the corners, which makes
+                // sparse edge/corner contacts (e.g. a box-foot heel strike)
+                // read artificially grippy. Sequential PGS cone projection;
+                // a point's tangents sit at normal_slot+1 / +2. 2D's single
+                // tangent needs no coupling.
+                let limit = if DIM == 3 {
+                    let other = if s as usize == ns + 1 { ns + 2 } else { ns + 1 };
+                    let ot = imp_shared[other];
+                    let lim2 = mu_n * mu_n - ot * ot;
+                    if lim2 > 0.0 { fsqrt(lim2) } else { 0.0 }
+                } else {
+                    mu_n
+                };
                 if raw_imp > limit {
                     limit
                 } else if raw_imp < -limit {
@@ -576,7 +594,17 @@ pub fn gpu_mb_solve_contacts_delassus(
         let raw_imp = cfm_shared[s as usize] * (impulse - inv_lhs_shared[s as usize] * rhs_total);
 
         let new_imp = if kind == MB_CONTACT_KIND_TANGENT {
-            let limit = friction_shared[s as usize] * imp_shared[normal_slot as usize];
+            let mu_n = friction_shared[s as usize] * imp_shared[normal_slot as usize];
+            // Friction-cone coupling — see the dof-space sweep above.
+            let limit = if DIM == 3 {
+                let ns = normal_slot as usize;
+                let other = if s as usize == ns + 1 { ns + 2 } else { ns + 1 };
+                let ot = imp_shared[other];
+                let lim2 = mu_n * mu_n - ot * ot;
+                if lim2 > 0.0 { fsqrt(lim2) } else { 0.0 }
+            } else {
+                mu_n
+            };
             if raw_imp > limit {
                 limit
             } else if raw_imp < -limit {
