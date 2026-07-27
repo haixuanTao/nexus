@@ -24,7 +24,7 @@ readme = "README.md"
 exclude = ["**/.DS_Store"]
 
 [workspace.dependencies]
-glamx = { version = "0.3", default-features = false, features = ["nostd-libm", "bytemuck"] }
+glamx = { version = "0.3", default-features = false, features = ["nostd-libm", "bytemuck", "scalar-math"] }
 include_dir = "0.7"
 # Defaults OFF: the canonical device route is CUDA-OXIDE (prebuilt cubins via
 # tools/build_unified_cubins_local.sh + CUDA_OXIDE_SHADERS_PTX_* env). The
@@ -126,3 +126,6 @@ khal-builder = { path = "../khal-unified/crates/khal-builder" }
 # vortx fork, `vortx/unified` branch worktree — cuda-oxide device support.
 vortx = { path = "../vortx-unified" }
 vortx-shaders = { path = "../vortx-unified/vortx-shaders" }
+
+[patch."https://github.com/haixuanTao/cuda-oxide.git"]
+cuda-device = { path = "/home/baguette/cuda-oxide-upstreaming/crates/cuda-device" }
