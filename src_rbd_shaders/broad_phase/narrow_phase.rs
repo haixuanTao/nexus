@@ -158,7 +158,13 @@ pub fn gpu_reduce_contacts(
     }
 }
 
-pub(crate) const PREDICTION: f32 = 2.0e-3; // TODO: make the prediction configurable.
+// 2cm, PhysX contactOffset-style (was 2mm). With a stiff normal holding
+// equilibrium penetration ~0, a 2mm window drops a box foot's far-edge
+// corners at ~0.5deg tilt: the manifold collapses to ONE EDGE (zero pitch
+// moment capacity) and the foot rocks between edges — a G1 could never
+// stand. Speculative contacts (dist>0) exert no force until touch, so the
+// wider window only ADDS manifold points. TODO: make configurable.
+pub(crate) const PREDICTION: f32 = 2.0e-2;
 
 /// Narrow phase, pass 1 of 2: analytic shape-shape contacts for ball / cuboid
 /// pairs, written straight into the `contacts` buffer.
