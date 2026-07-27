@@ -448,6 +448,15 @@ impl GpuMultibodySolver {
             }
             // Contact-only work: indirect grid collapses to zero workgroups
             // on contact-free steps.
+            // NEXUS_CONTACT_SWEEPS: extra PGS sweeps over the contact rows per
+            // pass - converges the friction-cone force DISTRIBUTION (a single
+            // sweep leaves front rows cone-saturated while back rows are
+            // underused, the residual behind the standing creep). Default 1.
+            let sweeps: u32 = std::env::var("NEXUS_CONTACT_SWEEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            for _ in 0..sweeps.max(1) {
             self.solve_contacts_delassus.call(
                 pass,
                 // Fixed-grid on CUDA (indirect dispatch reads the grid
@@ -467,6 +476,7 @@ impl GpuMultibodySolver {
                 &mut mb.dof_state,
                 args.solver_vels,
             )?;
+            }
         } else if mb.has_joint_constraints {
             self.solve_constraints.call(
                 pass,

@@ -542,6 +542,15 @@ pub fn gpu_mb_solve_contacts_delassus(
         let cons = contact_constraints.read(cons_base + s as usize);
         imp_shared[s as usize] = cons.impulse;
         rhs_shared[s as usize] = if use_bias { cons.rhs } else { cons.rhs_wo_bias };
+        // Stiction anchor: pull the contact back toward where it gripped at the
+        // step's manifold build. Positional bias — with-bias pass only.
+        #[cfg(feature = "dim3")]
+        if use_bias && cons.kind == MB_CONTACT_KIND_TANGENT {
+            let gain = f32::from_bits(cons._pad4[0]);
+            let mc = f32::from_bits(cons._pad4[1]);
+            let b = cons._unused_cfm * gain;
+            rhs_shared[s as usize] += if b > mc { mc } else if b < -mc { -mc } else { b };
+        }
         inv_lhs_shared[s as usize] = cons.inv_lhs;
         cfm_shared[s as usize] = cons.cfm_factor;
         friction_shared[s as usize] = cons.friction_coeff;
@@ -651,6 +660,17 @@ pub fn gpu_mb_solve_contacts_delassus(
     for s in StepRng::new(lane..count, LANES) {
         let mut cons = contact_constraints.read(ccons_writeback_guard(cons_base, s));
         cons.impulse = imp_shared[s as usize];
+        // Stiction anchor: integrate this substep's residual tangential motion
+        // (a_shared[s] = J·u under the POST-solve velocities — kept current by
+        // the sweep's Delassus row updates) into the slip accumulator. Once per
+        // substep: on the stabilization (wo-bias) pass, which runs last.
+        #[cfg(feature = "dim3")]
+        if !use_bias && cons.kind == MB_CONTACT_KIND_TANGENT {
+            let gain = f32::from_bits(cons._pad4[0]);
+            if gain > 0.0 {
+                cons._unused_cfm += a_shared[s as usize] / gain;
+            }
+        }
         contact_constraints.write(ccons_writeback_guard(cons_base, s), cons);
     }
 }

@@ -558,8 +558,18 @@ pub fn gpu_mb_init_contact_constraints(
                     rhs_wo_bias: 0.0,
                     impulse: warmstart_tang_impulse,
                     cfm_factor,
+                    // STICTION ANCHOR: `_unused_cfm` is the accumulated tangential
+                    // slip (m) of this contact point since the step's manifold
+                    // build — integrated per substep by the Delassus solve kernel
+                    // and fed back as a positional friction bias (rapier's
+                    // (p1−p2)·t/dt term, computed as ∫J·v dt instead of anchor
+                    // points, which the GPU manifold does not store). Zeroed here
+                    // at every per-step rebuild = rapier's per-step anchor reset.
                     _unused_cfm: 0.0,
-                    _pad4: [0; 2],
+                    // Bias gain (1/dt′) and clamp for the slip feedback, bitcast
+                    // into the spare pads so the solve kernel needs no new
+                    // uniform binding.
+                    _pad4: [inv_dt.to_bits(), max_corr_velocity.to_bits()],
                 };
                 #[cfg(feature = "dim2")]
                 let tang_cons = MultibodyContactConstraint {
