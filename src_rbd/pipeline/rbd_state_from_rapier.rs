@@ -490,6 +490,12 @@ impl RbdState {
                 [0.0, -9.81, 0.0],
                 max_colliders as u32,
             );
+            // Plumb the CONFIGURED substep count before deriving the substep dt:
+            // the field defaults to 4 while the pipeline runs sp.num_solver_iterations
+            // (default 8) substeps — leaving every mb kernel integrating with 2x the
+            // true substep dt (and NaN at 16), inconsistent with the constraint
+            // softness computed from the correctly-divided params below.
+            mb.set_num_solver_iterations(num_solver_iterations);
             mb.set_visible_dt(backend, multibody_dt);
             // Soft contact coefficients (rapier TGS-soft) from the substep sim
             // params, so multibody-vs-floor contacts use the same soft ERP + CFM
