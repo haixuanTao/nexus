@@ -248,7 +248,7 @@ impl GpuMultibodySolver {
         // joint rhs / limit activity / accumulated impulse from the
         // integrated joint positions (a no-op on the first substep — the
         // once-per-step build just wrote those exact values).
-        if mb.implicit_coriolis {
+        if mb.implicit_coriolis || mb.substep_refresh {
             self.build_contact_constraints(encoder, timestamps.as_deref_mut(), mb, args)?;
         } else if mb.has_joint_constraints && !first_substep {
             let mut pass =
@@ -638,7 +638,7 @@ impl GpuMultibodySolver {
         //       `implicit_coriolis`. This further improves performances as that’s the main
         //       purpose of disabling the implicit handling of coriolis forces (and makes it
         //       closer to Mujoco/Genesis).
-        if !is_last_substep && mb.implicit_coriolis {
+        if !is_last_substep && (mb.implicit_coriolis || mb.substep_refresh) {
             self.compute_dynamics(pass, mb, args)?;
         }
 

@@ -50,6 +50,7 @@ pub struct GpuMultibodySet {
     /// matrix (implicit integration). When `false`, they are applied explicitly
     /// as part of the RHS.
     pub(super) implicit_coriolis: bool,
+    pub(super) substep_refresh: bool,
     /// When `false` (no joint limits / motors anywhere), the joint constraint
     /// kernel chain is skipped on the host side.
     pub(super) has_joint_constraints: bool,
@@ -300,6 +301,19 @@ impl GpuMultibodySet {
     /// Enable implicit integration of the Coriolis / gyroscopic terms. Implicit
     /// treatment stabilizes the integrator at large time-steps; the explicit
     /// form is slightly cheaper but can become unstable for fast rotations.
+    /// Per-substep refresh of the dynamics (M/LU/jacobians) and the full
+    /// joint+contact constraint rebuild while keeping the explicit
+    /// (coriolis-free) kernels — the dispatch cadence of implicit mode
+    /// without its mass-matrix coriolis augmentation. No effect when
+    /// `implicit_coriolis` is set (that mode already refreshes).
+    pub fn set_substep_refresh(&mut self, enabled: bool) {
+        self.substep_refresh = enabled;
+    }
+
+    pub fn substep_refresh(&self) -> bool {
+        self.substep_refresh
+    }
+
     pub fn set_implicit_coriolis(&mut self, enabled: bool) {
         self.implicit_coriolis = enabled;
     }
