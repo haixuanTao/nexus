@@ -412,7 +412,7 @@ pub fn gpu_mb_init_contact_constraints(
                 kind: MB_CONTACT_KIND_NORMAL,
                 free_body_id,
                 free_body_im: free_im,
-                friction_coeff: im.friction,
+                friction_coeff: erp_inv_dt, // normal rows: erp gain (μ unused)
                 normal_constraint_slot: normal_slot,
                 _pad0: 0,
                 lin_jac,
@@ -426,8 +426,15 @@ pub fn gpu_mb_init_contact_constraints(
                 rhs_wo_bias,
                 impulse: warmstart_normal_impulse,
                 cfm_factor,
-                _unused_cfm: 0.0,
-                _pad4: [0; 2],
+                // LIVE DEPTH TRACKING (explicit mode's per-substep contact
+                // refresh, no FK): `_unused_cfm` holds the corrected depth
+                // (dist + allowed_lin_err), integrated per substep by the
+                // solve kernel as depth += (J·v)·dt′. The bias is recomputed
+                // from it each substep — rapier's per-substep contact update
+                // without live poses. `friction_coeff` (unused on normal
+                // rows) carries erp_inv_dt; `_pad4` = (inv_dt, max_corr).
+                _unused_cfm: dist + allowed_lin_err,
+                _pad4: [inv_dt.to_bits(), max_corr_velocity.to_bits()],
             };
             #[cfg(feature = "dim2")]
             let normal_cons = MultibodyContactConstraint {

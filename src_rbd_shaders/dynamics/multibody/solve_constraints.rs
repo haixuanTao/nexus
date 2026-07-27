@@ -32,7 +32,7 @@ use crate::utils::BatchIndices;
 use crate::utils::linalg::MAX_MB_DOFS;
 
 use super::types::{
-    MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MB_CONTACT_KIND_TANGENT, MB_JOINT_KIND_LIMIT,
+    MAX_MB_CONTACT_CONSTRAINTS_PER_MB, MB_CONTACT_KIND_NORMAL, MB_CONTACT_KIND_TANGENT, MB_JOINT_KIND_LIMIT,
     MB_JOINT_KIND_MOTOR, MultibodyContactConstraint, MultibodyInfo, MultibodyJointConstraint,
 };
 
@@ -551,6 +551,20 @@ pub fn gpu_mb_solve_contacts_delassus(
             let b = cons._unused_cfm * gain;
             rhs_shared[s as usize] += if b > mc { mc } else if b < -mc { -mc } else { b };
         }
+        // Live-depth ERP (explicit mode's per-substep contact refresh): normal
+        // rows recompute their positional bias each substep from the integrated
+        // depth estimate (dist drifts as the link moves between manifold
+        // rebuilds — the stale per-step bias is what makes coarse sim steps
+        // topple a statically-loaded stance). friction_coeff on normal rows
+        // carries erp_inv_dt; _unused_cfm is (dist + allowed), integrated below.
+        #[cfg(feature = "dim3")]
+        if use_bias && cons.kind == MB_CONTACT_KIND_NORMAL {
+            let erp = cons.friction_coeff;
+            let mc = f32::from_bits(cons._pad4[1]);
+            let b = cons._unused_cfm * erp;
+            let bias = if b < -mc { -mc } else if b > 0.0 { 0.0 } else { b };
+            rhs_shared[s as usize] = cons.rhs_wo_bias + bias;
+        }
         inv_lhs_shared[s as usize] = cons.inv_lhs;
         cfm_shared[s as usize] = cons.cfm_factor;
         friction_shared[s as usize] = cons.friction_coeff;
@@ -665,9 +679,12 @@ pub fn gpu_mb_solve_contacts_delassus(
         // the sweep's Delassus row updates) into the slip accumulator. Once per
         // substep: on the stabilization (wo-bias) pass, which runs last.
         #[cfg(feature = "dim3")]
-        if !use_bias && cons.kind == MB_CONTACT_KIND_TANGENT {
+        if !use_bias
+            && (cons.kind == MB_CONTACT_KIND_TANGENT || cons.kind == MB_CONTACT_KIND_NORMAL)
+        {
             let gain = f32::from_bits(cons._pad4[0]);
             if gain > 0.0 {
+                // tangent: slip += J·v·dt′ ; normal: depth += J·v·dt′
                 cons._unused_cfm += a_shared[s as usize] / gain;
             }
         }
