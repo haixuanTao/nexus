@@ -409,6 +409,7 @@ impl GpuMultibodySet {
             i_coriolis_dt_entries_per_batch: icdt_cap,
             implicit_coriolis: true,
             substep_refresh: false,
+            substep_refresh_light: false,
             has_joint_constraints: all_infos.iter().any(|info| info.max_constraints > 0),
 
             multibody_info: Tensor::vector(backend, &all_infos, storage).unwrap(),

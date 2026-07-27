@@ -51,6 +51,7 @@ pub struct GpuMultibodySet {
     /// as part of the RHS.
     pub(super) implicit_coriolis: bool,
     pub(super) substep_refresh: bool,
+    pub(super) substep_refresh_light: bool,
     /// When `false` (no joint limits / motors anywhere), the joint constraint
     /// kernel chain is skipped on the host side.
     pub(super) has_joint_constraints: bool,
@@ -312,6 +313,15 @@ impl GpuMultibodySet {
 
     pub fn substep_refresh(&self) -> bool {
         self.substep_refresh
+    }
+
+    /// Light split-cadence refresh: rebuild the joint+contact constraints
+    /// (anchors, depth, jacobian rows, columns) every substep, but keep the
+    /// heavy dynamics recompute (M / LU / body jacobians) at the explicit
+    /// once-per-sim-step cadence. Columns are computed against the step-start
+    /// LU — slowly varying — while the bias/anchor terms track substep poses.
+    pub fn set_substep_refresh_light(&mut self, enabled: bool) {
+        self.substep_refresh_light = enabled;
     }
 
     pub fn set_implicit_coriolis(&mut self, enabled: bool) {
