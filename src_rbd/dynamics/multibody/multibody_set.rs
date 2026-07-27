@@ -635,6 +635,10 @@ impl GpuMultibodySet {
     }
 
     /// Diagnostic: packed dof state (velocities, then damping, then armature).
+    pub fn dbg_body_jacobians(&self) -> &Tensor<f32> {
+        &self.body_jacobians
+    }
+
     pub fn dbg_dof_state(&self) -> &Tensor<f32> {
         &self.dof_state
     }

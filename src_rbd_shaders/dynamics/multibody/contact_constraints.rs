@@ -19,6 +19,9 @@ use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use crate::dynamics::ConstraintSoftness;
+use super::ws_soa::{ws_pose, WsAddr, WS_LTW};
+use khal_std::glamx::Vec4;
+use super::types::MultibodyLinkStatic;
 use crate::dynamics::body::{Velocity, WorldMassProperties};
 use crate::dynamics::joint::SPATIAL_DIM;
 use crate::queries::IndexedManifold;
@@ -151,6 +154,9 @@ pub fn gpu_mb_init_contact_constraints(
     #[spirv(storage_buffer, descriptor_set = 1, binding = 0)] mprops: &[WorldMassProperties],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 1)] poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 1, binding = 2)] contacts: &[IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 3)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 1, binding = 4)] links_workspace: &[Vec4],
     #[spirv(uniform, descriptor_set = 0, binding = 6)] batch_ids: &BatchIndices,
 ) {
     // Only ACTIVE multibody slots are visited now; the `ndofs == 0` sentinel
@@ -273,23 +279,26 @@ pub fn gpu_mb_init_contact_constraints(
         };
         let free_im = if is_self { 0.0 } else { free_mp.inv_mass.x };
 
-        // Multibody-link origins come from the collider poses buffer instead
-        // of `links_workspace` (which we no longer bind in this kernel — see
-        // binding-count cap discussion). This uses the contacting collider's
-        // world translation as a proxy for its link's world origin. It is exact
-        // when the collider sits at the link origin (the historical one-collider
-        // case); for a link carrying a collider offset from its origin the
-        // angular lever arm `pt_world - link_origin_a` is off by that offset.
-        // Binding `body_poses` here to use the true link origin would exceed the
-        // 10-storage-buffer cap — left as a follow-up. `mb_link_id_a` always
-        // corresponds to side `id1`/`b1` when `mb_on_1 || is_self`, and to
-        // `id2`/`b2` otherwise. `mb_link_id_b` is only used in the self-contact
-        // case where it corresponds to `id2`.
-        let link_origin_a = if is_self || mb_on_1 {
-            pose1.translation
-        } else {
-            pose2.translation
-        };
+        // Angular lever-arm reference: rapier's multibody body-jacobians
+        // measure link linear velocity at the link's WORLD COM, so contact
+        // lever arms must be `pt_world - link_world_com` (see rapier
+        // generic_joint_constraint_builder: "the lever arms must be taken
+        // relative to the world com"). The previous proxy — the contacting
+        // COLLIDER's world translation — is off by the collider's offset from
+        // the link COM (~4.6cm for the G1 foot box → 30-50% ankle-row torque
+        // error; the multibody-statics topple). The world COM is available in
+        // the already-bound `mprops` buffer, indexed by BODY id exactly like
+        // the free side below. `mb_link_id_a` always corresponds to side
+        // `id1`/`b1` when `mb_on_1 || is_self`, and to `id2`/`b2` otherwise.
+        // `mb_link_id_b` is only used in the self-contact case (side `id2`).
+        // True reference: the MB link's world COM = ltw(link) * local_mprops.com
+        // — the exact point the body jacobians are referenced at. (The rigid-
+        // body mprops com is polluted by collider-density contributions and the
+        // collider translation proxy before it was off by the collider offset.)
+        let wa = WsAddr::new(mb.first_link as usize, batch_ids.num_batches, batch_id);
+        let stat_slice = batch_ids.ib(batch_id, links_static).offset(mb.first_link as usize);
+        let link_origin_a = ws_pose(links_workspace, wa, mb_link_id_a, WS_LTW)
+            * stat_slice[mb_link_id_a as usize].local_mprops.com;
         let link_origin_b_default = link_origin_a;
 
         for k in 0..im.contact.len {
@@ -360,7 +369,8 @@ pub fn gpu_mb_init_contact_constraints(
                 // Self-contact: B-side link is the collider at `id2`, so its
                 // world pose is `pose2` (already loaded). Avoids a
                 // `links_workspace` binding.
-                let link_origin_b = pose2.translation;
+                let link_origin_b = ws_pose(links_workspace, wa, mb_link_id_b, WS_LTW)
+                    * stat_slice[mb_link_id_b as usize].local_mprops.com;
                 let _ = link_origin_b_default;
                 let shift_b = pt_world - link_origin_b;
                 let torque_b_normal = gcross(shift_b, lin_jac);
@@ -504,7 +514,8 @@ pub fn gpu_mb_init_contact_constraints(
                 );
 
                 let (ang_jac_tang, ii_ang_jac_tang) = if is_self {
-                    let link_origin_b = pose2.translation;
+                    let link_origin_b = ws_pose(links_workspace, wa, mb_link_id_b, WS_LTW)
+                    * stat_slice[mb_link_id_b as usize].local_mprops.com;
                     let shift_b = pt_world - link_origin_b;
                     let torque_b_tang = gcross(shift_b, free_tangent);
                     fill_contact_jac_row(
