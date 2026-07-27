@@ -196,7 +196,16 @@ pub fn gpu_mb_solve_constraints(
             let impulse = imp_shared[s as usize];
             let rhs_total = j_dot_v + rhs;
             // CFM-factor form (rapier's `*ContactConstraintNormalPart::generic_solve`).
-            let raw_imp = cons.cfm_factor * (impulse - cons.inv_lhs * rhs_total);
+            // NORMAL ONLY: rapier's TangentPart::solve has no cfm_factor — friction
+            // is rigid. Applying the soft-contact cfm to tangents multiplied the
+            // effective μ by cfm_factor (≈0.02 at the NF=30/ζ=5 config): μ_eff≈0.03
+            // regardless of collider friction — the standing-creep bug.
+            let unsoft_imp = impulse - cons.inv_lhs * rhs_total;
+            let raw_imp = if cons.kind == MB_CONTACT_KIND_TANGENT {
+                unsoft_imp
+            } else {
+                cons.cfm_factor * unsoft_imp
+            };
 
             // Normal: clamp to ≥ 0. Friction tangent: clamp to
             // `±μ · normal_impulse` (box friction), reading the paired normal
@@ -573,7 +582,13 @@ pub fn gpu_mb_solve_contacts_delassus(
         let impulse = imp_shared[s as usize];
         let rhs_total = a_shared[s as usize] + rhs_shared[s as usize];
         // CFM-factor form (rapier's `*ContactConstraintNormalPart::generic_solve`).
-        let raw_imp = cfm_shared[s as usize] * (impulse - inv_lhs_shared[s as usize] * rhs_total);
+        // NORMAL ONLY — see the scalar sweep above: friction tangents are rigid.
+        let unsoft_imp = impulse - inv_lhs_shared[s as usize] * rhs_total;
+        let raw_imp = if kind == MB_CONTACT_KIND_TANGENT {
+            unsoft_imp
+        } else {
+            cfm_shared[s as usize] * unsoft_imp
+        };
 
         let new_imp = if kind == MB_CONTACT_KIND_TANGENT {
             let limit = friction_shared[s as usize] * imp_shared[normal_slot as usize];
