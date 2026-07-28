@@ -784,6 +784,16 @@ impl NexusPipeline {
         self.0.replay_rbd_graph().map_err(gpu_err)
     }
 
+    /// Headless `capture_cuda_graph` (viewerless backend).
+    #[cfg(feature = "cuda")]
+    fn capture_cuda_graph_headless(
+        &mut self,
+        backend: PyRef<NexusBackend>,
+        mut state: PyRefMut<NexusState>,
+    ) -> PyResult<bool> {
+        pollster::block_on(self.0.capture_rbd_graph(&backend.0, &mut state.0)).map_err(gpu_err)
+    }
+
     /// Compiles all GPU pipelines up-front on a viewerless backend.
     fn preload_pipelines_headless(&mut self, backend: PyRef<NexusBackend>) -> PyResult<()> {
         self.0
