@@ -432,6 +432,18 @@ pub fn opaque_bound(n: u32) -> u32 {
 /// `black_box` makes the condition unhoistable, keeping ONE loop body with
 /// uniform barrier placement. Pass-through on SPIR-V (no `black_box` on
 /// rust-gpu; naga's uniformity analysis already rejects unsound placement).
+/// `(x / d, x % d)` through a `NonZeroU32` divisor so rustc emits NO
+/// division-by-zero panic branch. The panic edge is not academic: naga's
+/// structurizer lowers it into an early exit that SKIPS every later
+/// workgroup barrier, which browser WGSL uniformity validation rejects
+/// outright (and which would be a real barrier-divergence hazard if ever
+/// taken). `d == 0` maps to divisor 1 — callers never pass 0 in practice.
+#[inline(always)]
+pub fn div_rem_nz(x: u32, d: u32) -> (u32, u32) {
+    let d = core::num::NonZeroU32::new(d).unwrap_or(core::num::NonZeroU32::MIN);
+    (x / d, x % d)
+}
+
 #[inline(always)]
 pub fn opaque_u32(x: u32) -> u32 {
     // See `opaque_bound` for the backend split.

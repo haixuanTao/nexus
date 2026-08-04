@@ -31,10 +31,11 @@ use super::ws_soa::{WsAddr, ws_coord};
 /// (6.5x on `gpu_mb_refresh_joint_constraints` vs the WGPU build). A `match`
 /// turns every index into a constant, so each arm is one direct global load.
 ///
-/// Used in the PER-SUBSTEP refresh kernel only. The once-per-step emission
-/// kernel deliberately keeps the plain dynamic indexing: its stack copies are
-/// amortized once per link, and A/B showed the per-site `match` branches cost
-/// ~3% there (quad12@8192 2.53M -> 2.46M) — the copies were the cheaper evil.
+/// Used by the per-substep refresh kernel AND the once-per-step emission walk.
+/// (The emission walk originally kept plain dynamic indexing — the `match` cost
+/// ~3% on CUDA at quad12@8192 — but the `arr[axis]` bounds check is a panic
+/// edge that naga lowers into a break past the kernel's barriers, which the
+/// browser's WGSL uniformity analysis rejects; panic-free wins.)
 #[inline(always)]
 pub(crate) fn limits_at(stat: &MultibodyLinkStatic, axis: u32) -> (f32, f32) {
     let l = &stat.data.limits;
@@ -174,8 +175,11 @@ fn emit_joint_constraints(
 
             if (motor_axes & (1 << axis)) != 0 {
                 let has_limits = (limit_axes & (1 << axis)) != 0;
-                let limit_min = stat.data.limits[axis as usize].min;
-                let limit_max = stat.data.limits[axis as usize].max;
+                // Constant-index loads (`limits_at`/`motor_at`): the plain
+                // `arr[axis]` bounds check is a panic edge naga lowers into a
+                // break past the kernel's barriers — Tint (browser WGSL)
+                // rejects the whole module.
+                let (limit_min, limit_max) = limits_at(stat, axis);
                 let cons = build_motor_constraint(
                     abs_dof,
                     k,
@@ -183,9 +187,7 @@ fn emit_joint_constraints(
                     curr_pos,
                     inv_dt,
                     dt,
-                    // By-value element load — CUDA codegen drops the dynamic
-                    // index on `&motors[axis]` (fork-documented; faults).
-                    &{ stat.data.motors[axis as usize] },
+                    &motor_at(stat, axis),
                     has_limits,
                     limit_min,
                     limit_max,
@@ -194,15 +196,13 @@ fn emit_joint_constraints(
                 slot += 1;
             }
             if (limit_axes & (1 << axis)) != 0 {
+                let (limit_min, limit_max) = limits_at(stat, axis);
                 let cons = build_limit_constraint(
                     abs_dof,
                     k,
                     axis,
                     curr_pos,
-                    [
-                        stat.data.limits[axis as usize].min,
-                        stat.data.limits[axis as usize].max,
-                    ],
+                    [limit_min, limit_max],
                     joint_erp_inv_dt,
                     joint_cfm_coeff,
                 );
@@ -221,15 +221,13 @@ fn emit_joint_constraints(
             let curr_pos = ws_coord(links_workspace, wa, k, axis);
 
             if (limit_axes & (1 << axis)) != 0 {
+                let (limit_min, limit_max) = limits_at(stat, axis);
                 let cons = build_limit_constraint(
                     abs_dof,
                     k,
                     axis,
                     curr_pos,
-                    [
-                        stat.data.limits[axis as usize].min,
-                        stat.data.limits[axis as usize].max,
-                    ],
+                    [limit_min, limit_max],
                     joint_erp_inv_dt,
                     joint_cfm_coeff,
                 );
@@ -238,8 +236,7 @@ fn emit_joint_constraints(
             }
             if (motor_axes & (1 << axis)) != 0 {
                 let has_limits = (limit_axes & (1 << axis)) != 0;
-                let limit_min = stat.data.limits[axis as usize].min;
-                let limit_max = stat.data.limits[axis as usize].max;
+                let (limit_min, limit_max) = limits_at(stat, axis);
                 let cons = build_motor_constraint(
                     abs_dof,
                     k,
@@ -247,9 +244,7 @@ fn emit_joint_constraints(
                     curr_pos,
                     inv_dt,
                     dt,
-                    // By-value element load — CUDA codegen drops the dynamic
-                    // index on `&motors[axis]` (fork-documented; faults).
-                    &{ stat.data.motors[axis as usize] },
+                    &motor_at(stat, axis),
                     has_limits,
                     limit_min,
                     limit_max,
@@ -574,18 +569,17 @@ pub fn gpu_mb_init_joint_constraints(
     let mb_idx = workgroup_id.x;
     let lane = local_id.x;
     let num_mb = batch_ids.multibodies_len;
-    if mb_idx >= num_mb {
-        return;
-    }
 
     let mb = batch_ids
         .ib(batch_id, multibody_info)
         .read(mb_idx as usize);
     let ndofs = mb.ndofs;
-    // Uniform per workgroup: every lane of this group returns together.
-    if ndofs == 0 {
-        return;
-    }
+    // Inactive (padding) workgroups must NOT return early: the barriers below
+    // have to stay in provably-uniform control flow for browser WGSL
+    // validation (naga lowers an early return into a branch that skips them —
+    // Tint then rejects the whole module). Guard the WORK on `live` instead;
+    // for an active workgroup the behavior is identical.
+    let live = mb_idx < num_mb && ndofs != 0;
 
     let mb_mm_base = mb.mass_matrix_offset as usize;
     let piv = batch_ids.ivec(batch_id, mb.first_dof as usize);
@@ -600,12 +594,15 @@ pub fn gpu_mb_init_joint_constraints(
         + (mb.first_constraint as usize) * dofs_stride;
     let m = batch_ids.imat(batch_id, mb_mm_base, ndofs, ndofs);
 
-    // Stage 1 — lane-parallel slot reset.
-    for s in StepRng::new(lane..mb.max_constraints, LANES) {
-        let mut cz: MultibodyJointConstraint = joint_constraints.read(cons_base + s as usize);
-        cz.kind = 0;
-        cz.impulse = 0.0;
-        joint_constraints.write(cons_base + s as usize, cz);
+    // Stage 1 — lane-parallel slot reset (no barrier inside, so the `live`
+    // guard is uniformity-safe).
+    if live {
+        for s in StepRng::new(lane..mb.max_constraints, LANES) {
+            let mut cz: MultibodyJointConstraint = joint_constraints.read(cons_base + s as usize);
+            cz.kind = 0;
+            cz.impulse = 0.0;
+            joint_constraints.write(cons_base + s as usize, cz);
+        }
     }
 
     // All-storage-memory barrier reached uniformly by every lane. QueueFamily
@@ -621,7 +618,7 @@ pub fn gpu_mb_init_joint_constraints(
     >();
 
     // Stage 2 — serial metadata emission on lane 0.
-    if lane == 0 {
+    if lane == 0 && live {
         emit_joint_constraints(
             links_static,
             links_workspace,
@@ -652,6 +649,9 @@ pub fn gpu_mb_init_joint_constraints(
     // is large (∝ 1/(dt²·stiffness)), so the fold dominates and makes the
     // effective gain inertia-independent — without it the servo is far too
     // weak and the robot sags).
+    if !live {
+        return;
+    }
     for s in StepRng::new(lane..mb.max_constraints, LANES) {
         let mut cons = joint_constraints.read(cons_base + s as usize);
         if cons.kind == 0 {

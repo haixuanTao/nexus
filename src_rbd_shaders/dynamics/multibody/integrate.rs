@@ -41,8 +41,7 @@ pub fn gpu_mb_integrate_velocities(
     if invocation_id.x >= num_mb * batch_ids.num_batches {
         return;
     }
-    let batch_id = invocation_id.x / num_mb;
-    let mb_idx = invocation_id.x % num_mb;
+    let (batch_id, mb_idx) = crate::div_rem_nz(invocation_id.x, num_mb);
     let dt = *dt_uniform;
 
     let mb = batch_ids
@@ -80,8 +79,7 @@ pub fn gpu_mb_integrate(
     if invocation_id.x >= num_mb * batch_ids.num_batches {
         return;
     }
-    let batch_id = invocation_id.x / num_mb;
-    let mb_idx = invocation_id.x % num_mb;
+    let (batch_id, mb_idx) = crate::div_rem_nz(invocation_id.x, num_mb);
     let dt = *dt_uniform;
 
     let mb = batch_ids

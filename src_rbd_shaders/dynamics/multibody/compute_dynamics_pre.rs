@@ -56,8 +56,7 @@ fn sync_slots(t: u32) {
 #[inline(always)]
 fn packed_decode(wg_id: UVec3, lid: UVec3, batch_ids: &BatchIndices) -> (u32, u32, u32, u32, bool) {
     let t = batch_ids.mb_pack_lanes;
-    let slot = lid.x / t;
-    let lane = lid.x % t;
+    let (slot, lane) = crate::div_rem_nz(lid.x, t);
     let slots = 64 / t;
 
     let num_mb = batch_ids.multibodies_len;
@@ -65,8 +64,7 @@ fn packed_decode(wg_id: UVec3, lid: UVec3, batch_ids: &BatchIndices) -> (u32, u3
     let global_mb = wg_id.x * slots + slot;
     let active_slot = global_mb < total_mb;
     let clamped_mb = if active_slot { global_mb } else { total_mb - 1 };
-    let batch_id = clamped_mb / num_mb;
-    let mb_idx = clamped_mb % num_mb;
+    let (batch_id, mb_idx) = crate::div_rem_nz(clamped_mb, num_mb);
     (t, lane, batch_id, mb_idx, active_slot)
 }
 
@@ -105,7 +103,7 @@ pub fn gpu_mb_compute_dynamics_pre(
     #[cfg(feature = "dim2")]
     let _ = chain_buf;
     #[cfg(feature = "dim3")]
-    let chain_base = ((lid.x / t) * 33) as usize;
+    let chain_base = (crate::div_rem_nz(lid.x, t).0 * 33) as usize;
 
     let dt = *dt_uniform;
 
@@ -620,7 +618,7 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[cfg(feature = "dim2")]
     let _ = chain_buf;
     #[cfg(feature = "dim3")]
-    let chain_base = ((lid.x / t) * 33) as usize;
+    let chain_base = (crate::div_rem_nz(lid.x, t).0 * 33) as usize;
 
     let dt = *dt_uniform;
 

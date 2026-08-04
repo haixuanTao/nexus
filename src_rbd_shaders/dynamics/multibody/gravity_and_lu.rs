@@ -121,8 +121,12 @@ fn apply_force_based_pd(
                     } else {
                         motor.target_pos
                     };
+                    // max/min instead of `clamp`: clamp's `min <= max` assert
+                    // is a panic edge, which naga lowers to a break past the
+                    // downstream barriers (Tint then rejects the module).
                     let tau = (motor.stiffness * (target - q) - motor.damping * v)
-                        .clamp(-motor.max_force, motor.max_force);
+                        .max(-motor.max_force)
+                        .min(motor.max_force);
                     let idx = batch_ids.mbi(batch_id, gen_base + abs_dof as usize);
                     gen_forces.write(idx, gen_forces.read(idx) + tau);
                 }
@@ -173,8 +177,16 @@ pub fn gpu_mb_gravity_and_lu(
     let mb_idx = wg_id.x;
     let lane = lid.x;
     // Uniform-sourced loop bounds (see `BatchIndices::mb_max_ndofs`).
-    let max_ndofs = batch_ids.mb_max_ndofs;
-    let max_links = batch_ids.mb_max_links;
+    // strict_uniformity (wasm): compile-time bounds — Tint rejects barrier
+    // loops bounded by ANY buffer read (naga lowers them through private
+    // variables); the per-mb inner guards keep the work identical.
+    #[cfg(not(feature = "strict_uniformity"))]
+    let (max_ndofs, max_links) = (batch_ids.mb_max_ndofs, batch_ids.mb_max_links);
+    #[cfg(feature = "strict_uniformity")]
+    let (max_ndofs, max_links) = (
+        crate::utils::linalg::MAX_MB_DOFS as u32,
+        crate::utils::linalg::MAX_MB_DOFS as u32,
+    );
 
     let mb = batch_ids
         .ib(batch_id, multibody_info)
@@ -454,12 +466,19 @@ fn gravity_and_lu_packed_impl<const T: u32, const MATN: usize, const SLOTS: usiz
     // Clamped so index math stays in-bounds for inactive slots; their loops
     // all no-op (dummy `mb`) and every store is guarded.
     let clamped_mb = if active_slot { global_mb } else { total_mb - 1 };
-    let batch_id = clamped_mb / num_mb;
-    let mb_idx = clamped_mb % num_mb;
+    let (batch_id, mb_idx) = crate::div_rem_nz(clamped_mb, num_mb);
 
     // Uniform-sourced loop bounds (see `BatchIndices::mb_max_ndofs`).
-    let max_ndofs = batch_ids.mb_max_ndofs;
-    let max_links = batch_ids.mb_max_links;
+    // strict_uniformity (wasm): compile-time bounds — Tint rejects barrier
+    // loops bounded by ANY buffer read (naga lowers them through private
+    // variables it can't prove uniform). `T` is a safe over-bound: the tier
+    // is selected so `max_ndofs <= T`, and a floating-base chain's link count
+    // never exceeds its DoF count. Per-mb inner guards keep the actual work
+    // identical; extra iterations only pace idle barriers.
+    #[cfg(not(feature = "strict_uniformity"))]
+    let (max_ndofs, max_links) = (batch_ids.mb_max_ndofs, batch_ids.mb_max_links);
+    #[cfg(feature = "strict_uniformity")]
+    let (max_ndofs, max_links) = (T, T);
 
     let mb = if active_slot {
         batch_ids
@@ -744,8 +763,7 @@ pub fn gpu_mb_gravity_and_lu_t1(
     if invocation_id.x >= num_mb * batch_ids.num_batches {
         return;
     }
-    let batch_id = invocation_id.x / num_mb;
-    let mb_idx = invocation_id.x % num_mb;
+    let (batch_id, mb_idx) = crate::div_rem_nz(invocation_id.x, num_mb);
 
     let mb = batch_ids
         .ib(batch_id, multibody_info)

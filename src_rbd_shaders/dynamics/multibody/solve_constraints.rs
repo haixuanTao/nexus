@@ -108,10 +108,10 @@ pub fn gpu_mb_solve_constraints(
     // workgroup memory. Impulses stay shared for the whole sweep so the
     // tangent clamp can read its normal's impulse without a storage fence.
     if lane < ndofs {
-        dof_v[lane as usize] = dof_state.read(batch_ids.mbi(batch_id, v_base + lane as usize));
+        dof_v.write(lane as usize, dof_state.read(batch_ids.mbi(batch_id, v_base + lane as usize)));
     }
     for s in StepRng::new(lane..contact_count, LANES) {
-        imp_shared[s as usize] = contact_constraints.read(ccons_base + s as usize).impulse;
+        imp_shared.write(s as usize, contact_constraints.read(ccons_base + s as usize).impulse);
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -130,7 +130,7 @@ pub fn gpu_mb_solve_constraints(
         }
 
         let rhs = if use_bias { cons.rhs } else { cons.rhs_wo_bias };
-        let v_d = dof_v[cons.dof_id as usize];
+        let v_d = dof_v.read(cons.dof_id as usize);
         let rhs_total = v_d + rhs;
         let raw_imp = cons.impulse + cons.inv_lhs * (rhs_total - cons.cfm_gain * cons.impulse);
         let mut new_imp = raw_imp;
@@ -153,7 +153,7 @@ pub fn gpu_mb_solve_constraints(
         if lane < ndofs {
             let col = joint_constraint_columns
                 .read(jcol_base + (s as usize) * dofs_stride + lane as usize);
-            dof_v[lane as usize] -= delta * col;
+            dof_v.write(lane as usize, dof_v.read(lane as usize) - (delta * col));
         }
         workgroup_memory_barrier_with_group_sync();
     }
@@ -169,17 +169,17 @@ pub fn gpu_mb_solve_constraints(
 
         // Multibody side of J · u, one product per lane; lane 0 sums them in
         // DOF order (bit-identical to the old serial accumulation).
-        scratch[lane as usize] = if lane < ndofs {
-            contact_constraint_jacs.read(col_offset + lane as usize) * dof_v[lane as usize]
+        scratch.write(lane as usize, if lane < ndofs {
+            contact_constraint_jacs.read(col_offset + lane as usize) * dof_v.read(lane as usize)
         } else {
             0.0
-        };
+        });
         workgroup_memory_barrier_with_group_sync();
 
         if lane == 0 {
             let mut j_dot_v = 0.0f32;
             for i in 0..ndofs {
-                j_dot_v += scratch[i as usize];
+                j_dot_v += scratch.read(i as usize);
             }
             // Free-body side stays lane-0-local (reads its own prior writes in
             // program order, so no storage fence is needed within the sweep).
@@ -193,7 +193,7 @@ pub fn gpu_mb_solve_constraints(
             }
 
             let rhs = if use_bias { cons.rhs } else { cons.rhs_wo_bias };
-            let impulse = imp_shared[s as usize];
+            let impulse = imp_shared.read(s as usize);
             let rhs_total = j_dot_v + rhs;
             // CFM-factor form (rapier's `*ContactConstraintNormalPart::generic_solve`).
             // NORMAL ONLY: rapier's TangentPart::solve has no cfm_factor — friction
@@ -212,7 +212,7 @@ pub fn gpu_mb_solve_constraints(
             // slot's CURRENT impulse from shared memory.
             let new_imp = if cons.kind == MB_CONTACT_KIND_TANGENT {
                 let limit =
-                    cons.friction_coeff * imp_shared[cons.normal_constraint_slot as usize];
+                    cons.friction_coeff * imp_shared.read(cons.normal_constraint_slot as usize);
                 if raw_imp > limit {
                     limit
                 } else if raw_imp < -limit {
@@ -226,7 +226,7 @@ pub fn gpu_mb_solve_constraints(
                 raw_imp
             };
             let delta = new_imp - impulse;
-            imp_shared[s as usize] = new_imp;
+            imp_shared.write(s as usize, new_imp);
             // Broadcast through a dedicated slot (NOT `scratch[0]`): the next
             // iteration's product writes into `scratch` must not race with the
             // other lanes' read of the broadcast below, and keeping them on
@@ -249,7 +249,7 @@ pub fn gpu_mb_solve_constraints(
         let delta = *delta_shared;
         if delta != 0.0 && lane < ndofs {
             let col = contact_constraint_columns.read(col_offset + lane as usize);
-            dof_v[lane as usize] += delta * col;
+            dof_v.write(lane as usize, dof_v.read(lane as usize) + (delta * col));
         }
     }
 
@@ -259,12 +259,12 @@ pub fn gpu_mb_solve_constraints(
     if lane < ndofs {
         dof_state.write(
             batch_ids.mbi(batch_id, v_base + lane as usize),
-            dof_v[lane as usize],
+            dof_v.read(lane as usize),
         );
     }
     for s in StepRng::new(lane..contact_count, LANES) {
         let mut cons = contact_constraints.read(ccons_base + s as usize);
-        cons.impulse = imp_shared[s as usize];
+        cons.impulse = imp_shared.read(s as usize);
         contact_constraints.write(ccons_base + s as usize, cons);
     }
 }
@@ -316,16 +316,13 @@ pub fn gpu_mb_solve_joints(
     let mb_idx = workgroup_id.x;
     let lane = local_id.x;
     let num_mb = batch_ids.multibodies_len;
-    if mb_idx >= num_mb {
-        return;
-    }
 
     let mb = multibody_info.read(batch_ids.mbi(batch_id, mb_idx as usize));
     let ndofs = mb.ndofs;
-    // Uniform per workgroup: every lane of this group returns together.
-    if ndofs == 0 || mb.max_constraints == 0 {
-        return;
-    }
+    // No early returns before the barriers: naga lowers them into breaks that
+    // jump past the barriers, and Tint (browser WGSL) then rejects the whole
+    // module. Guard the WORK on `live`; barriers run unconditionally.
+    let live = mb_idx < num_mb && ndofs != 0 && mb.max_constraints != 0;
     let use_bias = *use_bias != 0;
 
     let v_base = mb.first_dof as usize;
@@ -335,23 +332,35 @@ pub fn gpu_mb_solve_joints(
     let jcol_base = batch_ids.mb_joint_constraint_columns_start(batch_id)
         + (mb.first_constraint as usize) * dofs_stride;
 
-    if lane < ndofs {
-        dof_v[lane as usize] = dof_state.read(batch_ids.mbi(batch_id, v_base + lane as usize));
+    if live && lane < ndofs {
+        dof_v.write(lane as usize, dof_state.read(batch_ids.mbi(batch_id, v_base + lane as usize)));
     }
     workgroup_memory_barrier_with_group_sync();
 
-    for s in 0..mb.max_constraints {
+    // The loop carries barriers, so its bound must be provably uniform for the
+    // browser's WGSL analysis: `mb.max_constraints` is a storage read (Tint
+    // treats those as non-uniform), so the strict build loops to the
+    // uniform-sourced batch capacity and guards the work on the real count.
+    #[cfg(feature = "strict_uniformity")]
+    let bound = batch_ids.mb_joint_constraints_batch_capacity;
+    #[cfg(not(feature = "strict_uniformity"))]
+    let bound = mb.max_constraints;
+    for s in 0..bound {
         // Every lane reads the same constraint: all per-constraint scalars
-        // below are workgroup-uniform, so no broadcast is needed.
-        let cons = joint_constraints.read(jcons_base + s as usize);
-        if cons.kind != MB_JOINT_KIND_LIMIT && cons.kind != MB_JOINT_KIND_MOTOR {
-            // Unused slot or inactive limit. Uniform skip: all lanes take it
-            // together (barrier-safe).
-            continue;
-        }
+        // below are workgroup-uniform, so no broadcast is needed. Unused
+        // slots / inactive limits keep `active == false` — the lanes still
+        // reach both barriers below (no uniform `continue`, see above).
+        let in_range = live && s < mb.max_constraints;
+        let cons = if in_range {
+            joint_constraints.read(jcons_base + s as usize)
+        } else {
+            MultibodyJointConstraint::default()
+        };
+        let active =
+            in_range && (cons.kind == MB_JOINT_KIND_LIMIT || cons.kind == MB_JOINT_KIND_MOTOR);
 
         let rhs = if use_bias { cons.rhs } else { cons.rhs_wo_bias };
-        let v_d = dof_v[cons.dof_id as usize];
+        let v_d = dof_v.read(cons.dof_id as usize);
         let rhs_total = v_d + rhs;
         let raw_imp = cons.impulse + cons.inv_lhs * (rhs_total - cons.cfm_gain * cons.impulse);
         let mut new_imp = raw_imp;
@@ -363,7 +372,7 @@ pub fn gpu_mb_solve_joints(
         }
         let delta = new_imp - cons.impulse;
 
-        if lane == 0 {
+        if active && lane == 0 {
             let mut cons = cons;
             cons.impulse = new_imp;
             joint_constraints.write(jcons_base + s as usize, cons);
@@ -371,18 +380,18 @@ pub fn gpu_mb_solve_joints(
 
         // All lanes read `dof_v[dof_id]` above; sync before overwriting it.
         workgroup_memory_barrier_with_group_sync();
-        if lane < ndofs {
+        if active && lane < ndofs {
             let col = joint_constraint_columns
                 .read(jcol_base + (s as usize) * dofs_stride + lane as usize);
-            dof_v[lane as usize] -= delta * col;
+            dof_v.write(lane as usize, dof_v.read(lane as usize) - (delta * col));
         }
         workgroup_memory_barrier_with_group_sync();
     }
 
-    if lane < ndofs {
+    if live && lane < ndofs {
         dof_state.write(
             batch_ids.mbi(batch_id, v_base + lane as usize),
-            dof_v[lane as usize],
+            dof_v.read(lane as usize),
         );
     }
 }
@@ -441,8 +450,7 @@ pub fn gpu_mb_build_contact_delassus(
     // `D` writes coalesce.
     let num_pairs = count * count;
     for p in StepRng::new(lane..num_pairs, LANES) {
-        let s = p / count;
-        let j = p % count;
+        let (s, j) = crate::div_rem_nz(p, count);
 
         // Multibody coupling: jac_j · (M⁻¹ jac_sᵀ).
         let jac_j_off = col_base + (j as usize) * dofs_stride;
@@ -505,17 +513,14 @@ pub fn gpu_mb_solve_contacts_delassus(
     let mb_idx = workgroup_id.x;
     let lane = local_id.x;
     let num_mb = batch_ids.multibodies_len;
-    if mb_idx >= num_mb {
-        return;
-    }
 
     let mb = multibody_info.read(batch_ids.mbi(batch_id, mb_idx as usize));
     let ndofs = mb.ndofs;
-    let count = mb.contact_constraint_count;
-    // Uniform per workgroup: every lane of this group returns together.
-    if ndofs == 0 || count == 0 {
-        return;
-    }
+    // No early returns before the barriers: naga lowers them into breaks that
+    // jump past the barriers, and Tint (browser WGSL) then rejects the whole
+    // module. Guard the WORK on `live`/`count`; barriers run unconditionally.
+    let live = mb_idx < num_mb && ndofs != 0;
+    let count = if live { mb.contact_constraint_count } else { 0 };
     let use_bias = *use_bias != 0;
 
     let v_base = mb.first_dof as usize;
@@ -529,8 +534,8 @@ pub fn gpu_mb_solve_contacts_delassus(
         * (MAXC as usize)
         * (MAXC as usize);
 
-    if lane < ndofs {
-        dof_v[lane as usize] = dof_state.read(batch_ids.mbi(batch_id, v_base + lane as usize));
+    if live && lane < ndofs {
+        dof_v.write(lane as usize, dof_state.read(batch_ids.mbi(batch_id, v_base + lane as usize)));
     }
 
     // Preload the per-constraint solve scalars into shared SoA arrays. The
@@ -540,8 +545,8 @@ pub fn gpu_mb_solve_contacts_delassus(
     // (dynamic free body only — zero-mass floors skip it entirely).
     for s in StepRng::new(lane..count, LANES) {
         let cons = contact_constraints.read(cons_base + s as usize);
-        imp_shared[s as usize] = cons.impulse;
-        rhs_shared[s as usize] = if use_bias { cons.rhs } else { cons.rhs_wo_bias };
+        imp_shared.write(s as usize, cons.impulse);
+        rhs_shared.write(s as usize, if use_bias { cons.rhs } else { cons.rhs_wo_bias });
         // Stiction anchor: pull the contact back toward where it gripped at the
         // step's manifold build. Positional bias — with-bias pass only.
         #[cfg(feature = "dim3")]
@@ -549,7 +554,7 @@ pub fn gpu_mb_solve_contacts_delassus(
             let gain = f32::from_bits(cons._pad4[0]);
             let mc = f32::from_bits(cons._pad4[1]);
             let b = cons._unused_cfm * gain;
-            rhs_shared[s as usize] += if b > mc { mc } else if b < -mc { -mc } else { b };
+            rhs_shared.write(s as usize, rhs_shared.read(s as usize) + (if b > mc { mc } else if b < -mc { -mc } else { b }));
         }
         // Live-depth ERP (explicit mode's per-substep contact refresh): normal
         // rows recompute their positional bias each substep from the integrated
@@ -563,17 +568,17 @@ pub fn gpu_mb_solve_contacts_delassus(
             let mc = f32::from_bits(cons._pad4[1]);
             let b = cons._unused_cfm * erp;
             let bias = if b < -mc { -mc } else if b > 0.0 { 0.0 } else { b };
-            rhs_shared[s as usize] = cons.rhs_wo_bias + bias;
+            rhs_shared.write(s as usize, cons.rhs_wo_bias + bias);
         }
-        inv_lhs_shared[s as usize] = cons.inv_lhs;
-        cfm_shared[s as usize] = cons.cfm_factor;
-        friction_shared[s as usize] = cons.friction_coeff;
+        inv_lhs_shared.write(s as usize, cons.inv_lhs);
+        cfm_shared.write(s as usize, cons.cfm_factor);
+        friction_shared.write(s as usize, cons.friction_coeff);
         let is_self = cons.free_body_id == u32::MAX;
         let free_active = !is_self
             && (cons.free_body_im != 0.0 || gdot(cons.ii_ang_jac, cons.ii_ang_jac) != 0.0);
-        meta_shared[s as usize] = (cons.kind & 0xff)
+        meta_shared.write(s as usize, (cons.kind & 0xff)
             | ((cons.normal_constraint_slot & 0xffff) << 8)
-            | (if free_active { 1 << 24 } else { 0 });
+            | (if free_active { 1 << 24 } else { 0 }));
     }
     workgroup_memory_barrier_with_group_sync();
 
@@ -583,57 +588,72 @@ pub fn gpu_mb_solve_contacts_delassus(
         let jac_off = col_base + (s as usize) * dofs_stride;
         let mut dot = 0.0f32;
         for i in 0..ndofs {
-            dot += contact_constraint_jacs.read(jac_off + i as usize) * dof_v[i as usize];
+            dot += contact_constraint_jacs.read(jac_off + i as usize) * dof_v.read(i as usize);
         }
         let cons = contact_constraints.read(cons_base + s as usize);
         if cons.free_body_id != u32::MAX {
             let free = solver_vels.read(colliders_start + cons.free_body_id as usize);
             dot += cons.lin_jac.dot(free.linear) + gdot(cons.ang_jac, free.angular);
         }
-        a_shared[s as usize] = dot;
+        a_shared.write(s as usize, dot);
     }
     workgroup_memory_barrier_with_group_sync();
 
-    for s in 0..count {
+    // The sweep carries a barrier, so under `strict_uniformity` its bound must
+    // be a compile-time constant (`count` is a storage read, and even `delta`
+    // below is shared-memory-derived — Tint treats both as non-uniform) and
+    // the per-iteration barrier runs unconditionally.
+    #[cfg(feature = "strict_uniformity")]
+    let sweep_bound = MAXC;
+    #[cfg(not(feature = "strict_uniformity"))]
+    let sweep_bound = count;
+    for s in 0..sweep_bound {
+        let sweep_active = s < count;
         // Every lane computes the same scalar recurrence from shared memory —
         // all inputs are workgroup-uniform, so no broadcast is needed.
-        let meta = meta_shared[s as usize];
-        let kind = meta & 0xff;
-        let normal_slot = (meta >> 8) & 0xffff;
-        let free_active = (meta >> 24) != 0;
+        let (new_imp, delta) = if sweep_active {
+            let meta = meta_shared.read(s as usize);
+            let kind = meta & 0xff;
+            let normal_slot = (meta >> 8) & 0xffff;
 
-        let impulse = imp_shared[s as usize];
-        let rhs_total = a_shared[s as usize] + rhs_shared[s as usize];
-        // CFM-factor form (rapier's `*ContactConstraintNormalPart::generic_solve`).
-        // NORMAL ONLY — see the scalar sweep above: friction tangents are rigid.
-        let unsoft_imp = impulse - inv_lhs_shared[s as usize] * rhs_total;
-        let raw_imp = if kind == MB_CONTACT_KIND_TANGENT {
-            unsoft_imp
-        } else {
-            cfm_shared[s as usize] * unsoft_imp
-        };
+            let impulse = imp_shared.read(s as usize);
+            let rhs_total = a_shared.read(s as usize) + rhs_shared.read(s as usize);
+            // CFM-factor form (rapier's `*ContactConstraintNormalPart::generic_solve`).
+            // NORMAL ONLY — see the scalar sweep above: friction tangents are rigid.
+            let unsoft_imp = impulse - inv_lhs_shared.read(s as usize) * rhs_total;
+            let raw_imp = if kind == MB_CONTACT_KIND_TANGENT {
+                unsoft_imp
+            } else {
+                cfm_shared.read(s as usize) * unsoft_imp
+            };
 
-        let new_imp = if kind == MB_CONTACT_KIND_TANGENT {
-            let limit = friction_shared[s as usize] * imp_shared[normal_slot as usize];
-            if raw_imp > limit {
-                limit
-            } else if raw_imp < -limit {
-                -limit
+            let new_imp = if kind == MB_CONTACT_KIND_TANGENT {
+                let limit =
+                    friction_shared.read(s as usize) * imp_shared.read(normal_slot as usize);
+                if raw_imp > limit {
+                    limit
+                } else if raw_imp < -limit {
+                    -limit
+                } else {
+                    raw_imp
+                }
+            } else if raw_imp < 0.0 {
+                0.0
             } else {
                 raw_imp
-            }
-        } else if raw_imp < 0.0 {
-            0.0
+            };
+            (new_imp, new_imp - impulse)
         } else {
-            raw_imp
+            (0.0, 0.0)
         };
-        let delta = new_imp - impulse;
 
-        // Uniform skip (delta is workgroup-uniform): nothing changed, no
-        // barrier needed either — no shared writes happened this iteration.
+        // Uniform skip (delta is workgroup-uniform): nothing changed — and in
+        // the non-strict build no barrier is needed either, since no shared
+        // writes happened this iteration.
         if delta != 0.0 {
             if lane == 0 {
-                imp_shared[s as usize] = new_imp;
+                imp_shared.write(s as usize, new_imp);
+                let free_active = (meta_shared.read(s as usize) >> 24) != 0;
                 // Fire-and-forget free-body velocity update (only when the
                 // free body is dynamic). Not on the recurrence's critical
                 // path: `a`'s free-side coupling is already inside `D`.
@@ -651,15 +671,18 @@ pub fn gpu_mb_solve_contacts_delassus(
             // `dof_v` again until the writeback).
             let d_row = d_base + (s * MAXC) as usize;
             for j in StepRng::new(lane..count, LANES) {
-                a_shared[j as usize] += delta * delassus.read(d_row + j as usize);
+                a_shared.write(j as usize, a_shared.read(j as usize) + (delta * delassus.read(d_row + j as usize)));
             }
             if lane < ndofs {
                 let col = contact_constraint_columns
                     .read(col_base + (s as usize) * dofs_stride + lane as usize);
-                dof_v[lane as usize] += delta * col;
+                dof_v.write(lane as usize, dof_v.read(lane as usize) + (delta * col));
             }
+            #[cfg(not(feature = "strict_uniformity"))]
             workgroup_memory_barrier_with_group_sync();
         }
+        #[cfg(feature = "strict_uniformity")]
+        workgroup_memory_barrier_with_group_sync();
     }
 
     /*
@@ -668,12 +691,12 @@ pub fn gpu_mb_solve_contacts_delassus(
     if lane < ndofs {
         dof_state.write(
             batch_ids.mbi(batch_id, v_base + lane as usize),
-            dof_v[lane as usize],
+            dof_v.read(lane as usize),
         );
     }
     for s in StepRng::new(lane..count, LANES) {
         let mut cons = contact_constraints.read(ccons_writeback_guard(cons_base, s));
-        cons.impulse = imp_shared[s as usize];
+        cons.impulse = imp_shared.read(s as usize);
         // Stiction anchor: integrate this substep's residual tangential motion
         // (a_shared[s] = J·u under the POST-solve velocities — kept current by
         // the sweep's Delassus row updates) into the slip accumulator. Once per
@@ -685,7 +708,7 @@ pub fn gpu_mb_solve_contacts_delassus(
             let gain = f32::from_bits(cons._pad4[0]);
             if gain > 0.0 {
                 // tangent: slip += J·v·dt′ ; normal: depth += J·v·dt′
-                cons._unused_cfm += a_shared[s as usize] / gain;
+                cons._unused_cfm += a_shared.read(s as usize) / gain;
             }
         }
         contact_constraints.write(ccons_writeback_guard(cons_base, s), cons);

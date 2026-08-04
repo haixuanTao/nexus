@@ -327,7 +327,11 @@ pub fn gpu_mb_init_contact_constraints(
             #[cfg(feature = "dim3")]
             let torque_a_t1 = gcross(shift_a, mb_tangent1);
 
-            let rhs_bias = (erp_inv_dt * (dist + allowed_lin_err)).clamp(-max_corr_velocity, 0.0);
+            // max/min instead of `clamp` — clamp's assert is a panic edge that
+            // breaks past barriers in the naga-translated WGSL.
+            let rhs_bias = (erp_inv_dt * (dist + allowed_lin_err))
+                .max(-max_corr_velocity)
+                .min(0.0);
             let rhs_wo_bias = if dist > 0.0 { dist * inv_dt } else { 0.0 };
 
             let normal_slot = count;
@@ -647,8 +651,7 @@ pub fn gpu_mb_stash_contacts_len(
     if invocation_id.x >= num_mb * batch_ids.num_batches {
         return;
     }
-    let batch_id = invocation_id.x / num_mb;
-    let mb_idx = invocation_id.x % num_mb;
+    let (batch_id, mb_idx) = crate::div_rem_nz(invocation_id.x, num_mb);
     let mut mb = multibody_info.read(batch_ids.mbi(batch_id, mb_idx as usize));
     mb.batch_contacts_len = contacts_len.read(batch_id as usize);
     multibody_info.write(batch_ids.mbi(batch_id, mb_idx as usize), mb);
@@ -681,7 +684,7 @@ pub fn gpu_mb_reset_contact_warmstart(
     if invocation_id.x >= per_batch * batch_ids.num_batches {
         return;
     }
-    let batch_id = invocation_id.x / per_batch;
+    let batch_id = crate::div_rem_nz(invocation_id.x, per_batch).0;
     let r = invocation_id.x % per_batch;
     let mb_idx = r / MAXC;
     let s = r % MAXC;

@@ -551,6 +551,72 @@ impl GpuMultibodySet {
         &self.links_static
     }
 
+    /// GPU buffer of the per-link SoA workspace (`Vec4` quads — layout in the
+    /// shader crate's `ws_soa`). Exposed for external kernels (e.g. RL
+    /// observation assembly) that read link poses GPU-side.
+    pub fn links_workspace_buffer(&self) -> &Tensor<glamx::Vec4> {
+        &self.links_workspace
+    }
+
+    /// [`Self::scatter_motor_targets`], but reading the targets from a GPU
+    /// buffer (row-major `[num_actuated × num_batches]`) — no host upload, so
+    /// a GPU-resident policy can drive the motors without a round-trip.
+    pub fn scatter_motor_targets_gpu(
+        &mut self,
+        backend: &GpuBackend,
+        targets: &Tensor<f32>,
+        actuated_link_ids: &[u32],
+        axis: u32,
+    ) -> Result<(), GpuBackendError> {
+        use khal::backend::Encoder as _;
+        let mut enc = backend.begin_encoding();
+        self.encode_scatter_motor_targets(backend, &mut enc, targets, actuated_link_ids, axis)?;
+        backend.submit(enc)?;
+        Ok(())
+    }
+
+    /// Encode the motor-target scatter into an existing encoder (single-submit
+    /// control steps).
+    pub fn encode_scatter_motor_targets(
+        &mut self,
+        backend: &GpuBackend,
+        enc: &mut <GpuBackend as khal::backend::Backend>::Encoder,
+        targets: &Tensor<f32>,
+        actuated_link_ids: &[u32],
+        axis: u32,
+    ) -> Result<(), GpuBackendError> {
+        use crate::shaders::dynamics::GpuScatterMotorTargets;
+        use khal::backend::Encoder;
+
+        /// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.
+        #[derive(Shader)]
+        struct MotorScatterBundle {
+            scatter: GpuScatterMotorTargets,
+        }
+
+        let num_actuated = actuated_link_ids.len() as u32;
+        let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
+        let t_links = Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?;
+        let u_na = Tensor::scalar(backend, num_actuated, uu)?;
+        let u_ne = Tensor::scalar(backend, self.num_batches, uu)?;
+        let u_ax = Tensor::scalar(backend, axis, uu)?;
+        let bundle = MotorScatterBundle::from_backend(backend)?;
+        {
+            let mut pass = enc.begin_pass("scatter_motor_targets_gpu", None);
+            bundle.scatter.call(
+                &mut pass,
+                [num_actuated, self.num_batches, 1],
+                targets,
+                &mut self.links_static,
+                &t_links,
+                &u_na,
+                &u_ne,
+                &u_ax,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Configure the contact force sensor: sense the summed normal-contact
     /// impulse on these multibody links (at most
     /// [`crate::shaders::dynamics::MAX_CONTACT_SENSORS`]; the same links are

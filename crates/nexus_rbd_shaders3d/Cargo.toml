@@ -24,12 +24,20 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 [features]
 default = ["dim3"]
 dim3 = []
-unsafe_remove_boundchecks = ["vortx-shaders/unsafe_remove_boundchecks"]
+unsafe_remove_boundchecks = [
+    "vortx-shaders/unsafe_remove_boundchecks",
+    "khal-std/unsafe_remove_boundchecks",
+]
 push_constants = []
 cpu = []
 cpu-parallel = ["cpu", "vortx-shaders/cpu-parallel"]
 cuda = []
 cuda-oxide = ["khal-std/cuda-oxide", "vortx-shaders/cuda-oxide"]
+# strict_uniformity — swap barrier-carrying loop bounds to compile-time
+# constants so browser WGSL uniformity analysis (Tint) accepts the kernels:
+# naga lowers even uniform-buffer reads through module-scope private variables
+# that Tint refuses to track. wasm builds only (see nexus_rbd3d/build.rs).
+strict_uniformity = []
 
 [dependencies]
 vortx-shaders = { workspace = true }
