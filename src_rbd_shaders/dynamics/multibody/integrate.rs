@@ -61,6 +61,88 @@ pub fn gpu_mb_integrate_velocities(
     }
 }
 
+/// One link's semi-implicit position update — the body of
+/// [`gpu_mb_integrate`]'s loop, shared with the fused
+/// integrate+dynamics-pre entries (`compute_dynamics_pre.rs`), where the
+/// links of each multibody are strided across its packed lanes instead of
+/// walked serially. Order-independent across links.
+#[inline(always)]
+pub(super) fn integrate_link(
+    stat_slice: &crate::utils::ISlice<'_, MultibodyLinkStatic>,
+    links_workspace: &mut [Vec4],
+    wa: WsAddr,
+    k: u32,
+    dof_vel: &crate::utils::ISlice<'_, f32>,
+    dt: f32,
+) {
+    let stat = stat_slice.read(k as usize);
+    let locked = stat.data.locked_axes;
+    let aid = stat.assembly_id as usize;
+
+    // Free linear DOFs first, in axis order.
+    let mut curr_free = 0u32;
+    for i in 0..DIM {
+        if (locked & (1 << i)) == 0 {
+            let v = dof_vel[aid + curr_free as usize];
+            let cur = ws_coord(links_workspace, wa, k, i);
+            ws_set_coord(links_workspace, wa, k, i, cur + v * dt);
+            curr_free += 1;
+        }
+    }
+
+    // Free angular DOFs.
+    let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
+    let num_ang = ANG_DIM - ang_locked.count_ones();
+    if num_ang == 1 {
+        #[cfg(feature = "dim3")]
+        {
+            let dof_id = (!ang_locked & 0x7).trailing_zeros();
+            let v = dof_vel[aid + curr_free as usize];
+            let idx = 3 + dof_id;
+            let new = ws_coord(links_workspace, wa, k, idx) + v * dt;
+            ws_set_coord(links_workspace, wa, k, idx, new);
+            ws_set_rot(
+                links_workspace,
+                wa,
+                k,
+                WS_JOINT_ROT,
+                rotation_from_scaled_axis(Vector::ith(dof_id as usize, new)),
+            );
+        }
+        #[cfg(feature = "dim2")]
+        {
+            let v = dof_vel[aid + curr_free as usize];
+            let new = ws_coord(links_workspace, wa, k, DIM) + v * dt;
+            ws_set_coord(links_workspace, wa, k, DIM, new);
+            ws_set_rot(links_workspace, wa, k, WS_JOINT_ROT, rotation_from_angle(new));
+        }
+    } else if num_ang == 3 {
+        #[cfg(feature = "dim3")]
+        {
+            let vx = dof_vel[aid + curr_free as usize];
+            let vy = dof_vel[aid + (curr_free + 1) as usize];
+            let vz = dof_vel[aid + (curr_free + 2) as usize];
+            let ang = Vector::new(vx, vy, vz);
+            let disp = rotation_from_scaled_axis(ang * dt);
+            let jr = ws_rot(links_workspace, wa, k, WS_JOINT_ROT);
+            ws_set_rot(
+                links_workspace,
+                wa,
+                k,
+                WS_JOINT_ROT,
+                rotation_renormalize_fast(disp * jr),
+            );
+            let c3 = ws_coord(links_workspace, wa, k, 3);
+            ws_set_coord(links_workspace, wa, k, 3, c3 + vx * dt);
+            let c4 = ws_coord(links_workspace, wa, k, 4);
+            ws_set_coord(links_workspace, wa, k, 4, c4 + vy * dt);
+            let c5 = ws_coord(links_workspace, wa, k, 5);
+            ws_set_coord(links_workspace, wa, k, 5, c5 + vz * dt);
+        }
+    }
+    // num_ang == 0: no-op.
+}
+
 #[spirv_bindgen]
 #[spirv(compute(threads(64)))]
 pub fn gpu_mb_integrate(
@@ -104,72 +186,7 @@ pub fn gpu_mb_integrate(
     // in place through `&mut ws_slice[k]` so SPIR-V emits field-targeted stores
     // instead of a whole `MultibodyLinkWorkspace` round-trip (~240 B in 3D).
     for k in 0..num_links {
-        let stat = stat_slice[k as usize];
-        let locked = stat.data.locked_axes;
-        let aid = stat.assembly_id as usize;
-
-        // Free linear DOFs first, in axis order.
-        let mut curr_free = 0u32;
-        for i in 0..DIM {
-            if (locked & (1 << i)) == 0 {
-                let v = dof_vel[aid + curr_free as usize];
-                let cur = ws_coord(links_workspace, wa, k, i);
-                ws_set_coord(links_workspace, wa, k, i, cur + v * dt);
-                curr_free += 1;
-            }
-        }
-
-        // Free angular DOFs.
-        let ang_locked = (locked >> DIM) & ((1 << ANG_DIM) - 1);
-        let num_ang = ANG_DIM - ang_locked.count_ones();
-        if num_ang == 1 {
-            #[cfg(feature = "dim3")]
-            {
-                let dof_id = (!ang_locked & 0x7).trailing_zeros();
-                let v = dof_vel[aid + curr_free as usize];
-                let idx = 3 + dof_id;
-                let new = ws_coord(links_workspace, wa, k, idx) + v * dt;
-                ws_set_coord(links_workspace, wa, k, idx, new);
-                ws_set_rot(
-                    links_workspace,
-                    wa,
-                    k,
-                    WS_JOINT_ROT,
-                    rotation_from_scaled_axis(Vector::ith(dof_id as usize, new)),
-                );
-            }
-            #[cfg(feature = "dim2")]
-            {
-                let v = dof_vel[aid + curr_free as usize];
-                let new = ws_coord(links_workspace, wa, k, DIM) + v * dt;
-                ws_set_coord(links_workspace, wa, k, DIM, new);
-                ws_set_rot(links_workspace, wa, k, WS_JOINT_ROT, rotation_from_angle(new));
-            }
-        } else if num_ang == 3 {
-            #[cfg(feature = "dim3")]
-            {
-                let vx = dof_vel[aid + curr_free as usize];
-                let vy = dof_vel[aid + (curr_free + 1) as usize];
-                let vz = dof_vel[aid + (curr_free + 2) as usize];
-                let ang = Vector::new(vx, vy, vz);
-                let disp = rotation_from_scaled_axis(ang * dt);
-                let jr = ws_rot(links_workspace, wa, k, WS_JOINT_ROT);
-                ws_set_rot(
-                    links_workspace,
-                    wa,
-                    k,
-                    WS_JOINT_ROT,
-                    rotation_renormalize_fast(disp * jr),
-                );
-                let c3 = ws_coord(links_workspace, wa, k, 3);
-                ws_set_coord(links_workspace, wa, k, 3, c3 + vx * dt);
-                let c4 = ws_coord(links_workspace, wa, k, 4);
-                ws_set_coord(links_workspace, wa, k, 4, c4 + vy * dt);
-                let c5 = ws_coord(links_workspace, wa, k, 5);
-                ws_set_coord(links_workspace, wa, k, 5, c5 + vz * dt);
-            }
-        }
-        // num_ang == 0: no-op.
+        integrate_link(&stat_slice, links_workspace, wa, k, &dof_vel, dt);
     }
 
     // Silence dof_val unused warning — it will be used once we also support

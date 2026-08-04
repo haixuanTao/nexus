@@ -4,7 +4,8 @@ use super::multibody_set::*;
 use crate::math::Pose;
 use crate::queries::GpuIndexedContact;
 use crate::shaders::dynamics::{
-    GpuMbBuildContactDelassus, GpuMbComputeDynamicsPre,
+    GpuMbBuildContactDelassus, GpuMbComputeDynamicsPre, GpuMbIntegrateAndDynamicsPre,
+    GpuMbIntegrateAndDynamicsWithoutCoriolisPre,
     GpuMbComputeDynamicsWithoutCoriolisPre,
     GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbGravityAndLuT1, GpuMbGravityAndLuT8,
     GpuMbGravityAndLuT16, GpuMbGravityAndLuT32, GpuMbInitContactConstraints,
@@ -38,6 +39,12 @@ pub struct GpuMultibodySolver {
     gravity_and_lu_t32: GpuMbGravityAndLuT32,
     compute_dynamics_pre: GpuMbComputeDynamicsPre,
     compute_dynamics_without_coriolis_pre: GpuMbComputeDynamicsWithoutCoriolisPre,
+    /// `pre` with the joint integration fused in as phase 0 — replaces the
+    /// separate `integrate` dispatch on the per-solver-substep refresh path
+    /// (the browser profile showed the refresh chain dominated by dispatch
+    /// count: integrate + pre + LU ×12 per control step).
+    integrate_and_dynamics_pre: GpuMbIntegrateAndDynamicsPre,
+    integrate_and_dynamics_without_coriolis_pre: GpuMbIntegrateAndDynamicsWithoutCoriolisPre,
     init_joint_with_bias: GpuMbInitJointConstraints,
     /// Explicit-coriolis fast path: per-substep refresh of the joint rhs /
     /// limit activity (the columns and `inv_lhs` are per-step constants
@@ -129,7 +136,9 @@ impl GpuMultibodySolver {
         if mb.is_empty() {
             return Ok(());
         }
-        self.compute_dynamics(pass, mb, &mut args)
+        // Plain refresh (no fused integration): this path recomputes
+        // dynamics without moving the joints.
+        self.compute_dynamics(pass, mb, &mut args, false)
     }
 
     /// Once-per-visible-step setup. After this call, `gen_forces` holds the
@@ -164,7 +173,8 @@ impl GpuMultibodySolver {
         }
         {
             let mut pass = encoder.begin_pass("[RBD] mbi/pre", timestamps.as_deref_mut());
-            self.dispatch_dynamics_pre(&mut pass, mb, args)?;
+            // Init-step pre: positions are current, nothing to integrate.
+            self.dispatch_dynamics_pre(&mut pass, mb, args, false)?;
         }
         let mut pass = encoder.begin_pass("[RBD] mbi/gravity-lu", timestamps.as_deref_mut());
         self.dispatch_gravity_lu(&mut pass, mb, args)
@@ -617,29 +627,33 @@ impl GpuMultibodySolver {
         if mb.is_empty() {
             return Ok(());
         }
-        let dispatch = mb.flat_mb_dispatch();
-
-        self.integrate.call(
-            pass,
-            dispatch,
-            &mb.multibody_info,
-            &mb.links_static,
-            &mut mb.links_workspace,
-            &mut mb.dof_values,
-            &mb.dof_state,
-            &mb.dt,
-            args.batch_indices,
-        )?;
 
         // Recompute `a` for the next substep — orientations / positions just
         // changed so M and τ are stale. Skipped on the last substep (rapier
-        // skips it too: `if !is_last_substep`).
+        // skips it too: `if !is_last_substep`). When the refresh runs, the
+        // joint integration is FUSED into its `pre` kernel as phase 0 (one
+        // dispatch instead of two — the browser profile showed this chain
+        // dispatch-count-bound); the standalone integrate dispatch only
+        // remains for the no-refresh case and the last substep.
         // NOTE: we also only update the mass matrix a single time if running without
         //       `implicit_coriolis`. This further improves performances as that’s the main
         //       purpose of disabling the implicit handling of coriolis forces (and makes it
         //       closer to Mujoco/Genesis).
         if !is_last_substep && (mb.implicit_coriolis || mb.substep_refresh) {
-            self.compute_dynamics(pass, mb, args)?;
+            self.compute_dynamics(pass, mb, args, true)?;
+        } else {
+            let dispatch = mb.flat_mb_dispatch();
+            self.integrate.call(
+                pass,
+                dispatch,
+                &mb.multibody_info,
+                &mb.links_static,
+                &mut mb.links_workspace,
+                &mut mb.dof_values,
+                &mb.dof_state,
+                &mb.dt,
+                args.batch_indices,
+            )?;
         }
 
         Ok(())
@@ -729,8 +743,9 @@ impl GpuMultibodySolver {
         pass: &mut GpuPass,
         mb: &mut GpuMultibodySet,
         args: &mut MultibodySolverArgs<'_>,
+        integrate_first: bool,
     ) -> Result<(), GpuBackendError> {
-        self.dispatch_dynamics_pre(pass, mb, args)?;
+        self.dispatch_dynamics_pre(pass, mb, args, integrate_first)?;
         self.dispatch_gravity_lu(pass, mb, args)
     }
 
@@ -743,12 +758,43 @@ impl GpuMultibodySolver {
         pass: &mut GpuPass,
         mb: &mut GpuMultibodySet,
         args: &mut MultibodySolverArgs<'_>,
+        integrate_first: bool,
     ) -> Result<(), GpuBackendError> {
         // Fused FK + body-jacobians + velocity propagation + Mass-matrix
         // assembly. Packed: `64 / mb_pack_lanes` multibodies per workgroup,
-        // flattened (multibody, batch) grid.
+        // flattened (multibody, batch) grid. `integrate_first` selects the
+        // variants with the joint integration fused in as phase 0.
         let pre_dispatch = mb.packed_wg_dispatch();
-        if mb.implicit_coriolis {
+        if mb.implicit_coriolis && integrate_first {
+            self.integrate_and_dynamics_pre.call(
+                pass,
+                pre_dispatch,
+                &mb.multibody_info,
+                &mb.links_static,
+                &mut mb.links_workspace,
+                args.poses,
+                &mut mb.body_jacobians,
+                &mut mb.mass_matrices,
+                &mut mb.coriolis_packed,
+                &mb.dof_state,
+                &mb.dt,
+                args.batch_indices,
+            )?;
+        } else if !mb.implicit_coriolis && integrate_first {
+            self.integrate_and_dynamics_without_coriolis_pre.call(
+                pass,
+                pre_dispatch,
+                &mb.multibody_info,
+                &mb.links_static,
+                &mut mb.links_workspace,
+                args.poses,
+                &mut mb.body_jacobians,
+                &mut mb.mass_matrices,
+                &mb.dof_state,
+                &mb.dt,
+                args.batch_indices,
+            )?;
+        } else if mb.implicit_coriolis {
             self.compute_dynamics_pre.call(
                 pass,
                 pre_dispatch,

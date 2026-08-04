@@ -70,27 +70,22 @@ fn packed_decode(wg_id: UVec3, lid: UVec3, batch_ids: &BatchIndices) -> (u32, u3
 
 // TODO: refactor into multiple functions (but single kernel) to share between the coriolis and non-coriolis versions.
 /// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
-#[spirv_bindgen(force_cpu_coroutines)]
-#[spirv(compute(threads(64, 1, 1)))]
-pub fn gpu_mb_compute_dynamics_pre(
-    #[spirv(workgroup_id)] wg_id: UVec3,
-    #[spirv(local_invocation_id)] lid: UVec3,
-    // Ancestor-chain DOF lists for the chain-bounded CRBA, one 33-slot
-    // region per packed slot (up to 8): 32 DOF indices + the length.
-    // Unconditional: the cuda-oxide entry glue drops cfg'd workgroup params.
-    #[spirv(workgroup)] chain_buf: &mut [u32; 264],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn dynamics_pre_impl<const INTEGRATE: bool>(
+    wg_id: UVec3,
+    lid: UVec3,
+    chain_buf: &mut [u32; 264],
+    multibody_info: &[MultibodyInfo],
     links_static: &[MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
     links_workspace: &mut [Vec4],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] coriolis_packed: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+    poses: &mut [Pose],
+    body_jacobians: &mut [f32],
+    mass_matrices: &mut [f32],
+    coriolis_packed: &mut [f32],
+    dof_state: &[f32],
+    dt_uniform: &f32,
+    batch_ids: &BatchIndices,
 ) {
     // Packed layout — see `packed_decode`. No early-return for inactive
     // slots — WGSL's naga frontend can't prove a storage-loaded comparison is
@@ -139,6 +134,22 @@ pub fn gpu_mb_compute_dynamics_pre(
         .ib(batch_id, dof_state)
         .offset(2 * batch_ids.dof_batch_capacity as usize + vel_base);
     let vel_slice = batch_ids.ib(batch_id, dof_state).offset(vel_base);
+
+    // 0) Fused-mode joint integration (was `gpu_mb_integrate`, its own
+    //    dispatch): advance each link's coords/joint_rot BEFORE FK re-derives
+    //    world poses. Links stride across the slot's lanes; the barrier
+    //    orders the writes before FK reads them — the same sync_slots
+    //    precedent every later phase of this kernel already relies on.
+    //    `INTEGRATE` is a const generic, so the barrier stays in provably
+    //    uniform control flow after folding (Tint requirement).
+    if INTEGRATE {
+        let mut k = lane;
+        while k < num_links {
+            super::integrate::integrate_link(&stat_slice, links_workspace, wa, k, &vel_slice, dt);
+            k += t;
+        }
+        sync_slots(t);
+    }
 
     // 1) Forward Kinematics (single-threaded)
     if active_slot && num_links > 0 && lane == 0 {
@@ -589,10 +600,9 @@ pub fn gpu_mb_compute_dynamics_pre(
     }
 }
 
-/// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
 #[spirv_bindgen(force_cpu_coroutines)]
 #[spirv(compute(threads(64, 1, 1)))]
-pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
+pub fn gpu_mb_compute_dynamics_pre(
     #[spirv(workgroup_id)] wg_id: UVec3,
     #[spirv(local_invocation_id)] lid: UVec3,
     // Ancestor-chain DOF lists for the chain-bounded CRBA, one 33-slot
@@ -607,9 +617,56 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &mut [f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_state: &[f32],
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] dt_uniform: &f32,
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] coriolis_packed: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+) {
+    dynamics_pre_impl::<false>(wg_id, lid, chain_buf, multibody_info, links_static, links_workspace, poses, body_jacobians, mass_matrices, coriolis_packed, dof_state, dt_uniform, batch_ids);
+}
+
+#[spirv_bindgen(force_cpu_coroutines)]
+#[spirv(compute(threads(64, 1, 1)))]
+pub fn gpu_mb_integrate_and_dynamics_pre(
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
+    // Ancestor-chain DOF lists for the chain-bounded CRBA, one 33-slot
+    // region per packed slot (up to 8): 32 DOF indices + the length.
+    // Unconditional: the cuda-oxide entry glue drops cfg'd workgroup params.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 264],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &mut [Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] coriolis_packed: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 9)] batch_ids: &BatchIndices,
+) {
+    dynamics_pre_impl::<true>(wg_id, lid, chain_buf, multibody_info, links_static, links_workspace, poses, body_jacobians, mass_matrices, coriolis_packed, dof_state, dt_uniform, batch_ids);
+}
+
+
+/// Fused FK + body-jacobians + velocity propagation + CRBA-with-Coriolis.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn dynamics_pre_wc_impl<const INTEGRATE: bool>(
+    wg_id: UVec3,
+    lid: UVec3,
+    chain_buf: &mut [u32; 264],
+    multibody_info: &[MultibodyInfo],
+    links_static: &[MultibodyLinkStatic],
+    links_workspace: &mut [Vec4],
+    poses: &mut [Pose],
+    body_jacobians: &mut [f32],
+    mass_matrices: &mut [f32],
+    dof_state: &[f32],
+    dt_uniform: &f32,
+    batch_ids: &BatchIndices,
 ) {
     // Packed layout — see `packed_decode` and the uniformity note on
     // `gpu_mb_compute_dynamics_pre`.
@@ -650,6 +707,22 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         .ib(batch_id, dof_state)
         .offset(2 * batch_ids.dof_batch_capacity as usize + vel_base);
     let vel_slice = batch_ids.ib(batch_id, dof_state).offset(vel_base);
+
+    // 0) Fused-mode joint integration (was `gpu_mb_integrate`, its own
+    //    dispatch): advance each link's coords/joint_rot BEFORE FK re-derives
+    //    world poses. Links stride across the slot's lanes; the barrier
+    //    orders the writes before FK reads them — the same sync_slots
+    //    precedent every later phase of this kernel already relies on.
+    //    `INTEGRATE` is a const generic, so the barrier stays in provably
+    //    uniform control flow after folding (Tint requirement).
+    if INTEGRATE {
+        let mut k = lane;
+        while k < num_links {
+            super::integrate::integrate_link(&stat_slice, links_workspace, wa, k, &vel_slice, dt);
+            k += t;
+        }
+        sync_slots(t);
+    }
 
     // 1) Forward Kinematics (single-threaded)
     if active_slot && num_links > 0 && lane == 0 {
@@ -795,6 +868,55 @@ pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
         );
     }
 }
+
+#[spirv_bindgen(force_cpu_coroutines)]
+#[spirv(compute(threads(64, 1, 1)))]
+pub fn gpu_mb_compute_dynamics_without_coriolis_pre(
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
+    // Ancestor-chain DOF lists for the chain-bounded CRBA, one 33-slot
+    // region per packed slot (up to 8): 32 DOF indices + the length.
+    // Unconditional: the cuda-oxide entry glue drops cfg'd workgroup params.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 264],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &mut [Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_state: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+) {
+    dynamics_pre_wc_impl::<false>(wg_id, lid, chain_buf, multibody_info, links_static, links_workspace, poses, body_jacobians, mass_matrices, dof_state, dt_uniform, batch_ids);
+}
+
+#[spirv_bindgen(force_cpu_coroutines)]
+#[spirv(compute(threads(64, 1, 1)))]
+pub fn gpu_mb_integrate_and_dynamics_without_coriolis_pre(
+    #[spirv(workgroup_id)] wg_id: UVec3,
+    #[spirv(local_invocation_id)] lid: UVec3,
+    // Ancestor-chain DOF lists for the chain-bounded CRBA, one 33-slot
+    // region per packed slot (up to 8): 32 DOF indices + the length.
+    // Unconditional: the cuda-oxide entry glue drops cfg'd workgroup params.
+    #[spirv(workgroup)] chain_buf: &mut [u32; 264],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    links_static: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)]
+    links_workspace: &mut [Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_jacobians: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] mass_matrices: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_state: &[f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] dt_uniform: &f32,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] batch_ids: &BatchIndices,
+) {
+    dynamics_pre_wc_impl::<true>(wg_id, lid, chain_buf, multibody_info, links_static, links_workspace, poses, body_jacobians, mass_matrices, dof_state, dt_uniform, batch_ids);
+}
+
 
 /// Body-local velocity contributed by a joint, reading dof velocities directly
 /// from the slice. Mirrors `velocity::jacobian_mul_coordinates`.
