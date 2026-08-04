@@ -13,4 +13,4 @@ mod rbd_step;
 pub use rbd_state::{RbdCapacities, RbdResizePolicy, RbdState, RunStats};
 #[cfg(feature = "dim3")]
 pub use rbd_state::RbdSnapshot;
-pub use rbd_step::RbdPipeline;
+pub use rbd_step::{FORCE_FUSED_SWEEPS, RbdPipeline};
