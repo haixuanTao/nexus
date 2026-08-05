@@ -345,8 +345,9 @@ fn compute_constraint_column(
         col_offset,
         dof_id,
     );
-    let lhs = joint_constraint_columns.read(col_offset + dof_id as usize);
-    if lhs != 0.0 { 1.0 / lhs } else { 0.0 }
+    // Returns the RAW lhs (J M^-1 J^T diagonal); callers fold in their cfm
+    // regularization before inverting (rapier: inv_lhs = 1/(lhs + cfm_total)).
+    joint_constraint_columns.read(col_offset + dof_id as usize)
 }
 
 /// Initialize a single limit constraint slot. Mirrors rapier's
@@ -381,7 +382,7 @@ fn emit_limit_constraint(
     let rhs_bias = (hi_excess - lo_excess) * erp_inv_dt;
     let rhs_wo_bias = 0.0f32;
 
-    let inv_lhs = compute_constraint_column(
+    let lhs = compute_constraint_column(
         joint_constraint_columns,
         col_base,
         slot,
@@ -393,6 +394,8 @@ fn emit_limit_constraint(
         lu_pivots,
         piv_offset,
     );
+    // Limits are rigid (cfm_coeff = 0 above): plain inverse.
+    let inv_lhs = if lhs != 0.0 { 1.0 / lhs } else { 0.0 };
 
     let max_neg_impulse = if min_enabled { -1.0e30f32 } else { 0.0 };
     let max_pos_impulse = if max_enabled { 1.0e30f32 } else { 0.0 };
@@ -459,7 +462,7 @@ fn emit_motor_constraint(
     }
     rhs_wo_bias += -target_vel;
 
-    let inv_lhs = compute_constraint_column(
+    let lhs = compute_constraint_column(
         joint_constraint_columns,
         col_base,
         slot,
@@ -471,6 +474,18 @@ fn emit_motor_constraint(
         lu_pivots,
         piv_offset,
     );
+    // Mirror rapier generic_joint_constraint_builder finalize: fold the motor
+    // compliance into the effective-mass denominator BEFORE inverting —
+    //   cfm_total = lhs*cfm_coeff + cfm_gain;  inv_lhs = 1/(lhs + cfm_total)
+    // and write the folded total back so the solve's numerator term matches
+    // (rapier: "Don't forget to update the inv_lhs."). Without this the soft
+    // motor degenerates into a rigid one-sweep velocity slam whose effective
+    // stiffness scales as 1/dt': more substeps -> NaN, and the motor/contact
+    // ping-pong limit cycle behind the standing-creep bug.
+    let cfm_total = lhs * cfm_coeff + cfm_gain;
+    let denom = lhs + cfm_total;
+    let inv_lhs = if denom != 0.0 { 1.0 / denom } else { 0.0 };
+    let cfm_gain = cfm_total;
 
     let cons = MultibodyJointConstraint {
         dof_id,
