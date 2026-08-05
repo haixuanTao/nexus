@@ -75,7 +75,9 @@ fn packed_decode(wg_id: UVec3, lid: UVec3, batch_ids: &BatchIndices) -> (u32, u3
 fn dynamics_pre_impl<const INTEGRATE: bool>(
     wg_id: UVec3,
     lid: UVec3,
-    chain_buf: &mut [u32; 264],
+    // Generic over element access so cuda-oxide's SmemBuf workgroup arrays
+    // fit (they don't coerce to `&mut [u32; N]`) — same pattern as lu.rs.
+    chain_buf: &mut impl MaybeIndexUnchecked<u32>,
     multibody_info: &[MultibodyInfo],
     links_static: &[MultibodyLinkStatic],
     links_workspace: &mut [Vec4],
@@ -657,7 +659,8 @@ pub fn gpu_mb_integrate_and_dynamics_pre(
 fn dynamics_pre_wc_impl<const INTEGRATE: bool>(
     wg_id: UVec3,
     lid: UVec3,
-    chain_buf: &mut [u32; 264],
+    // Generic over element access (see dynamics_pre_impl).
+    chain_buf: &mut impl MaybeIndexUnchecked<u32>,
     multibody_info: &[MultibodyInfo],
     links_static: &[MultibodyLinkStatic],
     links_workspace: &mut [Vec4],
