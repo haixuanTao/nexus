@@ -265,6 +265,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "cuda-device"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=3655fa1246fb6c55c1d1ad0f3d2ce82e719ed8c3#3655fa1246fb6c55c1d1ad0f3d2ce82e719ed8c3"
+dependencies = [
+ "cuda-macros",
+]
+
+[[package]]
+name = "cuda-macros"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=3655fa1246fb6c55c1d1ad0f3d2ce82e719ed8c3#3655fa1246fb6c55c1d1ad0f3d2ce82e719ed8c3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "reserved-oxide-symbols",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "cudarc"
 version = "0.19.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -660,9 +679,9 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.33.2"
+version = "0.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f22fb22f065b308be0d8724e3706c7fa3fc2a6c7d6899df4cad7860e7a75436"
+checksum = "7360bd2cd76e0cd9032d42cf2922155cecea2685b0cfa4630c3246df030bcfd6"
 dependencies = [
  "bytemuck",
  "libm",
@@ -689,9 +708,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9847f980afb0628849bcd6a406cdffd29eb9d53fca83e1646005901a9acd4c5c"
 dependencies = [
  "bytemuck",
- "glam 0.33.2",
+ "glam 0.33.3",
  "num-traits",
- "simba 0.10.0",
+ "simba 0.10.1",
 ]
 
 [[package]]
@@ -892,11 +911,12 @@ dependencies = [
 
 [[package]]
 name = "khal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-channel",
  "bitflags 2.11.1",
+ "block",
  "bytemuck",
  "cudarc",
  "include_dir",
@@ -912,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "khal-builder"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "walkdir",
@@ -920,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "khal-derive"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -930,10 +950,10 @@ dependencies = [
 
 [[package]]
 name = "khal-std"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "corosensei",
- "glam 0.32.1",
+ "cuda-device",
  "glamx 0.3.0",
  "khal-derive",
  "num-traits",
@@ -1783,6 +1803,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "reserved-oxide-symbols"
+version = "0.2.1"
+source = "git+https://github.com/NVlabs/cuda-oxide.git?rev=3655fa1246fb6c55c1d1ad0f3d2ce82e719ed8c3#3655fa1246fb6c55c1d1ad0f3d2ce82e719ed8c3"
+
+[[package]]
 name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1921,9 +1946,9 @@ dependencies = [
 
 [[package]]
 name = "simba"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f45c644a9f3a386f9288625d9f0c1e999e1acf07a37df35d0516c7f199d9cb2"
+checksum = "834a9952211d4a60ff10ac1d20cc01640a75bdc0a0c688d62f359ea7d17459f3"
 dependencies = [
  "approx",
  "num-complex",
