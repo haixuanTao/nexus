@@ -907,6 +907,7 @@ impl RbdState {
             rb_contacts_inert,
             num_active_colliders: num_colliders as u32,
             num_active_bodies: num_bodies as u32,
+            env_reset_bodies: None,
         }
     }
 }

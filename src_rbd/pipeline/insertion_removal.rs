@@ -246,6 +246,7 @@ impl RbdState {
         .unwrap();
 
         Self {
+            env_reset_bodies: None,
             capacities,
             num_batches,
             num_colliders_per_batch,

@@ -21,6 +21,7 @@ use crate::shaders::utils::BatchIndices;
 use crate::utils::PrefixSumWorkspace;
 
 use khal::BufferUsages;
+use khal::Shader;
 use khal::backend::{Backend, GpuBackend, GpuReadback};
 use std::time::Duration;
 use vortx::shaders::linalg::Shape as TensorShape;
@@ -275,6 +276,60 @@ pub struct RbdState {
     /// CPU-side mirror of the number of *active* rigid bodies per batch.
     /// Mirrors `BatchIndices::bodies_len`. Always `<= num_active_colliders`.
     pub(super) num_active_bodies: u32,
+    /// Lazily-created shader bundle + persistent staging for the batched
+    /// rigid-body half of an RL env reset (`gpu_rbd_env_reset_bodies`).
+    pub(super) env_reset_bodies: Option<BodyResetBundle>,
+}
+
+/// Shader bundle + persistent staging buffers for the batched rigid-body reset
+/// scatter. Lazily created on first reset and grown (never shrunk), so a
+/// steady-state rollout stops allocating entirely.
+pub(super) struct BodyResetBundle {
+    shader: BodyResetShader,
+    staging_poses: Tensor<Pose>,
+    staging_vels: Tensor<GpuVelocity>,
+    dst_envs: Tensor<u32>,
+    params: Tensor<glamx::UVec4>,
+    cap: u32,
+}
+
+/// `#[derive(Shader)]` supplies `from_backend`, which loads the embedded
+/// `gpu_rbd_env_reset_bodies` entry point.
+#[derive(Shader)]
+struct BodyResetShader {
+    kernel: crate::shaders::dynamics::GpuRbdEnvResetBodies,
+}
+
+impl BodyResetBundle {
+    fn new(backend: &GpuBackend, bps: u32, vs: u32, cap: u32) -> Self {
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        let cap = cap.max(1);
+        Self {
+            shader: BodyResetShader::from_backend(backend).unwrap(),
+            staging_poses: Tensor::vector_uninit(backend, (cap * bps).max(1), storage).unwrap(),
+            staging_vels: Tensor::vector_uninit(backend, (cap * vs).max(1), storage).unwrap(),
+            dst_envs: Tensor::vector_uninit(backend, cap, storage).unwrap(),
+            params: Tensor::scalar(
+                backend,
+                glamx::UVec4::ZERO,
+                BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            )
+            .unwrap(),
+            cap,
+        }
+    }
+
+    fn reserve(&mut self, backend: &GpuBackend, bps: u32, vs: u32, cap: u32) {
+        if cap <= self.cap {
+            return;
+        }
+        let cap = cap.next_power_of_two();
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        self.staging_poses = Tensor::vector_uninit(backend, (cap * bps).max(1), storage).unwrap();
+        self.staging_vels = Tensor::vector_uninit(backend, (cap * vs).max(1), storage).unwrap();
+        self.dst_envs = Tensor::vector_uninit(backend, cap, storage).unwrap();
+        self.cap = cap;
+    }
 }
 
 impl RbdState {
@@ -693,16 +748,86 @@ impl RbdState {
         dst_env: u32,
         snap: &RbdSnapshot,
     ) {
+        self.reset_envs_from_snapshots(backend, &[(dst_env, snap)]);
+    }
+
+    /// Reset many envs at once. The multibody scatter — the expensive part —
+    /// collapses to a single staging upload and a single dispatch for the whole
+    /// batch; see [`GpuMultibodySet::reset_envs_from_snapshots`].
+    ///
+    /// The rigid-body `body_poses` / `vels` rows go through their own batched
+    /// scatter (`gpu_rbd_env_reset_bodies`) rather than one contiguous
+    /// `write_buffer` per env — at thousands of resets per rollout step those
+    /// two small H2D copies per env cost more than the staged upload plus a
+    /// single dispatch.
+    pub fn reset_envs_from_snapshots(
+        &mut self,
+        backend: &GpuBackend,
+        resets: &[(u32, &RbdSnapshot)],
+    ) {
+        use khal::backend::Encoder;
+
+        if resets.is_empty() {
+            return;
+        }
         let nb = self.num_batches as u64;
-        let bps = (self.body_poses.len() / nb) as usize;
+        let bps = (self.body_poses.len() / nb) as u32;
+        let vs = (self.vels.len() / nb) as u32;
+        let count = resets.len() as u32;
+
+        let mut bundle = match self.env_reset_bodies.take() {
+            Some(b) => b,
+            None => BodyResetBundle::new(backend, bps, vs, count),
+        };
+        bundle.reserve(backend, bps, vs, count);
+
+        // Env-major packed staging, matching the kernel's `k * bps + j`.
+        let mut poses: Vec<Pose> = Vec::with_capacity(count as usize * bps as usize);
+        let mut vels: Vec<GpuVelocity> = Vec::with_capacity(count as usize * vs as usize);
+        let mut envs: Vec<u32> = Vec::with_capacity(count as usize);
+        for (dst_env, snap) in resets {
+            poses.extend_from_slice(&snap.body_poses[..bps as usize]);
+            vels.extend_from_slice(&snap.vels[..vs as usize]);
+            envs.push(*dst_env);
+        }
+        let span = bps.max(vs);
+
+        backend.write_buffer(bundle.staging_poses.buffer_mut(), 0, &poses).unwrap();
+        backend.write_buffer(bundle.staging_vels.buffer_mut(), 0, &vels).unwrap();
+        backend.write_buffer(bundle.dst_envs.buffer_mut(), 0, &envs).unwrap();
         backend
-            .write_buffer(self.body_poses.buffer_mut(), dst_env as u64 * bps as u64, &snap.body_poses[..bps])
+            .write_buffer(
+                bundle.params.buffer_mut(),
+                0,
+                &[glamx::UVec4::new(count, bps, vs, span)],
+            )
             .unwrap();
-        let vs = (self.vels.len() / nb) as usize;
-        backend
-            .write_buffer(self.vels.buffer_mut(), dst_env as u64 * vs as u64, &snap.vels[..vs])
-            .unwrap();
-        self.multibodies.reset_env_from_snapshot(backend, dst_env, &snap.mb);
+
+        let mut encoder = backend.begin_encoding();
+        {
+            let mut pass = encoder.begin_pass("[RBD] env-reset-bodies", None);
+            let pass = &mut pass;
+            bundle
+                .shader
+                .kernel
+                .call(
+                    pass,
+                    count * span,
+                    &bundle.staging_poses,
+                    &bundle.staging_vels,
+                    &bundle.dst_envs,
+                    &mut self.body_poses,
+                    &mut self.vels,
+                    &bundle.params,
+                )
+                .unwrap();
+        }
+        backend.submit(encoder).unwrap();
+        self.env_reset_bodies = Some(bundle);
+
+        let mb: Vec<(u32, &GpuMultibodySnapshot)> =
+            resets.iter().map(|(e, s)| (*e, &s.mb)).collect();
+        self.multibodies.reset_envs_from_snapshots(backend, &mb);
     }
 
     /// Pre-size the collision-pair / contact / constraint buffers to at least
@@ -830,6 +955,23 @@ impl RbdSnapshot {
                 p.translation += offset;
             }
         });
+        out
+    }
+
+    /// [`Self::translated`] with the multibody generalized velocities replaced
+    /// by `dof_vels` — the prepared-snapshot form callers need to feed a batched
+    /// [`RbdState::reset_envs_from_snapshots`] (spawn teleport + per-episode
+    /// velocity randomization in one owned snapshot, no extra clone).
+    pub fn translated_with_dof_vels(&self, offset: Vector, dof_vels: &[f32]) -> RbdSnapshot {
+        let mut out = self.translated(offset);
+        out.mb.set_dof_vels(dof_vels);
+        out
+    }
+
+    /// [`Self::translated_with_dof_vels`] without the translation (flat ground).
+    pub fn with_dof_vels(&self, dof_vels: &[f32]) -> RbdSnapshot {
+        let mut out = self.clone();
+        out.mb.set_dof_vels(dof_vels);
         out
     }
 }

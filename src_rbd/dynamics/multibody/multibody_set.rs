@@ -1101,7 +1101,11 @@ pub(super) struct EnvResetBundle {
     staging_ws: Tensor<Vec4>,
     staging_links: Tensor<MultibodyLinkStatic>,
     staging_dofs: Tensor<f32>,
+    /// Destination env id per staged reset (`cap` entries allocated).
+    dst_envs: Tensor<u32>,
     params: Tensor<UVec4>,
+    /// Number of envs the staging buffers can currently hold.
+    cap: u32,
 }
 
 /// `#[derive(Shader)]` supplies `from_backend`, which loads the embedded
@@ -1112,20 +1116,42 @@ struct EnvResetShader {
 }
 
 impl EnvResetBundle {
-    fn new(backend: &GpuBackend, lpb: u32, dpb: u32) -> Self {
+    /// Allocate staging for `cap` simultaneously-reset envs. Capacity is grown
+    /// (never shrunk) by [`Self::reserve`] so a steady-state rollout stops
+    /// reallocating entirely after the first few steps.
+    fn new(backend: &GpuBackend, lpb: u32, dpb: u32, cap: u32) -> Self {
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        let cap = cap.max(1);
         Self {
             shader: EnvResetShader::from_backend(backend).unwrap(),
-            staging_ws: Tensor::vector_uninit(backend, lpb * WS_QUADS, storage).unwrap(),
-            staging_links: Tensor::vector_uninit(backend, lpb, storage).unwrap(),
-            staging_dofs: Tensor::vector_uninit(backend, (dpb * 2).max(1), storage).unwrap(),
+            staging_ws: Tensor::vector_uninit(backend, cap * lpb * WS_QUADS, storage).unwrap(),
+            staging_links: Tensor::vector_uninit(backend, cap * lpb, storage).unwrap(),
+            staging_dofs: Tensor::vector_uninit(backend, (cap * dpb * 2).max(1), storage).unwrap(),
+            dst_envs: Tensor::vector_uninit(backend, cap, storage).unwrap(),
             params: Tensor::scalar(
                 backend,
                 UVec4::ZERO,
                 BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             )
             .unwrap(),
+            cap,
         }
+    }
+
+    /// Grow staging to hold at least `cap` envs, if it doesn't already.
+    fn reserve(&mut self, backend: &GpuBackend, lpb: u32, dpb: u32, cap: u32) {
+        if cap <= self.cap {
+            return;
+        }
+        // Round up so a slowly-growing reset count doesn't reallocate each step.
+        let cap = cap.next_power_of_two();
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        self.staging_ws = Tensor::vector_uninit(backend, cap * lpb * WS_QUADS, storage).unwrap();
+        self.staging_links = Tensor::vector_uninit(backend, cap * lpb, storage).unwrap();
+        self.staging_dofs =
+            Tensor::vector_uninit(backend, (cap * dpb * 2).max(1), storage).unwrap();
+        self.dst_envs = Tensor::vector_uninit(backend, cap, storage).unwrap();
+        self.cap = cap;
     }
 }
 
@@ -1238,54 +1264,94 @@ impl GpuMultibodySet {
 
     /// Reset env `dst_env` from a CPU snapshot: one staging upload + one
     /// scatter dispatch — no GPU→CPU readback, no per-element strided writes.
+    ///
+    /// Thin wrapper over [`Self::reset_envs_from_snapshots`]; prefer the batched
+    /// form in rollout reset loops, where per-dispatch overhead dominates.
     pub fn reset_env_from_snapshot(
         &mut self,
         backend: &GpuBackend,
         dst_env: u32,
         snap: &GpuMultibodySnapshot,
     ) {
-        if self.is_empty() {
+        self.reset_envs_from_snapshots(backend, &[(dst_env, snap)]);
+    }
+
+    /// Reset many envs in ONE staging upload + ONE scatter dispatch.
+    ///
+    /// This is the form RL rollouts want: an untrained policy terminates
+    /// thousands of envs per step, and paying a staging upload, a params
+    /// allocation, an encoder build and a kernel launch per env costs far more
+    /// than the few kilobytes each reset actually moves.
+    ///
+    /// `resets` is `(dst_env, snapshot)` pairs; duplicate `dst_env`s are not
+    /// meaningful (the last writer would win non-deterministically) and are the
+    /// caller's responsibility to avoid.
+    pub fn reset_envs_from_snapshots(
+        &mut self,
+        backend: &GpuBackend,
+        resets: &[(u32, &GpuMultibodySnapshot)],
+    ) {
+        if self.is_empty() || resets.is_empty() {
             return;
         }
         let nb = self.num_batches;
         let lpb = self.links_per_batch;
         let dpb = self.dofs_per_batch;
-        debug_assert_eq!(snap.links_static.len(), lpb as usize);
-        debug_assert_eq!(snap.dof_values.len(), dpb as usize);
+        let count = resets.len() as u32;
+        for (_, snap) in resets {
+            debug_assert_eq!(snap.links_static.len(), lpb as usize);
+            debug_assert_eq!(snap.dof_values.len(), dpb as usize);
+        }
 
         // Keep the host mirror in lockstep (the motor setters read-modify-
         // write it).
-        for k in 0..lpb as usize {
-            self.links_static_mirror[k * nb as usize + dst_env as usize] = snap.links_static[k];
+        for (dst_env, snap) in resets {
+            for k in 0..lpb as usize {
+                self.links_static_mirror[k * nb as usize + *dst_env as usize] = snap.links_static[k];
+            }
         }
 
         // Take the bundle out to sidestep the simultaneous &mut borrows of
         // the live buffers below.
         let mut bundle = match self.env_reset.take() {
             Some(b) => b,
-            None => EnvResetBundle::new(backend, lpb, dpb),
+            None => EnvResetBundle::new(backend, lpb, dpb, count),
         };
+        bundle.reserve(backend, lpb, dpb, count);
 
-        let ws = ws_soa_from_structs(&snap.links_workspace, lpb, 1);
+        // Concatenate every reset's staging blob env-major, matching the
+        // indexing the kernel does (`k * span + j`).
+        let span = (lpb * WS_QUADS) as usize;
+        let mut ws_all: Vec<Vec4> = Vec::with_capacity(count as usize * span);
+        let mut links_all: Vec<MultibodyLinkStatic> =
+            Vec::with_capacity(count as usize * lpb as usize);
+        let mut dofs_all: Vec<f32> = Vec::with_capacity(count as usize * 2 * dpb as usize);
+        let mut envs: Vec<u32> = Vec::with_capacity(count as usize);
+        for (dst_env, snap) in resets {
+            ws_all.extend_from_slice(&ws_soa_from_structs(&snap.links_workspace, lpb, 1));
+            links_all.extend_from_slice(&snap.links_static);
+            dofs_all.extend_from_slice(&snap.dof_values);
+            dofs_all.extend_from_slice(&snap.dof_vels);
+            envs.push(*dst_env);
+        }
+
         backend
-            .write_buffer(bundle.staging_ws.buffer_mut(), 0, &ws)
+            .write_buffer(bundle.staging_ws.buffer_mut(), 0, &ws_all)
             .unwrap();
         backend
-            .write_buffer(bundle.staging_links.buffer_mut(), 0, &snap.links_static)
+            .write_buffer(bundle.staging_links.buffer_mut(), 0, &links_all)
             .unwrap();
-        let mut dofs = snap.dof_values.clone();
-        dofs.extend_from_slice(&snap.dof_vels);
-        if !dofs.is_empty() {
+        if !dofs_all.is_empty() {
             backend
-                .write_buffer(bundle.staging_dofs.buffer_mut(), 0, &dofs)
+                .write_buffer(bundle.staging_dofs.buffer_mut(), 0, &dofs_all)
                 .unwrap();
         }
-        bundle.params = Tensor::scalar(
-            backend,
-            UVec4::new(dst_env, nb, lpb, dpb),
-            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        )
-        .unwrap();
+        backend
+            .write_buffer(bundle.dst_envs.buffer_mut(), 0, &envs)
+            .unwrap();
+        backend
+            .write_buffer(bundle.params.buffer_mut(), 0, &[UVec4::new(count, nb, lpb, dpb)])
+            .unwrap();
 
         let mut encoder = backend.begin_encoding();
         {
@@ -1296,10 +1362,11 @@ impl GpuMultibodySet {
                 .kernel
                 .call(
                     pass,
-                    lpb * WS_QUADS,
+                    count * lpb * WS_QUADS,
                     &bundle.staging_ws,
                     &bundle.staging_links,
                     &bundle.staging_dofs,
+                    &bundle.dst_envs,
                     &mut self.links_workspace,
                     &mut self.links_static,
                     &mut self.dof_values,
