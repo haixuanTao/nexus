@@ -289,8 +289,14 @@ pub(super) struct BodyResetBundle {
     staging_poses: Tensor<Pose>,
     staging_vels: Tensor<GpuVelocity>,
     dst_envs: Tensor<u32>,
+    /// Per-reset spawn offset (xyz used), applied by the kernel.
+    offsets: Tensor<glamx::Vec4>,
+    /// Per-body translate flag — topology-constant, uploaded once.
+    body_flags: Tensor<u32>,
     params: Tensor<glamx::UVec4>,
     cap: u32,
+    /// Whether `body_flags` has been populated.
+    flags_ready: bool,
 }
 
 /// `#[derive(Shader)]` supplies `from_backend`, which loads the embedded
@@ -309,6 +315,8 @@ impl BodyResetBundle {
             staging_poses: Tensor::vector_uninit(backend, (cap * bps).max(1), storage).unwrap(),
             staging_vels: Tensor::vector_uninit(backend, (cap * vs).max(1), storage).unwrap(),
             dst_envs: Tensor::vector_uninit(backend, cap, storage).unwrap(),
+            offsets: Tensor::vector_uninit(backend, cap, storage).unwrap(),
+            body_flags: Tensor::vector_uninit(backend, bps.max(1), storage).unwrap(),
             params: Tensor::scalar(
                 backend,
                 glamx::UVec4::ZERO,
@@ -316,6 +324,7 @@ impl BodyResetBundle {
             )
             .unwrap(),
             cap,
+            flags_ready: false,
         }
     }
 
@@ -328,7 +337,31 @@ impl BodyResetBundle {
         self.staging_poses = Tensor::vector_uninit(backend, (cap * bps).max(1), storage).unwrap();
         self.staging_vels = Tensor::vector_uninit(backend, (cap * vs).max(1), storage).unwrap();
         self.dst_envs = Tensor::vector_uninit(backend, cap, storage).unwrap();
+        self.offsets = Tensor::vector_uninit(backend, cap, storage).unwrap();
         self.cap = cap;
+    }
+}
+
+/// One env's reset request for [`RbdState::reset_envs_from_snapshots`].
+///
+/// Borrows the UNtranslated template; the spawn teleport is applied by the
+/// scatter kernels, so a reset never clones a snapshot.
+pub struct EnvResetSpec<'a> {
+    /// Destination environment (batch) index.
+    pub dst_env: u32,
+    /// Template state to reset to.
+    pub template: &'a RbdSnapshot,
+    /// World-frame spawn offset applied to floating-base multibodies.
+    pub offset: Vector,
+    /// Generalized velocities to start the episode with; `None` keeps the
+    /// template's own.
+    pub dof_vels: Option<&'a [f32]>,
+}
+
+impl<'a> EnvResetSpec<'a> {
+    /// Reset to `template` unchanged — no teleport, template velocities.
+    pub fn new(dst_env: u32, template: &'a RbdSnapshot) -> Self {
+        Self { dst_env, template, offset: Vector::ZERO, dof_vels: None }
     }
 }
 
@@ -748,7 +781,7 @@ impl RbdState {
         dst_env: u32,
         snap: &RbdSnapshot,
     ) {
-        self.reset_envs_from_snapshots(backend, &[(dst_env, snap)]);
+        self.reset_envs_from_snapshots(backend, &[EnvResetSpec::new(dst_env, snap)]);
     }
 
     /// Reset many envs at once. The multibody scatter — the expensive part —
@@ -763,7 +796,7 @@ impl RbdState {
     pub fn reset_envs_from_snapshots(
         &mut self,
         backend: &GpuBackend,
-        resets: &[(u32, &RbdSnapshot)],
+        resets: &[EnvResetSpec<'_>],
     ) {
         use khal::backend::Encoder;
 
@@ -781,20 +814,31 @@ impl RbdState {
         };
         bundle.reserve(backend, bps, vs, count);
 
-        // Env-major packed staging, matching the kernel's `k * bps + j`.
+        // Upload the topology-constant translate flags once.
+        if !bundle.flags_ready {
+            let flags = resets[0].template.body_translate_flags(bps as usize);
+            backend.write_buffer(bundle.body_flags.buffer_mut(), 0, &flags).unwrap();
+            bundle.flags_ready = true;
+        }
+
+        // Env-major packed staging, matching the kernel's `k * bps + j`. The
+        // UNtranslated template is staged as-is; the kernel applies the offset.
         let mut poses: Vec<Pose> = Vec::with_capacity(count as usize * bps as usize);
         let mut vels: Vec<GpuVelocity> = Vec::with_capacity(count as usize * vs as usize);
         let mut envs: Vec<u32> = Vec::with_capacity(count as usize);
-        for (dst_env, snap) in resets {
-            poses.extend_from_slice(&snap.body_poses[..bps as usize]);
-            vels.extend_from_slice(&snap.vels[..vs as usize]);
-            envs.push(*dst_env);
+        let mut offs: Vec<glamx::Vec4> = Vec::with_capacity(count as usize);
+        for r in resets {
+            poses.extend_from_slice(&r.template.body_poses[..bps as usize]);
+            vels.extend_from_slice(&r.template.vels[..vs as usize]);
+            envs.push(r.dst_env);
+            offs.push(offset_quad(r.offset));
         }
         let span = bps.max(vs);
 
         backend.write_buffer(bundle.staging_poses.buffer_mut(), 0, &poses).unwrap();
         backend.write_buffer(bundle.staging_vels.buffer_mut(), 0, &vels).unwrap();
         backend.write_buffer(bundle.dst_envs.buffer_mut(), 0, &envs).unwrap();
+        backend.write_buffer(bundle.offsets.buffer_mut(), 0, &offs).unwrap();
         backend
             .write_buffer(
                 bundle.params.buffer_mut(),
@@ -816,6 +860,8 @@ impl RbdState {
                     &bundle.staging_poses,
                     &bundle.staging_vels,
                     &bundle.dst_envs,
+                    &bundle.offsets,
+                    &bundle.body_flags,
                     &mut self.body_poses,
                     &mut self.vels,
                     &bundle.params,
@@ -825,8 +871,15 @@ impl RbdState {
         backend.submit(encoder).unwrap();
         self.env_reset_bodies = Some(bundle);
 
-        let mb: Vec<(u32, &GpuMultibodySnapshot)> =
-            resets.iter().map(|(e, s)| (*e, &s.mb)).collect();
+        let mb: Vec<crate::dynamics::MbEnvResetSpec<'_>> = resets
+            .iter()
+            .map(|r| crate::dynamics::MbEnvResetSpec {
+                dst_env: r.dst_env,
+                snapshot: &r.template.mb,
+                offset: mb_offset(r.offset),
+                dof_vels: r.dof_vels,
+            })
+            .collect();
         self.multibodies.reset_envs_from_snapshots(backend, &mb);
     }
 
@@ -974,4 +1027,45 @@ impl RbdSnapshot {
         out.mb.set_dof_vels(dof_vels);
         out
     }
+
+    /// Per-body translate flag for the in-kernel spawn teleport: 1 for bodies
+    /// backing a link of a FREE-rooted multibody (the set [`Self::translated`]
+    /// moves), 0 for ground / terrain and fixed-base chains.
+    ///
+    /// Topology-constant, so computed once and uploaded once.
+    pub(crate) fn body_translate_flags(&self, bps: usize) -> Vec<u32> {
+        let mut flags = vec![0u32; bps];
+        self.mb.for_each_link_rb_id(|rb_id| {
+            if let Some(f) = flags.get_mut(rb_id as usize) {
+                *f = 1;
+            }
+        });
+        flags
+    }
+}
+
+/// Spawn offset packed for the reset kernels' `offsets` buffer.
+#[cfg(feature = "dim3")]
+#[inline]
+fn offset_quad(o: Vector) -> glamx::Vec4 {
+    glamx::Vec4::new(o.x, o.y, o.z, 0.0)
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn offset_quad(o: Vector) -> glamx::Vec4 {
+    glamx::Vec4::new(o.x, o.y, 0.0, 0.0)
+}
+
+/// The multibody layer takes a 3D offset in both dimensions.
+#[cfg(feature = "dim3")]
+#[inline]
+fn mb_offset(o: Vector) -> glamx::Vec3 {
+    o
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn mb_offset(o: Vector) -> glamx::Vec3 {
+    glamx::Vec3::new(o.x, o.y, 0.0)
 }

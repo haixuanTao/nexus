@@ -18,7 +18,67 @@ use khal_std::macros::{spirv, spirv_bindgen};
 use super::super::body::Velocity;
 use super::types::MultibodyLinkStatic;
 use super::ws_soa::WS_QUADS;
+#[allow(unused_imports)]
+use super::ws_soa::{WS_COORDS, WS_LTP, WS_LTW};
 use crate::Pose;
+use crate::Vector;
+
+/// Per-link translate flags, precomputed host-side from the (topology-constant)
+/// template. Bit 0: this link belongs to a FREE-rooted multibody, so its
+/// `local_to_world` moves with a spawn teleport. Bit 1: it is additionally that
+/// multibody's root, whose `local_to_parent` and free linear coords also move.
+/// Bit 1 implies bit 0.
+pub const RESET_TRANSLATE_LTW: u32 = 1;
+pub const RESET_TRANSLATE_ROOT: u32 = 2;
+
+/// Spawn offset as a world-frame vector, from the packed per-reset quad.
+#[cfg(feature = "dim3")]
+#[inline]
+fn off_vec(o: Vec4) -> Vector {
+    Vector::new(o.x, o.y, o.z)
+}
+
+#[cfg(feature = "dim2")]
+#[inline]
+fn off_vec(o: Vec4) -> Vector {
+    Vector::new(o.x, o.y)
+}
+
+/// Apply a spawn offset to workspace quad `q` of a link carrying `flags`.
+///
+/// This is the in-kernel form of the host's snapshot `translated()`: rotations,
+/// velocities and non-root joint coordinates are translation-invariant, so only
+/// the local-to-world translation (every link of a floating-base multibody) and
+/// the root's local-to-parent translation + free linear coords move. Doing it
+/// here is what lets the caller stage the UNtranslated template directly
+/// instead of cloning and translating a snapshot per reset.
+#[cfg(feature = "dim3")]
+#[inline]
+fn ws_apply_offset(v: Vec4, q: u32, flags: u32, o: Vec4) -> Vec4 {
+    let shift = (flags & RESET_TRANSLATE_LTW != 0 && q == WS_LTW + 1)
+        || (flags & RESET_TRANSLATE_ROOT != 0 && (q == WS_LTP + 1 || q == WS_COORDS));
+    if shift {
+        Vec4::new(v.x + o.x, v.y + o.y, v.z + o.z, v.w)
+    } else {
+        v
+    }
+}
+
+/// dim2 mirror: poses are a single quad `(rot.re, rot.im, trans.x, trans.y)`,
+/// and the free root's linear coords are `c0, c1`.
+#[cfg(feature = "dim2")]
+#[inline]
+fn ws_apply_offset(v: Vec4, q: u32, flags: u32, o: Vec4) -> Vec4 {
+    let pose_shift = (flags & RESET_TRANSLATE_LTW != 0 && q == WS_LTW)
+        || (flags & RESET_TRANSLATE_ROOT != 0 && q == WS_LTP);
+    if pose_shift {
+        Vec4::new(v.x, v.y, v.z + o.x, v.w + o.y)
+    } else if flags & RESET_TRANSLATE_ROOT != 0 && q == WS_COORDS {
+        Vec4::new(v.x + o.x, v.y + o.y, v.z, v.w)
+    } else {
+        v
+    }
+}
 
 /// Scatters `count` staged env states into the interleaved buffers in ONE
 /// dispatch. Dispatch `[count · links_per_batch · WS_QUADS, 1, 1]` threads:
@@ -54,13 +114,15 @@ pub fn gpu_mb_env_reset(
     staging_links: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] staging_dofs: &[f32],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dst_envs: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] links_workspace: &mut [Vec4],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)]
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] offsets: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] link_flags: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] links_workspace: &mut [Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)]
     links_static: &mut [MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_values: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] dof_state: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_values: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] dof_state: &mut [f32],
     // x = count, y = num_batches, z = links_per_batch, w = dofs_per_batch.
-    #[spirv(uniform, descriptor_set = 0, binding = 8)] params: &UVec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 10)] params: &UVec4,
 ) {
     let i = invocation_id.x;
     let count = params.x;
@@ -76,8 +138,19 @@ pub fn gpu_mb_env_reset(
     // slack past `count` envs) fall out here.
     if k < count {
         let env = dst_envs.read(k as usize);
+        let off = offsets.read(k as usize);
 
-        links_workspace.write((j * nb + env) as usize, staging_ws.read((k * span + j) as usize));
+        // Spawn teleport is applied HERE rather than by cloning + translating a
+        // snapshot per reset on the host.
+        let link = j / WS_QUADS;
+        let q = j - link * WS_QUADS;
+        let ws = ws_apply_offset(
+            staging_ws.read((k * span + j) as usize),
+            q,
+            link_flags.read(link as usize),
+            off,
+        );
+        links_workspace.write((j * nb + env) as usize, ws);
         if j < lpb {
             links_static.write((j * nb + env) as usize, staging_links.read((k * lpb + j) as usize));
         }
@@ -109,10 +182,12 @@ pub fn gpu_rbd_env_reset_bodies(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] staging_poses: &[Pose],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] staging_vels: &[Velocity],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] dst_envs: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] body_poses: &mut [Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] vels: &mut [Velocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] offsets: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_flags: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] vels: &mut [Velocity],
     // x = count, y = bodies_per_batch, z = vels_per_batch, w = thread span.
-    #[spirv(uniform, descriptor_set = 0, binding = 5)] params: &UVec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] params: &UVec4,
 ) {
     let i = invocation_id.x;
     let count = params.x;
@@ -125,8 +200,15 @@ pub fn gpu_rbd_env_reset_bodies(
 
     if k < count {
         let env = dst_envs.read(k as usize);
+        let off = offsets.read(k as usize);
         if j < bps {
-            body_poses.write((env * bps + j) as usize, staging_poses.read((k * bps + j) as usize));
+            // Only bodies backing a floating-base multibody move; ground and
+            // terrain keep their template poses.
+            let mut p = staging_poses.read((k * bps + j) as usize);
+            if body_flags.read(j as usize) != 0 {
+                p.translation += off_vec(off);
+            }
+            body_poses.write((env * bps + j) as usize, p);
         }
         if j < vs {
             vels.write((env * vs + j) as usize, staging_vels.read((k * vs + j) as usize));
