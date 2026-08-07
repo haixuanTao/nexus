@@ -109,20 +109,22 @@ fn ws_apply_offset(v: Vec4, q: u32, flags: u32, o: Vec4) -> Vec4 {
 #[spirv(compute(threads(64)))]
 pub fn gpu_mb_env_reset(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] staging_ws: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] bank_ws: &[Vec4],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
-    staging_links: &[MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] staging_dofs: &[f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dst_envs: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] offsets: &[Vec4],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] link_flags: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] links_workspace: &mut [Vec4],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)]
+    bank_links: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] bank_dof_values: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] staging_dof_vels: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] template_ids: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] dst_envs: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] offsets: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] link_flags: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] links_workspace: &mut [Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)]
     links_static: &mut [MultibodyLinkStatic],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)] dof_values: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] dof_state: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] dof_values: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 11)] dof_state: &mut [f32],
     // x = count, y = num_batches, z = links_per_batch, w = dofs_per_batch.
-    #[spirv(uniform, descriptor_set = 0, binding = 10)] params: &UVec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 12)] params: &UVec4,
 ) {
     let i = invocation_id.x;
     let count = params.x;
@@ -139,25 +141,27 @@ pub fn gpu_mb_env_reset(
     if k < count {
         let env = dst_envs.read(k as usize);
         let off = offsets.read(k as usize);
+        // Template state is READ FROM THE BANK, uploaded once — only the
+        // per-reset velocities, offset, env and template id travel per reset.
+        let tid = template_ids.read(k as usize);
 
         // Spawn teleport is applied HERE rather than by cloning + translating a
         // snapshot per reset on the host.
         let link = j / WS_QUADS;
         let q = j - link * WS_QUADS;
         let ws = ws_apply_offset(
-            staging_ws.read((k * span + j) as usize),
+            bank_ws.read((tid * span + j) as usize),
             q,
             link_flags.read(link as usize),
             off,
         );
         links_workspace.write((j * nb + env) as usize, ws);
         if j < lpb {
-            links_static.write((j * nb + env) as usize, staging_links.read((k * lpb + j) as usize));
+            links_static.write((j * nb + env) as usize, bank_links.read((tid * lpb + j) as usize));
         }
         if j < dpb {
-            let base = k * 2 * dpb;
-            dof_values.write((j * nb + env) as usize, staging_dofs.read((base + j) as usize));
-            dof_state.write((j * nb + env) as usize, staging_dofs.read((base + dpb + j) as usize));
+            dof_values.write((j * nb + env) as usize, bank_dof_values.read((tid * dpb + j) as usize));
+            dof_state.write((j * nb + env) as usize, staging_dof_vels.read((k * dpb + j) as usize));
         }
     }
 }
@@ -179,15 +183,16 @@ pub fn gpu_mb_env_reset(
 #[spirv(compute(threads(64)))]
 pub fn gpu_rbd_env_reset_bodies(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] staging_poses: &[Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] staging_vels: &[Velocity],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] dst_envs: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] offsets: &[Vec4],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] body_flags: &[u32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_poses: &mut [Pose],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] vels: &mut [Velocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] bank_poses: &[Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] bank_vels: &[Velocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] template_ids: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dst_envs: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] offsets: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_flags: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] body_poses: &mut [Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] vels: &mut [Velocity],
     // x = count, y = bodies_per_batch, z = vels_per_batch, w = thread span.
-    #[spirv(uniform, descriptor_set = 0, binding = 7)] params: &UVec4,
+    #[spirv(uniform, descriptor_set = 0, binding = 8)] params: &UVec4,
 ) {
     let i = invocation_id.x;
     let count = params.x;
@@ -201,17 +206,18 @@ pub fn gpu_rbd_env_reset_bodies(
     if k < count {
         let env = dst_envs.read(k as usize);
         let off = offsets.read(k as usize);
+        let tid = template_ids.read(k as usize);
         if j < bps {
             // Only bodies backing a floating-base multibody move; ground and
             // terrain keep their template poses.
-            let mut p = staging_poses.read((k * bps + j) as usize);
+            let mut p = bank_poses.read((tid * bps + j) as usize);
             if body_flags.read(j as usize) != 0 {
                 p.translation += off_vec(off);
             }
             body_poses.write((env * bps + j) as usize, p);
         }
         if j < vs {
-            vels.write((env * vs + j) as usize, staging_vels.read((k * vs + j) as usize));
+            vels.write((env * vs + j) as usize, bank_vels.read((tid * vs + j) as usize));
         }
     }
 }

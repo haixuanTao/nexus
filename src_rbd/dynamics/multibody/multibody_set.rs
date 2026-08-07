@@ -65,7 +65,15 @@ pub struct GpuMultibodySet {
     pub(super) links_static_mirror: Vec<MultibodyLinkStatic>,
     /// Lazily-created shader bundle + staging buffers for the per-env RL
     /// reset scatter (`gpu_mb_env_reset`).
-    pub(super) env_reset: Option<EnvResetBundle>,
+    pub(crate) env_reset: Option<EnvResetBundle>,
+    /// Host mirror of the reset template bank's `links_static`, `templates ×
+    /// links_per_batch`. Needed because a reset must update
+    /// `links_static_mirror` for the destination env, and the GPU-side bank
+    /// isn't readable without a stall.
+    pub(super) links_static_bank: Vec<MultibodyLinkStatic>,
+    /// Host mirror of the bank's per-template `dof_vels`, `templates ×
+    /// dofs_per_batch` — the fallback when a reset supplies no velocities.
+    pub(super) dof_vels_bank: Vec<f32>,
     /// Persistent external generalized forces (RL torque input), same
     /// interleaved layout as `gen_forces`; zeroed = none. Applied every
     /// substep by the gravity kernels until overwritten.
@@ -1009,6 +1017,14 @@ pub struct GpuMultibodySnapshot {
     /// Generalized velocities of batch 0 (`dofs_per_batch`; the velocity
     /// section of `dof_state` — the damping section is static config).
     dof_vels: Vec<f32>,
+    /// `links_workspace` pre-converted to the packed (`num_batches = 1`) SoA
+    /// quad layout the reset kernel consumes.
+    ///
+    /// Cached because the reset staging build would otherwise re-run
+    /// `ws_soa_from_structs` — a fresh allocation plus a field-by-field AoS→SoA
+    /// scatter — for EVERY reset, thousands of times per rollout step, always
+    /// producing the same bytes for a given template.
+    ws_soa: Vec<Vec4>,
 }
 
 impl GpuMultibodySnapshot {
@@ -1111,6 +1127,9 @@ impl GpuMultibodySnapshot {
                 ws.coords[2] += offset.z;
             }
         }
+        // Keep the packed cache consistent with the mutated AoS workspace.
+        let lpb = out.links_static.len() as u32;
+        out.ws_soa = ws_soa_from_structs(&out.links_workspace, lpb, 1);
         out
     }
 }
@@ -1123,19 +1142,21 @@ impl GpuMultibodySnapshot {
 pub struct MbEnvResetSpec<'a> {
     /// Destination environment (batch) index.
     pub dst_env: u32,
-    /// Template state to reset to.
-    pub snapshot: &'a GpuMultibodySnapshot,
+    /// Index into the bank uploaded by
+    /// [`GpuMultibodySet::upload_reset_templates`].
+    pub template_idx: u32,
     /// World-frame spawn offset applied to floating-base multibodies.
     pub offset: glamx::Vec3,
     /// Generalized velocities to start the episode with; `None` keeps the
-    /// snapshot's own.
+    /// template's own.
     pub dof_vels: Option<&'a [f32]>,
 }
 
 impl<'a> MbEnvResetSpec<'a> {
-    /// Reset to `snapshot` unchanged — no teleport, snapshot velocities.
-    pub fn new(dst_env: u32, snapshot: &'a GpuMultibodySnapshot) -> Self {
-        Self { dst_env, snapshot, offset: glamx::Vec3::ZERO, dof_vels: None }
+    /// Reset to bank template `template_idx` unchanged — no teleport, template
+    /// velocities.
+    pub fn new(dst_env: u32, template_idx: u32) -> Self {
+        Self { dst_env, template_idx, offset: glamx::Vec3::ZERO, dof_vels: None }
     }
 
     fn offset_quad(&self) -> Vec4 {
@@ -1146,11 +1167,17 @@ impl<'a> MbEnvResetSpec<'a> {
 /// Standalone shader bundle + persistent staging buffers for the per-env
 /// reset scatter. Lazily created on first reset (allocations stay outside
 /// any captured region).
-pub(super) struct EnvResetBundle {
+pub(crate) struct EnvResetBundle {
     shader: EnvResetShader,
-    staging_ws: Tensor<Vec4>,
-    staging_links: Tensor<MultibodyLinkStatic>,
-    staging_dofs: Tensor<f32>,
+    /// Template BANK — every template's state, uploaded once. Indexed by the
+    /// per-reset template id, so a reset never re-uploads template bytes.
+    bank_ws: Tensor<Vec4>,
+    bank_links: Tensor<MultibodyLinkStatic>,
+    bank_dof_values: Tensor<f32>,
+    /// Per-reset: the episode's starting generalized velocities.
+    staging_dof_vels: Tensor<f32>,
+    /// Per-reset: which template to read from the bank.
+    template_ids: Tensor<u32>,
     /// Destination env id per staged reset (`cap` entries allocated).
     dst_envs: Tensor<u32>,
     /// Per-reset spawn offset (xyz used), applied by the kernel.
@@ -1162,6 +1189,8 @@ pub(super) struct EnvResetBundle {
     cap: u32,
     /// Whether `link_flags` has been populated.
     flags_ready: bool,
+    /// Templates currently in the bank (0 = not uploaded yet).
+    templates: u32,
 }
 
 /// `#[derive(Shader)]` supplies `from_backend`, which loads the embedded
@@ -1180,9 +1209,12 @@ impl EnvResetBundle {
         let cap = cap.max(1);
         Self {
             shader: EnvResetShader::from_backend(backend).unwrap(),
-            staging_ws: Tensor::vector_uninit(backend, cap * lpb * WS_QUADS, storage).unwrap(),
-            staging_links: Tensor::vector_uninit(backend, cap * lpb, storage).unwrap(),
-            staging_dofs: Tensor::vector_uninit(backend, (cap * dpb * 2).max(1), storage).unwrap(),
+            // Bank is sized by `upload_templates`; start minimal.
+            bank_ws: Tensor::vector_uninit(backend, lpb * WS_QUADS, storage).unwrap(),
+            bank_links: Tensor::vector_uninit(backend, lpb, storage).unwrap(),
+            bank_dof_values: Tensor::vector_uninit(backend, dpb.max(1), storage).unwrap(),
+            staging_dof_vels: Tensor::vector_uninit(backend, (cap * dpb).max(1), storage).unwrap(),
+            template_ids: Tensor::vector_uninit(backend, cap, storage).unwrap(),
             dst_envs: Tensor::vector_uninit(backend, cap, storage).unwrap(),
             offsets: Tensor::vector_uninit(backend, cap, storage).unwrap(),
             link_flags: Tensor::vector_uninit(backend, lpb.max(1), storage).unwrap(),
@@ -1194,24 +1226,58 @@ impl EnvResetBundle {
             .unwrap(),
             cap,
             flags_ready: false,
+            templates: 0,
         }
     }
 
-    /// Grow staging to hold at least `cap` envs, if it doesn't already.
-    fn reserve(&mut self, backend: &GpuBackend, lpb: u32, dpb: u32, cap: u32) {
+    /// Grow the per-reset staging to hold at least `cap` envs. The template
+    /// bank is untouched — it scales with template count, not reset count.
+    fn reserve(&mut self, backend: &GpuBackend, dpb: u32, cap: u32) {
         if cap <= self.cap {
             return;
         }
         // Round up so a slowly-growing reset count doesn't reallocate each step.
         let cap = cap.next_power_of_two();
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        self.staging_ws = Tensor::vector_uninit(backend, cap * lpb * WS_QUADS, storage).unwrap();
-        self.staging_links = Tensor::vector_uninit(backend, cap * lpb, storage).unwrap();
-        self.staging_dofs =
-            Tensor::vector_uninit(backend, (cap * dpb * 2).max(1), storage).unwrap();
+        self.staging_dof_vels = Tensor::vector_uninit(backend, (cap * dpb).max(1), storage).unwrap();
+        self.template_ids = Tensor::vector_uninit(backend, cap, storage).unwrap();
         self.dst_envs = Tensor::vector_uninit(backend, cap, storage).unwrap();
         self.offsets = Tensor::vector_uninit(backend, cap, storage).unwrap();
         self.cap = cap;
+    }
+
+    /// Upload every template's state once. Resets then reference templates by
+    /// index, so per-reset traffic is just (env, template id, offset, vels).
+    fn upload_templates(
+        &mut self,
+        backend: &GpuBackend,
+        templates: &[&GpuMultibodySnapshot],
+        lpb: u32,
+        dpb: u32,
+    ) {
+        let n = templates.len() as u32;
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        let span = (lpb * WS_QUADS) as usize;
+        let mut ws: Vec<Vec4> = Vec::with_capacity(n as usize * span);
+        let mut links: Vec<MultibodyLinkStatic> = Vec::with_capacity(n as usize * lpb as usize);
+        let mut dofs: Vec<f32> = Vec::with_capacity(n as usize * dpb as usize);
+        for s in templates {
+            ws.extend_from_slice(&s.ws_soa);
+            links.extend_from_slice(&s.links_static);
+            dofs.extend_from_slice(&s.dof_values);
+        }
+        self.bank_ws = Tensor::vector(backend, &ws, storage).unwrap();
+        self.bank_links = Tensor::vector(backend, &links, storage).unwrap();
+        if !dofs.is_empty() {
+            self.bank_dof_values = Tensor::vector(backend, &dofs, storage).unwrap();
+        }
+        self.templates = n;
+        // Flags are topology-constant; take them from template 0.
+        if let Some(first) = templates.first() {
+            let flags = first.translate_flags();
+            self.link_flags = Tensor::vector(backend, &flags, storage).unwrap();
+            self.flags_ready = true;
+        }
     }
 }
 
@@ -1266,14 +1332,16 @@ impl GpuMultibodySet {
         // Gather batch 0 out of the interleave; de-SoA the workspace through
         // the shared layout accessors (one source of truth with the kernels).
         let a = WsAddr::new(0, nb, 0);
-        let links_workspace = (0..lpb as u32)
+        let links_workspace: Vec<MultibodyLinkWorkspace> = (0..lpb as u32)
             .map(|k| ws_struct_from_soa(&ws_soa, a, k))
             .collect();
+        let ws_packed = ws_soa_from_structs(&links_workspace, lpb as u32, 1);
         GpuMultibodySnapshot {
             links_workspace,
             links_static: (0..lpb).map(|k| ls_all[k * nb as usize]).collect(),
             dof_values: (0..dpb).map(|d| dv_all[d * nb as usize]).collect(),
             dof_vels: (0..dpb).map(|d| ds_all[d * nb as usize]).collect(),
+            ws_soa: ws_packed,
         }
     }
 
@@ -1333,7 +1401,66 @@ impl GpuMultibodySet {
         dst_env: u32,
         snap: &GpuMultibodySnapshot,
     ) {
-        self.reset_envs_from_snapshots(backend, &[MbEnvResetSpec::new(dst_env, snap)]);
+        // Slow path for one-off callers: publish a single-entry bank, reset from
+        // it, then RESTORE the shared bank — otherwise this would silently
+        // invalidate the template indices the batched path is using. Rollouts
+        // should call `upload_reset_templates` once and reset by index instead.
+        let saved = self.take_reset_bank();
+        self.upload_reset_templates(backend, &[snap]);
+        self.reset_envs_from_snapshots(backend, &[MbEnvResetSpec::new(dst_env, 0)]);
+        self.restore_reset_bank(saved);
+    }
+
+    /// Detach the reset template bank (GPU bundle + host mirrors) so a one-off
+    /// reset can install a scratch bank without invalidating the template
+    /// indices a batched caller is using. Pair with [`Self::restore_reset_bank`].
+    pub(crate) fn take_reset_bank(
+        &mut self,
+    ) -> (Option<EnvResetBundle>, Vec<MultibodyLinkStatic>, Vec<f32>) {
+        (
+            self.env_reset.take(),
+            std::mem::take(&mut self.links_static_bank),
+            std::mem::take(&mut self.dof_vels_bank),
+        )
+    }
+
+    /// Re-install a bank taken by [`Self::take_reset_bank`]. A `None` bundle
+    /// means there was nothing to restore, and the scratch bank is kept.
+    pub(crate) fn restore_reset_bank(
+        &mut self,
+        bank: (Option<EnvResetBundle>, Vec<MultibodyLinkStatic>, Vec<f32>),
+    ) {
+        if bank.0.is_some() {
+            self.env_reset = bank.0;
+            self.links_static_bank = bank.1;
+            self.dof_vels_bank = bank.2;
+        }
+    }
+
+    /// Publish the template bank the batched reset reads from. Call once after
+    /// building templates; resets then reference them by index and never
+    /// re-upload template bytes.
+    pub fn upload_reset_templates(
+        &mut self,
+        backend: &GpuBackend,
+        templates: &[&GpuMultibodySnapshot],
+    ) {
+        if self.is_empty() || templates.is_empty() {
+            return;
+        }
+        let (lpb, dpb) = (self.links_per_batch, self.dofs_per_batch);
+        let mut bundle = match self.env_reset.take() {
+            Some(b) => b,
+            None => EnvResetBundle::new(backend, lpb, dpb, 1),
+        };
+        bundle.upload_templates(backend, templates, lpb, dpb);
+        self.env_reset = Some(bundle);
+        self.links_static_bank = templates
+            .iter()
+            .flat_map(|s| s.links_static.iter().copied())
+            .collect();
+        self.dof_vels_bank =
+            templates.iter().flat_map(|s| s.dof_vels.iter().copied()).collect();
     }
 
     /// Reset many envs in ONE staging upload + ONE scatter dispatch.
@@ -1358,20 +1485,6 @@ impl GpuMultibodySet {
         let lpb = self.links_per_batch;
         let dpb = self.dofs_per_batch;
         let count = resets.len() as u32;
-        for r in resets {
-            debug_assert_eq!(r.snapshot.links_static.len(), lpb as usize);
-            debug_assert_eq!(r.snapshot.dof_values.len(), dpb as usize);
-        }
-
-        // Keep the host mirror in lockstep (the motor setters read-modify-
-        // write it). links_static is translation-invariant, so the untranslated
-        // template values are what belong here.
-        for r in resets {
-            for k in 0..lpb as usize {
-                self.links_static_mirror[k * nb as usize + r.dst_env as usize] =
-                    r.snapshot.links_static[k];
-            }
-        }
 
         // Take the bundle out to sidestep the simultaneous &mut borrows of
         // the live buffers below.
@@ -1379,61 +1492,49 @@ impl GpuMultibodySet {
             Some(b) => b,
             None => EnvResetBundle::new(backend, lpb, dpb, count),
         };
-        bundle.reserve(backend, lpb, dpb, count);
+        assert!(
+            bundle.templates > 0,
+            "reset_envs_from_snapshots: call upload_reset_templates first"
+        );
+        bundle.reserve(backend, dpb, count);
 
-        // Upload the topology-constant translate flags once.
-        if !bundle.flags_ready {
-            let flags = resets[0].snapshot.translate_flags();
-            backend
-                .write_buffer(bundle.link_flags.buffer_mut(), 0, &flags)
-                .unwrap();
-            bundle.flags_ready = true;
-        }
-
-        // Concatenate every reset's staging blob env-major, matching the
-        // indexing the kernel does (`k * span + j`). The UNtranslated template
-        // is staged as-is — the kernel applies each reset's spawn offset, so no
-        // snapshot is cloned or translated on the host.
-        let span = (lpb * WS_QUADS) as usize;
-        let mut ws_all: Vec<Vec4> = Vec::with_capacity(count as usize * span);
-        let mut links_all: Vec<MultibodyLinkStatic> =
-            Vec::with_capacity(count as usize * lpb as usize);
-        let mut dofs_all: Vec<f32> = Vec::with_capacity(count as usize * 2 * dpb as usize);
+        // Per-reset traffic is now ONLY (env, template id, offset, velocities)
+        // — the template's workspace / links / dof values live in the bank and
+        // are never re-uploaded. Keeps the host mirror in lockstep too;
+        // links_static is translation-invariant so the template values apply.
+        let tmpl_links = &self.links_static_bank;
         let mut envs: Vec<u32> = Vec::with_capacity(count as usize);
+        let mut tids: Vec<u32> = Vec::with_capacity(count as usize);
         let mut offs: Vec<Vec4> = Vec::with_capacity(count as usize);
+        let mut vels_all: Vec<f32> = Vec::with_capacity(count as usize * dpb as usize);
         for r in resets {
-            let snap = r.snapshot;
-            ws_all.extend_from_slice(&ws_soa_from_structs(&snap.links_workspace, lpb, 1));
-            links_all.extend_from_slice(&snap.links_static);
-            dofs_all.extend_from_slice(&snap.dof_values);
+            debug_assert!(r.template_idx < bundle.templates);
+            envs.push(r.dst_env);
+            tids.push(r.template_idx);
+            offs.push(r.offset_quad());
+            let base = r.template_idx as usize * dpb as usize;
             match r.dof_vels {
                 Some(v) => {
                     debug_assert_eq!(v.len(), dpb as usize);
-                    dofs_all.extend_from_slice(v);
+                    vels_all.extend_from_slice(v);
                 }
-                None => dofs_all.extend_from_slice(&snap.dof_vels),
+                None => vels_all.extend_from_slice(&self.dof_vels_bank[base..base + dpb as usize]),
             }
-            envs.push(r.dst_env);
-            offs.push(r.offset_quad());
+            let lbase = r.template_idx as usize * lpb as usize;
+            for k in 0..lpb as usize {
+                self.links_static_mirror[k * nb as usize + r.dst_env as usize] =
+                    tmpl_links[lbase + k];
+            }
         }
 
-        backend
-            .write_buffer(bundle.staging_ws.buffer_mut(), 0, &ws_all)
-            .unwrap();
-        backend
-            .write_buffer(bundle.staging_links.buffer_mut(), 0, &links_all)
-            .unwrap();
-        if !dofs_all.is_empty() {
+        backend.write_buffer(bundle.dst_envs.buffer_mut(), 0, &envs).unwrap();
+        backend.write_buffer(bundle.template_ids.buffer_mut(), 0, &tids).unwrap();
+        backend.write_buffer(bundle.offsets.buffer_mut(), 0, &offs).unwrap();
+        if !vels_all.is_empty() {
             backend
-                .write_buffer(bundle.staging_dofs.buffer_mut(), 0, &dofs_all)
+                .write_buffer(bundle.staging_dof_vels.buffer_mut(), 0, &vels_all)
                 .unwrap();
         }
-        backend
-            .write_buffer(bundle.dst_envs.buffer_mut(), 0, &envs)
-            .unwrap();
-        backend
-            .write_buffer(bundle.offsets.buffer_mut(), 0, &offs)
-            .unwrap();
         backend
             .write_buffer(bundle.params.buffer_mut(), 0, &[UVec4::new(count, nb, lpb, dpb)])
             .unwrap();
@@ -1448,9 +1549,11 @@ impl GpuMultibodySet {
                 .call(
                     pass,
                     count * lpb * WS_QUADS,
-                    &bundle.staging_ws,
-                    &bundle.staging_links,
-                    &bundle.staging_dofs,
+                    &bundle.bank_ws,
+                    &bundle.bank_links,
+                    &bundle.bank_dof_values,
+                    &bundle.staging_dof_vels,
+                    &bundle.template_ids,
                     &bundle.dst_envs,
                     &bundle.offsets,
                     &bundle.link_flags,

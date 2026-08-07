@@ -286,8 +286,11 @@ pub struct RbdState {
 /// steady-state rollout stops allocating entirely.
 pub(super) struct BodyResetBundle {
     shader: BodyResetShader,
-    staging_poses: Tensor<Pose>,
-    staging_vels: Tensor<GpuVelocity>,
+    /// Template BANK — uploaded once, indexed per reset.
+    bank_poses: Tensor<Pose>,
+    bank_vels: Tensor<GpuVelocity>,
+    /// Per-reset: which template to read from the bank.
+    template_ids: Tensor<u32>,
     dst_envs: Tensor<u32>,
     /// Per-reset spawn offset (xyz used), applied by the kernel.
     offsets: Tensor<glamx::Vec4>,
@@ -312,8 +315,9 @@ impl BodyResetBundle {
         let cap = cap.max(1);
         Self {
             shader: BodyResetShader::from_backend(backend).unwrap(),
-            staging_poses: Tensor::vector_uninit(backend, (cap * bps).max(1), storage).unwrap(),
-            staging_vels: Tensor::vector_uninit(backend, (cap * vs).max(1), storage).unwrap(),
+            bank_poses: Tensor::vector_uninit(backend, bps.max(1), storage).unwrap(),
+            bank_vels: Tensor::vector_uninit(backend, vs.max(1), storage).unwrap(),
+            template_ids: Tensor::vector_uninit(backend, cap, storage).unwrap(),
             dst_envs: Tensor::vector_uninit(backend, cap, storage).unwrap(),
             offsets: Tensor::vector_uninit(backend, cap, storage).unwrap(),
             body_flags: Tensor::vector_uninit(backend, bps.max(1), storage).unwrap(),
@@ -328,17 +332,40 @@ impl BodyResetBundle {
         }
     }
 
-    fn reserve(&mut self, backend: &GpuBackend, bps: u32, vs: u32, cap: u32) {
+    fn reserve(&mut self, backend: &GpuBackend, cap: u32) {
         if cap <= self.cap {
             return;
         }
         let cap = cap.next_power_of_two();
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        self.staging_poses = Tensor::vector_uninit(backend, (cap * bps).max(1), storage).unwrap();
-        self.staging_vels = Tensor::vector_uninit(backend, (cap * vs).max(1), storage).unwrap();
+        self.template_ids = Tensor::vector_uninit(backend, cap, storage).unwrap();
         self.dst_envs = Tensor::vector_uninit(backend, cap, storage).unwrap();
         self.offsets = Tensor::vector_uninit(backend, cap, storage).unwrap();
         self.cap = cap;
+    }
+
+    /// Upload every template's body poses / velocities once.
+    fn upload_templates(
+        &mut self,
+        backend: &GpuBackend,
+        templates: &[&RbdSnapshot],
+        bps: usize,
+        vs: usize,
+    ) {
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        let mut poses: Vec<Pose> = Vec::with_capacity(templates.len() * bps);
+        let mut vels: Vec<GpuVelocity> = Vec::with_capacity(templates.len() * vs);
+        for s in templates {
+            poses.extend_from_slice(&s.body_poses[..bps]);
+            vels.extend_from_slice(&s.vels[..vs]);
+        }
+        self.bank_poses = Tensor::vector(backend, &poses, storage).unwrap();
+        self.bank_vels = Tensor::vector(backend, &vels, storage).unwrap();
+        if let Some(first) = templates.first() {
+            let flags = first.body_translate_flags(bps);
+            self.body_flags = Tensor::vector(backend, &flags, storage).unwrap();
+            self.flags_ready = true;
+        }
     }
 }
 
@@ -349,8 +376,8 @@ impl BodyResetBundle {
 pub struct EnvResetSpec<'a> {
     /// Destination environment (batch) index.
     pub dst_env: u32,
-    /// Template state to reset to.
-    pub template: &'a RbdSnapshot,
+    /// Index into the bank uploaded by [`RbdState::upload_reset_templates`].
+    pub template_idx: u32,
     /// World-frame spawn offset applied to floating-base multibodies.
     pub offset: Vector,
     /// Generalized velocities to start the episode with; `None` keeps the
@@ -359,9 +386,9 @@ pub struct EnvResetSpec<'a> {
 }
 
 impl<'a> EnvResetSpec<'a> {
-    /// Reset to `template` unchanged — no teleport, template velocities.
-    pub fn new(dst_env: u32, template: &'a RbdSnapshot) -> Self {
-        Self { dst_env, template, offset: Vector::ZERO, dof_vels: None }
+    /// Reset to bank template `template_idx` unchanged.
+    pub fn new(dst_env: u32, template_idx: u32) -> Self {
+        Self { dst_env, template_idx, offset: Vector::ZERO, dof_vels: None }
     }
 }
 
@@ -781,7 +808,37 @@ impl RbdState {
         dst_env: u32,
         snap: &RbdSnapshot,
     ) {
-        self.reset_envs_from_snapshots(backend, &[EnvResetSpec::new(dst_env, snap)]);
+        // One-off path: publish a single-entry bank, reset, then restore the
+        // shared bank so batched callers' template indices stay valid.
+        let saved_bodies = self.env_reset_bodies.take();
+        let saved_mb = self.multibodies.take_reset_bank();
+        self.upload_reset_templates(backend, &[snap]);
+        self.reset_envs_from_snapshots(backend, &[EnvResetSpec::new(dst_env, 0)]);
+        if saved_bodies.is_some() {
+            self.env_reset_bodies = saved_bodies;
+        }
+        self.multibodies.restore_reset_bank(saved_mb);
+    }
+
+    /// Publish the reset template bank (bodies + multibody). Call once after
+    /// building templates; resets then reference them by index, so per-reset
+    /// traffic is only (env, template id, offset, velocities).
+    pub fn upload_reset_templates(&mut self, backend: &GpuBackend, templates: &[&RbdSnapshot]) {
+        if templates.is_empty() {
+            return;
+        }
+        let nb = self.num_batches as u64;
+        let bps = (self.body_poses.len() / nb) as usize;
+        let vs = (self.vels.len() / nb) as usize;
+        let mut bundle = match self.env_reset_bodies.take() {
+            Some(b) => b,
+            None => BodyResetBundle::new(backend, bps as u32, vs as u32, 1),
+        };
+        bundle.upload_templates(backend, templates, bps, vs);
+        self.env_reset_bodies = Some(bundle);
+
+        let mb: Vec<&GpuMultibodySnapshot> = templates.iter().map(|s| &s.mb).collect();
+        self.multibodies.upload_reset_templates(backend, &mb);
     }
 
     /// Reset many envs at once. The multibody scatter — the expensive part —
@@ -812,31 +869,24 @@ impl RbdState {
             Some(b) => b,
             None => BodyResetBundle::new(backend, bps, vs, count),
         };
-        bundle.reserve(backend, bps, vs, count);
+        bundle.reserve(backend, count);
+        assert!(
+            bundle.flags_ready,
+            "reset_envs_from_snapshots: call upload_reset_templates first"
+        );
 
-        // Upload the topology-constant translate flags once.
-        if !bundle.flags_ready {
-            let flags = resets[0].template.body_translate_flags(bps as usize);
-            backend.write_buffer(bundle.body_flags.buffer_mut(), 0, &flags).unwrap();
-            bundle.flags_ready = true;
-        }
-
-        // Env-major packed staging, matching the kernel's `k * bps + j`. The
-        // UNtranslated template is staged as-is; the kernel applies the offset.
-        let mut poses: Vec<Pose> = Vec::with_capacity(count as usize * bps as usize);
-        let mut vels: Vec<GpuVelocity> = Vec::with_capacity(count as usize * vs as usize);
+        // Per-reset traffic only — template bodies live in the bank.
         let mut envs: Vec<u32> = Vec::with_capacity(count as usize);
+        let mut tids: Vec<u32> = Vec::with_capacity(count as usize);
         let mut offs: Vec<glamx::Vec4> = Vec::with_capacity(count as usize);
         for r in resets {
-            poses.extend_from_slice(&r.template.body_poses[..bps as usize]);
-            vels.extend_from_slice(&r.template.vels[..vs as usize]);
             envs.push(r.dst_env);
+            tids.push(r.template_idx);
             offs.push(offset_quad(r.offset));
         }
         let span = bps.max(vs);
 
-        backend.write_buffer(bundle.staging_poses.buffer_mut(), 0, &poses).unwrap();
-        backend.write_buffer(bundle.staging_vels.buffer_mut(), 0, &vels).unwrap();
+        backend.write_buffer(bundle.template_ids.buffer_mut(), 0, &tids).unwrap();
         backend.write_buffer(bundle.dst_envs.buffer_mut(), 0, &envs).unwrap();
         backend.write_buffer(bundle.offsets.buffer_mut(), 0, &offs).unwrap();
         backend
@@ -857,8 +907,9 @@ impl RbdState {
                 .call(
                     pass,
                     count * span,
-                    &bundle.staging_poses,
-                    &bundle.staging_vels,
+                    &bundle.bank_poses,
+                    &bundle.bank_vels,
+                    &bundle.template_ids,
                     &bundle.dst_envs,
                     &bundle.offsets,
                     &bundle.body_flags,
@@ -875,7 +926,7 @@ impl RbdState {
             .iter()
             .map(|r| crate::dynamics::MbEnvResetSpec {
                 dst_env: r.dst_env,
-                snapshot: &r.template.mb,
+                template_idx: r.template_idx,
                 offset: mb_offset(r.offset),
                 dof_vels: r.dof_vels,
             })
