@@ -1032,6 +1032,31 @@ impl GpuMultibodySnapshot {
         })
     }
 
+    /// Number of generalized velocities this snapshot carries (`dofs_per_batch`).
+    pub fn dof_vels_len(&self) -> usize {
+        self.dof_vels.len()
+    }
+
+    /// Overwrite the generalized velocities the env is reset TO.
+    ///
+    /// The reset already uploads `dof_values ++ dof_vels` as one contiguous
+    /// staging block that the `mb-env-reset` kernel scatters into the
+    /// batch-interleaved `dof_state` (dof `d` of env `e` at `d * num_batches +
+    /// e`). Callers that want per-reset velocity randomization should inject it
+    /// HERE rather than writing `dof_state` afterwards: a strided host write
+    /// costs one 4-byte H2D copy per DOF per reset, while this rides along in
+    /// the dispatch the reset already performs.
+    pub fn set_dof_vels(&mut self, vels: &[f32]) {
+        assert_eq!(
+            vels.len(),
+            self.dof_vels.len(),
+            "set_dof_vels: expected {} generalized velocities (dofs_per_batch), got {}",
+            self.dof_vels.len(),
+            vels.len()
+        );
+        self.dof_vels.copy_from_slice(vels);
+    }
+
     /// Calls `f(rb_id)` for every rigid body backing a link of a FREE-rooted
     /// (floating-base) multibody — the set of bodies an offset-reset moves.
     pub(crate) fn for_each_link_rb_id(&self, mut f: impl FnMut(u32)) {

@@ -766,6 +766,43 @@ impl RbdState {
         let moved = snap.translated(offset);
         self.reset_env_from_snapshot(backend, dst_env, &moved);
     }
+
+    /// [`Self::reset_env_from_snapshot_offset`] that also resets the multibody
+    /// generalized velocities to `dof_vels` instead of the snapshot's own.
+    ///
+    /// This is the batched form of "reset, then randomize velocities": the
+    /// override travels in the staging block the reset dispatch already
+    /// uploads, so it costs nothing extra. Writing `dof_state` afterwards
+    /// instead costs one strided 4-byte H2D copy PER DOF PER RESET, which
+    /// dominates reset time in any regime with a high termination rate.
+    #[cfg(feature = "dim3")]
+    pub fn reset_env_from_snapshot_offset_vels(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &RbdSnapshot,
+        offset: Vector,
+        dof_vels: &[f32],
+    ) {
+        let mut moved = snap.translated(offset);
+        moved.mb.set_dof_vels(dof_vels);
+        self.reset_env_from_snapshot(backend, dst_env, &moved);
+    }
+
+    /// [`Self::reset_env_from_snapshot`] with the same `dof_vels` override as
+    /// [`Self::reset_env_from_snapshot_offset_vels`] (flat-ground path).
+    #[cfg(feature = "dim3")]
+    pub fn reset_env_from_snapshot_vels(
+        &mut self,
+        backend: &GpuBackend,
+        dst_env: u32,
+        snap: &RbdSnapshot,
+        dof_vels: &[f32],
+    ) {
+        let mut s = snap.clone();
+        s.mb.set_dof_vels(dof_vels);
+        self.reset_env_from_snapshot(backend, dst_env, &s);
+    }
 }
 
 /// CPU-side snapshot of one (single-batch) physics template — body poses,
