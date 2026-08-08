@@ -417,6 +417,7 @@ impl GpuMultibodySet {
                 .unwrap(),
             links_static_mirror: all_statics.clone(),
             env_reset: None,
+            motor_scatter: None,
             links_static_bank: Vec::new(),
             dof_vels_bank: Vec::new(),
             motor_delay_state: Tensor::vector(

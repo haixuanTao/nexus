@@ -66,6 +66,9 @@ pub struct GpuMultibodySet {
     /// Lazily-created shader bundle + staging buffers for the per-env RL
     /// reset scatter (`gpu_mb_env_reset`).
     pub(crate) env_reset: Option<EnvResetBundle>,
+    /// Cached shader + constant buffers for the motor-target scatter, which an
+    /// RL rollout runs every control step.
+    pub(super) motor_scatter: Option<MotorScatterBundle>,
     /// Host mirror of the reset template bank's `links_static`, `templates ×
     /// links_per_batch`. Needed because a reset must update
     /// `links_static_mirror` for the destination env, and the GPU-side bank
@@ -593,35 +596,43 @@ impl GpuMultibodySet {
         actuated_link_ids: &[u32],
         axis: u32,
     ) -> Result<(), GpuBackendError> {
-        use crate::shaders::dynamics::GpuScatterMotorTargets;
         use khal::backend::Encoder;
 
-        /// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.
-        #[derive(Shader)]
-        struct MotorScatterBundle {
-            scatter: GpuScatterMotorTargets,
-        }
-
         let num_actuated = actuated_link_ids.len() as u32;
-        let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
-        let t_links = Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?;
-        let u_na = Tensor::scalar(backend, num_actuated, uu)?;
-        let u_ne = Tensor::scalar(backend, self.num_batches, uu)?;
-        let u_ax = Tensor::scalar(backend, axis, uu)?;
-        let bundle = MotorScatterBundle::from_backend(backend)?;
+        // Cache the shader + link-id / uniform buffers. This runs once per
+        // control step in an RL rollout, and rebuilding them each call cost
+        // four GPU allocations plus a shader load per step.
+        let stale = self
+            .motor_scatter
+            .as_ref()
+            .is_none_or(|b| b.links != actuated_link_ids || b.axis != axis);
+        if stale {
+            let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
+            self.motor_scatter = Some(MotorScatterBundle {
+                shader: MotorScatterShader::from_backend(backend)?,
+                t_links: Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?,
+                u_na: Tensor::scalar(backend, num_actuated, uu)?,
+                u_ne: Tensor::scalar(backend, self.num_batches, uu)?,
+                u_ax: Tensor::scalar(backend, axis, uu)?,
+                links: actuated_link_ids.to_vec(),
+                axis,
+            });
+        }
+        let bundle = self.motor_scatter.take().expect("motor scatter bundle");
         {
             let mut pass = enc.begin_pass("scatter_motor_targets_gpu", None);
-            bundle.scatter.call(
+            bundle.shader.scatter.call(
                 &mut pass,
                 [num_actuated, self.num_batches, 1],
                 targets,
                 &mut self.links_static,
-                &t_links,
-                &u_na,
-                &u_ne,
-                &u_ax,
+                &bundle.t_links,
+                &bundle.u_na,
+                &bundle.u_ne,
+                &bundle.u_ax,
             )?;
         }
+        self.motor_scatter = Some(bundle);
         Ok(())
     }
 
@@ -1191,6 +1202,24 @@ pub(crate) struct EnvResetBundle {
     flags_ready: bool,
     /// Templates currently in the bank (0 = not uploaded yet).
     templates: u32,
+}
+
+/// Cached shader + constant buffers for `gpu_scatter_motor_targets`.
+pub(super) struct MotorScatterBundle {
+    shader: MotorScatterShader,
+    t_links: Tensor<u32>,
+    u_na: Tensor<u32>,
+    u_ne: Tensor<u32>,
+    u_ax: Tensor<u32>,
+    /// Rebuild trigger: the link set / axis this bundle was built for.
+    links: Vec<u32>,
+    axis: u32,
+}
+
+/// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.
+#[derive(Shader)]
+struct MotorScatterShader {
+    scatter: crate::shaders::dynamics::GpuScatterMotorTargets,
 }
 
 /// `#[derive(Shader)]` supplies `from_backend`, which loads the embedded
