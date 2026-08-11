@@ -250,6 +250,8 @@ impl RbdState {
             num_batches,
             num_colliders_per_batch,
             num_solver_iterations,
+            #[cfg(feature = "dim3")]
+            reset_templates_bodies: None,
             sim_params: Tensor::vector(backend, &all_sim_params, BufferUsages::STORAGE).unwrap(),
             vels: Tensor::vector(backend, &all_vels, rw).unwrap(),
             solver_vels: Tensor::vector(backend, &all_vels, storage).unwrap(),

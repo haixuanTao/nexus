@@ -796,6 +796,8 @@ impl RbdState {
             num_batches,
             num_colliders_per_batch: num_colliders_per_batch as u32,
             num_solver_iterations,
+            #[cfg(feature = "dim3")]
+            reset_templates_bodies: None,
             sim_params: Tensor::vector(backend, &all_sim_params, BufferUsages::STORAGE).unwrap(),
             // COPY_DST: written by the RL per-env reset (`reset_env_from_*`).
             vels: Tensor::vector(

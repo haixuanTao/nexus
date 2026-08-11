@@ -66,6 +66,14 @@ pub struct GpuMultibodySet {
     /// Lazily-created shader bundle + staging buffers for the per-env RL
     /// reset scatter (`gpu_mb_env_reset`).
     pub(super) env_reset: Option<EnvResetBundle>,
+    /// GPU-resident reset templates for the batched reset
+    /// (`gpu_mb_env_reset_batch`); populated by `publish_reset_templates`.
+    pub(super) reset_templates: Option<ResetTemplatesMb>,
+    /// Cached shader + constant tensors for the per-step on-device
+    /// actuator-delay refresh (`update_motor_delay_state_gpu`).
+    pub(super) delay_update_cache: Option<DelayUpdateCache>,
+    /// Cached shader + constant tensors for the per-step target scatter.
+    pub(super) scatter_cache: Option<MotorScatterCache>,
     /// Persistent external generalized forces (RL torque input), same
     /// interleaved layout as `gen_forces`; zeroed = none. Applied every
     /// substep by the gravity kernels until overwritten.
@@ -489,6 +497,64 @@ impl GpuMultibodySet {
         backend.write_buffer(self.motor_delay_state.buffer_mut(), 0, data)
     }
 
+    /// Per-step actuator-delay state refresh on device (see
+    /// `gpu_mb_delay_state_update`): tick←0, k←`k_eff`, prev-target lanes
+    /// copied from `prev_targets` (the motor-target tensor BEFORE this step's
+    /// scatter). Replaces the full `stride × n` host rebuild + upload.
+    pub fn update_motor_delay_state_gpu(
+        &mut self,
+        backend: &GpuBackend,
+        prev_targets: &Tensor<f32>,
+        k_eff: &Tensor<f32>,
+        actuated_link_ids: &[u32],
+    ) -> Result<(), GpuBackendError> {
+        use khal::backend::Encoder as _;
+        // Cache the shader bundle + constant tensors: per-call `from_backend`
+        // + uniform allocs cost more than the upload this path removes.
+        let cache = match self.delay_update_cache.take() {
+            Some(c) => c,
+            None => {
+                let num_actuated = actuated_link_ids.len() as u32;
+                let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
+                DelayUpdateCache {
+                    shader: DelayUpdateBundle::from_backend(backend)?,
+                    t_links: Tensor::vector(
+                        backend,
+                        actuated_link_ids,
+                        BufferUsages::STORAGE,
+                    )?,
+                    params: Tensor::scalar(
+                        backend,
+                        UVec4::new(
+                            num_actuated,
+                            self.num_batches,
+                            self.motor_delay_stride(),
+                            0,
+                        ),
+                        uu,
+                    )?,
+                    num_actuated,
+                }
+            }
+        };
+        let mut enc = backend.begin_encoding();
+        {
+            let mut pass = enc.begin_pass("mb_delay_state_update", None);
+            cache.shader.kernel.call(
+                &mut pass,
+                [cache.num_actuated, self.num_batches, 1],
+                prev_targets,
+                k_eff,
+                &cache.t_links,
+                &mut self.motor_delay_state,
+                &cache.params,
+            )?;
+        }
+        backend.submit(enc)?;
+        self.delay_update_cache = Some(cache);
+        Ok(())
+    }
+
     /// Scatter per-(actuated-joint, env) motor target positions into
     /// `links_static` on the GPU — the on-device equivalent of
     /// [`stage_motor_position`](Self::stage_motor_position) +
@@ -585,35 +651,41 @@ impl GpuMultibodySet {
         actuated_link_ids: &[u32],
         axis: u32,
     ) -> Result<(), GpuBackendError> {
-        use crate::shaders::dynamics::GpuScatterMotorTargets;
         use khal::backend::Encoder;
 
-        /// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.
-        #[derive(Shader)]
-        struct MotorScatterBundle {
-            scatter: GpuScatterMotorTargets,
-        }
-
-        let num_actuated = actuated_link_ids.len() as u32;
-        let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
-        let t_links = Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?;
-        let u_na = Tensor::scalar(backend, num_actuated, uu)?;
-        let u_ne = Tensor::scalar(backend, self.num_batches, uu)?;
-        let u_ax = Tensor::scalar(backend, axis, uu)?;
-        let bundle = MotorScatterBundle::from_backend(backend)?;
+        // Cached shader + constant tensors (link ids / counts / axis don't
+        // change between steps): per-call `from_backend` + four allocations
+        // cost more than the dispatch itself at per-step frequency.
+        let cache = match self.scatter_cache.take() {
+            Some(c) if c.axis == axis => c,
+            _ => {
+                let num_actuated = actuated_link_ids.len() as u32;
+                let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
+                MotorScatterCache {
+                    shader: MotorScatterBundle::from_backend(backend)?,
+                    t_links: Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?,
+                    u_na: Tensor::scalar(backend, num_actuated, uu)?,
+                    u_ne: Tensor::scalar(backend, self.num_batches, uu)?,
+                    u_ax: Tensor::scalar(backend, axis, uu)?,
+                    num_actuated,
+                    axis,
+                }
+            }
+        };
         {
             let mut pass = enc.begin_pass("scatter_motor_targets_gpu", None);
-            bundle.scatter.call(
+            cache.shader.scatter.call(
                 &mut pass,
-                [num_actuated, self.num_batches, 1],
+                [cache.num_actuated, self.num_batches, 1],
                 targets,
                 &mut self.links_static,
-                &t_links,
-                &u_na,
-                &u_ne,
-                &u_ax,
+                &cache.t_links,
+                &cache.u_na,
+                &cache.u_ne,
+                &cache.u_ax,
             )?;
         }
+        self.scatter_cache = Some(cache);
         Ok(())
     }
 
@@ -983,9 +1055,9 @@ pub(super) fn make_workspace_init() -> MultibodyLinkWorkspace {
  */
 
 use crate::shaders::dynamics::{
-    GpuMbEnvReset, MULTIBODY_ROOT, WS_JOINT_ROT, WS_JOINT_VEL, WS_KIN_ACC, WS_LTP, WS_LTW,
-    WS_QUADS, WS_RB_VELS, WS_SHIFT02, WS_SHIFT23, WsAddr, ws_coords, ws_pose, ws_rot,
-    ws_soa_from_structs, ws_vec, ws_vel,
+    GpuMbEnvReset, GpuMbEnvResetBatch, MULTIBODY_ROOT, WS_JOINT_ROT, WS_JOINT_VEL, WS_KIN_ACC,
+    WS_LTP, WS_LTW, WS_QUADS, WS_RB_VELS, WS_SHIFT02, WS_SHIFT23, WsAddr, ws_coords, ws_pose,
+    ws_rot, ws_soa_from_structs, ws_vec, ws_vel,
 };
 use glamx::UVec4;
 use khal::Shader;
@@ -1286,4 +1358,173 @@ impl GpuMultibodySet {
         backend.submit(encoder).unwrap();
         self.env_reset = Some(bundle);
     }
+
+    /// Upload the reset templates ONCE as GPU-resident blobs (SoA workspace,
+    /// links, coords+vels) plus the per-link translate flags the batch-reset
+    /// kernel needs. Also keeps a host copy of each template's `links_static`
+    /// so [`Self::encode_reset_envs_batch`] can maintain the host mirror.
+    pub fn publish_reset_templates(
+        &mut self,
+        backend: &GpuBackend,
+        snaps: &[&GpuMultibodySnapshot],
+    ) {
+        if self.is_empty() || snaps.is_empty() {
+            return;
+        }
+        let lpb = self.links_per_batch as usize;
+        let dpb = self.dofs_per_batch as usize;
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+
+        let mut ws = Vec::with_capacity(snaps.len() * lpb * WS_QUADS as usize);
+        let mut links = Vec::with_capacity(snaps.len() * lpb);
+        let mut dofs = Vec::with_capacity(snaps.len() * 2 * dpb);
+        let mut mirror_links = Vec::with_capacity(snaps.len());
+        for snap in snaps {
+            debug_assert_eq!(snap.links_static.len(), lpb);
+            debug_assert_eq!(snap.dof_values.len(), dpb);
+            ws.extend_from_slice(&ws_soa_from_structs(&snap.links_workspace, lpb as u32, 1));
+            links.extend_from_slice(&snap.links_static);
+            dofs.extend_from_slice(&snap.dof_values);
+            dofs.extend_from_slice(&snap.dof_vels);
+            mirror_links.push(snap.links_static.clone());
+        }
+        // Per-link translate flags (constant per robot — identical across
+        // templates): bit0 = valid link of a free-root multibody, bit1 = the
+        // root link itself. Matches `GpuMultibodySnapshot::translated`.
+        let flags: Vec<u32> = snaps[0]
+            .links_static
+            .iter()
+            .map(|ls| {
+                let movable = GpuMultibodySnapshot::link_is_valid(ls)
+                    && snaps[0].mb_root_is_free(ls.multibody_id);
+                (movable as u32) | (((movable && ls.parent_link_id == MULTIBODY_ROOT) as u32) << 1)
+            })
+            .collect();
+
+        self.reset_templates = Some(ResetTemplatesMb {
+            ws: Tensor::vector(backend, &ws, storage).unwrap(),
+            links: Tensor::vector(backend, &links, storage).unwrap(),
+            dofs: Tensor::vector(backend, &dofs, storage).unwrap(),
+            flags: Tensor::vector(backend, &flags, storage).unwrap(),
+            shader: EnvResetBatchShader::from_backend(backend).unwrap(),
+            mirror_links,
+        });
+    }
+
+    /// Encode ONE dispatch resetting every `(dst_env, template)` in `resets`
+    /// from the resident templates, translating each by its `offsets` entry
+    /// and writing its `dof_vels` slice (`dofs_per_batch` per reset) into the
+    /// velocity section. Uploads only the compact reset list. Also refreshes
+    /// the host `links_static` mirror for the reset envs.
+    ///
+    /// [`Self::publish_reset_templates`] must have run first.
+    pub fn encode_reset_envs_batch(
+        &mut self,
+        backend: &GpuBackend,
+        enc: &mut <GpuBackend as Backend>::Encoder,
+        resets: &[UVec4],
+        offsets: &[glamx::Vec4],
+        dof_vels: &[f32],
+    ) {
+        let n = resets.len() as u32;
+        if n == 0 || self.is_empty() {
+            return;
+        }
+        let nb = self.num_batches;
+        let lpb = self.links_per_batch;
+        let dpb = self.dofs_per_batch;
+        debug_assert_eq!(dof_vels.len(), (n * dpb) as usize);
+        let tpl = self.reset_templates.take().expect("publish_reset_templates first");
+
+        // Host mirror lockstep (the motor setters read-modify-write it).
+        for meta in resets {
+            let (env, t) = (meta.x as usize, meta.y as usize);
+            for (k, ls) in tpl.mirror_links[t].iter().enumerate() {
+                self.links_static_mirror[k * nb as usize + env] = *ls;
+            }
+        }
+
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        let t_resets = Tensor::vector(backend, resets, storage).unwrap();
+        let t_offs = Tensor::vector(backend, offsets, storage).unwrap();
+        let t_vels = Tensor::vector(backend, dof_vels, storage).unwrap();
+        let params = Tensor::scalar(
+            backend,
+            UVec4::new(nb, lpb, dpb, n),
+            BufferUsages::STORAGE | BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        )
+        .unwrap();
+        {
+            let mut pass = enc.begin_pass("[RBD] mb-env-reset-batch", None);
+            tpl.shader
+                .kernel
+                .call(
+                    &mut pass,
+                    [lpb * WS_QUADS, n, 1],
+                    &tpl.ws,
+                    &tpl.links,
+                    &tpl.dofs,
+                    &tpl.flags,
+                    &t_resets,
+                    &t_offs,
+                    &t_vels,
+                    &mut self.links_workspace,
+                    &mut self.links_static,
+                    &mut self.dof_values,
+                    &mut self.dof_state,
+                    &params,
+                )
+                .unwrap();
+        }
+        self.reset_templates = Some(tpl);
+    }
+}
+
+/// GPU-resident reset templates + the batch-reset shader (see
+/// [`GpuMultibodySet::publish_reset_templates`]).
+pub(crate) struct ResetTemplatesMb {
+    ws: Tensor<Vec4>,
+    links: Tensor<MultibodyLinkStatic>,
+    dofs: Tensor<f32>,
+    flags: Tensor<u32>,
+    shader: EnvResetBatchShader,
+    /// Host copies for the `links_static` mirror update.
+    mirror_links: Vec<Vec<MultibodyLinkStatic>>,
+}
+
+/// `#[derive(Shader)]` supplies `from_backend` for the embedded batch entry.
+#[derive(Shader)]
+struct EnvResetBatchShader {
+    kernel: GpuMbEnvResetBatch,
+}
+
+/// Cached shader + constant tensors for the per-step motor-target scatter.
+pub(crate) struct MotorScatterCache {
+    shader: MotorScatterBundle,
+    t_links: Tensor<u32>,
+    u_na: Tensor<u32>,
+    u_ne: Tensor<u32>,
+    u_ax: Tensor<u32>,
+    num_actuated: u32,
+    axis: u32,
+}
+
+/// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.
+#[derive(Shader)]
+struct MotorScatterBundle {
+    scatter: crate::shaders::dynamics::GpuScatterMotorTargets,
+}
+
+/// Cached shader + constant tensors for the on-device delay refresh.
+pub(crate) struct DelayUpdateCache {
+    shader: DelayUpdateBundle,
+    t_links: Tensor<u32>,
+    params: Tensor<UVec4>,
+    num_actuated: u32,
+}
+
+/// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.
+#[derive(Shader)]
+struct DelayUpdateBundle {
+    kernel: crate::shaders::dynamics::GpuMbDelayStateUpdate,
 }

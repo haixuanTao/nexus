@@ -60,3 +60,138 @@ pub fn gpu_mb_env_reset(
         dof_state.write((i * nb + env) as usize, staging_dofs.read((dpb + i) as usize));
     }
 }
+
+/// Batched, template-resident variant of [`gpu_mb_env_reset`]: N resets in one
+/// dispatch, reading from template blobs that live on the GPU permanently
+/// (uploaded once at env build) instead of a per-reset staging upload. The
+/// terrain teleport offset is applied IN-KERNEL to the free root's world
+/// position (local_to_world / local_to_parent translations + coords c0..c2),
+/// so the host never clones-and-translates a snapshot per reset. The dof
+/// velocity section comes from `dof_vels` (host-randomized AGILE reset
+/// velocities, or zeros), replacing the per-dof strided `write_buffer` loop.
+///
+/// Dispatch `[lpb · WS_QUADS, num_resets, 1]` threads.
+///
+/// `link_flags` per link (constant per robot): bit0 = valid link of a
+/// free-root multibody (translate WS_LTW), bit1 = that link is the root
+/// (translate WS_LTP + coords c0..c2).
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_mb_env_reset_batch(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] templates_ws: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    templates_links: &[MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] templates_dofs: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] link_flags: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] resets: &[UVec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] offsets: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)] dof_vels: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 7)] links_workspace: &mut [Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 8)]
+    links_static: &mut [MultibodyLinkStatic],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 9)] dof_values: &mut [f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 10)] dof_state: &mut [f32],
+    // x = num_batches, y = links_per_batch, z = dofs_per_batch, w = num_resets.
+    #[spirv(uniform, descriptor_set = 0, binding = 11)] params: &UVec4,
+) {
+    let i = invocation_id.x;
+    let r = invocation_id.y;
+    let nb = params.x;
+    let lpb = params.y;
+    let dpb = params.z;
+    if r >= params.w {
+        return;
+    }
+    let meta = resets.read(r as usize);
+    let env = meta.x;
+    let t = meta.y;
+    let off = offsets.read(r as usize);
+
+    if i < lpb * WS_QUADS {
+        let mut v = templates_ws.read((t * lpb * WS_QUADS + i) as usize);
+        let link = i / WS_QUADS;
+        let q = i % WS_QUADS;
+        let f = link_flags.read(link as usize);
+        // WS_LTW rot|trans and WS_LTP rot|trans are quad pairs; +1 is the
+        // translation quad. Coords c0..c3 share quad WS_COORDS (c3 = a
+        // rotational dof, never offset — the .w lane stays untouched).
+        if f & 1 != 0 && q == super::ws_soa::WS_LTW + 1 {
+            v.x += off.x;
+            v.y += off.y;
+            v.z += off.z;
+        }
+        if f & 2 != 0 {
+            if q == super::ws_soa::WS_LTP + 1 || q == super::ws_soa::WS_COORDS {
+                v.x += off.x;
+                v.y += off.y;
+                v.z += off.z;
+            }
+        }
+        links_workspace.write((i * nb + env) as usize, v);
+    }
+    if i < lpb {
+        links_static.write(
+            (i * nb + env) as usize,
+            templates_links.read((t * lpb + i) as usize),
+        );
+    }
+    if i < dpb {
+        // dof_values (generalized coords) are translation-invariant: the free
+        // root's world position lives in the WORKSPACE coords quad handled
+        // above, matching `GpuMultibodySnapshot::translated`.
+        dof_values.write(
+            (i * nb + env) as usize,
+            templates_dofs.read((t * 2 * dpb + i) as usize),
+        );
+        dof_state.write((i * nb + env) as usize, dof_vels.read((r * dpb + i) as usize));
+    }
+}
+
+/// Rigid-body half of the batched reset: copy each reset env's `body_poses` /
+/// `vels` slices (ENV-MAJOR layout, unlike the interleaved multibody buffers)
+/// from the resident templates, adding the teleport offset to the poses of
+/// bodies flagged in `body_mask` (free-multibody links; ground/terrain stay).
+///
+/// Dispatch `[max(bodies_per_env, vels_per_env), num_resets, 1]` threads.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_env_reset_bodies(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] templates_poses: &[crate::Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)]
+    templates_vels: &[crate::dynamics::Velocity],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] body_mask: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] resets: &[UVec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] offsets: &[Vec4],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 5)] body_poses: &mut [crate::Pose],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 6)]
+    vels: &mut [crate::dynamics::Velocity],
+    // x = bodies_per_env, y = vels_per_env, z = num_resets.
+    #[spirv(uniform, descriptor_set = 0, binding = 7)] params: &UVec4,
+) {
+    let i = invocation_id.x;
+    let r = invocation_id.y;
+    let bps = params.x;
+    let vs = params.y;
+    if r >= params.z {
+        return;
+    }
+    let meta = resets.read(r as usize);
+    let env = meta.x;
+    let t = meta.y;
+    let off = offsets.read(r as usize);
+
+    if i < bps {
+        let mut p = templates_poses.read((t * bps + i) as usize);
+        if body_mask.read(i as usize) != 0 {
+            p.translation.x += off.x;
+            p.translation.y += off.y;
+            p.translation.z += off.z;
+        }
+        body_poses.write((env * bps + i) as usize, p);
+    }
+    if i < vs {
+        vels.write((env * vs + i) as usize, templates_vels.read((t * vs + i) as usize));
+    }
+}
