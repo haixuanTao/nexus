@@ -10,7 +10,8 @@
 //! element `(j, env)` at `j · num_envs + env` (matches the policy action
 //! buffer layout).
 
-use khal_std::glamx::UVec3;
+use khal_std::glamx::{UVec3, UVec4};
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::macros::{spirv, spirv_bindgen};
 
 use super::types::MultibodyLinkStatic;
@@ -49,4 +50,43 @@ pub fn gpu_scatter_motor_targets(
         link.data.motors[*axis_id as usize].target_pos = target;
         link.data.motor_axes |= 1u32 << *axis_id;
     }
+}
+
+/// Per-step actuator-delay state refresh, on device: `tick ← 0`,
+/// `k ← k_eff[env]`, and the actuated links' `prev_target` lanes copied from
+/// the PREVIOUS step's motor-target tensor (row-major `[num_actuated × n]` —
+/// the same buffer the target scatter consumed last step, read BEFORE this
+/// step's scatter overwrites it). Replaces a full `stride × n` host rebuild +
+/// upload per step with one `[n]` upload (`k_eff`) + this dispatch.
+/// Non-actuated `prev` lanes stay at their zero-initialized value, exactly
+/// like the host path's zero fill.
+///
+/// Dispatch `[num_actuated, num_envs, 1]` threads; lane `j == 0` also writes
+/// the two scalar lanes.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_mb_delay_state_update(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] prev_targets: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] k_eff: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] actuated_link_ids: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] delay_state: &mut [f32],
+    // x = num_actuated, y = num_envs, z = stride (2 + links_per_batch).
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] params: &UVec4,
+) {
+    let j = invocation_id.x;
+    let env = invocation_id.y;
+    if j >= params.x || env >= params.y {
+        return;
+    }
+    let base = (env * params.z) as usize;
+    if j == 0 {
+        delay_state.write(base, 0.0);
+        delay_state.write(base + 1, k_eff.read(env as usize));
+    }
+    let link = actuated_link_ids.read(j as usize);
+    delay_state.write(
+        base + 2 + link as usize,
+        prev_targets.read((j * params.y + env) as usize),
+    );
 }
