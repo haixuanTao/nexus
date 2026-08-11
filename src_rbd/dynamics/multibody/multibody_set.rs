@@ -555,6 +555,51 @@ impl GpuMultibodySet {
         Ok(())
     }
 
+    /// [`Self::update_motor_delay_state_gpu`], encoded into an existing
+    /// encoder (single-submit control steps: delay refresh + target scatter
+    /// ride one submission).
+    pub fn encode_update_motor_delay_state(
+        &mut self,
+        backend: &GpuBackend,
+        enc: &mut <GpuBackend as Backend>::Encoder,
+        prev_targets: &Tensor<f32>,
+        k_eff: &Tensor<f32>,
+        actuated_link_ids: &[u32],
+    ) -> Result<(), GpuBackendError> {
+        use khal::backend::Encoder as _;
+        let cache = match self.delay_update_cache.take() {
+            Some(c) => c,
+            None => {
+                let num_actuated = actuated_link_ids.len() as u32;
+                let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
+                DelayUpdateCache {
+                    shader: DelayUpdateBundle::from_backend(backend)?,
+                    t_links: Tensor::vector(backend, actuated_link_ids, BufferUsages::STORAGE)?,
+                    params: Tensor::scalar(
+                        backend,
+                        UVec4::new(num_actuated, self.num_batches, self.motor_delay_stride(), 0),
+                        uu,
+                    )?,
+                    num_actuated,
+                }
+            }
+        };
+        {
+            let mut pass = enc.begin_pass("mb_delay_state_update", None);
+            cache.shader.kernel.call(
+                &mut pass,
+                [cache.num_actuated, self.num_batches, 1],
+                prev_targets,
+                k_eff,
+                &cache.t_links,
+                &mut self.motor_delay_state,
+                &cache.params,
+            )?;
+        }
+        self.delay_update_cache = Some(cache);
+        Ok(())
+    }
+
     /// Scatter per-(actuated-joint, env) motor target positions into
     /// `links_static` on the GPU — the on-device equivalent of
     /// [`stage_motor_position`](Self::stage_motor_position) +
