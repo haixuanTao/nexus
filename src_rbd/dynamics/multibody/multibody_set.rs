@@ -72,8 +72,9 @@ pub struct GpuMultibodySet {
     /// Cached shader + constant tensors for the per-step on-device
     /// actuator-delay refresh (`update_motor_delay_state_gpu`).
     pub(super) delay_update_cache: Option<DelayUpdateCache>,
-    /// Cached shader + constant tensors for the per-step target scatter.
-    pub(super) scatter_cache: Option<MotorScatterCache>,
+    /// Cached shader + constant tensors for the per-step target scatter, one
+    /// entry per (axis, link-set) — see [`MotorScatterCache::link_ids`].
+    pub(super) scatter_caches: Vec<MotorScatterCache>,
     /// Persistent external generalized forces (RL torque input), same
     /// interleaved layout as `gen_forces`; zeroed = none. Applied every
     /// substep by the gravity kernels until overwritten.
@@ -701,9 +702,15 @@ impl GpuMultibodySet {
         // Cached shader + constant tensors (link ids / counts / axis don't
         // change between steps): per-call `from_backend` + four allocations
         // cost more than the dispatch itself at per-step frequency.
-        let cache = match self.scatter_cache.take() {
-            Some(c) if c.axis == axis => c,
-            _ => {
+        // Take the matching entry out so `self.links_static` can be borrowed
+        // mutably for the dispatch below; it is pushed back at the end.
+        let hit = self
+            .scatter_caches
+            .iter()
+            .position(|c| c.axis == axis && c.link_ids == actuated_link_ids);
+        let cache = match hit {
+            Some(i) => self.scatter_caches.swap_remove(i),
+            None => {
                 let num_actuated = actuated_link_ids.len() as u32;
                 let uu = BufferUsages::STORAGE | BufferUsages::UNIFORM;
                 MotorScatterCache {
@@ -714,6 +721,7 @@ impl GpuMultibodySet {
                     u_ax: Tensor::scalar(backend, axis, uu)?,
                     num_actuated,
                     axis,
+                    link_ids: actuated_link_ids.to_vec(),
                 }
             }
         };
@@ -730,7 +738,7 @@ impl GpuMultibodySet {
                 &cache.u_ax,
             )?;
         }
-        self.scatter_cache = Some(cache);
+        self.scatter_caches.push(cache);
         Ok(())
     }
 
@@ -1552,6 +1560,12 @@ pub(crate) struct MotorScatterCache {
     u_ax: Tensor<u32>,
     num_actuated: u32,
     axis: u32,
+    /// The link set this entry was built for. Part of the cache KEY: a caller
+    /// may scatter several disjoint link sets on the SAME axis (e.g. actuated
+    /// leg targets and PD-held arm targets, both `AngZ`). Keying on `axis`
+    /// alone handed the second caller the first one's link buffer and count,
+    /// which reads past the end of the smaller targets tensor.
+    link_ids: Vec<u32>,
 }
 
 /// `#[derive(Shader)]` supplies `from_backend` for the embedded entry.

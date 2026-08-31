@@ -419,7 +419,7 @@ impl GpuMultibodySet {
             env_reset: None,
             reset_templates: None,
             delay_update_cache: None,
-            scatter_cache: None,
+            scatter_caches: Vec::new(),
             motor_delay_state: Tensor::vector(
                 backend,
                 &vec![0.0f32; ((2 + links_cap) * num_batches) as usize],
