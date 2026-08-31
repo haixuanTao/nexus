@@ -24,6 +24,46 @@ Branch tip at recording: post khal-unified repoint.
    per-env relative tolerance 1e-2 on 25-step checksums, or step-1 checksums
    for bit-exactness. boxes is insensitive (bit-stable across builds).
 
+## Run-to-run determinism with contacts (`NEXUS_DETERMINISTIC`)
+
+Since `691f3e1` (2026-08-31), scenes WITH contacts are bit-exact run to run
+on the same binary/GPU — before that, only contact-free dynamics were.
+
+**Cause of the old nondeterminism:** the narrow phase appends contacts (and
+trimesh/polyline pfm pairs) through `atomic_add_u32` cursors, so the contact
+buffer ORDER was warp-scheduling luck. Two order-sensitive consumers turned
+that into float divergence within ~25 steps of first contact: the
+per-multibody contact loop (`for ci in 0..n_contacts` accumulates jacobians
+in buffer order) and the greedy contact reduce (merges each pair's manifolds
+in buffer order).
+
+**The fix:** right after the narrow phase, contacts are stable-sorted to
+(collider pair, feature)-lexicographic order — `feature_id` is the
+trimesh/polyline BVH leaf the pfm pair was cut from (0 for analytic
+contacts), carried in `IndexedManifold::_padding[0]`. The (pair, feature)
+key is unique per record, so the order is fully canonical; two chained
+batched radix sorts + a gather + an encoder copy-back implement it, and in
+this mode the contact reduce runs AFTER the sorted copy-back. Cost ~3% step
+time on the robot-RL scene at 256 batches.
+
+**Gate:** `RbdPipeline::deterministic_contacts` — default ON for native
+targets, OFF on wasm (no env vars there; browser is dispatch-latency-bound).
+`NEXUS_DETERMINISTIC=0`/`=1` overrides. Auto-disabled when
+`colliders_batch_capacity^2 > 2^32` (the packed pair key wouldn't fit).
+
+**Scope and limits:**
+- Run-to-run on ONE binary/GPU only. The cross-build FMA/pipeline-cache
+  variance documented above is untouched — the verification policy stands.
+- Robot scenes (`rb_contacts_inert`) are fully covered. Free-rigid-body
+  scenes still have two nondeterministic stages: the per-body CSR fill
+  (`gpu_solver_sort_constraints` atomic slot-grab) and the coloring's
+  intra-dispatch color races. Order within a color bucket commutes
+  (disjoint bodies), but the partition itself can differ.
+- Verified on Mac Metal (WebGPU): zealot `zero_action_probe 256x600` and
+  `biped_train_gpu` (11 iters x 4096 envs, and 21 x 256) run twice →
+  bit-identical output / identical checkpoint SHA-256. CUDA backend runs
+  the same code path but has not been re-verified.
+
 Golden 25-step chain checksums below are from the M0 binary; the M1 binary
 reproduces 52.054231@1 exactly and ~51.69/env at ≥256 (within the documented
 cross-build tolerance).
