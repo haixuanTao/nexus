@@ -3,6 +3,7 @@
 //! This module contains the actual GPU compute shader entry points for mass properties update.
 
 use khal_std::glamx::UVec3;
+use khal_std::index::MaybeIndexUnchecked;
 use khal_std::iter::StepRng;
 use khal_std::macros::{spirv, spirv_bindgen};
 
@@ -71,5 +72,28 @@ pub fn gpu_sync_collider_poses(
         let idx = i as usize;
         let body = collider_parent[idx] as usize;
         collider_world_poses[idx] = body_poses[body] * collider_local_poses[idx];
+    }
+}
+
+/// DEBUG: copy the `BatchIndices` uniform's fields (as the GPU actually
+/// reads them) into a storage buffer — layout-mismatch detector between the
+/// host struct and each backend's uniform ABI.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_dbg_dump_batch_indices(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    // (MaybeIndexUnchecked in scope via the module's existing import)
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] out: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 1)] batch_ids: &BatchIndices,
+) {
+    if invocation_id.x == 0 {
+        out.write(0, batch_ids.num_batches);
+        out.write(1, batch_ids.colliders_batch_capacity);
+        out.write(2, batch_ids.colliders_len);
+        out.write(3, batch_ids.bodies_len);
+        out.write(4, batch_ids.collision_pairs_batch_capacity);
+        out.write(5, batch_ids.contacts_batch_capacity);
+        out.write(6, batch_ids.multibodies_batch_capacity);
+        out.write(7, batch_ids.links_batch_capacity);
     }
 }

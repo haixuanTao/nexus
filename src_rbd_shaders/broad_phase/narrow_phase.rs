@@ -731,18 +731,18 @@ fn polyline_convex(
 #[cfg_attr(not(target_arch_is_gpu), derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(C)]
 pub struct NarrowPhasePfmPair {
-    shape1: Shape,
-    shape2: Shape,
-    pose12: Pose,
-    thickness1: f32,
-    thickness2: f32,
-    colliders: UVec2,
+    pub shape1: Shape,
+    pub shape2: Shape,
+    pub pose12: Pose,
+    pub thickness1: f32,
+    pub thickness2: f32,
+    pub colliders: UVec2,
     /// Sub-shape provenance for deterministic contact ordering: the trimesh /
     /// polyline BVH leaf (`shape_index`) this pair was cut from, 0 for whole
     /// shapes. Carried into `IndexedManifold::_padding[0]` so same-collider-pair
     /// contacts get a stable sort tiebreaker (see `gpu_contact_sort_keys`).
-    feature_id: u32,
-    _padding: [u32; 3],
+    pub feature_id: u32,
+    pub _padding: [u32; 3],
 }
 
 /// Initializes PFM-PFM dispatch arguments for constraint solver. Dispatch one

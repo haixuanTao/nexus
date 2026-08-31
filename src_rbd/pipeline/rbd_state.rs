@@ -507,6 +507,21 @@ impl RbdState {
         &self.contacts
     }
 
+    /// Debug: per-collider world poses (the narrow phase's pose input).
+    pub fn dbg_collider_world_poses(&self) -> &Tensor<Pose> {
+        &self.collider_world_poses
+    }
+
+    /// Debug: the deferred narrow-phase work list (per-batch lens + records).
+    pub fn dbg_pfm_pairs(
+        &self,
+    ) -> (
+        &Tensor<u32>,
+        &Tensor<crate::shaders::broad_phase::NarrowPhasePfmPair>,
+    ) {
+        (&self.pfm_pairs_len, &self.pfm_pairs)
+    }
+
     /// Debug: read back active contacts as `(collider_a, collider_b, body_a,
     /// body_b, manifold_len)` tuples (only `len > 0` entries).
     pub fn debug_contact_pairs(&self, backend: &GpuBackend) -> Vec<(u32, u32, u32, u32, u32)> {
