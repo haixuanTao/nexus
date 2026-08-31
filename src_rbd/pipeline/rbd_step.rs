@@ -38,9 +38,20 @@ pub struct RbdPipeline {
     coloring: GpuColoring,
     warmstart: GpuWarmstart,
     reduce: Reduce,
+    det_sort: crate::utils::RadixSort,
     /// Optional (default `false`): merge each collider pair's manifolds
     /// (e.g. per-triangle trimesh contacts) into one before the solvers.
     pub contact_reduction: bool,
+    /// Canonicalize the contact-buffer order after the narrow phase so
+    /// identical runs stay bit-identical. The narrow-phase kernels append
+    /// contacts through an atomic cursor, which makes the buffer ORDER
+    /// warp-scheduling-dependent; every order-sensitive consumer downstream
+    /// (the sequential per-multibody contact loop, the rigid-body CSR fill)
+    /// then amplifies the reordering into float divergence. The extra
+    /// stable sort costs a few dispatches per step. Default: on for native
+    /// targets, off on wasm (browser demos are dispatch-latency-bound);
+    /// `NEXUS_DETERMINISTIC=0` / `=1` overrides.
+    pub deterministic_contacts: bool,
 }
 
 impl RbdPipeline {
@@ -63,7 +74,12 @@ impl RbdPipeline {
             coloring: GpuColoring::from_backend(backend)?,
             warmstart: GpuWarmstart::from_backend(backend)?,
             reduce: Reduce::from_backend(backend)?,
+            det_sort: crate::utils::RadixSort::from_backend(backend)?,
             contact_reduction: false,
+            // wasm has no env vars; keep the browser on the fast path there.
+            deterministic_contacts: std::env::var("NEXUS_DETERMINISTIC")
+                .map(|v| v != "0")
+                .unwrap_or(cfg!(not(target_arch = "wasm32"))),
         })
     }
 
@@ -298,6 +314,13 @@ impl RbdPipeline {
         // own GPU work overlaps with Phase 2b's CPU encoding.
         // (continues in the same encoder; standalone mode split off the
         // broad-phase work above)
+        // Deterministic contact order (see `Self::deterministic_contacts`):
+        // stable-sort the freshly appended contacts by (collider pair, feature)
+        // so the buffer order no longer depends on warp scheduling. The packed
+        // u32 pair key needs colliders_batch_capacity^2 <= 2^32.
+        let det_contacts = self.deterministic_contacts
+            && (state.num_colliders_per_batch as u64) * (state.num_colliders_per_batch as u64)
+                <= 1 << 32;
         {
             let mut pass = encoder.begin_pass("[RBD] narrow-phase", timestamps.as_deref_mut());
 
@@ -321,10 +344,64 @@ impl RbdPipeline {
                 &state.batch_indices,
                 &state.collider_parent,
                 &state.collider_materials,
-                self.contact_reduction,
+                // The greedy reduce merges in buffer order — in deterministic
+                // mode it runs after the canonical sort instead (below).
+                self.contact_reduction && !det_contacts,
             )?;
 
+            if det_contacts {
+                // Lazily (re)size the det scratch to the contacts capacity —
+                // this also tracks the auto-resize path.
+                let total = state.contacts.len() as u32;
+                if state.det_sort_keys.len() != state.contacts.len() {
+                    let su = BufferUsages::STORAGE;
+                    state.det_sort_keys = Tensor::vector_uninit(backend, total, su)?;
+                    state.det_sort_vals = Tensor::vector_uninit(backend, total, su)?;
+                    state.det_sorted_keys = Tensor::vector_uninit(backend, total, su)?;
+                    state.det_sorted_vals = Tensor::vector_uninit(backend, total, su)?;
+                    state.det_contacts_scratch =
+                        Tensor::vector_uninit(backend, total, su | BufferUsages::COPY_SRC)?;
+                }
+                self.narrow_phase.dispatch_contact_sort(
+                    backend,
+                    &mut pass,
+                    &self.det_sort,
+                    &mut state.det_sort_workspace,
+                    &state.contacts,
+                    &state.contacts_len,
+                    &state.batch_indices,
+                    &mut state.det_sort_keys,
+                    &mut state.det_sort_vals,
+                    &mut state.det_sorted_keys,
+                    &mut state.det_sorted_vals,
+                    &mut state.det_contacts_scratch,
+                    state.num_colliders_per_batch,
+                )?;
+            }
+
             drop(pass);
+            if det_contacts {
+                let n = state.contacts.len() as usize;
+                encoder.copy_buffer_to_buffer(
+                    state.det_contacts_scratch.buffer(),
+                    0,
+                    state.contacts.buffer_mut(),
+                    0,
+                    n,
+                )?;
+                #[cfg(feature = "dim3")]
+                if self.contact_reduction {
+                    let mut pass =
+                        encoder.begin_pass("[RBD] det-reduce-contacts", timestamps.as_deref_mut());
+                    self.narrow_phase.dispatch_reduce_contacts(
+                        &mut pass,
+                        &mut state.contacts,
+                        &mut state.contacts_len,
+                        &state.batch_indices,
+                    )?;
+                    drop(pass);
+                }
+            }
             if !merge_submits {
                 split(&mut *encoder)?;
             }
@@ -675,7 +752,8 @@ impl RbdPipeline {
                 let nb = state.num_batches;
 
                 state.collision_pairs = Tensor::vector_uninit(backend, new_capacity * nb, storage)?;
-                state.contacts = Tensor::vector_uninit(backend, new_capacity * nb, storage)?;
+                state.contacts =
+                    Tensor::vector_uninit(backend, new_capacity * nb, storage | BufferUsages::COPY_DST)?;
                 state.pfm_pairs = Tensor::vector_uninit(backend, new_capacity * nb, storage)?;
                 state.old_constraints = Tensor::vector_uninit(backend, new_capacity * nb, storage)?;
                 state.old_constraint_builders =

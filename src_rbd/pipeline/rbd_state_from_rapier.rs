@@ -11,7 +11,7 @@ use crate::shaders::dynamics::{
     WorldMassProperties as GpuWorldMassProperties,
 };
 use crate::shaders::utils::BatchIndices;
-use crate::utils::PrefixSumWorkspace;
+use crate::utils::{PrefixSumWorkspace, RadixSortWorkspace};
 
 use super::rbd_state::*;
 use khal::BufferUsages;
@@ -646,7 +646,7 @@ impl RbdState {
         let contacts = Tensor::vector_uninit(
             backend,
             capacities.collisions_capacity * num_batches,
-            storage,
+            storage | BufferUsages::COPY_DST,
         )
         .unwrap();
         let contacts_len = Tensor::vector_uninit(
@@ -902,6 +902,13 @@ impl RbdState {
             .unwrap(),
             old_body_constraint_ids,
             new_body_constraint_ids,
+            det_sort_keys: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_sort_vals: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_sorted_keys: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_sorted_vals: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_contacts_scratch: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE)
+                .unwrap(),
+            det_sort_workspace: RadixSortWorkspace::new(backend),
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
             max_colors: capacities.solver_colors,

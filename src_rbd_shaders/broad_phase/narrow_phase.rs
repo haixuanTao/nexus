@@ -158,6 +158,113 @@ pub fn gpu_reduce_contacts(
     }
 }
 
+/// Deterministic contact ordering, pass 1 of 3: emit each live contact's
+/// FEATURE key (the trimesh/polyline BVH-leaf id its pfm pair was cut from,
+/// carried as raw bits in `_padding[0]`; 0 for analytic contacts) plus its
+/// local slot index. The narrow-phase kernels append contacts through an
+/// atomic cursor, so the buffer ORDER depends on warp scheduling and varies
+/// run to run; a stable sort by (collider pair, feature) afterwards
+/// canonicalizes it — the contact SET and each record's content are already
+/// order-independent, and (pair, feature) is unique per record. LSD order:
+/// this feature sort runs first, then `gpu_contact_sort_pair_keys` re-keys
+/// the permutation by collider pair for the second stable sort.
+///
+/// Grid `[contacts_batch_capacity, num_batches, 1]` threads.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_contact_sort_keys(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &[IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sort_keys: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] sort_vals: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let i = invocation_id.x;
+    let cap = batch_ids.contacts_batch_capacity;
+    if i >= cap || batch_id >= batch_ids.num_batches {
+        return;
+    }
+    let len = contacts_len.read(batch_id as usize).min(cap);
+    if i >= len {
+        return;
+    }
+    let flat = batch_ids.contacts_start(batch_id) + i as usize;
+    let im = contacts.at(flat);
+    sort_keys.write(flat, im._padding[0].to_bits());
+    sort_vals.write(flat, i);
+}
+
+/// Deterministic contact ordering, pass 2 of 3: re-key the feature-sorted
+/// permutation by packed collider pair. `prev_vals[batch][j]` is the local
+/// contact index at rank `j` of the feature sort; the second stable radix
+/// sort of these keys yields the (pair, feature)-lexicographic permutation.
+///
+/// Key packing requires `colliders_batch_capacity^2 <= u32::MAX` — the host
+/// gate checks this. Grid `[contacts_batch_capacity, num_batches, 1]` threads.
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_contact_sort_pair_keys(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &[IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] prev_vals: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] sort_keys: &mut [u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] sort_vals: &mut [u32],
+    #[spirv(uniform, descriptor_set = 0, binding = 5)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let j = invocation_id.x;
+    let cap = batch_ids.contacts_batch_capacity;
+    if j >= cap || batch_id >= batch_ids.num_batches {
+        return;
+    }
+    let len = contacts_len.read(batch_id as usize).min(cap);
+    if j >= len {
+        return;
+    }
+    let start = batch_ids.contacts_start(batch_id);
+    let flat = start + j as usize;
+    let src_local = prev_vals.read(flat).min(cap - 1);
+    let im = contacts.at(start + src_local as usize);
+    let key = im.colliders.x * batch_ids.colliders_batch_capacity + im.colliders.y;
+    sort_keys.write(flat, key);
+    sort_vals.write(flat, src_local);
+}
+
+/// Deterministic contact ordering, pass 2 of 2: gather contacts into their
+/// sorted slots. `sorted_vals[batch][j]` is the pre-sort local index of the
+/// contact that belongs at local slot `j` (from the batched radix sort of
+/// `gpu_contact_sort_keys`' output). Writes to a scratch buffer — the host
+/// copies it back over `contacts` (in-place gather would race).
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_contact_sort_gather(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] contacts: &[IndexedManifold],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] contacts_len: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] sorted_vals: &[u32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 3)]
+    contacts_out: &mut [IndexedManifold],
+    #[spirv(uniform, descriptor_set = 0, binding = 4)] batch_ids: &BatchIndices,
+) {
+    let batch_id = invocation_id.y;
+    let j = invocation_id.x;
+    let cap = batch_ids.contacts_batch_capacity;
+    if j >= cap || batch_id >= batch_ids.num_batches {
+        return;
+    }
+    let len = contacts_len.read(batch_id as usize).min(cap);
+    if j >= len {
+        return;
+    }
+    let start = batch_ids.contacts_start(batch_id);
+    let src_local = sorted_vals.read(start + j as usize).min(cap - 1);
+    let im = contacts.at(start + src_local as usize);
+    contacts_out.write(start + j as usize, *im);
+}
+
 // 2cm, PhysX contactOffset-style (was 2mm). With a stiff normal holding
 // equilibrium penetration ~0, a 2mm window drops a box foot's far-edge
 // corners at ~0.5deg tilt: the manifold collapses to ONE EDGE (zero pitch
@@ -381,6 +488,8 @@ pub fn gpu_narrow_phase_shape_shape_deferred(
                     thickness1: sub1.thickness,
                     thickness2: sub2.thickness,
                     colliders: pair.colliders,
+                    feature_id: 0,
+                    _padding: [0; 3],
                 };
                 let pfm_index = atomic_add_u32(pfm_pairs_len, 1);
                 // NOTE: if we exceed the work-list allocation size, just skip
@@ -521,6 +630,8 @@ fn trimesh_convex(
                 thickness1: sub1.thickness,
                 thickness2: sub2.thickness,
                 colliders,
+                feature_id: idx.shape_index,
+                _padding: [0; 3],
             };
             let pfm_index = atomic_add_u32(pfm_pairs_len, 1);
             // Skip (don’t write) on overflow; the caller resizes and re-runs.
@@ -594,6 +705,8 @@ fn polyline_convex(
                 thickness1: sub1.thickness,
                 thickness2: sub2.thickness,
                 colliders,
+                feature_id: idx.shape_index,
+                _padding: [0; 3],
             };
             let pfm_index = atomic_add_u32(pfm_pairs_len, 1);
             // Skip (don’t write) on overflow; the caller resizes and re-runs.
@@ -624,6 +737,12 @@ pub struct NarrowPhasePfmPair {
     thickness1: f32,
     thickness2: f32,
     colliders: UVec2,
+    /// Sub-shape provenance for deterministic contact ordering: the trimesh /
+    /// polyline BVH leaf (`shape_index`) this pair was cut from, 0 for whole
+    /// shapes. Carried into `IndexedManifold::_padding[0]` so same-collider-pair
+    /// contacts get a stable sort tiebreaker (see `gpu_contact_sort_keys`).
+    feature_id: u32,
+    _padding: [u32; 3],
 }
 
 /// Initializes PFM-PFM dispatch arguments for constraint solver. Dispatch one
@@ -714,7 +833,10 @@ pub fn gpu_narrow_phase_pfm_pfm(
                     bodies: UVec2::new(body1, body2),
                     friction: mat1.combined_friction(&mat2),
                     restitution: mat1.combined_restitution(&mat2),
-                    _padding: [0.0; 2],
+                    // Sub-shape provenance (BVH leaf id) as raw bits — the
+                    // deterministic-order sort's tiebreaker for the many
+                    // contacts one trimesh/polyline pair produces.
+                    _padding: [f32::from_bits(pair.feature_id), 0.0],
                 };
             }
         }

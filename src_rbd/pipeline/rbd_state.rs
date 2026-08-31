@@ -18,7 +18,7 @@ use crate::shaders::dynamics::{
 };
 use crate::shaders::shapes::Shape;
 use crate::shaders::utils::BatchIndices;
-use crate::utils::PrefixSumWorkspace;
+use crate::utils::{PrefixSumWorkspace, RadixSortWorkspace};
 
 use khal::BufferUsages;
 use khal::backend::{Backend, GpuBackend, GpuReadback};
@@ -207,6 +207,17 @@ pub struct RbdState {
     /// `[multibodies_batch_capacity, num_batches, 1]`, or all-zero when no
     /// batch has any contact this step (written by the narrow-phase reduce).
     pub(super) mb_sweep_indirect: Tensor<[u32; 3]>,
+    /// Deterministic contact-order scratch (see the `NEXUS_DETERMINISTIC`
+    /// gate in [`super::RbdPipeline::step`]): per-slot sort keys/values,
+    /// their sorted counterparts, the gathered-contacts scratch, and the
+    /// radix-sort workspace. Lazily (re)sized each step to match `contacts`,
+    /// so the auto-resize path needs no extra handling.
+    pub(super) det_sort_keys: Tensor<u32>,
+    pub(super) det_sort_vals: Tensor<u32>,
+    pub(super) det_sorted_keys: Tensor<u32>,
+    pub(super) det_sorted_vals: Tensor<u32>,
+    pub(super) det_contacts_scratch: Tensor<GpuIndexedContact>,
+    pub(super) det_sort_workspace: RadixSortWorkspace,
     pub(super) new_constraints: Tensor<TwoBodyConstraint>,
     pub(super) new_constraint_builders: Tensor<TwoBodyConstraintBuilder>,
     pub(super) new_constraints_counts: Tensor<u32>,
@@ -726,7 +737,9 @@ impl RbdState {
         self.collision_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
         self.collision_pairs_per_batch_cpu = desired_len;
         self.contacts_per_batch_cpu = desired_len;
-        self.contacts = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
+        self.contacts =
+            Tensor::vector_uninit(backend, desired_len * nb, storage | BufferUsages::COPY_DST)
+                .unwrap();
         self.pfm_pairs = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
         self.old_constraints = Tensor::vector_uninit(backend, desired_len * nb, storage).unwrap();
         self.old_constraint_builders =

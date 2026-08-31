@@ -328,6 +328,13 @@ impl RbdState {
             old_body_constraint_ids,
             new_body_constraint_ids,
             color_uniforms: Vec::new(),
+            det_sort_keys: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_sort_vals: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_sorted_keys: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_sorted_vals: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE).unwrap(),
+            det_contacts_scratch: Tensor::vector_uninit(backend, 0, BufferUsages::STORAGE)
+                .unwrap(),
+            det_sort_workspace: crate::utils::RadixSortWorkspace::new(backend),
             prefix_sum_workspace: PrefixSumWorkspace::default(),
             lbvh: LbvhState::with_usages(backend, lbvh_usages),
             max_colors: capacities.solver_colors,
