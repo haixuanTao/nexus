@@ -471,6 +471,45 @@ impl GpuMultibodySet {
         entry.data.motor_axes |= 1u32 << axis_id;
     }
 
+    /// Stage PD motor gains for one (batch, link, axis) into the host mirror:
+    /// `stiffness`, `damping`, `max_force` and the motor `model`
+    /// (`FORCE_BASED` = 1). Enables the axis. Call `flush_links_static` once
+    /// afterwards, BEFORE any `scatter_motor_targets_gpu` (which bypasses the
+    /// mirror; a later flush would overwrite GPU-side targets with stale ones).
+    pub fn stage_motor_gains(
+        &mut self,
+        batch: u32,
+        link_id: u32,
+        axis: JointAxis,
+        stiffness: f32,
+        damping: f32,
+        max_force: f32,
+        model: u32,
+    ) {
+        let global_idx = (link_id * self.num_batches + batch) as usize;
+        let axis_id = axis as usize;
+        let Some(entry) = self.links_static_mirror.get_mut(global_idx) else {
+            return;
+        };
+        let m = &mut entry.data.motors[axis_id];
+        m.stiffness = stiffness;
+        m.damping = damping;
+        m.max_force = max_force;
+        m.model = model;
+        entry.data.motor_axes |= 1u32 << axis_id;
+    }
+
+    /// Per-(batch, multibody) descriptors, batch-interleaved.
+    pub fn multibody_info(&self) -> &Tensor<MultibodyInfo> {
+        &self.multibody_info
+    }
+
+    /// Contact-constraint slots per batch (capacity; slots are grouped per
+    /// multibody with a fixed per-multibody stride).
+    pub fn contact_constraints_per_batch(&self) -> u32 {
+        self.contact_constraints_per_batch
+    }
+
     /// Push the entire host-side `links_static_mirror` to the GPU in a single
     /// `write_buffer` call. Pairs with
     /// [`stage_motor_position`](Self::stage_motor_position) for batched
@@ -792,6 +831,13 @@ impl GpuMultibodySet {
     /// perturbations / reset-velocity randomization). Velocity of dof `d`,
     /// env `b` lives at `d · num_batches + b`; damping and armature sections
     /// follow at 1× and 2× `dofs_per_batch · num_batches`.
+    /// Mutable access to the persistent external generalized forces (RL torque
+    /// input), layout `dof * num_batches + batch`, applied every substep by the
+    /// gravity kernels until overwritten. Exposed for zero-copy host-side writers.
+    pub fn external_gen_forces_mut(&mut self) -> &mut Tensor<f32> {
+        &mut self.external_gen_forces
+    }
+
     pub fn dof_state_mut(&mut self) -> &mut Tensor<f32> {
         &mut self.dof_state
     }

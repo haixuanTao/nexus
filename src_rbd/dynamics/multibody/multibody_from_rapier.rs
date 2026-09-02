@@ -413,7 +413,7 @@ impl GpuMultibodySet {
             has_joint_constraints: all_infos.iter().any(|info| info.max_constraints > 0),
 
             multibody_info: Tensor::vector(backend, &all_infos, storage).unwrap(),
-            links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST)
+            links_static: Tensor::vector(backend, &all_statics, storage | BufferUsages::COPY_DST | BufferUsages::COPY_SRC)
                 .unwrap(),
             links_static_mirror: all_statics.clone(),
             env_reset: None,
