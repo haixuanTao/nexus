@@ -27,6 +27,7 @@ fn nexus3d(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Rigid bodies, colliders, shapes, handles
     m.add_class::<nexus::NexusBackend>()?;
+    m.add_class::<nexus::CudaArray>()?;
     m.add_class::<rbd::RigidBodyHandle>()?;
     m.add_class::<rbd::ImpulseJointHandle>()?;
     m.add_class::<rbd::MultibodyJointHandle>()?;

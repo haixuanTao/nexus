@@ -45,4 +45,6 @@ rapier3d-mjcf = { workspace = true }
 glamx = { workspace = true }
 anyhow = { workspace = true }
 khal = { workspace = true }
+vortx = { workspace = true }
+bytemuck = { workspace = true }
 pollster = { workspace = true }

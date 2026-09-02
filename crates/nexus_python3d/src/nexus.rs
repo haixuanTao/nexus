@@ -14,6 +14,9 @@ use nexus3d::prelude::{
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyTuple};
+use numpy::{PyArray2, PyArrayMethods};
+use khal::backend::Backend as _;
 use rapier3d::prelude as rp;
 
 /// Maps a GPU backend error to a Python exception.
@@ -57,6 +60,93 @@ impl GpuTimestamps {
     }
 }
 
+/// dim3 SoA workspace layout (quad offsets per link). Mirrors
+/// `src_rbd_shaders/dynamics/multibody/ws_soa.rs::layout`; the glob re-export
+/// is not visible from this crate. `links_workspace_cuda()` checks WS_QUADS
+/// against the real buffer length, and the field offsets are validated by the
+/// Python test against the pose-derived joint angle.
+mod ws_layout {
+    pub const WS_JOINT_ROT: u32 = 0;
+    pub const WS_COORDS: u32 = 1;
+    pub const WS_LTP: u32 = 3;
+    pub const WS_LTW: u32 = 5;
+    pub const WS_JOINT_VEL: u32 = 9;
+    pub const WS_RB_VELS: u32 = 11;
+    pub const WS_KIN_ACC: u32 = 13;
+    pub const WS_QUADS: u32 = 15;
+}
+
+/// A `__cuda_array_interface__` (v3) view over a Nexus GPU buffer.
+///
+/// Zero-copy: `torch.as_tensor(view, device="cuda")` aliases the simulator's
+/// own memory, no staging buffer and no host round-trip. The view is valid
+/// while the owning `NexusState` lives and is not re-finalized. Call
+/// `NexusBackend.synchronize()` after a step before reading from it.
+#[pyclass(name = "CudaArray", frozen)]
+pub struct CudaArray {
+    ptr: u64,
+    byte_len: u64,
+    shape: Vec<usize>,
+    typestr: &'static str,
+}
+
+#[pymethods]
+impl CudaArray {
+    #[getter]
+    fn __cuda_array_interface__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("shape", PyTuple::new(py, &self.shape)?)?;
+        d.set_item("typestr", self.typestr)?;
+        d.set_item("data", (self.ptr, false))?;
+        d.set_item("version", 3)?;
+        d.set_item("strides", py.None())?;
+        Ok(d)
+    }
+    #[getter]
+    fn ptr(&self) -> u64 {
+        self.ptr
+    }
+    #[getter]
+    fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+    #[getter]
+    fn shape(&self) -> Vec<usize> {
+        self.shape.clone()
+    }
+}
+
+/// Raw device pointer + byte length of a khal buffer on the CUDA backend.
+fn cuda_ptr<T: khal::backend::DeviceValue>(
+    buf: &khal::backend::GpuBuffer<T>,
+) -> PyResult<(u64, u64)> {
+    #[cfg(feature = "cuda")]
+    if let khal::backend::GpuBuffer::Cuda(b) = buf {
+        return Ok((b.device_ptr_raw(), b.byte_len()));
+    }
+    let _ = buf;
+    Err(PyRuntimeError::new_err(
+        "buffer is not on the CUDA backend; build NexusBackend(\"cuda\") and finalize_headless() with it",
+    ))
+}
+
+fn cuda_array<T: khal::backend::DeviceValue>(
+    buf: &khal::backend::GpuBuffer<T>,
+    shape: Vec<usize>,
+    elem_bytes: u64,
+    what: &str,
+) -> PyResult<CudaArray> {
+    let (ptr, byte_len) = cuda_ptr(buf)?;
+    let n: u64 = shape.iter().map(|&x| x as u64).product();
+    if n * elem_bytes > byte_len {
+        return Err(PyRuntimeError::new_err(format!(
+            "{what}: shape {shape:?} needs {} bytes but buffer holds {byte_len}",
+            n * elem_bytes
+        )));
+    }
+    Ok(CudaArray { ptr, byte_len, shape, typestr: "<f4" })
+}
+
 /// A viewerless GPU backend for headless evaluation (no window, no
 /// swapchain). `NexusBackend()` = headless WebGPU with the standard limits;
 /// `NexusBackend("cuda")` = the native CUDA backend (cuda feature builds).
@@ -95,6 +185,21 @@ impl NexusBackend {
             ))),
         }
     }
+
+    /// True if this backend is CUDA.
+    fn is_cuda(&self) -> bool {
+        self.0.is_cuda()
+    }
+
+    /// Block until all GPU work queued on this backend has completed.
+    /// Required before reading a `CudaArray` view after `simulate_headless`.
+    fn synchronize(&self) -> PyResult<()> {
+        #[cfg(feature = "cuda")]
+        if let khal::backend::GpuBackend::Cuda(c) = &self.0 {
+            return c.stream().synchronize().map_err(gpu_err);
+        }
+        Ok(())
+    }
 }
 
 /// The GPU-resident state of a multiphysics simulation
@@ -102,13 +207,19 @@ impl NexusBackend {
 /// `rapier3d-mjcf` robot handles of the last `insert_mjcf`, so
 /// `apply_actuator_controls` can drive the robot's actuators per step.
 #[pyclass(name = "NexusState", unsendable)]
-pub struct NexusState(pub RNexusState, pub Option<crate::loaders::MjcfHandles>);
+pub struct NexusState(
+    pub RNexusState,
+    pub Option<crate::loaders::MjcfHandles>,
+    pub Vec<(Vec<u32>, u32, vortx::tensor::Tensor<f32>)>,
+    pub Option<crate::loaders::MjcfNames>,
+);
+
 
 #[pymethods]
 impl NexusState {
     #[new]
     fn new() -> Self {
-        NexusState(RNexusState::default(), None)
+        NexusState(RNexusState::default(), None, Vec::new(), None)
     }
 
     // --- rigid bodies -----------------------------------------------------
@@ -252,6 +363,401 @@ impl NexusState {
         self.0.rbd_num_batches()
     }
 
+    // --- zero-copy CUDA state views (Isaac Lab backend) --------------------
+
+    /// Number of multibody links per batch (environment).
+    fn links_per_batch(&self) -> PyResult<u32> {
+        let rbd = self.0.rbd.as_ref().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        Ok(rbd.multibodies().links_per_batch())
+    }
+
+    /// Number of generalized DOFs per batch (environment).
+    fn dofs_per_batch(&self) -> PyResult<u32> {
+        let rbd = self.0.rbd.as_ref().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        Ok(rbd.multibodies().dofs_per_batch())
+    }
+
+    /// Layout of the per-link SoA workspace: quad offset of each field, quads
+    /// per link, and batch geometry. The raw buffer index of (link k, quad q,
+    /// batch b) is `(k * WS_QUADS + q) * num_batches + b` -- batch innermost --
+    /// so `links_workspace_cuda()` viewed as (links, WS_QUADS, num_batches, 4)
+    /// makes every field a strided view. Quaternions are stored x y z w; a
+    /// pose field is (rotation quad, translation quad); a velocity field is
+    /// (linear quad, angular quad).
+    fn ws_layout<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        use crate::nexus::ws_layout::*;
+        let rbd = self.0.rbd.as_ref().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let d = PyDict::new(py);
+        d.set_item("WS_JOINT_ROT", WS_JOINT_ROT)?;
+        d.set_item("WS_COORDS", WS_COORDS)?;
+        d.set_item("WS_LTP", WS_LTP)?;
+        d.set_item("WS_LTW", WS_LTW)?;
+        d.set_item("WS_JOINT_VEL", WS_JOINT_VEL)?;
+        d.set_item("WS_RB_VELS", WS_RB_VELS)?;
+        d.set_item("WS_KIN_ACC", WS_KIN_ACC)?;
+        d.set_item("WS_QUADS", WS_QUADS)?;
+        d.set_item("links_per_batch", rbd.multibodies().links_per_batch())?;
+        d.set_item("dofs_per_batch", rbd.multibodies().dofs_per_batch())?;
+        d.set_item("num_batches", self.0.rbd_num_batches())?;
+        Ok(d)
+    }
+
+    /// Per-link static joint metadata for batch 0 (identical across batches),
+    /// as a `(links_per_batch, 8)` uint32 array with columns
+    /// `[rb_id, parent_link_id, multibody_id, assembly_id, ndofs, kinematic, locked_axes, motor_axes]`.
+    /// `assembly_id` is the first flat DOF column of the link's joint and
+    /// `ndofs` its width: together they map per-link `coords` slots onto
+    /// Isaac Lab's flat `(num_envs, num_dofs)` joint vectors.
+    fn links_static_host<'py>(&mut self, py: Python<'py>, backend: PyRef<NexusBackend>) -> PyResult<Bound<'py, PyArray2<u32>>> {
+        let nb = self.0.rbd_num_batches() as usize;
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies_mut();
+        let backend = &backend.0;
+        let links = mb.links_per_batch() as usize;
+        let t = mb.links_static_mut();
+        let mut all = bytemuck::zeroed_vec(t.len() as usize);
+        pollster::block_on(backend.slow_read_buffer(t.buffer(), &mut all)).map_err(gpu_err)?;
+        if all.len() < links * nb {
+            return Err(PyRuntimeError::new_err(format!("links_static len {} < links {} * batches {}", all.len(), links, nb)));
+        }
+        // batch-interleaved like the workspace: element (k, b) at k * nb + b; take b = 0
+        let rows: Vec<Vec<u32>> = (0..links)
+            .map(|k| {
+                let l = &all[k * nb];
+                vec![l.rb_id, l.parent_link_id, l.multibody_id, l.assembly_id, l.ndofs, l.kinematic, l.data.locked_axes, l.data.motor_axes]
+            })
+            .collect();
+        PyArray2::from_vec2(py, &rows).map_err(gpu_err)
+    }
+
+    // --- write path (Isaac Lab backend) -----------------------------------
+
+    /// Zero-copy CUDA view of the persistent external generalized forces (the
+    /// RL torque input), shape `(dofs_per_batch, num_batches)` float32, layout
+    /// `dof * num_batches + batch`. Write into it from torch; the gravity
+    /// kernels add it every substep until it is overwritten. Zero it to stop.
+    fn external_gen_forces_cuda(&mut self) -> PyResult<CudaArray> {
+        let nb = self.0.rbd_num_batches() as usize;
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies_mut();
+        let dofs = mb.dofs_per_batch() as usize;
+        let t = mb.external_gen_forces_mut();
+        let have = t.len() as usize;
+        if have < dofs * nb {
+            return Err(PyRuntimeError::new_err(format!("external_gen_forces len {have} < dofs {dofs} * batches {nb}")));
+        }
+        cuda_array(t.buffer(), vec![dofs, nb], 4, "external_gen_forces")
+    }
+
+    /// Allocate a GPU target buffer for a group of actuated links sharing one
+    /// joint axis, returning `(group_id, view)`. `view` is a zero-copy
+    /// `(num_links, num_batches)` float32 array (element `(j, env)` at
+    /// `j * num_batches + env`); write position targets into it from torch,
+    /// then call `scatter_motor_targets(backend, group_id)` once per env step.
+    fn motor_target_group(
+        &mut self,
+        backend: PyRef<NexusBackend>,
+        link_ids: Vec<u32>,
+        axis: u32,
+    ) -> PyResult<(usize, CudaArray)> {
+        use khal::BufferUsages;
+        let nb = self.0.rbd_num_batches() as usize;
+        let n = link_ids.len();
+        let t = vortx::tensor::Tensor::vector(
+            &backend.0,
+            &vec![0.0f32; n * nb],
+            BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        )
+        .map_err(gpu_err)?;
+        let view = cuda_array(t.buffer(), vec![n, nb], 4, "motor_targets")?;
+        self.2.push((link_ids, axis, t));
+        Ok((self.2.len() - 1, view))
+    }
+
+    /// Scatter a target group's positions into the GPU motor parameters
+    /// (`motors[axis].target_pos` of each link, for every batch). One dispatch.
+    fn scatter_motor_targets(&mut self, backend: PyRef<NexusBackend>, group_id: usize) -> PyResult<()> {
+        let (ids, axis, t) = self
+            .2
+            .get(group_id)
+            .ok_or_else(|| PyRuntimeError::new_err(format!("no motor target group {group_id}")))?;
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        rbd.multibodies_mut()
+            .scatter_motor_targets_gpu(&backend.0, t, ids, *axis)
+            .map_err(gpu_err)
+    }
+
+    /// MJCF names resolved onto Nexus link indices (batch 0). Returns a dict:
+    /// `link_body_names[k]`, `link_joint_names[k]` (joint driving link k, or
+    /// "" for the root), `joint_names`, `joint_link_ids` (Nexus link per MJCF
+    /// joint, -1 if unresolved), `actuator_names`, `actuator_joint_idx`.
+    /// Call after `finalize_headless`.
+    fn mjcf_names<'py>(&mut self, py: Python<'py>, backend: PyRef<NexusBackend>) -> PyResult<Bound<'py, PyDict>> {
+        let names = self.3.clone().ok_or_else(|| PyRuntimeError::new_err("no MJCF loaded"))?;
+        // gpu slot of each rapier body handle (env 0)
+        let (body_gpu, joint_gpu): (Vec<Option<u32>>, Vec<Option<u32>>) = {
+            let rb_gpu = |h: Option<rapier3d::prelude::RigidBodyHandle>| -> Option<u32> {
+                let h = h?;
+                let r = self.0.rbd2gpu.first()?.get(h.0)?;
+                (r.gpu_id != u32::MAX).then_some(r.gpu_id)
+            };
+            (
+                names.body_handles.iter().map(|h| rb_gpu(*h)).collect(),
+                names.joint_body_handles.iter().map(|h| rb_gpu(*h)).collect(),
+            )
+        };
+        // per-link rb_id from links_static
+        let stat = self.links_static_host(py, backend)?;
+        let stat = stat.readonly();
+        let stat = stat.as_array();
+        let links = stat.shape()[0];
+        let mut link_body = vec![String::new(); links];
+        let mut link_joint = vec![String::new(); links];
+        let mut joint_link_ids = vec![-1i64; names.joint_names.len()];
+        for k in 0..links {
+            let rb = stat[[k, 0]];
+            if let Some(i) = body_gpu.iter().position(|g| *g == Some(rb)) {
+                link_body[k] = names.body_names[i].clone();
+            }
+            if let Some(j) = joint_gpu.iter().position(|g| *g == Some(rb)) {
+                link_joint[k] = names.joint_names[j].clone();
+                joint_link_ids[j] = k as i64;
+            }
+        }
+        let d = PyDict::new(py);
+        d.set_item("link_body_names", link_body)?;
+        d.set_item("link_joint_names", link_joint)?;
+        d.set_item("joint_names", names.joint_names.clone())?;
+        d.set_item("joint_link_ids", joint_link_ids)?;
+        d.set_item("actuator_names", names.actuator_names.clone())?;
+        d.set_item("actuator_joint_idx", names.actuator_joint_idx.iter().map(|x| x.map(|v| v as i64).unwrap_or(-1)).collect::<Vec<i64>>())?;
+        Ok(d)
+    }
+
+    /// Capture the current physics state (call right after `finalize_headless`,
+    /// i.e. the initial pose) and publish it to the GPU as reset template 0.
+    /// Required once before `reset_envs`.
+    fn publish_reset_template(&mut self, backend: PyRef<NexusBackend>) -> PyResult<()> {
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let snap = pollster::block_on(rbd.snapshot(&backend.0));
+        rbd.publish_reset_templates(&backend.0, &[&snap]);
+        Ok(())
+    }
+
+    /// Batched reset: restore every env in `env_ids` from template 0, translated
+    /// by `offsets[i]` (x y z), with `dof_vels` (`dofs_per_batch` floats per env,
+    /// flattened) written into the generalized velocities. One upload, two
+    /// dispatches, one submit for the whole batch.
+    fn reset_envs(
+        &mut self,
+        backend: PyRef<NexusBackend>,
+        env_ids: Vec<u32>,
+        offsets: Vec<[f32; 3]>,
+        dof_vels: Vec<f32>,
+    ) -> PyResult<()> {
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let dofs = rbd.multibodies().dofs_per_batch() as usize;
+        if offsets.len() != env_ids.len() || dof_vels.len() != env_ids.len() * dofs {
+            return Err(PyRuntimeError::new_err(format!(
+                "reset_envs: {} envs, {} offsets, {} dof_vels (need {} = envs * dofs {})",
+                env_ids.len(), offsets.len(), dof_vels.len(), env_ids.len() * dofs, dofs
+            )));
+        }
+        let resets: Vec<(u32, u32)> = env_ids.iter().map(|&e| (e, 0u32)).collect();
+        let offs: Vec<glamx::Vec3> = offsets.iter().map(|o| glamx::Vec3::new(o[0], o[1], o[2])).collect();
+        rbd.reset_envs_from_templates(&backend.0, &resets, &offs, &dof_vels);
+        Ok(())
+    }
+
+    /// Set PD motor gains (force-based model) on `link_ids` for `axis`, for every
+    /// batch, and upload once. Call BEFORE the first `scatter_motor_targets`.
+    fn set_motor_gains(
+        &mut self,
+        backend: PyRef<NexusBackend>,
+        link_ids: Vec<u32>,
+        axis: u32,
+        stiffness: f32,
+        damping: f32,
+        max_force: f32,
+    ) -> PyResult<()> {
+        use nexus3d::rbd::rapier::prelude::JointAxis;
+        let nb = self.0.rbd_num_batches();
+        let axis = match axis {
+            0 => JointAxis::LinX,
+            1 => JointAxis::LinY,
+            2 => JointAxis::LinZ,
+            3 => JointAxis::AngX,
+            4 => JointAxis::AngY,
+            5 => JointAxis::AngZ,
+            _ => return Err(PyRuntimeError::new_err(format!("bad joint axis {axis} (0..5)"))),
+        };
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies_mut();
+        for &k in &link_ids {
+            for b in 0..nb {
+                mb.stage_motor_gains(b, k, axis, stiffness, damping, max_force, 1 /* FORCE_BASED */);
+            }
+        }
+        mb.flush_links_static(&backend.0).map_err(gpu_err)
+    }
+
+    /// Zero-copy CUDA view of the multibody contact-constraint slab as raw
+    /// float32 words, shape `(total_slots, stride)`; u32 fields must be
+    /// reinterpreted (`.view(torch.int32)`). See `contact_layout()`.
+    #[pyo3(signature = (solved = true))]
+    fn contact_constraints_cuda(&mut self, solved: bool) -> PyResult<CudaArray> {
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mbs = rbd.multibodies();
+        // NOTE: multibody-vs-static contacts are solved on the rigid-body path
+        // (`RbdState::old_constraints`); this slab only carries multibody/free-body
+        // coupling and shows impulse == 0 for floor contacts. `solved` is kept for API stability.
+        let _ = solved;
+        let t = mbs.contact_constraints();
+        let n = t.len() as usize;
+        let stride = (t.bytes_len() / t.len().max(1)) as usize / 4;
+        if stride != 28 {
+            return Err(PyRuntimeError::new_err(format!(
+                "MultibodyContactConstraint stride is {stride} floats, binding assumes 28; update contact_layout"
+            )));
+        }
+        cuda_array(t.buffer(), vec![n, stride], 4, "contact_constraints")
+    }
+
+    /// Layout of the contact-constraint slab: slots per batch, per-multibody
+    /// stride, multibodies per batch, and float-word offsets of the fields
+    /// needed for per-link net contact force.
+    fn contact_layout<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let rbd = self.0.rbd.as_ref().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies();
+        let nb = self.0.rbd_num_batches().max(1) as usize;
+        let d = PyDict::new(py);
+        d.set_item("per_batch", mb.contact_constraints_per_batch())?;
+        d.set_item("multibodies_per_batch", (mb.multibody_info().len() as usize / nb) as u32)?;
+        d.set_item("stride", 28u32)?;
+        d.set_item("kind_normal", 1u32)?;
+        d.set_item("kind_tangent", 2u32)?;
+        d.set_item("off_multibody_id", 0u32)?;
+        d.set_item("off_link_id", 1u32)?;
+        d.set_item("off_kind", 2u32)?;
+        d.set_item("off_free_body_id", 3u32)?;
+        d.set_item("off_lin_jac", 8u32)?;
+        d.set_item("off_impulse", 23u32)?;
+        Ok(d)
+    }
+
+    /// Zero-copy view of the SOLVED rigid-body contact constraints (last step),
+    /// raw float32 words `(total_slots, stride)`; see `rigid_contact_layout()`.
+    /// Slot layout is `batch * per_batch + i`; `contacts_len_cuda()` gives the
+    /// live count per batch.
+    fn rigid_contacts_cuda(&mut self) -> PyResult<CudaArray> {
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let t = rbd.old_constraints();
+        let n = t.len() as usize;
+        let stride = (t.bytes_len() / t.len().max(1)) as usize / 4;
+        cuda_array(t.buffer(), vec![n, stride], 4, "rigid_contacts")
+    }
+
+    /// Zero-copy view of per-batch contact counts, shape `(num_batches,)` (uint32 bits as f32 view; reinterpret).
+    fn contacts_len_cuda(&mut self) -> PyResult<CudaArray> {
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let t = rbd.contacts_len();
+        cuda_array(t.buffer(), vec![t.len() as usize], 4, "contacts_len")
+    }
+
+    /// Layout of `rigid_contacts_cuda()` in float words, computed from the Rust
+    /// struct with `offset_of!` (no guessing): stride, dir_a, solver_body_a/b,
+    /// len, elements, elem_stride, elem_normal_impulse, plus per_batch slots.
+    fn rigid_contact_layout<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        use nexus3d::rbd::pipeline::RbdState;
+        let rbd = self.0.rbd.as_ref().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let l = RbdState::two_body_constraint_layout();
+        let nb = self.0.rbd_num_batches().max(1) as usize;
+        let d = PyDict::new(py);
+        for (k, v) in ["stride", "off_dir_a", "off_solver_body_a", "off_solver_body_b", "off_len", "off_elements", "elem_stride", "off_elem_normal_impulse"].iter().zip(l) {
+            d.set_item(*k, v)?;
+        }
+        d.set_item("per_batch", (rbd.old_constraints().len() as usize / nb) as u32)?;
+        d.set_item("max_elements", 4u32)?;
+        Ok(d)
+    }
+
+    /// Zero-copy view of ALL rigid-body world poses (multibody links and free
+    /// bodies alike), raw float32 `(num_bodies_total, stride)`; a Pose3 is a
+    /// quaternion (x y z w) followed by a translation. Index = gpu body id.
+    fn body_poses_cuda(&mut self) -> PyResult<CudaArray> {
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let t = rbd.body_poses();
+        let n = t.len() as usize;
+        let stride = (t.bytes_len() / t.len().max(1)) as usize / 4;
+        cuda_array(t.buffer(), vec![n, stride], 4, "body_poses")
+    }
+
+    /// Configure the engine's contact force sensors: up to `MAX_CONTACT_SENSORS`
+    /// (4) multibody link ids, shared by every multibody in every batch. Returns
+    /// the number of sensors accepted.
+    fn set_contact_sensor_links(&mut self, backend: PyRef<NexusBackend>, links: Vec<u32>) -> PyResult<u32> {
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies_mut();
+        mb.set_contact_sensor_links(&backend.0, &links);
+        Ok(mb.num_contact_sensors())
+    }
+
+    /// Zero-copy view of the contact sensor readout, shape
+    /// `(multibodies_per_batch, num_batches, MAX_CONTACT_SENSORS)` float32:
+    /// accumulated normal impulse per sensed link over the last step.
+    fn contact_sensor_out_cuda(&mut self) -> PyResult<CudaArray> {
+        let nb = self.0.rbd_num_batches().max(1) as usize;
+        let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies_mut();
+        let mbs = mb.multibody_info().len() as usize / nb;
+        let t = mb.contact_sensor_out();
+        let n = t.len() as usize;
+        let maxs = if mbs * nb > 0 { n / (mbs * nb) } else { 0 };
+        if maxs == 0 || mbs * nb * maxs != n {
+            return Err(PyRuntimeError::new_err(format!("contact_sensor_out len {n} vs mbs {mbs} * batches {nb}")));
+        }
+        cuda_array(t.buffer(), vec![mbs, nb, maxs], 4, "contact_sensor_out")
+    }
+
+    /// Zero-copy CUDA view of the links workspace, shape
+    /// `(links_per_batch, WS_QUADS, num_batches, 4)` float32. See `ws_layout`.
+    fn links_workspace_cuda(&self) -> PyResult<CudaArray> {
+        use crate::nexus::ws_layout::WS_QUADS;
+        let rbd = self.0.rbd.as_ref().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies();
+        let t = mb.links_workspace_buffer();
+        let nb = self.0.rbd_num_batches() as usize;
+        let quads = WS_QUADS as usize;
+        let links = mb.links_per_batch() as usize;
+        let expect = links * quads * nb;
+        let have = t.len() as usize;
+        if have != expect {
+            return Err(PyRuntimeError::new_err(format!(
+                "links_workspace length {have} != links({links}) * WS_QUADS({quads}) * batches({nb}) = {expect}"
+            )));
+        }
+        cuda_array(t.buffer(), vec![links, quads, nb, 4], 4, "links_workspace")
+    }
+
+    /// Zero-copy CUDA view of the DOF state, shape
+    /// `(sections, dofs_per_batch, num_batches)` float32; section 0 is the
+    /// generalized velocities, later sections are per-DOF parameters.
+    fn dof_state_cuda(&self) -> PyResult<CudaArray> {
+        let rbd = self.0.rbd.as_ref().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
+        let mb = rbd.multibodies();
+        let t = mb.dof_state();
+        let nb = self.0.rbd_num_batches() as usize;
+        let dofs = mb.dofs_per_batch() as usize;
+        let per = dofs * nb;
+        let have = t.len() as usize;
+        if per == 0 || have % per != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "dof_state length {have} not a multiple of dofs({dofs}) * batches({nb})"
+            )));
+        }
+        cuda_array(t.buffer(), vec![have / per, dofs, nb], 4, "dof_state")
+    }
+
     // --- robot loaders ----------------------------------------------------
 
     /// Loads a URDF robot into environment 0 as a multibody and returns the
@@ -342,13 +848,21 @@ impl NexusState {
     }
 
     /// Physics-only MJCF load (robot + auto floor, no renderer).
-    #[pyo3(signature = (scene_path, env=0))]
+    /// Load an MJCF robot into env `env`. `translation` shifts every robot body
+    /// at spawn (e.g. to start above terrain); `auto_floor` adds the loader's
+    /// flat floor under the robot (disable when the scene has its own ground).
+    #[pyo3(signature = (scene_path, env, translation = None, auto_floor = true))]
     fn insert_mjcf_headless(
         &mut self,
         scene_path: std::path::PathBuf,
         env: usize,
+        translation: Option<[f32; 3]>,
+        auto_floor: bool,
     ) -> PyResult<MjcfSceneInfo> {
-        let (info, handles) = crate::loaders::insert_mjcf_headless(&mut self.0, &scene_path, env)?;
+        let (info, handles, names) = crate::loaders::insert_mjcf_headless(&mut self.0, &scene_path, env, translation, auto_floor)?;
+        if names.is_some() {
+            self.3 = names;
+        }
         if env == 0 {
             self.1 = handles;
         }
