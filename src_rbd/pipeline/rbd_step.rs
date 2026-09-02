@@ -83,6 +83,52 @@ impl RbdPipeline {
         })
     }
 
+    /// DEBUG: dump the `BatchIndices` uniform as the GPU reads it.
+    pub fn dbg_dump_batch_indices(
+        &self,
+        backend: &GpuBackend,
+        state: &RbdState,
+    ) -> Result<Vec<u32>, GpuBackendError> {
+        use crate::shaders::dynamics::GpuDbgDumpBatchIndices;
+        let kernel = GpuDbgDumpBatchIndices::from_dir(backend, &crate::SPIRV_DIR)?;
+        let mut out = vortx::tensor::Tensor::vector(
+            backend,
+            &[0u32; 8],
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        )?;
+        let mut encoder = backend.begin_encoding();
+        let mut pass = encoder.begin_pass("[RBD] dbg-batch-indices", None);
+        kernel.call(&mut pass, 64u32, &mut out, &state.batch_indices)?;
+        drop(pass);
+        backend.submit(encoder)?;
+        futures::executor::block_on(backend.slow_read_vec(out.buffer()))
+    }
+
+    /// DEBUG: one standalone `sync_collider_poses` dispatch on a fresh
+    /// encoder+submit. If the in-step sync misbehaves but this one is
+    /// correct, the kernel is fine and the step's encoding/ordering is not.
+    pub fn dbg_resync_collider_poses(
+        &self,
+        backend: &GpuBackend,
+        state: &mut RbdState,
+    ) -> Result<(), GpuBackendError> {
+        let mut encoder = backend.begin_encoding();
+        let mut pass = encoder.begin_pass("[RBD] dbg-resync", None);
+        self.sync_collider_poses.dispatch(
+            &mut pass,
+            &state.body_poses,
+            &state.collider_local_poses,
+            &mut state.collider_world_poses,
+            &state.collider_parent,
+            &state.batch_indices,
+            state.num_colliders_per_batch,
+            state.num_batches,
+        )?;
+        drop(pass);
+        backend.submit(encoder)?;
+        Ok(())
+    }
+
     /// Executes one physics simulation timestep on the GPU.
     ///
     /// Automatically resizes buffers (next power of two) if collision pair count exceeds capacity.
