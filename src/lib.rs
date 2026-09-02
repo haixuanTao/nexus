@@ -15,6 +15,7 @@ pub use nexus_rbd3d as rbd;
 pub use rbd::{parry, rapier};
 
 pub mod prelude {
+    pub use crate::rbd::pipeline::RbdResizePolicy;
     #[cfg(feature = "rbd")]
     pub use crate::pipeline::*;
     #[cfg(feature = "rbd")]

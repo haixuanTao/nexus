@@ -410,6 +410,28 @@ impl RbdState {
     }
 
     /// Returns the configured max color count.
+    /// Per-batch collision-pair capacity as currently allocated (grows under
+    /// `RbdResizePolicy::Grow`; see `auto_resize_buffers`).
+    pub fn collisions_capacity_per_batch(&self) -> u32 {
+        (self.collision_pairs.len() as u32).div_ceil(self.num_batches.max(1))
+    }
+
+    /// Last read-back max collision-pair count across batches (the value
+    /// `auto_resize_buffers` sizes from); 0 until the first readback lands.
+    pub fn collision_pairs_len_cpu(&self) -> u32 {
+        self.collision_pairs_len_cpu
+    }
+
+    /// High-water mark of converged contact-coloring counts over the run.
+    pub fn colors_high_water(&self) -> u32 {
+        self.colors_high_water
+    }
+
+    /// Switch the collision-buffer resize policy of a live state.
+    pub fn set_collisions_resize_policy(&mut self, policy: RbdResizePolicy) {
+        self.capacities.collisions_resize_policy = policy;
+    }
+
     pub fn max_colors(&self) -> u32 {
         self.max_colors
     }

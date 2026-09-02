@@ -161,6 +161,19 @@ impl NexusState {
     /// is sized for one busy scene, not thousands of small batched envs —
     /// pair-keyed workspaces scale as `capacity x num_envs x sizeof(manifold)`,
     /// which at 2048 envs binds ~9 GiB unless this is lowered.
+    /// Collision-buffer resize policy; applies to a live rbd state too.
+    pub fn set_rbd_resize_policy(&mut self, policy: RbdResizePolicy) {
+        self.capacities.rbd.collisions_resize_policy = policy;
+        if let Some(rbd) = self.rbd.as_mut() {
+            rbd.set_collisions_resize_policy(policy);
+        }
+    }
+
+    /// Configured per-batch collision-pair capacity floor.
+    pub fn rbd_collisions_capacity(&self) -> u32 {
+        self.capacities.rbd.collisions_capacity
+    }
+
     pub fn set_rbd_collisions_capacity(&mut self, capacity: u32) {
         self.capacities.rbd.collisions_capacity = capacity.max(1);
     }

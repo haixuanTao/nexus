@@ -1010,6 +1010,39 @@ impl NexusState {
         Ok(numpy::PyArray2::from_vec2(py, &rows).map_err(|e| PyRuntimeError::new_err(e.to_string()))?)
     }
 
+    /// Collision-buffer resize policy: "grow" (engine default: grow on any
+    /// batch's spike, never shrink), "fit" (grow and shrink), or "fixed"
+    /// (never resize; overflowing pairs are DROPPED). Applies to a finalized
+    /// state immediately and is also recorded for the next finalize.
+    fn set_rbd_resize_policy(&mut self, policy: &str) -> PyResult<()> {
+        use nexus3d::prelude::RbdResizePolicy;
+        let p = match policy {
+            "grow" => RbdResizePolicy::Grow,
+            "fit" => RbdResizePolicy::Fit,
+            "fixed" => RbdResizePolicy::Fixed,
+            other => return Err(PyRuntimeError::new_err(format!("unknown resize policy {other:?} (grow|fit|fixed)"))),
+        };
+        self.0.set_rbd_resize_policy(p);
+        Ok(())
+    }
+
+    /// Resize bookkeeping of the live rigid-body state, as a dict:
+    /// `pairs_len` (last read-back max collision pairs across batches),
+    /// `capacity_per_batch` (allocated), `capacity_min` (configured floor),
+    /// `max_colors`, `colors_high_water`, `rb_contacts_inert`.
+    fn rbd_resize_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("capacity_min", self.0.rbd_collisions_capacity())?;
+        if let Some(rbd) = self.0.rbd.as_ref() {
+            d.set_item("pairs_len", rbd.collision_pairs_len_cpu())?;
+            d.set_item("capacity_per_batch", rbd.collisions_capacity_per_batch())?;
+            d.set_item("max_colors", rbd.max_colors())?;
+            d.set_item("colors_high_water", rbd.colors_high_water())?;
+            d.set_item("rb_contacts_inert", rbd.rb_contacts_inert())?;
+        }
+        Ok(d)
+    }
+
     fn set_rbd_collisions_capacity(&mut self, capacity: u32) {
         self.0.set_rbd_collisions_capacity(capacity);
     }
