@@ -20,7 +20,7 @@ pub const MAX_JOINT_DOFS: usize = SPATIAL_DIM;
 /// multibody. Sized for typical use (a single multibody touching the
 /// environment with up to ~32 contact points × 2 manifold sides). Per-multibody
 /// banks of this size are pre-allocated; surplus slots are left inactive.
-pub const MAX_MB_CONTACTS_PER_MB: u32 = 64;
+pub const MAX_MB_CONTACTS_PER_MB: u32 = 256; // was 64: fine terrain meshes emit many triangle pairs per link
 
 /// Number of constraint slots reserved per contact point — one normal +
 /// `DIM-1` friction tangents (Coulomb friction). Mirrors rapier's

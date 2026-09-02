@@ -877,7 +877,7 @@ pub fn gpu_mb_finalize_contact_constraints(
 // phase, with the bias removal folded in as a `use_bias` uniform.
 
 /// Maximum sensed links per multibody for the contact force-sensor readout.
-pub const MAX_CONTACT_SENSORS: u32 = 4;
+pub const MAX_CONTACT_SENSORS: u32 = 32;
 
 /// Contact "force sensor" readout: per sensed link, sum the accumulated
 /// NORMAL-constraint impulses. Dispatched once per step after the LAST
