@@ -758,8 +758,15 @@ pub fn gpu_init_pfm_pfm_dispatch(
     max_len_indirect_args(lid.x, pfm_pairs_len, indirect_args, partial);
 }
 
+// 32-wide (one Apple simdgroup / NVIDIA warp): the per-pair GJK/EPA work is
+// highly divergent, so wider groups mostly serialize across the extra lanes.
+// The capacity/indirect grids are still sized for 64-wide dispatch; the
+// StepRng stride loop (driven by the true `num_workgroups`) absorbs the
+// difference.
+const PFM_WORKGROUP_SIZE: u32 = 32;
+
 #[spirv_bindgen]
-#[spirv(compute(threads(64)))] // TODO PERF: pfm_pfm is very divergent. Use a smaller workgroup size?
+#[spirv(compute(threads(32)))]
 pub fn gpu_narrow_phase_pfm_pfm(
     #[spirv(global_invocation_id)] invocation_id: UVec3,
     #[spirv(num_workgroups)] num_workgroups: UVec3,
@@ -781,7 +788,7 @@ pub fn gpu_narrow_phase_pfm_pfm(
     #[spirv(storage_buffer, descriptor_set = 0, binding = 8)]
     collider_materials: &[ColliderMaterial],
 ) {
-    let num_threads = num_workgroups.x * WORKGROUP_SIZE;
+    let num_threads = num_workgroups.x * PFM_WORKGROUP_SIZE;
     let batch_id = invocation_id.y;
     let contacts_batch_capacity = batch_ids.contacts_batch_capacity as usize;
 
