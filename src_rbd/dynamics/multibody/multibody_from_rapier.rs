@@ -595,7 +595,10 @@ impl GpuMultibodySet {
                 buf.extend_from_slice(&all_dof_friction);
                 buf.resize(7 * n, 0.0);
                 debug_assert_eq!(buf.len(), 7 * n);
-                Tensor::vector(backend, &buf, storage).unwrap()
+                // COPY_SRC added (Isaac Lab backend spike): lets hosts read the
+                // DOF state back for observation pipelines, matching
+                // `links_workspace` above.
+                Tensor::vector(backend, &buf, storage | BufferUsages::COPY_SRC).unwrap()
             },
             gen_forces: Tensor::vector(
                 backend,

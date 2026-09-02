@@ -9,6 +9,7 @@ use crate::rbd::{
     RigidBodyHandle, SharedShape,
 };
 use crate::viewer::NexusViewer;
+use khal::backend::Backend as _;
 use khal::backend::GpuTimestamps as RGpuTimestamps;
 use nexus3d::mpm::solver::BoundaryCondition as RBoundaryCondition;
 use nexus3d::prelude::{
@@ -264,6 +265,110 @@ impl NexusState {
     /// Number of GPU batches (== number of environments) once finalized.
     fn rbd_num_batches(&self) -> u32 {
         self.0.rbd_num_batches()
+    }
+
+    // --- state readback (added: Isaac Lab backend spike) ------------------
+
+    /// Number of DOFs per simulation batch (environment).
+    fn dofs_per_batch(&self) -> PyResult<u32> {
+        let rbd = self
+            .0
+            .rbd
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no rigid-body state; call finalize() first"))?;
+        Ok(rbd.multibodies().dofs_per_batch())
+    }
+
+    /// Reads the batched multibody DOF state back to the host as a
+    /// `(num_batches, dofs_per_batch)` float32 array.
+    ///
+    /// This is the buffer Isaac Lab's `ArticulationData.joint_pos` / `joint_vel`
+    /// would be views into. Host readback via a staging buffer, so it is a copy:
+    /// the zero-copy path is `device_ptr_raw()` on the CUDA backend.
+    fn dof_state<'py>(
+        &self,
+        py: Python<'py>,
+        viewer: PyRef<NexusViewer>,
+    ) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let backend = viewer.backend();
+        let rbd = self
+            .0
+            .rbd
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no rigid-body state; call finalize() first"))?;
+        let mb = rbd.multibodies();
+        let dofs = mb.dofs_per_batch() as usize;
+        let data: Vec<f32> =
+            pollster::block_on(backend.slow_read_vec(mb.dof_state().buffer())).map_err(gpu_err)?;
+        let rows = if dofs == 0 { 0 } else { data.len() / dofs };
+        PyArray2::from_vec2(py, &data.chunks(dofs.max(1)).map(|c| c.to_vec()).collect::<Vec<_>>())
+            .map_err(|e| PyRuntimeError::new_err(format!("{e:?} (rows={rows}, dofs={dofs})")))
+    }
+
+    /// Number of multibody links per simulation batch (environment).
+    fn links_per_batch(&self) -> PyResult<u32> {
+        let rbd = self
+            .0
+            .rbd
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no rigid-body state; call finalize() first"))?;
+        Ok(rbd.multibodies().links_per_batch())
+    }
+
+    /// Reads per-link multibody state back to the host, decoded from the
+    /// batch-interleaved SoA workspace. Rows are laid out
+    /// `env * links_per_batch + link`, in `from_rapier` link-traversal order.
+    ///
+    /// Returns `(joint_pos, link_pose_w, link_vel_w)`:
+    ///   joint_pos   (n, 6)  generalized coordinates; first `ndofs` are meaningful
+    ///   link_pose_w (n, 7)  link-to-world pose: x y z qx qy qz qw
+    ///   link_vel_w  (n, 6)  world rigid-body velocity: vx vy vz wx wy wz
+    ///
+    /// This is the buffer Isaac Lab's `joint_pos`, `body_link_pose_w` and
+    /// `body_com_vel_w` would be views into.
+    fn link_state<'py>(
+        &self,
+        py: Python<'py>,
+        viewer: PyRef<NexusViewer>,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
+    )> {
+        use nexus3d::rbd::shaders::dynamics::ws_soa_to_structs;
+
+        let backend = viewer.backend();
+        let rbd = self
+            .0
+            .rbd
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no rigid-body state; call finalize() first"))?;
+        let mb = rbd.multibodies();
+        let links_cap = mb.links_per_batch();
+        let nb = self.0.rbd_num_batches();
+
+        let raw: Vec<glamx::Vec4> =
+            pollster::block_on(backend.slow_read_vec(mb.links_workspace().buffer()))
+                .map_err(gpu_err)?;
+        let ws = ws_soa_to_structs(&raw, links_cap, nb);
+
+        let mut coords = Vec::with_capacity(ws.len());
+        let mut poses = Vec::with_capacity(ws.len());
+        let mut vels = Vec::with_capacity(ws.len());
+        for w in &ws {
+            coords.push(w.coords.to_vec());
+            let t = w.local_to_world.translation;
+            let r = w.local_to_world.rotation;
+            poses.push(vec![t.x, t.y, t.z, r.x, r.y, r.z, r.w]);
+            let l = w.rb_vels.linear;
+            let a = w.rb_vels.angular;
+            vels.push(vec![l.x, l.y, l.z, a.x, a.y, a.z]);
+        }
+        Ok((
+            PyArray2::from_vec2(py, &coords).map_err(gpu_err)?,
+            PyArray2::from_vec2(py, &poses).map_err(gpu_err)?,
+            PyArray2::from_vec2(py, &vels).map_err(gpu_err)?,
+        ))
     }
 
     // --- robot loaders ----------------------------------------------------
