@@ -624,6 +624,21 @@ impl GpuMultibodySolver {
         args: &mut MultibodySolverArgs<'_>,
         is_last_substep: bool,
     ) -> Result<(), GpuBackendError> {
+        // Contact force-sensor readout (Isaac Lab backend): the bias solve (P3) has
+        // just finished and its impulses are in the slab; fold each sensed link's
+        // NORMAL impulses into `contact_sensor_out` before positions integrate.
+        // (`substep_solve_no_bias`, which carries the same dispatch, has no callers.)
+        if is_last_substep && !mb.is_empty() && mb.num_contact_sensors > 0 {
+            self.sense_contact_impulses.call(
+                pass,
+                [mb.multibodies_per_batch, mb.num_batches, 1],
+                &mb.multibody_info,
+                &mb.contact_constraints,
+                &mb.contact_sensor_links,
+                &mut mb.contact_sensor_out,
+                args.batch_indices,
+            )?;
+        }
         if mb.is_empty() {
             return Ok(());
         }
