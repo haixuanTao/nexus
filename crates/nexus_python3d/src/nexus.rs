@@ -548,24 +548,42 @@ impl NexusState {
     /// by `offsets[i]` (x y z), with `dof_vels` (`dofs_per_batch` floats per env,
     /// flattened) written into the generalized velocities. One upload, two
     /// dispatches, one submit for the whole batch.
+    /// Reset `env_ids` to their published templates. `offsets` and `dof_vels`
+    /// default to zeros when omitted — the common RL case, and passing them
+    /// explicitly means marshalling `len(env_ids) * dofs` Python floats every
+    /// reset (143k of them at 4096 envs x 35 dofs).
+    #[pyo3(signature = (backend, env_ids, offsets=None, dof_vels=None))]
     fn reset_envs(
         &mut self,
         backend: PyRef<NexusBackend>,
         env_ids: Vec<u32>,
-        offsets: Vec<[f32; 3]>,
-        dof_vels: Vec<f32>,
+        offsets: Option<Vec<[f32; 3]>>,
+        dof_vels: Option<Vec<f32>>,
     ) -> PyResult<()> {
         let rbd = self.0.rbd.as_mut().ok_or_else(|| PyRuntimeError::new_err("finalize first"))?;
         let dofs = rbd.multibodies().dofs_per_batch() as usize;
-        if offsets.len() != env_ids.len() || dof_vels.len() != env_ids.len() * dofs {
-            return Err(PyRuntimeError::new_err(format!(
-                "reset_envs: {} envs, {} offsets, {} dof_vels (need {} = envs * dofs {})",
-                env_ids.len(), offsets.len(), dof_vels.len(), env_ids.len() * dofs, dofs
-            )));
+        if let Some(o) = offsets.as_ref() {
+            if o.len() != env_ids.len() {
+                return Err(PyRuntimeError::new_err(format!(
+                    "reset_envs: {} envs, {} offsets", env_ids.len(), o.len()
+                )));
+            }
+        }
+        if let Some(v) = dof_vels.as_ref() {
+            if v.len() != env_ids.len() * dofs {
+                return Err(PyRuntimeError::new_err(format!(
+                    "reset_envs: {} envs, {} dof_vels (need {} = envs * dofs {})",
+                    env_ids.len(), v.len(), env_ids.len() * dofs, dofs
+                )));
+            }
         }
         let resets: Vec<(u32, u32)> = env_ids.iter().map(|&e| (e, 0u32)).collect();
-        let offs: Vec<glamx::Vec3> = offsets.iter().map(|o| glamx::Vec3::new(o[0], o[1], o[2])).collect();
-        rbd.reset_envs_from_templates(&backend.0, &resets, &offs, &dof_vels);
+        let offs: Vec<glamx::Vec3> = match offsets {
+            Some(o) => o.iter().map(|o| glamx::Vec3::new(o[0], o[1], o[2])).collect(),
+            None => vec![glamx::Vec3::ZERO; env_ids.len()],
+        };
+        let vels: Vec<f32> = dof_vels.unwrap_or_else(|| vec![0.0; env_ids.len() * dofs]);
+        rbd.reset_envs_from_templates(&backend.0, &resets, &offs, &vels);
         Ok(())
     }
 
