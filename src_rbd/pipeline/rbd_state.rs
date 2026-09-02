@@ -431,6 +431,37 @@ impl RbdState {
     pub fn collider_poses(&self) -> &Tensor<Pose> {
         &self.collider_world_poses
     }
+    /// Solved rigid-body contact constraints of the last step (swapped in after
+    /// the solve; impulses valid). Multibody-link vs static/rigid contacts live here.
+    pub fn old_constraints(&self) -> &Tensor<TwoBodyConstraint> {
+        &self.old_constraints
+    }
+    /// Per-body constraint counts matching `old_constraints`.
+    pub fn old_constraints_counts(&self) -> &Tensor<u32> {
+        &self.old_constraints_counts
+    }
+    /// Per-batch contact (manifold) counts.
+    pub fn contacts_len(&self) -> &Tensor<u32> {
+        &self.contacts_len
+    }
+    /// Float-word layout of `TwoBodyConstraint` for host-side decoders:
+    /// `[stride, off_dir_a, off_solver_body_a, off_solver_body_b, off_len,
+    ///   off_elements, elem_stride, off_elem_normal_impulse]`.
+    pub fn two_body_constraint_layout() -> [u32; 8] {
+        use crate::shaders::dynamics::{TwoBodyConstraintElement, TwoBodyConstraintNormalPart};
+        use std::mem::{offset_of, size_of};
+        [
+            (size_of::<TwoBodyConstraint>() / 4) as u32,
+            (offset_of!(TwoBodyConstraint, dir_a) / 4) as u32,
+            (offset_of!(TwoBodyConstraint, solver_body_a) / 4) as u32,
+            (offset_of!(TwoBodyConstraint, solver_body_b) / 4) as u32,
+            (offset_of!(TwoBodyConstraint, len) / 4) as u32,
+            (offset_of!(TwoBodyConstraint, elements) / 4) as u32,
+            (size_of::<TwoBodyConstraintElement>() / 4) as u32,
+            ((offset_of!(TwoBodyConstraintElement, normal_part) + offset_of!(TwoBodyConstraintNormalPart, impulse)) / 4) as u32,
+        ]
+    }
+
 
     /// Per-body world-origin pose (matches rapier's `RigidBody::position`).
     pub fn body_poses(&self) -> &Tensor<Pose> {
