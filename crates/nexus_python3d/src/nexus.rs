@@ -1315,6 +1315,19 @@ impl NexusPipeline {
             .map_err(gpu_err)
     }
 
+    /// Windowless `capture_cuda_graph`: same contract, on a viewerless backend.
+    /// Call after `finalize_headless` and a few warmup `simulate_headless`
+    /// calls; the graph freezes buffer addresses and the coloring loop, and
+    /// replay skips `auto_resize_buffers`, so the scene must have settled.
+    #[cfg(feature = "cuda")]
+    fn capture_cuda_graph_headless(
+        &mut self,
+        backend: PyRef<NexusBackend>,
+        mut state: PyRefMut<NexusState>,
+    ) -> PyResult<bool> {
+        pollster::block_on(self.0.capture_rbd_graph(&backend.0, &mut state.0)).map_err(gpu_err)
+    }
+
     /// Replays the captured rigid-body CUDA graph (see `capture_cuda_graph`).
     /// Returns `False` when no graph has been captured.
     #[cfg(feature = "cuda")]
