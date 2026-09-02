@@ -150,6 +150,12 @@ async fn select_backend() -> GpuBackend {
             println!("backend: WebGPU");
             webgpu_backend().await
         }
+        #[cfg(feature = "cuda")]
+        Ok("cuda") => {
+            println!("backend: CUDA");
+            let cuda = khal::backend::cuda::Cuda::new(0).expect("CUDA init failed");
+            GpuBackend::Cuda(cuda)
+        }
         _ => {
             #[cfg(feature = "metal")]
             {
