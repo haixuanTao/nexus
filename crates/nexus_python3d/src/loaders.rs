@@ -118,6 +118,20 @@ struct VisualMeshReg {
 /// Handles of the robot loaded by [`insert_mjcf`], kept by the Python
 /// `NexusState` so per-step actuator control (`apply_actuator_controls`) can
 /// reuse `rapier3d-mjcf`'s MJCF actuator semantics.
+/// MJCF names + rapier handles captured at load (host only). GPU link ids are
+/// resolved after `finalize` via `rbd2gpu` (see `NexusState.mjcf_names`).
+#[derive(Clone, Debug, Default)]
+pub struct MjcfNames {
+    pub body_names: Vec<String>,
+    pub body_handles: Vec<Option<rapier3d::prelude::RigidBodyHandle>>,
+    pub joint_names: Vec<String>,
+    /// Rigid body of the child link each joint drives (None for unhandled joints).
+    pub joint_body_handles: Vec<Option<rapier3d::prelude::RigidBodyHandle>>,
+    pub actuator_names: Vec<String>,
+    /// Index into `joint_names` for each actuator (None if unbound).
+    pub actuator_joint_idx: Vec<Option<usize>>,
+}
+
 pub type MjcfHandles =
     rapier3d_mjcf::MjcfRobotHandles<Option<rapier3d::prelude::MultibodyJointHandle>>;
 
@@ -130,12 +144,18 @@ pub fn insert_mjcf_headless(
     state: &mut nexus3d::prelude::NexusState,
     scene_path: &std::path::Path,
     env: usize,
-) -> PyResult<(MjcfSceneInfo, Option<MjcfHandles>)> {
+    translation: Option<[f32; 3]>,
+    auto_floor: bool,
+) -> PyResult<(MjcfSceneInfo, Option<MjcfHandles>, Option<MjcfNames>)> {
     use pyo3::exceptions::PyRuntimeError;
     use rapier3d::parry::bounding_volume::BoundingVolume;
     use rapier3d_mjcf::{MjcfLoaderOptions, MjcfMultibodyOptions, MjcfRobot};
 
     let options = MjcfLoaderOptions {
+        shift: match translation {
+            Some(t) => glamx::Pose3::from_translation(glamx::Vec3::new(t[0], t[1], t[2])),
+            None => Default::default(),
+        },
         skip_plane_geoms: true,
         make_roots_fixed: false,
         create_colliders_from_visual_shapes: false,
@@ -147,6 +167,7 @@ pub fn insert_mjcf_headless(
     let mut floor: Option<(glamx::Vec3, glamx::Vec3)> = None;
     let mut loaded = false;
     let mut robot_handles: Option<MjcfHandles> = None;
+    let mut mjcf_names: Option<MjcfNames> = None;
     match MjcfRobot::from_file(scene_path, options) {
         Ok((robot, _model)) => {
             let world = state.rbd_world_mut(env);
@@ -159,6 +180,35 @@ pub fn insert_mjcf_headless(
             );
             let ctrl = vec![0.0; handles.actuators.len()];
             handles.apply_controls_multibody(&mut world.bodies, &mut world.multibody_joints, &ctrl);
+            // --- names (Isaac Lab backend): bodies, joints (-> child body), actuators ---
+            {
+                let mut names = MjcfNames::default();
+                for (i, b) in robot.bodies.iter().enumerate() {
+                    names.body_names.push(b.name.clone().unwrap_or_else(|| format!("body_{i}")));
+                    names.body_handles.push(handles.bodies.get(i).and_then(|h| h.as_ref()).map(|h| h.body));
+                }
+                for (j, jt) in robot.joints.iter().enumerate() {
+                    names.joint_names.push(jt.name.clone().unwrap_or_else(|| format!("joint_{j}")));
+                    let child = handles
+                        .joints
+                        .get(j)
+                        .and_then(|h| h.joint)
+                        .and_then(|mj| world.multibody_joints.get(mj))
+                        .and_then(|(mb, link_id)| mb.link(link_id))
+                        .map(|link| link.rigid_body_handle());
+                    names.joint_body_handles.push(child);
+                }
+                for (a, ah) in handles.actuators.iter().enumerate() {
+                    let binding = robot.actuators.get(a);
+                    names.actuator_names.push(
+                        binding.and_then(|x| x.actuator.name.clone()).unwrap_or_else(|| format!("actuator_{a}")),
+                    );
+                    // the loader already resolved which joint each actuator drives
+                    let _ = ah;
+                    names.actuator_joint_idx.push(binding.and_then(|x| x.joint_index));
+                }
+                mjcf_names = Some(names);
+            }
 
             let mut aabb = rp::Aabb::new_invalid();
             for (_, collider) in world.colliders.iter() {
@@ -184,12 +234,12 @@ pub fn insert_mjcf_headless(
             )));
         }
     }
-    if let Some((center, he)) = floor {
+    if let (true, Some((center, he))) = (auto_floor, floor) {
         let body = rp::RigidBodyBuilder::fixed().translation(center).build();
         let collider = rp::ColliderBuilder::cuboid(he.x, he.y, he.z).build();
         state.insert_rigid_body_in(env, body, collider);
     }
-    Ok((MjcfSceneInfo { z_up: true, loaded }, robot_handles))
+    Ok((MjcfSceneInfo { z_up: true, loaded }, robot_handles, mjcf_names))
 }
 
 pub fn insert_mjcf(
