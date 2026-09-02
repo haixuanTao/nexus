@@ -869,6 +869,30 @@ impl NexusState {
         Ok(info)
     }
 
+    /// Insert the same MJCF into environments `env_start..env_end`, parsing the
+    /// file and building its convex hulls ONCE (spawning 4096 copies one call at
+    /// a time re-parses the XML and its meshes 4096 times).
+    #[pyo3(signature = (scene_path, env_start, env_end, translation=None, auto_floor=true))]
+    fn insert_mjcf_headless_range(
+        &mut self,
+        scene_path: std::path::PathBuf,
+        env_start: usize,
+        env_end: usize,
+        translation: Option<[f32; 3]>,
+        auto_floor: bool,
+    ) -> PyResult<MjcfSceneInfo> {
+        let (info, handles, names) = crate::loaders::insert_mjcf_headless_range(
+            &mut self.0, &scene_path, env_start, env_end, translation, auto_floor,
+        )?;
+        if names.is_some() {
+            self.3 = names;
+        }
+        if env_start == 0 {
+            self.1 = handles;
+        }
+        Ok(info)
+    }
+
     /// Windowless `finalize`: uploads the scene to the GPU.
     fn finalize_headless(&mut self, backend: PyRef<NexusBackend>) -> PyResult<()> {
         pollster::block_on(self.0.finalize(&backend.0)).map_err(gpu_err)
@@ -1296,6 +1320,21 @@ impl NexusPipeline {
     #[cfg(feature = "cuda")]
     fn replay_cuda_graph(&mut self) -> PyResult<bool> {
         self.0.replay_rbd_graph().map_err(gpu_err)
+    }
+
+    /// Enables per-collider-pair contact reduction: all manifolds a pair emits
+    /// (a trimesh emits one per touched triangle) are merged into one manifold
+    /// of the deepest `MAX_MANIFOLD_POINTS` points before the solvers run.
+    /// Off upstream; without it a foot over a fine terrain mesh keeps whatever
+    /// 4 points the BVH traversal emitted first and sinks through the surface.
+    fn set_contact_reduction(&mut self, backend: PyRef<NexusBackend>, enabled: bool) -> PyResult<()> {
+        self.0
+            .preload_pipelines(&backend.0, nexus3d::pipeline::NexusPipelineMask::RBD)
+            .map_err(gpu_err)?;
+        if let Some(p) = self.0.rbd_pipeline.as_mut() {
+            p.contact_reduction = enabled;
+        }
+        Ok(())
     }
 
     /// Compiles all GPU pipelines up-front on a viewerless backend.
