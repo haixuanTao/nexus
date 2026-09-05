@@ -10,7 +10,7 @@ use crate::queries::{
 use crate::queries::{ContactPoint, MAX_MANIFOLD_POINTS, manifold_reduction};
 use crate::shapes::{
     Capsule, Polyline, SHAPE_TYPE_BALL, SHAPE_TYPE_CAPSULE, SHAPE_TYPE_CONE, SHAPE_TYPE_CUBOID,
-    SHAPE_TYPE_CYLINDER, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIMESH, Shape, TriMesh,
+    SHAPE_TYPE_CYLINDER, SHAPE_TYPE_POLYLINE, SHAPE_TYPE_TRIANGLE, SHAPE_TYPE_TRIMESH, Shape, TriMesh,
 };
 use crate::{PaddedVector, Pose, Vector};
 use khal_std::glamx::UVec3;
@@ -272,6 +272,12 @@ pub fn gpu_contact_sort_gather(
 // stand. Speculative contacts (dist>0) exert no force until touch, so the
 // wider window only ADDS manifold points. TODO: make configurable.
 pub(crate) const PREDICTION: f32 = 2.0e-2;
+/// One-sided trimesh triangles: a convex shape whose deepest point lies up to this far BELOW a triangle
+/// (behind its front face, CCW winding) gets a contact pushing it back out through the face, instead of the
+/// back-side manifold GJK would report (normal pointing away from the face, i.e. pushing it deeper) or none
+/// at all. Mirrors PhysX/MuJoCo mesh contacts, which resolve shallow penetrations; without it a foot whose
+/// 5 mm sole spheres dip past the surface ratchets into the ground for the rest of the episode.
+pub(crate) const TRIMESH_BACKSIDE_DEPTH: f32 = 0.10;
 
 /// Narrow phase, pass 1 of 2: analytic shape-shape contacts for ball / cuboid
 /// pairs, written straight into the `contacts` buffer.
@@ -600,8 +606,8 @@ fn trimesh_convex(
 
     // Get the convex shape's AABB in the trimesh's local space, and enlarge with the PREDICTION.
     let mut test_aabb = convex.compute_aabb(pose12, vertices);
-    test_aabb.mins -= Vector::splat(PREDICTION);
-    test_aabb.maxs += Vector::splat(PREDICTION);
+    test_aabb.mins -= Vector::splat(PREDICTION + TRIMESH_BACKSIDE_DEPTH);
+    test_aabb.maxs += Vector::splat(PREDICTION + TRIMESH_BACKSIDE_DEPTH);
 
     if !test_aabb.intersects(&mesh.root_aabb) {
         // No collision possible.
@@ -806,7 +812,8 @@ pub fn gpu_narrow_phase_pfm_pfm(
         if body1 == body2 {
             continue;
         }
-        let manifold = pfm_pfm(
+        #[allow(unused_mut)]
+        let mut manifold = pfm_pfm(
             pair.pose12,
             &pair.shape1,
             pair.thickness1,
@@ -817,6 +824,10 @@ pub fn gpu_narrow_phase_pfm_pfm(
             #[cfg(feature = "dim3")]
             indices,
         );
+        #[cfg(feature = "dim3")]
+        if pair.shape1.shape_type() == SHAPE_TYPE_TRIANGLE {
+            manifold = one_sided_triangle_contact(&pair, manifold, vertices);
+        }
 
         if manifold.len > 0 && manifold.points_a.at(0).dist < PREDICTION {
             let target_contact_index = atomic_add_u32(contacts_len, 1) as usize;
@@ -841,4 +852,49 @@ pub fn gpu_narrow_phase_pfm_pfm(
             }
         }
     }
+}
+
+
+/// Back-side handling for a triangle cut from a trimesh (see `TRIMESH_BACKSIDE_DEPTH`). `pair.shape1` is the
+/// triangle, in whose frame the manifold is expressed. If `shape2`'s deepest point lies below the triangle's
+/// front face, within the depth limit and over the triangle (2 cm margin), the manifold becomes a single
+/// contact along the face normal with `dist = -depth`, so the solver's penetration recovery pushes the shape
+/// back out through the face. Front-side manifolds are returned untouched.
+#[cfg(feature = "dim3")]
+fn one_sided_triangle_contact(
+    pair: &NarrowPhasePfmPair,
+    manifold: ContactManifold,
+    vertices: &[PaddedVector],
+) -> ContactManifold {
+    let tri = pair.shape1.to_triangle();
+    let n_raw = (tri.b - tri.a).cross(tri.c - tri.a);
+    let n_len = n_raw.length();
+    if n_len < 1.0e-9 {
+        return manifold;
+    }
+    let n = n_raw / n_len;
+    let backside = manifold.len == 0 || manifold.normal_a.dot(n) < 0.0;
+    if !backside {
+        return manifold;
+    }
+    // deepest point of shape2 along -n, in the triangle's frame (thickness = rounding radius of a ball/capsule)
+    let p2 = pair.shape2.support_point(pair.pose12, -n, vertices);
+    let depth = (tri.a - p2).dot(n) + pair.thickness2;
+    if depth <= 0.0 || depth >= TRIMESH_BACKSIDE_DEPTH {
+        return manifold;
+    }
+    let proj = p2 + n * (tri.a - p2).dot(n);
+    // over the triangle, with a margin: signed edge distances against the face normal
+    let margin = 0.02;
+    let e0 = (tri.b - tri.a).cross(proj - tri.a).dot(n) / (tri.b - tri.a).length().max(1.0e-9);
+    let e1 = (tri.c - tri.b).cross(proj - tri.b).dot(n) / (tri.c - tri.b).length().max(1.0e-9);
+    let e2 = (tri.a - tri.c).cross(proj - tri.c).dot(n) / (tri.a - tri.c).length().max(1.0e-9);
+    if e0 < -margin || e1 < -margin || e2 < -margin {
+        return manifold;
+    }
+    let mut out = ContactManifold::default();
+    out.normal_a = n;
+    out.len = 1;
+    out.points_a.write(0, ContactPoint::new(proj, -depth));
+    out
 }
