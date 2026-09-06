@@ -55,14 +55,42 @@ pub fn gpu_mb_integrate_velocities(
         .ib(batch_id, gen_accelerations)
         .offset(mb.first_dof as usize);
 
-    // Joint velocity limit (dof_state section 4, 1e30 = none) on the previous substep's final velocities
-    // (contact / joint-limit impulses land after the position integration), then integrate.
+    for d in 0..mb.ndofs {
+        let di = d as usize;
+        dof_vel[di] += acc[di] * dt;
+    }
+}
+
+/// Per-DOF joint velocity limit (dof_state section 4, 1e30 = none): clamp the generalized velocities
+/// the previous step left behind, before anything of the new step reads them (Coriolis terms, the
+/// force-based motor PD, the velocity integration). Dispatched once at the start of each step, which is
+/// the after-step clamp of a host-side PD loop. A generalized-velocity clamp has no reaction on the
+/// parent link, so it is deliberately NOT applied inside the step (see `gpu_mb_integrate`, section 5).
+#[spirv_bindgen]
+#[spirv(compute(threads(64)))]
+pub fn gpu_mb_clamp_dof_velocities(
+    #[spirv(global_invocation_id)] invocation_id: UVec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] multibody_info: &[MultibodyInfo],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] dof_state: &mut [f32],
+    #[spirv(uniform, descriptor_set = 0, binding = 2)] batch_ids: &BatchIndices,
+) {
+    let num_mb = batch_ids.multibodies_len;
+    if invocation_id.x >= num_mb * batch_ids.num_batches {
+        return;
+    }
+    let (batch_id, mb_idx) = crate::div_rem_nz(invocation_id.x, num_mb);
+    let mb = batch_ids
+        .ib(batch_id, multibody_info)
+        .read(mb_idx as usize);
+    let mut dof_vel = batch_ids
+        .ib_mut(batch_id, dof_state)
+        .offset(mb.first_dof as usize);
     let lim_off = 4 * batch_ids.dof_batch_capacity as usize;
     for d in 0..mb.ndofs {
         let di = d as usize;
         let l = dof_vel[lim_off + di];
-        let v = dof_vel[di].max(-l).min(l);
-        dof_vel[di] = v + acc[di] * dt;
+        let v = dof_vel[di];
+        dof_vel[di] = v.max(-l).min(l);
     }
 }
 
@@ -181,11 +209,14 @@ pub fn gpu_mb_integrate(
     let dof_val = batch_ids
         .ib_mut(batch_id, dof_values)
         .offset(mb.first_dof as usize);
-    // Joint velocity limit (dof_state section 4, 1e30 = none), applied to the solver-corrected velocities
-    // before they integrate the positions -- contact and joint-limit impulses land after the velocity
-    // integration, so this is the only place the limit holds.
+    // Optional second joint velocity clamp (dof_state section 5, 1e30 = none, the default) on the
+    // solver-corrected velocities right before they integrate the positions. Off by default: like the
+    // section-4 clamp it is a generalized-velocity clamp without a reaction on the parent link, and on a
+    // floating base it pumps angular momentum into the base at every substep (measured: 4x the invalid-state
+    // terminations under random actions on the G1). The section-4 clamp alone matches the after-step clamp of
+    // the host-side PD (the velocity carried into the next substep is capped; the motion is not).
     {
-        let lim_off = 4 * batch_ids.dof_batch_capacity as usize;
+        let lim_off = 5 * batch_ids.dof_batch_capacity as usize;
         let mut dv = batch_ids
             .ib_mut(batch_id, dof_state)
             .offset(mb.first_dof as usize);

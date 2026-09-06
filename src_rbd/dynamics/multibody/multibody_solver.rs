@@ -9,7 +9,7 @@ use crate::shaders::dynamics::{
     GpuMbComputeDynamicsWithoutCoriolisPre,
     GpuMbFinalizeContactConstraints, GpuMbGravityAndLu, GpuMbGravityAndLuT1, GpuMbGravityAndLuT8,
     GpuMbGravityAndLuT16, GpuMbGravityAndLuT32, GpuMbInitContactConstraints,
-    GpuMbInitJointConstraints, GpuMbIntegrate, GpuMbIntegrateVelocities,
+    GpuMbClampDofVelocities, GpuMbInitJointConstraints, GpuMbIntegrate, GpuMbIntegrateVelocities,
     GpuMbRefreshJointConstraints, GpuMbRemoveImpulseJointConstraintBias,
     GpuMbResetContactWarmstart, GpuMbSenseContactImpulses, GpuMbStashContactsLen,
     GpuMbWarmstartContactConstraints,
@@ -86,6 +86,8 @@ pub struct GpuMultibodySolver {
     solve_impulse_joint_constraints: GpuMbSolveImpulseJointConstraints,
     remove_impulse_joint_constraint_bias: GpuMbRemoveImpulseJointConstraintBias,
     integrate_velocities: GpuMbIntegrateVelocities,
+    /// Start-of-step joint velocity limit (dof_state section 4) -- see the kernel docs.
+    clamp_dof_velocities: GpuMbClampDofVelocities,
     integrate: GpuMbIntegrate,
 }
 
@@ -173,6 +175,15 @@ impl GpuMultibodySolver {
         }
         {
             let mut pass = encoder.begin_pass("[RBD] mbi/pre", timestamps.as_deref_mut());
+            // Joint velocity limit on the velocities the previous step left behind, before the Coriolis
+            // terms / motor PD / velocity integration of this step read them.
+            self.clamp_dof_velocities.call(
+                &mut pass,
+                mb.flat_mb_dispatch(),
+                &mb.multibody_info,
+                &mut mb.dof_state,
+                args.batch_indices,
+            )?;
             // Init-step pre: positions are current, nothing to integrate.
             self.dispatch_dynamics_pre(&mut pass, mb, args, false)?;
         }

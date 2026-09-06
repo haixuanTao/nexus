@@ -128,8 +128,8 @@ fn apply_force_based_pd(
                         .max(-motor.max_force)
                         .min(motor.max_force);
                     // Joint velocity limit (`target_vel` of a FORCE_BASED motor): no driving torque past the
-                    // limit, and full-effort braking beyond it. A torque, so the parent gets the reaction
-                    // (a post-step velocity clamp does not conserve momentum on a floating base).
+                    // limit (a torque saturation, so the parent gets the reaction); the hard cap itself is the
+                    // per-DOF clamp in `integrate.rs` (dof_state section 4).
                     let vmax = motor.target_vel;
                     if vmax > 0.0 && vmax < 1.0e30 {
                         let sv = if v >= 0.0 { 1.0 } else { -1.0 };

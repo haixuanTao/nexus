@@ -448,15 +448,16 @@ impl GpuMultibodySet {
                 // 3·N (offsets computed in-shader from the damping offset).
                 // Frictionloss defaults to 0 (off) — set post-build via
                 // `set_dof_frictionloss` (rapier carries no such quantity).
-                // Section 4·N: per-DOF velocity limit (|v| clamped after integration; 1e30 = none).
+                // Section 4·N: per-DOF velocity limit (|v| clamped at the start of each step; 1e30 = none).
+                // Section 5·N: optional second clamp before the position integration (1e30 = off, default).
                 let n = (dofs_cap * num_batches) as usize;
-                let mut buf = Vec::with_capacity(5 * n);
+                let mut buf = Vec::with_capacity(6 * n);
                 buf.extend_from_slice(&all_dof_vels);
                 buf.extend_from_slice(&all_dof_damping);
                 buf.extend_from_slice(&all_dof_armature);
                 buf.resize(4 * n, 0.0);
-                buf.resize(5 * n, 1.0e30);
-                debug_assert_eq!(buf.len(), 5 * n);
+                buf.resize(6 * n, 1.0e30);
+                debug_assert_eq!(buf.len(), 6 * n);
                 Tensor::vector(backend, &buf, storage).unwrap()
             },
             gen_forces: Tensor::vector(
