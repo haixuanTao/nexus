@@ -133,10 +133,8 @@ fn apply_force_based_pd(
                     let vmax = motor.target_vel;
                     if vmax > 0.0 && vmax < 1.0e30 {
                         let sv = if v >= 0.0 { 1.0 } else { -1.0 };
-                        if v * sv > vmax {
-                            tau = -sv * motor.max_force;
-                        } else if v * sv >= vmax * 0.98 && tau * sv > 0.0 {
-                            tau = 0.0;
+                        if v * sv >= vmax && tau * sv > 0.0 {
+                            tau = 0.0;                                     // no driving torque past the limit
                         }
                     }
                     let idx = batch_ids.mbi(batch_id, gen_base + abs_dof as usize);

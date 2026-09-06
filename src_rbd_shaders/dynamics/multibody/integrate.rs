@@ -55,9 +55,14 @@ pub fn gpu_mb_integrate_velocities(
         .ib(batch_id, gen_accelerations)
         .offset(mb.first_dof as usize);
 
+    // Joint velocity limit (dof_state section 4, 1e30 = none) on the previous substep's final velocities
+    // (contact / joint-limit impulses land after the position integration), then integrate.
+    let lim_off = 4 * batch_ids.dof_batch_capacity as usize;
     for d in 0..mb.ndofs {
         let di = d as usize;
-        dof_vel[di] += acc[di] * dt;
+        let l = dof_vel[lim_off + di];
+        let v = dof_vel[di].max(-l).min(l);
+        dof_vel[di] = v + acc[di] * dt;
     }
 }
 
@@ -152,7 +157,7 @@ pub fn gpu_mb_integrate(
     links_static: &[MultibodyLinkStatic],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 2)] links_workspace: &mut [Vec4],
     #[spirv(storage_buffer, descriptor_set = 0, binding = 3)] dof_values: &mut [f32],
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_state: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 4)] dof_state: &mut [f32],
     #[spirv(uniform, descriptor_set = 0, binding = 5)] dt_uniform: &f32,
     #[spirv(uniform, descriptor_set = 0, binding = 6)] batch_ids: &BatchIndices,
 ) {
@@ -176,8 +181,23 @@ pub fn gpu_mb_integrate(
     let dof_val = batch_ids
         .ib_mut(batch_id, dof_values)
         .offset(mb.first_dof as usize);
+    // Joint velocity limit (dof_state section 4, 1e30 = none), applied to the solver-corrected velocities
+    // before they integrate the positions -- contact and joint-limit impulses land after the velocity
+    // integration, so this is the only place the limit holds.
+    {
+        let lim_off = 4 * batch_ids.dof_batch_capacity as usize;
+        let mut dv = batch_ids
+            .ib_mut(batch_id, dof_state)
+            .offset(mb.first_dof as usize);
+        for d in 0..mb.ndofs {
+            let di = d as usize;
+            let l = dv[lim_off + di];
+            let v = dv[di];
+            dv[di] = v.max(-l).min(l);
+        }
+    }
     let dof_vel = batch_ids
-        .ib(batch_id, dof_state)
+        .ib(batch_id, &*dof_state)
         .offset(mb.first_dof as usize);
 
     // Per-link coord / joint_rot update (uses the already-corrected `dof_velocities`).

@@ -665,7 +665,7 @@ impl GpuMultibodySolver {
                 &mb.links_static,
                 &mut mb.links_workspace,
                 &mut mb.dof_values,
-                &mb.dof_state,
+                &mut mb.dof_state,
                 &mb.dt,
                 args.batch_indices,
             )?;
