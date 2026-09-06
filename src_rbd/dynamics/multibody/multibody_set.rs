@@ -485,6 +485,7 @@ impl GpuMultibodySet {
         damping: f32,
         max_force: f32,
         model: u32,
+        max_velocity: f32,
     ) {
         let global_idx = (link_id * self.num_batches + batch) as usize;
         let axis_id = axis as usize;
@@ -496,6 +497,9 @@ impl GpuMultibodySet {
         m.damping = damping;
         m.max_force = max_force;
         m.model = model;
+        // FORCE_BASED motors have no velocity target: `target_vel` carries the joint velocity limit
+        // (see `apply_force_based_pd`); `f32::INFINITY` = unlimited.
+        m.target_vel = max_velocity;
         entry.data.motor_axes |= 1u32 << axis_id;
     }
 

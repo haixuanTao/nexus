@@ -589,6 +589,7 @@ impl NexusState {
 
     /// Set PD motor gains (force-based model) on `link_ids` for `axis`, for every
     /// batch, and upload once. Call BEFORE the first `scatter_motor_targets`.
+    #[pyo3(signature = (backend, link_ids, axis, stiffness, damping, max_force, max_velocity = f32::INFINITY))]
     fn set_motor_gains(
         &mut self,
         backend: PyRef<NexusBackend>,
@@ -597,6 +598,7 @@ impl NexusState {
         stiffness: f32,
         damping: f32,
         max_force: f32,
+        max_velocity: f32,
     ) -> PyResult<()> {
         use nexus3d::rbd::rapier::prelude::JointAxis;
         let nb = self.0.rbd_num_batches();
@@ -613,7 +615,7 @@ impl NexusState {
         let mb = rbd.multibodies_mut();
         for &k in &link_ids {
             for b in 0..nb {
-                mb.stage_motor_gains(b, k, axis, stiffness, damping, max_force, 1 /* FORCE_BASED */);
+                mb.stage_motor_gains(b, k, axis, stiffness, damping, max_force, 1 /* FORCE_BASED */, max_velocity);
             }
         }
         mb.flush_links_static(&backend.0).map_err(gpu_err)

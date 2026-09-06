@@ -124,9 +124,21 @@ fn apply_force_based_pd(
                     // max/min instead of `clamp`: clamp's `min <= max` assert
                     // is a panic edge, which naga lowers to a break past the
                     // downstream barriers (Tint then rejects the module).
-                    let tau = (motor.stiffness * (target - q) - motor.damping * v)
+                    let mut tau = (motor.stiffness * (target - q) - motor.damping * v)
                         .max(-motor.max_force)
                         .min(motor.max_force);
+                    // Joint velocity limit (`target_vel` of a FORCE_BASED motor): no driving torque past the
+                    // limit, and full-effort braking beyond it. A torque, so the parent gets the reaction
+                    // (a post-step velocity clamp does not conserve momentum on a floating base).
+                    let vmax = motor.target_vel;
+                    if vmax > 0.0 && vmax < 1.0e30 {
+                        let sv = if v >= 0.0 { 1.0 } else { -1.0 };
+                        if v * sv > vmax {
+                            tau = -sv * motor.max_force;
+                        } else if v * sv >= vmax * 0.98 && tau * sv > 0.0 {
+                            tau = 0.0;
+                        }
+                    }
                     let idx = batch_ids.mbi(batch_id, gen_base + abs_dof as usize);
                     gen_forces.write(idx, gen_forces.read(idx) + tau);
                 }
